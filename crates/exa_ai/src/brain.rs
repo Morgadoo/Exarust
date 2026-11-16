@@ -276,6 +276,12 @@ pub struct Npc {
     /// Released or charging blasts the combat tick steps away from. A wave
     /// has no step of its own. Replaced each sight.
     pub blast_steps: Vec<crate::combat::BlastStep>,
+    /// The goal entity its search points at, created at the first pick
+    /// ([`crate::entity::GoalEntity`]).
+    pub goal: Option<crate::entity::GoalEntity>,
+    /// The pick flag: the search holds an object it picked, and the target
+    /// pass weighs the goal entity first.
+    pub goal_picked: bool,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -476,7 +482,57 @@ impl Npc {
             force_sights: Vec::new(),
             wall_steps: Vec::new(),
             blast_steps: Vec::new(),
+            goal: None,
+            goal_picked: false,
         }
+    }
+
+    /// The search's pick: the goal entity is linked to the picked object
+    /// at `at_cm` and the pick flag is set ([`crate::entity::pick`]).
+    pub fn pick_goal(&mut self, brain: Entity, at_cm: Vec3) {
+        crate::entity::pick(&mut self.goal, &mut self.goal_picked, brain, at_cm);
+    }
+
+    /// The search lets its object go ([`crate::entity::release`]).
+    pub fn release_goal(&mut self) {
+        crate::entity::release(&mut self.goal, &mut self.goal_picked);
+    }
+
+    /// Where contact `id` is when it is the goal entity: its linked object's
+    /// place (cm), the origin unlinked; none for any other contact.
+    pub fn goal_point(&self, id: u64) -> Option<Vec3> {
+        self.goal
+            .filter(|g| g.id == id)
+            .map(|g| g.linked_cm.unwrap_or(Vec3::ZERO))
+    }
+
+    /// Whether the brain attends its goal entity.
+    pub fn attends_goal(&self) -> bool {
+        self.goal.is_some_and(|g| self.pass.attention == Some(g.id))
+    }
+
+    /// The goal entity as the target pass weighs it while the pick flag
+    /// holds: its contact (the one the brain keeps, else a new object
+    /// contact) assessed from `head_cm`, at its linked place.
+    fn goal_sighting(&self, head_cm: Vec3) -> Option<contacts::Sighting> {
+        let goal = self.goal.filter(|_| self.goal_picked)?;
+        let mut contact = self
+            .contacts
+            .iter()
+            .find(|c| c.id == goal.id)
+            .copied()
+            .unwrap_or(ContactRecord {
+                id: goal.id,
+                object: true,
+                ..ContactRecord::default()
+            });
+        goal.assess(head_cm, &mut contact);
+        Some(contacts::Sighting {
+            contact,
+            character: false,
+            position_cm: goal.linked_cm.unwrap_or(Vec3::ZERO),
+            room: -1,
+        })
     }
 
     /// The brain of `record`: its traits and the personality they give,
@@ -616,6 +672,8 @@ impl Npc {
             self.integration.restraint = p.restraint;
             self.integration.soothe_scale = p.eagerness;
         }
+        // The integration never raises the goal entity's attention.
+        self.integration.scripted = self.goal.map(|g| g.id);
         self.integration.courage = courage;
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
@@ -652,6 +710,8 @@ impl Npc {
             )
             .is_some()
         };
+        // The goal entity under the search's pick, weighed first.
+        let goal_sighting = self.goal_sighting(place.at_cm);
         let report = contacts::target_pass(
             contacts::PassInput {
                 contacts: &mut self.contacts,
@@ -668,7 +728,8 @@ impl Npc {
                 asleep,
                 in_combat,
                 attended: None,
-                scripted: None,
+                scripted: goal_sighting,
+                goal: self.goal.map(|g| g.id),
                 cursor: self.cursor,
                 attended_id: attended,
                 greet_gates: (self.integration.notice_scale, self.integration.readiness),
@@ -760,6 +821,7 @@ impl Npc {
             self.integration.restraint = p.restraint;
             self.integration.soothe_scale = p.eagerness;
         }
+        self.integration.scripted = self.goal.map(|g| g.id);
         self.integration.courage = self.morale.courage;
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
@@ -1905,6 +1967,8 @@ pub fn ai_tick(
         let attended = npc.pass.attention.map(|id| {
             let at = if Some(id) == target_id {
                 target_cm
+            } else if let Some(goal) = npc.goal_point(id) {
+                goal
             } else {
                 places
                     .iter()
@@ -1916,8 +1980,8 @@ pub fn ai_tick(
                     crate::walker::notice_score(c.concern, c.hostility, c.noticed, c.attention)
                 }),
                 yaw: motion::yaw_of(at - observer_cm),
-                // The running game sets no scripted focus.
-                focus_held: false,
+                // The goal entity under the search's pick.
+                focus_held: npc.goal_picked && npc.goal.is_some_and(|g| g.id == id),
             }
         });
         // Entering combat marks the body in combat; the idle states clear
@@ -3260,6 +3324,80 @@ mod tests {
         let p = npc.personality.unwrap();
         assert!((p.skill - 0.5).abs() < 1e-6 && (p.courage - 0.7).abs() < 1e-6);
         assert_eq!(roll, 1);
+    }
+
+    /// The search's goal entity in the target pass: while the pick flag
+    /// holds, the pass weighs it first and, with nothing that outranks it,
+    /// attends it; its contact enters the brain's list as an object with the
+    /// weight as its noticed level, and the integration never raises its
+    /// attention. Once the search lets it go, a calm pass keeps attending
+    /// it; a pass that notices someone attends them.
+    #[test]
+    fn the_target_pass_attends_the_search_goal() {
+        let brain = Entity::from_raw_u32(3).unwrap();
+        let mut npc = Npc::new([0.0; 4]);
+        npc.integration.active = true;
+        let sight = contacts::FoeSight {
+            foe: None,
+            sees_foe: false,
+            foe_point: bevy::math::Vec3::ZERO,
+            foe_ground_y: 0.0,
+            foe_room: 0,
+            focus: None,
+        };
+        let pass = |npc: &mut Npc, visible: &[contacts::Sighting]| {
+            let mut roll = 7;
+            npc.run_pass(
+                visible,
+                sight,
+                &|_| 1.0e6,
+                false,
+                false,
+                (1.0, 1.0),
+                false,
+                0,
+                &mut roll,
+                &FleePlace::default(),
+            )
+        };
+        // Nothing picked: nothing attended.
+        pass(&mut npc, &[]);
+        assert_eq!(npc.pass.attention, None);
+        npc.pick_goal(brain, Vec3::new(0.0, 0.0, 300.0));
+        let id = crate::entity::goal_id(brain);
+        pass(&mut npc, &[]);
+        assert_eq!(npc.pass.attention, Some(id));
+        assert!(npc.attends_goal());
+        let c = *npc.contacts.iter().find(|c| c.id == id).unwrap();
+        assert!(c.object);
+        assert_eq!(c.sighting, 5.0);
+        assert_eq!(c.attention, 0.0);
+        for _ in 0..20 {
+            pass(&mut npc, &[]);
+        }
+        let c = npc.contacts.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(c.attention, 0.0, "the goal's attention never rises");
+        assert_eq!(npc.goal_point(id), Some(Vec3::new(0.0, 0.0, 300.0)));
+        // Let go: the calm pass keeps attending it, unlinked at the origin.
+        npc.release_goal();
+        pass(&mut npc, &[]);
+        assert_eq!(npc.pass.attention, Some(id));
+        assert_eq!(npc.goal_point(id), Some(Vec3::ZERO));
+        // Someone hostile seen: the pass attends them.
+        let hostile = contacts::Sighting {
+            contact: ContactRecord {
+                id: 1,
+                sighting: 1.0,
+                concern: 0.9,
+                ..ContactRecord::default()
+            },
+            character: true,
+            position_cm: bevy::math::Vec3::ZERO,
+            room: -1,
+        };
+        npc.pick_goal(brain, Vec3::new(0.0, 0.0, 300.0));
+        pass(&mut npc, &[hostile]);
+        assert_eq!(npc.pass.attention, Some(1));
     }
 
     /// A hostile rating enters the fight through the target pass at level

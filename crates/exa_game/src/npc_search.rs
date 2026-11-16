@@ -31,10 +31,12 @@
 //! - **The searcher's world** answers the search: reachable is the level's
 //!   sight callback ([`exa_ai::rooms::in_sight`]), as the original's pick
 //!   asks it; a path is the navigation grid's route on the planning turn;
-//!   the attention is on someone else while the attended contact's notice
-//!   score reaches 1, else on the search's goal within 12 m (the goal
-//!   entity's reach); the alert look takes the tick while the panic is at
-//!   least 0.2 and the in-combat mark is kept.
+//!   the attention is the brain's target pass's: on the brain's goal
+//!   entity, which the search's pick links to the picked object (and its
+//!   release unlinks) and the pass weighs first while the pick flag holds
+//!   ([`exa_ai::entity::GoalEntity`]), on someone else, or on no one; the
+//!   alert look takes the tick while the panic is at least 0.2 and the
+//!   in-combat mark is kept.
 //! - **The level's objects** are the search's containers and loose items:
 //!   every placed object that lies in the world (a root of the level, as
 //!   the original's object must sit straight under a sector) and has a
@@ -103,10 +105,6 @@ const CORPSE_HALF_CM: Vec3 = Vec3::new(30.0, 15.0, 90.0);
 /// The body's centre above its feet (cm) [Exarust stand-in for the body's
 /// centre point].
 const CENTRE_CM: f32 = 90.0;
-/// The goal entity is out of the attention's reach past 12 m.
-const GOAL_REACH_CM2: f32 = 1.44e6;
-/// The attention is on a contact once its notice score reaches this.
-const ATTEND_SCORE: f32 = 1.0;
 /// The alert look runs while the panic is at least this.
 const ALERT_PANIC: f32 = 0.2;
 
@@ -835,8 +833,13 @@ struct LiveSearcher<'a> {
     alert: bool,
     /// The attended contact's notice score.
     attended: Option<f32>,
-    /// The search holds an object at this place.
-    goal: Option<Vec3>,
+    /// The contact the brain's target pass attends.
+    attention: Option<u64>,
+    /// The brain's goal entity and its pick flag, which the pick links and
+    /// the release unlinks; the brain is on `brain`.
+    ai_goal: &'a mut Option<exa_ai::entity::GoalEntity>,
+    ai_picked: &'a mut bool,
+    brain: Entity,
     gaze: &'a mut Gaze,
     pack: &'a mut Pack,
     pack_id: u32,
@@ -901,14 +904,19 @@ impl search::Searcher for LiveSearcher<'_> {
             self.roll,
         );
     }
+    // The brain's attention: its goal entity, someone else, or no one.
     fn attention(&self) -> Attention {
-        if self.attended.is_some_and(|score| ATTEND_SCORE <= score) {
-            return Attention::Other;
+        match self.attention {
+            None => Attention::Nobody,
+            Some(id) if self.ai_goal.is_some_and(|g| g.id == id) => Attention::Goal,
+            Some(_) => Attention::Other,
         }
-        match self.goal {
-            Some(at) if at.distance_squared(self.feet) <= GOAL_REACH_CM2 => Attention::Goal,
-            _ => Attention::Nobody,
-        }
+    }
+    fn pick_goal(&mut self, at: Vec3) {
+        exa_ai::entity::pick(self.ai_goal, self.ai_picked, self.brain, at);
+    }
+    fn release_goal(&mut self) {
+        exa_ai::entity::release(self.ai_goal, self.ai_picked);
     }
     fn plan(&mut self, goal: Goal) -> bool {
         let route_goal = exa_ai::route::Goal {
@@ -1607,10 +1615,15 @@ pub fn follow_and_search(
                                 )
                             })
                         });
-                        let goal = search
-                            .target
-                            .and_then(|o| world.scene.objects.get(o))
-                            .map(|o| o.at);
+                        // The goal entity follows its object, as the
+                        // original's reads the linked node's place.
+                        if let (Some(goal), Some(o)) = (
+                            npc.goal.as_mut().filter(|g| g.linked_cm.is_some()),
+                            search.target.and_then(|o| world.scene.objects.get(o)),
+                        ) {
+                            goal.linked_cm = Some(o.at);
+                        }
+                        let attention = npc.pass.attention;
                         let mut roll = npc.roll;
                         let mut me = LiveSearcher {
                             now,
@@ -1619,7 +1632,10 @@ pub fn follow_and_search(
                             level,
                             alert: ALERT_PANIC <= npc.morale.panic && npc.alert.marked,
                             attended,
-                            goal,
+                            attention,
+                            ai_goal: &mut npc.goal,
+                            ai_picked: &mut npc.goal_picked,
+                            brain: entity,
                             gaze: &mut state.gaze,
                             pack: &mut pack,
                             pack_id,

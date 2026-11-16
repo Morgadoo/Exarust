@@ -781,15 +781,23 @@ pub fn walk_routes(
             continue;
         }
         // The AI's look target is the contact its target pass attends (the
-        // character's look target when it has no brain).
-        let look_at_cm = npc
+        // character's look target when it has no brain): a character, or
+        // its goal entity.
+        // The goal entity is looked at where its object lies.
+        let look_at_cm = match npc
             .as_ref()
-            .map_or_else(
-                || combatant.and_then(|c| c.look_target),
-                |n| n.pass.attention.and_then(Entity::try_from_bits),
-            )
-            .and_then(|e| targets.get(e).ok())
-            .map(|g| g.translation() * CM);
+            .and_then(|n| n.pass.attention.and_then(|id| n.goal_point(id)))
+        {
+            Some(at) => Some(at),
+            None => npc
+                .as_ref()
+                .map_or_else(
+                    || combatant.and_then(|c| c.look_target),
+                    |n| n.pass.attention.and_then(Entity::try_from_bits),
+                )
+                .and_then(|e| targets.get(e).ok())
+                .map(|g| g.translation() * CM),
+        };
         let nearby: Vec<(u64, Vec3, bool)> = npc.as_ref().map_or_else(Vec::new, |n| {
             crate::brain::nearby_bodies(&n.nearby, &others)
         });
