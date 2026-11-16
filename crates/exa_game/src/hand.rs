@@ -200,6 +200,10 @@ pub struct Hand {
     /// mode the controls' frame writes it every frame (kept unless Ctrl is
     /// held or the hand holds something), which the press reads directly.
     pub keeps_left: bool,
+    /// The combat toggle's lift cancel, waiting for the hold frame: the
+    /// lifted item goes back to the frames its lift saved
+    /// ([`crate::hotkeys::enter_combat`]).
+    pub cancel_lift: bool,
 }
 
 /// Where and when the left button went down, and whether its drag started.
@@ -1866,7 +1870,7 @@ fn press_hand(
 
 /// The hold each frame: the drag follows the cursor, the release lets go.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn hold_hand(
+pub(crate) fn hold_hand(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
@@ -2065,6 +2069,17 @@ fn hold_hand(
             }
         }
     }
+    // The combat toggle's lift cancel: the item goes back to the frames
+    // its lift saved, the hand already empty.
+    if std::mem::take(&mut hand.cancel_lift) {
+        end_lift(
+            &mut items,
+            &mut bodies,
+            &mut fixed,
+            true,
+            Some(Release::PutBack),
+        );
+    }
     match hand.holding {
         Holding::Nothing => {}
         Holding::Refused => {
@@ -2199,7 +2214,7 @@ fn hold_hand(
                     pb.hold_object(false);
                 }
                 // The lift's own out-of-reach answer cancels it.
-                end_lift(&mut items, &mut bodies, &mut fixed, hand.out_of_reach);
+                end_lift(&mut items, &mut bodies, &mut fixed, hand.out_of_reach, None);
             } else {
                 // The movement inputs turn the item (the lift keeps the
                 // movement request): the pad's raw move stick, or the move
@@ -2643,12 +2658,16 @@ fn end_lift(
     bodies: &mut Query<OtherBodies, Without<PlayerBody>>,
     fixed: &mut exa_physics::sim_app::FixedCommands,
     cancelled: bool,
+    outcome: Option<Release>,
 ) {
     // The last fitting placement is where the item already rests: a frame
     // that does not hold puts it back there, so it still fits.
-    let Some((outcome, held)) = items.end(cancelled, true) else {
+    let Some((released, held)) = items.end(cancelled, true) else {
         return;
     };
+    // The lift cancel (the combat toggle's) puts the item back whatever
+    // the cursor's hover word says.
+    let outcome = outcome.unwrap_or(released);
     // The let-go queues the held node's box, at the frame the lift saved,
     // for the grid's refresh: the floor the item stood on is refreshed.
     if let Some(&at) = held.saved.get(held.part) {
@@ -2812,7 +2831,7 @@ fn reach_hand(
         // The forced release runs the lift's handler with the point out of
         // reach, so the lift ends as a cancelled one.
         if hand.holding == Holding::Lift {
-            end_lift(&mut items, &mut bodies, &mut fixed, true);
+            end_lift(&mut items, &mut bodies, &mut fixed, true, None);
         }
         hand.holding = Holding::Nothing;
         hand.out_of_reach = true;

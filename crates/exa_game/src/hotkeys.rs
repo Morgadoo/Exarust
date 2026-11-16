@@ -303,13 +303,19 @@ pub fn pad_hotkeys(bits: u32, c: Context) -> Vec<Hotkey> {
 }
 
 /// Entering combat mode: the hand lets go and the request's backpedal,
-/// keys' heading and turn-about bits clear. The original's cancel puts a
-/// lifted item back where its lift saved it and leaves a drag's link in
-/// place; Exarust lets go of the drag.
+/// keys' heading and turn-about bits clear. A lifted item is cancelled:
+/// the hold frame puts it back where its lift saved it
+/// ([`Hand::cancel_lift`]), as the original's lift cancel restores the
+/// saved frames. The original's cancel leaves a drag's link in place;
+/// Exarust lets go of the drag (the answer is the dragged body).
 pub fn enter_combat(hand: &mut Hand, req: &mut Locomotion) -> Option<Entity> {
     req.flags &= !COMBAT_CLEARS;
     let held = match hand.holding {
         Holding::Drag { body, .. } => Some(body),
+        Holding::Lift => {
+            hand.cancel_lift = true;
+            None
+        }
         _ => None,
     };
     hand.holding = Holding::Nothing;
@@ -999,6 +1005,102 @@ mod tests {
         hand.holding = Holding::Lift;
         assert_eq!(enter_combat(&mut hand, &mut req), None);
         assert_eq!(hand.holding, Holding::Nothing);
+    }
+
+    fn ball_body(at: Vec3) -> Ragdoll {
+        Ragdoll::rigid(&[exa_physics::body::RigidPart {
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::from_translation(at),
+            rest: [
+                Vec3::new(-0.2, 0.0, -0.2),
+                Vec3::new(0.2, 0.0, -0.2),
+                Vec3::new(0.0, 0.0, 0.2),
+                Vec3::new(0.0, 0.4, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: bevy::math::Affine3A::IDENTITY,
+            mobility: 1.0,
+            spheres: vec![(Vec3::ZERO, 0.2)],
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: None,
+            triangles: None,
+        }])
+    }
+
+    /// A cube of half side `h` about the origin, two triangles a face,
+
+    /// Tab into combat mode while an item is lifted: the live key handler
+    /// empties the hand and the hold frame puts the item back at the frame
+    /// its lift saved, as the original's lift cancel restores the saved
+    /// frames (not where the cursor last placed it).
+    #[test]
+    fn entering_combat_puts_a_lifted_item_back() {
+        use crate::control_nodes::Frame;
+        use crate::item_cursor::{HeldItem, ItemCursor};
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>()
+            .init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<exa_ui::ScriptedPointer>()
+            .init_resource::<exa_physics::prop::StandIns>()
+            .init_resource::<exa_physics::ColliderNodes>()
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .add_message::<ScreenRequest>()
+            .add_message::<crate::end_menu_screen::EndMenuConfirm>()
+            .add_message::<crate::skill_screen::OpenSkills>()
+            .add_message::<BarCommand>()
+            .add_message::<FlipWeaponRequest>()
+            .init_resource::<DialogueFocus>()
+            .add_message::<exa_script::Talk>()
+            .add_message::<exa_script::PickReply>()
+            .add_message::<exa_script::LeaveDialogue>()
+            .add_message::<crate::hand::WorldClick>()
+            .add_message::<crate::object_click::ObjectClick>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .add_systems(Update, (press_hotkeys, crate::hand::hold_hand).chain());
+        app.world_mut()
+            .spawn((PlayerBody::new(0.0), Condition::NORMAL));
+        let saved_at = Vec3::new(1.0, 0.5, 2.0);
+        let saved = bevy::math::Affine3A::from_translation(saved_at);
+        // The item hangs on the cursor, away from where the lift took it.
+        let item = app
+            .world_mut()
+            .spawn(ball_body(Vec3::new(3.0, 1.5, 0.0)))
+            .id();
+        app.world_mut()
+            .resource_mut::<ItemCursor>()
+            .begin(HeldItem {
+                body: item,
+                part: 0,
+                saved: vec![saved],
+                saved_frame: Frame::new(saved_at, Mat3::IDENTITY),
+                shown: Frame::new(Vec3::new(3.0, 1.5, 0.0), Mat3::IDENTITY),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.2),
+                target: Vec3::new(3.0, 1.5, 0.0),
+                last: Some(Frame::new(Vec3::new(3.0, 1.5, 0.0), Mat3::IDENTITY)),
+                item: 0,
+                model: 0,
+            });
+        app.world_mut().resource_mut::<Hand>().holding = Holding::Lift;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Tab);
+        app.update();
+        assert_eq!(app.world().resource::<Hand>().holding, Holding::Nothing);
+        assert!(app.world().resource::<ItemCursor>().held.is_none());
+        assert!(!app.world().resource::<Hand>().cancel_lift);
+        let at = Vec3::from(
+            app.world().get::<Ragdoll>(item).unwrap().parts[0]
+                .transform()
+                .translation,
+        );
+        assert!((at - saved_at).length() < 1e-4, "the item is at {at}");
     }
 
     /// The dialogue keys: with the panel open the Talk key ends, the digits
