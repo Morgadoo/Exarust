@@ -134,7 +134,8 @@ pub fn stance_by_energy(yellow: f32, energy: f32, most_energy: f32) -> Stance {
 /// the Defence stance. `target` is the target's distance (m) and body
 /// scale, `since_attack` the seconds since that tick.
 ///
-/// Not yet: a parrying player keeps its stance (no parries).
+/// A parrying player keeps its stance: the caller answers it before this
+/// rule (the original's clinch branch returns the body's stance word).
 pub fn player_stance(
     combat: bool,
     yellow: f32,

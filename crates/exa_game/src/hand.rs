@@ -178,6 +178,11 @@ pub enum Holding {
     },
     /// A press on something the hand does not use, until the release.
     Refused,
+    /// A GUI callback's drag (the original's state word 0x40000): the
+    /// running kinesis took the press's pick, until the release, whose
+    /// handler clears the state. The movement request is dropped
+    /// meanwhile, so the movement keys only turn the held body.
+    Callback,
 }
 
 /// The hand's state between frames.
@@ -254,6 +259,7 @@ impl Hand {
             Holding::Mechanism(Pick::Wheel) | Holding::Wheel { .. } => DragState::Wheel,
             Holding::Mechanism(_) | Holding::Cloth { .. } => DragState::Cloth,
             Holding::Refused => DragState::Refused,
+            Holding::Callback => DragState::GuiCallback,
         }
     }
 
@@ -267,6 +273,12 @@ impl Hand {
     /// press is refused or a lift holds the cursor.
     pub fn keeps_the_request(&self) -> bool {
         matches!(self.holding, Holding::Refused | Holding::Lift)
+    }
+
+    /// Whether the movement request is dropped: while a GUI callback's
+    /// drag (the kinesis pick) holds the press.
+    pub fn drops_the_request(&self) -> bool {
+        self.holding == Holding::Callback
     }
 
     /// Whether the cursor shows the cross whatever else holds: a refused
@@ -1817,6 +1829,9 @@ fn press_hand(
                 if let Some(messages) = kinesis_picks.as_deref_mut() {
                     messages.write(KinesisPicked { caster, body });
                 }
+                // The pick hook took it: the hand's state is the GUI
+                // callback's drag until the release.
+                hand.holding = Holding::Callback;
                 return;
             }
             // The lift rides the item cursor (Exarust holds it with a plain
@@ -2158,6 +2173,13 @@ pub(crate) fn hold_hand(
             }
         }
         Holding::Mechanism(_) => {
+            if released {
+                hand.holding = Holding::Nothing;
+            }
+        }
+        // The callback's release handler clears the state (it also tells
+        // the hook of the release, which Exarust's kinesis does not read).
+        Holding::Callback => {
             if released {
                 hand.holding = Holding::Nothing;
             }
@@ -4150,6 +4172,48 @@ mod tests {
                 .resource_mut::<player_controls::PlayerControl>();
             crate::controls_live::block_controls(&mut control, false, "test");
             assert!(control.drag_limit);
+        }
+        app.update();
+        assert_eq!(app.world().resource::<Hand>().holding, Holding::Nothing);
+    }
+
+    /// The kinesis pick's drag (the GUI callback's state) drops the
+    /// movement request until the left button's release, whose handler
+    /// clears it.
+    #[test]
+    fn the_kinesis_picks_drag_holds_until_the_release() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<Bindings>()
+            .init_resource::<ScriptedPointer>()
+            .init_resource::<StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
+            .init_resource::<player_controls::PlayerControl>()
+            .add_message::<WorldClick>()
+            .add_message::<ObjectClick>()
+            .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
+        app.world_mut()
+            .resource_mut::<player_controls::PlayerControl>()
+            .set_off(false);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.world_mut().resource_mut::<Hand>().holding = Holding::Callback;
+        app.update();
+        let hand = app.world().resource::<Hand>();
+        assert_eq!(hand.holding, Holding::Callback);
+        assert!(hand.drops_the_request() && !hand.keeps_the_request());
+        assert_eq!(hand.drag_state(), DragState::GuiCallback);
+        {
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.clear();
+            buttons.release(MouseButton::Left);
         }
         app.update();
         assert_eq!(app.world().resource::<Hand>().holding, Holding::Nothing);

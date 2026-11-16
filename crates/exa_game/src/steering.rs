@@ -415,9 +415,11 @@ impl CursorFollower {
 /// orbit or Cursor Look holds the mouse (`held`) the cursor's point is not
 /// read, and while Cursor Look turns (`look`, its target yaw) the cursor
 /// follower follows that target and the raw cursor direction is it.
+/// `turns`: the capture is Cursor Look's (else the orbit's).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Capture {
     pub(crate) held: bool,
+    pub(crate) turns: bool,
     pub(crate) look: Option<f32>,
 }
 
@@ -501,6 +503,10 @@ pub(crate) struct Steering {
     /// The body's step episode runs (any kind), as the behaviour tick
     /// reads it: a walk casts its look-ahead only while no step runs.
     pub(crate) body_stepping: bool,
+    /// The request is dropped this tick, after the keys' backwards flags:
+    /// while the hand holds a GUI callback's drag (the kinesis pick) or
+    /// the body plays Head Pain (action 45, the memory recall).
+    pub(crate) dropped: bool,
 }
 
 impl Steering {
@@ -545,7 +551,11 @@ impl Steering {
     /// the body moves, the request holds (heading-driven) until the walk's
     /// key segment `segment` is 0 or 4 (or no walk plays), which also
     /// clears backwards. Then the cursor's mode: the mouse's request walks
-    /// to a cursor within 3 m and runs beyond.
+    /// to a cursor within 3 m and runs beyond (a NaN distance walks: the
+    /// original's unordered compare takes the walk).
+    ///
+    /// A dropped request ([`Steering::dropped`]) is taken as no key and no
+    /// button once the backwards flags are set: the release's latch runs.
     pub(crate) fn request(
         &mut self,
         req: &mut Locomotion,
@@ -570,6 +580,9 @@ impl Steering {
             }
         } else if wanted {
             req.flags &= !(BACK | TURN_ABOUT);
+        }
+        if self.dropped {
+            wanted = false;
         }
         if wanted {
             if keys.mouse {

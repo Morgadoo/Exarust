@@ -119,6 +119,7 @@ pub(crate) fn pick_cursor(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     bodies: Query<(&PlayerBody, Option<&exa_combat::Condition>)>,
     mut cursor: ResMut<WorldCursor>,
+    pad: Option<Res<crate::pad_cursor::PadCursor>>,
 ) {
     let found = players.iter().find_map(|(at, children)| {
         children
@@ -157,6 +158,10 @@ pub(crate) fn pick_cursor(
         shape: shape(state),
         combat: pb.combat,
         player: window_point(camera, eye, window, aim),
+        // While the pad drives the screen cursor it is drawn at the
+        // behaviour's drawn point (the GUI's draw reads the controls'
+        // getter).
+        at: pad.as_deref().and_then(crate::pad_cursor::PadCursor::drawn),
     };
     if (cursor.active, cursor.shape, cursor.combat) != (next.active, next.shape, next.combat) {
         debug!(

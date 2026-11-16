@@ -104,6 +104,9 @@ pub struct WorldCursor {
     /// The player on screen (logical pixels), which the ring and chevrons
     /// turn away from.
     pub player: Option<Vec2>,
+    /// Where the cursor is drawn instead of the pointer (logical pixels):
+    /// the gamepad's screen cursor while the pad drives it.
+    pub at: Option<Vec2>,
 }
 
 /// A fixed pointer position (logical window pixels) that stands in for the
@@ -427,7 +430,7 @@ fn draw(
         return;
     };
     let atlas = atlas.as_ref().and_then(|a| a.0.as_ref());
-    let at = scripted.position(window);
+    let at = cursor.at.or_else(|| scripted.position(window));
     let shown = cursor.active && loading.is_none() && atlas.is_some() && at.is_some();
     // Cursor Look owns the pointer: hide both the system and the world
     // cursor until it is released. A panel shows the system pointer.

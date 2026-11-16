@@ -56,6 +56,29 @@ fn the_request_follows_the_keys_and_the_mouse() {
     assert!(!s.requested && req.flags == 0);
 }
 
+/// A dropped request (the kinesis pick's drag, Head Pain) reads as no key:
+/// W asks nothing, S still sets its backwards flags first, and a walking
+/// body's request takes the release's latch.
+#[test]
+fn a_dropped_request_reads_as_no_key() {
+    let (mut s, mut req, mut body) = standing();
+    s.dropped = true;
+    s.request(&mut req, &body, &keys("w"), None, Condition::NORMAL);
+    assert!(!s.requested && !req.has(flags::KEYS));
+    body.speed = 0.5;
+    s.request(&mut req, &body, &keys("s"), None, Condition::NORMAL);
+    assert!(!s.requested && req.has(flags::BACK));
+    // Walking, the latch holds until a release segment.
+    s.dropped = false;
+    s.request(&mut req, &body, &keys("w"), None, Condition::NORMAL);
+    req.moving = true;
+    s.dropped = true;
+    s.request(&mut req, &body, &keys("w"), Some(2), Condition::NORMAL);
+    assert!(s.requested && req.has(flags::KEYS));
+    s.request(&mut req, &body, &keys("w"), Some(4), Condition::NORMAL);
+    assert!(!s.requested);
+}
+
 /// Released while the body walks, the request holds (heading-driven) until
 /// the walk's key segment is 0 or 4, which also clears backwards; released
 /// standing it ends at once.
@@ -927,6 +950,7 @@ fn the_capture_freezes_the_cursor_and_cursor_look_steers_it() {
     // The orbit holds the mouse: a new point is not read.
     s.capture = Capture {
         held: true,
+        turns: false,
         look: None,
     };
     s.aim(&mut req, Some(Vec3::new(0.0, 0.0, 3.0)), false);
@@ -934,6 +958,7 @@ fn the_capture_freezes_the_cursor_and_cursor_look_steers_it() {
     // Cursor Look turns: the target is the look's, the distance kept.
     s.capture = Capture {
         held: true,
+        turns: true,
         look: Some(1.0),
     };
     let before = s.follower.unwrap().yaw();

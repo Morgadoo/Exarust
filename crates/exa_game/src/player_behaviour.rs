@@ -494,12 +494,11 @@ pub struct CombatModeInput {
     pub left: bool,
     /// A swing is under way.
     pub swinging: bool,
-    /// The step latch is set with the body's speed over 2 cm a tick (a
-    /// lunge's dash).
+    /// The body walks (its moving byte) with its speed over 2 cm a tick.
     pub dashing: bool,
-    /// The body plays the action that keeps the mode as it was under the
-    /// right button. A guess at its meaning: the original compares the
-    /// action number to 45.
+    /// The body plays Head Pain (action 45, the memory recall a story
+    /// event plays; the original compares the action number to 45): the
+    /// right button's branch keeps the mode as it was.
     pub keeps_mode: bool,
 }
 
