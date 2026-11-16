@@ -163,7 +163,15 @@ impl TableSource for NoTables {
 /// Migrates and walks a level's local store over the base tier `base`;
 /// returns how many records the walk refreshed.
 pub fn run(store: &mut Store, base: &ObjectDb, game: Option<&GameData>) -> usize {
-    base.migrate_store(store);
+    // The migration rebuilds a factory weapon from its factory, as the
+    // original's importer hook does.
+    let mut factories = ShopFactories::default();
+    base.migrate_store_with(
+        store,
+        Some(&mut |name: &str, body: &mut [u8]| {
+            factories.pass_in(game, name, body);
+        }),
+    );
     let mut world = ArchiveWorld {
         store,
         base,
@@ -171,7 +179,7 @@ pub fn run(store: &mut Store, base: &ObjectDb, game: Option<&GameData>) -> usize
         palette: Palette::default(),
         clock: ARCHIVE_SEED,
         seed: 0,
-        factories: ShopFactories::default(),
+        factories,
         refreshed: 0,
     };
     world_load(&mut world, &NoTables, &mut Fill::default());
