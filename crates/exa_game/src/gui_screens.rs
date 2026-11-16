@@ -934,9 +934,9 @@ impl GameScreens {
         }
     }
 
-    fn push(&mut self, kind: GameScreen, bounds: GuiRect, unit: i32) -> FormId {
-        let root = self.task.root;
-        let (words, border) = match kind {
+    /// The words and border a screen's form is built with.
+    fn screen_words(&self, kind: GameScreen) -> (gui_paint::FormWords, i32) {
+        match kind {
             GameScreen::Inventory => (
                 gui_paint::FormWords {
                     style: gui_paint::SCREEN_STYLE,
@@ -947,7 +947,112 @@ impl GameScreens {
             GameScreen::Journal => (gui_paint::JOURNAL_WORDS, gui_paint::FORM_SPACING),
             GameScreen::Container => (gui_paint::CONTAINER_WORDS, POPUP_BORDER),
             _ => (gui_paint::LOOT_WORDS, gui_paint::FORM_SPACING),
-        };
+        }
+    }
+
+    /// A screen's records at `bounds`, at the unit its layout keeps.
+    fn screen_records(&self, kind: GameScreen, bounds: GuiRect) -> Vec<Control> {
+        match kind {
+            GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
+            GameScreen::Journal => ScreenLayout::journal(self.journal_unit).controls_at(bounds),
+            _ => screen_controls(kind, bounds),
+        }
+    }
+
+    /// The GUI's rescale walk over the open screens (the level switch's
+    /// pass over the root's children, each form scaled from its old unit to
+    /// `unit`): a screen at another unit takes its place scaled as a free
+    /// form's (`v / old · unit`), its layout's size, client and records at
+    /// the new unit, and its item panels run their class's rescale
+    /// ([`Container::rescale`]: each entry's place `round(unit · place /
+    /// old)`). The journal's text box is laid out again. Container popups
+    /// keep the unit they opened at (their size follows their container's
+    /// record). Returns how many screens were rescaled.
+    pub fn rescale_open(&mut self, unit: i32) -> usize {
+        let unit = unit.max(1);
+        let mut count = 0;
+        for screen in self.open.clone() {
+            if matches!(
+                screen.kind,
+                GameScreen::Container | GameScreen::TechniqueSelector
+            ) {
+                continue;
+            }
+            let Some((old, bounds)) = self
+                .task
+                .form(screen.form)
+                .and_then(|f| f.base())
+                .map(|f| (f.unit, f.bounds))
+            else {
+                continue;
+            };
+            if old == unit || old <= 0 {
+                continue;
+            }
+            let scale = |v: i32| v / old * unit;
+            let size = match screen.kind {
+                GameScreen::Inventory => {
+                    self.inventory_unit = unit;
+                    self.pack.rescale(old, unit);
+                    self.pack.unit = unit;
+                    self.pack.icon_size = exa_items::icon_cache::icon_size(unit);
+                    let layout = self.inventory_layout();
+                    self.pack.client = (layout.pack.width(), layout.pack.height());
+                    layout.size
+                }
+                GameScreen::Journal => {
+                    self.journal_unit = unit;
+                    ScreenLayout::journal(unit).size
+                }
+                _ => {
+                    if let Some(window) = self.loot.iter_mut().find(|w| w.form == screen.form) {
+                        for panel in [&mut window.pack, &mut window.worn] {
+                            panel.rescale(old, unit);
+                            panel.unit = unit;
+                            panel.icon_size = exa_items::icon_cache::icon_size(unit);
+                        }
+                    }
+                    ScreenLayout::loot(unit).size
+                }
+            };
+            let bounds = GuiRect::new(scale(bounds.left), scale(bounds.top), size.0, size.1);
+            let (words, border) = self.screen_words(screen.kind);
+            let committed = gui_paint::commit_words(words.style, words.attributes, true);
+            let client = exa_ui::line_skin::line_client(
+                bounds.width(),
+                bounds.height(),
+                border,
+                committed.style,
+                committed.attributes,
+                unit,
+            );
+            let records = self.screen_records(screen.kind, bounds);
+            if let Some(form) = self.task.form_mut(screen.form).and_then(|f| f.base_mut()) {
+                form.bounds = bounds;
+                form.in_owner = (bounds.left, bounds.top);
+                form.unit = unit;
+                form.client = client;
+                form.records = records;
+                form.hover = 0;
+                form.held = 0;
+                form.over = false;
+                form.repeat_at = None;
+            }
+            if screen.kind == GameScreen::Journal {
+                if let Some(text_box) = self.journal_box.take() {
+                    self.task.close_form(text_box.form);
+                }
+                self.open_journal_box(screen.form);
+                self.journal_selected();
+            }
+            count += 1;
+        }
+        count
+    }
+
+    fn push(&mut self, kind: GameScreen, bounds: GuiRect, unit: i32) -> FormId {
+        let root = self.task.root;
+        let (words, border) = self.screen_words(kind);
         let unit = unit.max(1);
         let committed = gui_paint::commit_words(words.style, words.attributes, true);
         // The base form's show: a window with a parent is raised in it, and
@@ -976,11 +1081,7 @@ impl GameScreens {
         } else {
             bounds
         };
-        let controls = match kind {
-            GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
-            GameScreen::Journal => ScreenLayout::journal(self.journal_unit).controls_at(bounds),
-            _ => screen_controls(kind, bounds),
-        };
+        let controls = self.screen_records(kind, bounds);
         let client = exa_ui::line_skin::line_client(
             bounds.width(),
             bounds.height(),
@@ -1879,6 +1980,7 @@ impl Plugin for GameScreensPlugin {
                 Update,
                 (
                     sync_screen_size,
+                    rescale_open_screens,
                     register_level_items,
                     crate::container_fill::fill_level_containers,
                     show_script_inventory,
@@ -2353,6 +2455,35 @@ fn sync_screen_size(
         );
         if size != screens.task.screen {
             screens.task.screen = size;
+        }
+    }
+}
+
+/// The GUI unit follows the window's height (the level switch); a change
+/// runs the rescale walk over the open screens
+/// ([`GameScreens::rescale_open`]).
+fn rescale_open_screens(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut screens: ResMut<GameScreens>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
+    let stale = screens.open.iter().any(|screen| {
+        !matches!(
+            screen.kind,
+            GameScreen::Container | GameScreen::TechniqueSelector
+        ) && screens
+            .task
+            .form(screen.form)
+            .and_then(|f| f.base())
+            .is_some_and(|f| f.unit != unit.max(1))
+    });
+    if stale {
+        let count = screens.rescale_open(unit);
+        if count > 0 {
+            info!("GUI: {count} open screens rescale to unit {unit}");
         }
     }
 }
@@ -4415,6 +4546,82 @@ mod tests {
                 .is_none_or(|(f, _)| f != journal && f != text_box)
         );
         assert_eq!(screens.task.draw_order().len(), 2);
+    }
+
+    /// A window grown past a height step changes the GUI unit, and the
+    /// rescale walk takes the open screens with it: the inventory's place
+    /// scales as a free form's, its size, client and records are its
+    /// layout's at the new unit and its pack's entries rescale; the
+    /// journal and its text box follow.
+    #[test]
+    fn a_unit_change_rescales_the_open_screens() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(
+                Update,
+                (sync_screen_size, rescale_open_screens, open_requested_screens).chain(),
+            );
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions::default(),
+        ));
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1280, 720),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        for screen in [GameScreen::Inventory, GameScreen::Journal] {
+            app.world_mut()
+                .write_message(ScreenRequest::screen(screen, true, true));
+            app.update();
+        }
+        let inventory = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            assert_eq!(screens.inventory_unit, 4);
+            screens.pack.entries.push(crate::item_container::Entry {
+                cell: crate::item_container::Cell::new(40, 10),
+                id: 0x30,
+                ..Default::default()
+            });
+            screens.find(GameScreen::Inventory).unwrap().form
+        };
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(1920, 1080);
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        assert_eq!(screens.inventory_unit, 6);
+        let layout = InventoryLayout::at(6);
+        let form = screens.task.form(inventory).and_then(|f| f.base()).unwrap();
+        assert_eq!(form.unit, 6);
+        assert_eq!(
+            form.bounds,
+            GuiRect::new(12, 12, layout.size.0, layout.size.1)
+        );
+        assert_eq!(form.records, layout.controls_at(form.bounds));
+        assert_eq!(
+            screens.pack.entries[0].cell,
+            crate::item_container::Cell::new(60, 15)
+        );
+        assert_eq!(screens.pack.unit, 6);
+        assert_eq!(screens.journal_unit, 6);
+        let text_box = screens.journal_box.as_ref().unwrap().form;
+        assert_eq!(
+            screens.task.form(text_box).and_then(|f| f.base()).unwrap().unit,
+            6
+        );
+        // One text box: the old one closed with the walk.
+        assert_eq!(screens.task.draw_order().len(), 4);
     }
 
     #[test]
