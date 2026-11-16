@@ -1199,7 +1199,7 @@ fn parse_command_line(all: Vec<String>) -> Result<(Options, View, Option<PathBuf
                     }
                     _ => {
                         eprintln!("--weapon-seeds: cannot read {text:?} (a,b[,quality])");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
