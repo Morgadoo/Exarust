@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 60.2% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 60.3% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **60.2% closed**, of which 47.9% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 33.5% partial and 6.2% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **60.3% closed**, of which 47.9% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 33.5% partial and 6.2% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -24,12 +24,12 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 34% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 59% | 51% | 5% | 3% | 32% | 9% |  |
-| Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 57% | 7% |  |
+| Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 36% | 33% | 1% | 2% | 57% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 50% | 41% | 4% | 4% | 42% | 8% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 56% | 53% | 2% | 1% | 38% | 6% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 67% | 63% | 1% | 2% | 33% | 1% |  |
-| Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 65% | 63% | 1% | 0% | 33% | 2% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 65% | 64% | 1% | 0% | 33% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 86% | 84% | 2% | 0% | 10% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 63% | 61% | 2% | 0% | 32% | 4% |  |
@@ -136,7 +136,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Program main (Exanima.lpr) | Runtime & platform | 1 | 37% | 35% | 0% | 35% | 0% | 57% | 8% |
 | FPC Math helpers (FPC SysUtils by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | Windows-unit global memory helpers (FPC RTL: exeinfo (module info for backtraces) by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| FLX_System | Core, math & threading | 12 | 79% | 57% | 19% | 38% | 0% | 19% | 24% |
+| FLX_System | Core, math & threading | 12 | 79% | 58% | 20% | 38% | 0% | 18% | 24% |
 | RFT_BoundSphere | Core, math & threading | 8 | 95% | 54% | 54% | 0% | 0% | 46% | 0% |
 | Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 97% | 40% | 33% | 6% | 0% | 58% | 3% |
 | Core string/number formatting utilities | Core, math & threading | 4 | 94% | 89% | 78% | 4% | 6% | 9% | 2% |
@@ -266,10 +266,10 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | RF_Terrain_Vegetation2 | World, levels & terrain | 0 | 90% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TTerrainPlugin | World, levels & terrain | 0 | 85% | 0% | 0% | 0% | 0% | 0% | 100% |
 | TScenePlugin | World, levels & terrain | 0 | 90% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| TMotileDynamics | Physics, bodies & cloth | 121 | 97% | 21% | 17% | 1% | 4% | 79% | 0% |
+| TMotileDynamics | Physics, bodies & cloth | 121 | 97% | 21% | 17% | 1% | 4% | 78% | 0% |
 | TVCCloth | Physics, bodies & cloth | 30 | 96% | 74% | 71% | 2% | 1% | 21% | 5% |
 | TSimSector | Physics, bodies & cloth | 28 | 94% | 27% | 26% | 1% | 0% | 73% | 0% |
-| TTetraRBD | Physics, bodies & cloth | 15 | 80% | 45% | 43% | 1% | 1% | 51% | 4% |
+| TTetraRBD | Physics, bodies & cloth | 15 | 80% | 46% | 44% | 1% | 1% | 50% | 4% |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 14 | 90% | 37% | 37% | 0% | 0% | 45% | 18% |
 | RF_Intersection | Physics, bodies & cloth | 14 | 93% | 75% | 72% | 3% | 0% | 2% | 23% |
 | RF_Dynamics | Physics, bodies & cloth | 9 | 76% | 31% | 30% | 1% | 0% | 22% | 47% |
@@ -393,7 +393,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TPwrForceStrikes_C | Thaumaturgy & effects | 2 | 62% | 43% | 43% | 0% | 0% | 57% | 0% |
 | TPwrDispLongDoor_I | Thaumaturgy & effects | 2 | 78% | 10% | 10% | 0% | 0% | 90% | 0% |
 | TPwrForceThrow_I | Thaumaturgy & effects | 2 | 67% | 17% | 17% | 0% | 0% | 73% | 9% |
-| TBarricadeEntity | Thaumaturgy & effects | 2 | 96% | 12% | 12% | 0% | 0% | 88% | 0% |
+| TBarricadeEntity | Thaumaturgy & effects | 2 | 96% | 56% | 56% | 0% | 0% | 44% | 0% |
 | TBubbleEmissive@SG_Teleporters | Thaumaturgy & effects | 2 | 70% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TPwrControlMind_C | Thaumaturgy & effects | 1 | 87% | 57% | 57% | 0% | 0% | 43% | 0% |
 | TPwrSpiritForm | Thaumaturgy & effects | 1 | 89% | 45% | 45% | 0% | 0% | 55% | 0% |
