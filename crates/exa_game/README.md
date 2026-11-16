@@ -853,7 +853,9 @@ its footprint is stamped again where it ends, and it leaves combat and
 returns to idle. `golem_body::rest_sleepers` keeps a
 sleeper's statue byte and gait word as the same statue rest: the sleep
 activity's entry sets it and the sleeper's knock-out clears it
-(`exa_ai::brain::StatueByte`). A spawned body (the scene bodies, the arena's
+(`exa_ai::brain::StatueByte`); a statue the combat state takes up loses its
+rest, as the combat tick clears the body's pose word
+(`golem_body::clear_fighting_poses`). A spawned body (the scene bodies, the arena's
 fighters and a level's placed characters) gets the list its worn items
 register (`item_effects::WornEffects`, from the armour pass's
 `exa_formats::encumbrance::WornSpecials`): a healing item on a body that
@@ -1357,7 +1359,10 @@ is the player-control singleton's creation state (hotkey mask 31 and the two
 constructor flags). The character doll's equipment (`equip`) follows the record's out set:
 after a weapon-set swap the record's hands become the moveset's hands (the
 main hand's weapon, a second weapon, the off hand's shield or its torch;
-an off-hand weapon that also has a light section is the light). The GUI
+an off-hand weapon that also has a light section is the light). The swap
+key queues the switch motion (the sets swap at once only with the
+character's own inventory open), and the switch clip's 60 % point swaps the
+sets for any body (`equip::swap_at_switch_point`). The GUI
 character preview (`char_view`) turns the
 figure toward the mouse: 0.7 of the pointer's arc-cosine yaw clamped to
 ±1.5 rad, a 5 % step under 1 rad and a clamped 0.05 rad above (the wrap
@@ -2277,7 +2282,11 @@ its pack; an object at its first node's box centre, searchable when it lies stra
 level, a container's contents from its object sections; reachable is the
 level's sight test, a path the grid's route; the follow's and the search's
 routes are the character's one route, `exa_ai::route_walk::AiRoute`, at the
-follow's urgency, walked by the AI's walk after them), carrying out each take, wear
+follow's urgency, walked by the AI's walk after them; the follow's mode word
+and the leader's planned point live on that route, which every stop clears
+of its mode; while the combat state fights, the follow route is the combat
+state's follow check's to keep or stop, and `publish_follow_leader` gives
+that check the player as its leader each body tick), carrying out each take, wear
 or wield on both sides' `Possessions` and logging comments (no dialogue
 engine). The items' values come from the game's object database and the
 level's own records (tagged local). `carry_out_search` then does what the

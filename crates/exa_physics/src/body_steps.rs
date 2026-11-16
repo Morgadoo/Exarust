@@ -502,6 +502,19 @@ pub(super) fn note_near(near: u32, chest_cm: f32, scale: f32) -> u32 {
     }
 }
 
+/// How far back (ms) a light blow dates the step start.
+const DATED_BACK_MS: f32 = 1000.0;
+
+/// Dates the episode's start [`DATED_BACK_MS`] before the clock (whole
+/// ticks, at least that long; the clock's first ticks floor at 0).
+pub(super) fn date_back(steps: &mut Steps) {
+    let mut ticks = (DATED_BACK_MS / MS_PER_TICK).ceil() as u32;
+    while (ticks as f32) * MS_PER_TICK < DATED_BACK_MS {
+        ticks += 1;
+    }
+    steps.started = steps.clock.saturating_sub(ticks);
+}
+
 /// Milliseconds since the episode started, at `clock`.
 pub(super) fn elapsed_ms(steps: &Steps) -> f32 {
     steps.clock.saturating_sub(steps.started) as f32 * MS_PER_TICK

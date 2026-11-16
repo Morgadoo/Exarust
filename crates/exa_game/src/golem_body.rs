@@ -66,6 +66,10 @@ impl Plugin for GolemBodyPlugin {
                 rest_sleepers
                     .after(exa_ai::brain::ai_tick)
                     .before(stand_sentries),
+                clear_fighting_poses
+                    .after(exa_ai::DuelSystems)
+                    .after(rest_sleepers)
+                    .before(stand_sentries),
                 stand_sentries
                     .after(exa_ai::brain::idle_walk)
                     .after(crate::npc_search::follow_and_search)
@@ -73,6 +77,11 @@ impl Plugin for GolemBodyPlugin {
             ),
         )
         .add_systems(Update, trace_guardians);
+        {
+            use exa_physics::sim_bridge::SimBridgeAppExt;
+            app.bridge_copy::<StatueRest>()
+                .bridge_copy::<exa_ai::Duellist>();
+        }
     }
 }
 
@@ -136,6 +145,17 @@ pub fn rest_sleepers(
             change.entity,
             if change.set { "is set" } else { "clears" }
         );
+    }
+}
+
+/// The combat state clears the body's pose word on every tick that goes on
+/// past its leave, and its down exit does too ([`exa_ai::Duellist::clears_pose`]):
+/// a statue's rest (the pose word 2 with the statue byte) ends there.
+pub fn clear_fighting_poses(mut fighters: Query<(&exa_ai::Duellist, &mut StatueRest)>) {
+    for (duellist, mut rest) in &mut fighters {
+        if duellist.clears_pose() && rest.0 {
+            rest.0 = false;
+        }
     }
 }
 
@@ -420,5 +440,55 @@ mod tests {
             .pairing
             .mobility;
         assert_eq!(once, twice);
+    }
+
+    /// A resting statue the combat state takes up loses its rest: the
+    /// combat tick clears the body's pose word, with the real AI and golem
+    /// body plugins.
+    #[test]
+    fn a_fighting_statue_stops_resting() {
+        let mut app = App::new();
+        app.add_plugins((bevy::MinimalPlugins, exa_ai::AiPlugin, GolemBodyPlugin));
+        app.insert_resource(exa_physics::body::BodyTicks(1));
+        let target = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 8.0)),
+                exa_combat::Fighter::default(),
+            ))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                exa_physics::CharacterBody::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let mut duellist = Duellist::new(target);
+        duellist.engage();
+        let golem = app
+            .world_mut()
+            .spawn((
+                sentry(true),
+                duellist,
+                StatueRest(true),
+                Animator::new("Golem", "Stand 2"),
+                exa_combat::Fighter::default(),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                ChildOf(root),
+            ))
+            .id();
+        // The first tick enters combat; the second runs the combat state.
+        for _ in 0..2 {
+            app.world_mut()
+                .resource_mut::<exa_physics::body::BodyTicks>()
+                .0 += 1;
+            app.world_mut().run_schedule(exa_ai::BrainChain);
+        }
+        let w = app.world();
+        assert!(w.get::<Duellist>(golem).unwrap().fighting());
+        assert!(w.get::<Duellist>(golem).unwrap().clears_pose());
+        assert_eq!(w.get::<StatueRest>(golem), Some(&StatueRest(false)));
     }
 }

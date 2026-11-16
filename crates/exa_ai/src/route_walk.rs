@@ -31,8 +31,8 @@
 //!   double), with the sprint latch at urgency 2;
 //! - the AI's look yaw is the heading's; the body's look eases a tenth of
 //!   the way toward the heading (a unit again);
-//! - the head looks at the AI's look target ([`crate::motion::look_at`])
-//!   when it has one in front; otherwise the head's offset target is 0 and
+//! - the head looks at the AI's look target, the contact its target pass
+//!   attends ([`crate::motion::look_at`]), when it has one in front; otherwise the head's offset target is 0 and
 //!   the offset eases 0.02 of the way toward it (in double); the cursor is
 //!   the look yaw plus the offset, wrapped once;
 //! - a nearby body in the way ([`crate::motion::body_in_way`]) soft-stops
@@ -56,13 +56,15 @@
 //!   through the grid: a blocked line clears the run bit and asks for a
 //!   plan.
 //!
-//! The soft stop ([`soft_stop`]) ends the route, clears the run bit, sets
-//! the stopping bit, pulls a goal farther than `8·speed + 20` cm back along
-//! the frame's forward and walks the line from the ground point to it,
-//! which clamps it where the grid blocks. The route stop ([`route_stop`])
-//! ends the route, drops the plan request and clears the run bit. The walk
-//! writes its flags after the follower's, so a soft stop the follower made
-//! keeps only its goal: the walk asks the body to move toward it.
+//! The soft stop ([`soft_stop`]) ends the route and its mode word, clears
+//! the run bit, sets the stopping bit, pulls a goal farther than
+//! `8·speed + 20` cm back along the frame's forward and walks the line
+//! from the ground point to it, which clamps it where the grid blocks. The
+//! route stop ([`route_stop`]) ends the route and its mode word, drops the
+//! plan request and clears the run bit. The walk writes its flags after
+//! the follower's, so a soft stop the follower made keeps only its goal:
+//! the walk asks the body to move toward it. The in-the-way test skips the
+//! body the walk lets pass (the leader a follow walks to).
 //!
 //! The planner's end test (the goal record's flat or half-height radius
 //! test) belongs to the plan, not to the follower: the follower makes no
@@ -81,8 +83,10 @@
 //!   [Exarust: the original fights that tick];
 //! - a body without muscles (no locomotion request) is steered by the NPC
 //!   driver's stand-in toward the follower's goal, with its walk clip;
-//! - the walk's clear of the carried body and the follow mode word, and
-//!   the stop bytes beside the following byte, are not modelled.
+//! - the stop bytes beside the following byte are not modelled; the
+//!   walk's clear of the body it lets pass and of the mode word at the end
+//!   of its after-route count runs only when the walk is called without a
+//!   route, which the AI tick never does (it walks only a followed route).
 //!
 //! Evidence: the original's AI walk, its path follower, its route stop and
 //! soft stop, its head look and its body-in-the-way test, read from the
@@ -177,6 +181,15 @@ pub struct AiRoute {
     pub give_up_ms: Option<u32>,
     /// [Exarust] The stand-in's velocity for a body without muscles (m/s).
     pub velocity: Vec3,
+    /// The walk's mode word: the follow's 4 while it follows its leader, 6
+    /// while it closes on it; every stop (the route stop and the soft stop)
+    /// clears it.
+    pub mode: i32,
+    /// Where the leader stood when the follow last planned to it (cm).
+    pub leader_at: Vec3,
+    /// The body the walk lets pass: its in-the-way test skips it (the
+    /// leader a follow walks to), as entity bits.
+    pub passes: Option<u64>,
 }
 
 impl Default for AiRoute {
@@ -193,6 +206,9 @@ impl Default for AiRoute {
             straight: false,
             give_up_ms: None,
             velocity: Vec3::ZERO,
+            mode: 0,
+            leader_at: Vec3::ZERO,
+            passes: None,
         }
     }
 }
@@ -230,11 +246,12 @@ impl AiRoute {
         self.straight = true;
     }
 
-    /// The route stop's AI side: the route is no longer followed and no
-    /// plan is wanted.
+    /// The route stop's AI side: the route is no longer followed, no plan
+    /// is wanted and the walk's mode word clears.
     pub fn stop(&mut self) {
         self.following = false;
         self.wants_plan = false;
+        self.mode = 0;
     }
 
     /// Stops the route when `owner` planned it.
@@ -339,7 +356,8 @@ pub fn route_stop(route: &mut AiRoute, body: &mut WalkBody) {
     body.flags &= !flags::RUN;
 }
 
-/// The soft stop: the route ends (a plan request stays), the run bit
+/// The soft stop: the route ends (a plan request stays, the mode word
+/// clears), the run bit
 /// clears and the stopping bit is set; a goal farther than `8·speed + 20`
 /// cm from the standing point (3-D, a NaN distance not) is pulled back to
 /// that along the frame's forward, and the line from the ground point to
@@ -347,6 +365,7 @@ pub fn route_stop(route: &mut AiRoute, body: &mut WalkBody) {
 /// blocks.
 pub fn soft_stop(route: &mut AiRoute, body: &mut WalkBody, grid: Option<&NavGrid>) {
     route.following = false;
+    route.mode = 0;
     body.flags = (body.flags & !flags::RUN) | flags::STOPPING;
     let limit = STOP_SPEED * body.speed + STOP_BASE_CM;
     if distance2(body.standing_cm, body.goal_cm) > limit * limit {
@@ -737,8 +756,14 @@ pub fn walk_routes(
             }
             continue;
         }
-        let look_at_cm = combatant
-            .and_then(|c| c.look_target)
+        // The AI's look target is the contact its target pass attends (the
+        // character's look target when it has no brain).
+        let look_at_cm = npc
+            .as_ref()
+            .map_or_else(
+                || combatant.and_then(|c| c.look_target),
+                |n| n.pass.attention.and_then(Entity::try_from_bits),
+            )
             .and_then(|e| targets.get(e).ok())
             .map(|g| g.translation() * CM);
         let nearby: Vec<(u64, Vec3, bool)> = npc.as_ref().map_or_else(Vec::new, |n| {
@@ -759,8 +784,9 @@ pub fn walk_routes(
             let driver = &mut driven.0;
             let skip: Vec<usize> = nearby
                 .iter()
-                .position(|(id, ..)| Some(*id) == driver.in_way)
-                .into_iter()
+                .enumerate()
+                .filter(|(_, (id, ..))| Some(*id) == driver.in_way || Some(*id) == route.passes)
+                .map(|(i, _)| i)
                 .collect();
             let mut body = request_body(&req, driver, &at);
             let mut own = driver.gaze;
@@ -1078,6 +1104,64 @@ mod tests {
         assert_eq!(walked.in_way, Some(0));
         assert!(!r.following);
         assert_eq!(body.flags & flags::STOPPING, flags::STOPPING);
+    }
+
+    /// With the real AI plugin, the walk's head looks at the contact the
+    /// brain's target pass attends: the head's offset target turns toward
+    /// it; attending no one, it stays 0.
+    #[test]
+    fn the_walking_head_looks_at_the_attended_contact() {
+        use exa_physics::body::locomotion::Locomotion;
+        let offset_with = |attends: bool| {
+            let mut app = App::new();
+            app.add_plugins((bevy::MinimalPlugins, crate::AiPlugin));
+            app.insert_resource(BodyTicks(1));
+            let seen = app
+                .world_mut()
+                .spawn(GlobalTransform::from_translation(Vec3::new(1.0, 0.0, 1.0)))
+                .id();
+            let root = app
+                .world_mut()
+                .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+                .id();
+            let mut brain = crate::brain::Npc::new([0.0; 4]);
+            if attends {
+                brain.pass.attention = Some(seen.to_bits());
+            }
+            let mut route = AiRoute::default();
+            route.start(
+                vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 800.0)],
+                0,
+                Walker::Follow,
+            );
+            let (req, motor) = Locomotion::facing(0.0);
+            let npc = app
+                .world_mut()
+                .spawn((
+                    brain,
+                    route,
+                    req,
+                    motor,
+                    crate::drive::Driven::default(),
+                    GlobalTransform::IDENTITY,
+                    Transform::default(),
+                    ChildOf(root),
+                ))
+                .id();
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.world_mut().run_schedule(crate::BrainChain);
+            app.world()
+                .get::<crate::brain::Npc>(npc)
+                .unwrap()
+                .gaze
+                .target_offset
+        };
+        // An eighth of a turn to the right, measured from the look (yaw 0).
+        assert_eq!(
+            offset_with(true),
+            motion::yaw_of(Vec3::new(100.0, 0.0, 100.0))
+        );
+        assert_eq!(offset_with(false), 0.0);
     }
 
     /// The soft stop pulls a far goal to `8·speed + 20` cm along the

@@ -125,13 +125,16 @@ fn standing_the_clip_decides() {
         )
         .0
     };
-    // Compared in double precision: the float 0.6 is past the swap.
+    // Compared in double precision: the float 0.6 is past the swap; a NaN
+    // progress is not (the compare's parity jump keeps the switching word).
     assert_eq!(switch(0.599), Condition::SWITCHING);
     assert_eq!(switch(0.6), Condition::SWITCHED);
-    // The swap fires once, on the tick that leaves the switching word.
+    assert_eq!(switch(f32::NAN), Condition::SWITCHING);
+    // The swap is posted when the arm writes the switched word from a
+    // condition without bit 4: once a switch.
     assert!(swap_due(Condition::SWITCHING, Condition::SWITCHED));
+    assert!(swap_due(Condition::NORMAL, Condition::SWITCHED));
     assert!(!swap_due(Condition::SWITCHED, Condition::SWITCHED));
-    assert!(!swap_due(Condition::NORMAL, Condition::SWITCHED));
     assert!(!swap_due(Condition::SWITCHING, Condition::SWITCHING));
     // An action the motion set lacks is normal.
     let none = Posture {
@@ -339,6 +342,7 @@ fn motions() -> Motions {
 fn the_posture_stage_writes_once_a_tick() {
     let mut app = App::new();
     app.insert_resource(motions())
+        .add_message::<WeaponSwapDue>()
         .add_systems(Update, track_condition);
     let body = Ragdoll::new(&[]).with_drive();
     let id = app
@@ -505,6 +509,7 @@ fn a_high_condition_restores_the_lower_leg_layer() {
 fn the_posture_stage_restores_the_lower_legs() {
     let mut app = App::new();
     app.insert_resource(motions())
+        .add_message::<WeaponSwapDue>()
         .add_systems(Update, track_condition);
     let id = app
         .world_mut()
@@ -770,4 +775,47 @@ fn death_silences_the_voice() {
         .unwrap()
         .gain;
     assert_eq!(gain, 1.0);
+}
+
+/// A shock's force release leaves the body shocked until the game clock is
+/// past its busy deadline (unsigned, strict): the posture stage keeps the
+/// word at the deadline and makes it normal the tick after (the arm writes
+/// 0 and leaves the posture block for that tick).
+#[test]
+fn the_shock_ends_once_the_clock_passes_the_release() {
+    let mut app = App::new();
+    app.insert_resource(motions())
+        .add_message::<WeaponSwapDue>()
+        .add_systems(Update, track_condition);
+    let mut body = Ragdoll::new(&[]).with_drive();
+    body.force_release(1000);
+    let deadline = body.drive.as_ref().unwrap().busy_until_ms;
+    assert!(deadline > 1000);
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Animator::new("Default", "Cmbt - Idle"),
+            body,
+            Condition::SHOCKED,
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    let at = |app: &mut App, ms: u64| {
+        let tick = ms / exa_physics::body::GAME_MS_PER_TICK;
+        app.insert_resource(exa_physics::body::BodyTicks(tick));
+        app.update();
+        *app.world().get::<Condition>(id).unwrap()
+    };
+    assert_eq!(at(&mut app, 1000), Condition::SHOCKED);
+    // A clock at most the deadline keeps it.
+    let last =
+        deadline as u64 / exa_physics::body::GAME_MS_PER_TICK * exa_physics::body::GAME_MS_PER_TICK;
+    assert_eq!(at(&mut app, last), Condition::SHOCKED);
+    let after = last + exa_physics::body::GAME_MS_PER_TICK;
+    assert!(after > deadline as u64);
+    assert_eq!(at(&mut app, after), Condition::NORMAL);
 }

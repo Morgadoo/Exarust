@@ -506,9 +506,9 @@ fn respond_off_balance(
 
 /// Starts a `response` off balance: its clip unless it plays already, the
 /// fast ease every tick; a Rebalance's wait of 41 ticks; a fall leaves the
-/// controller; a stagger starts its get-up partway (blend 50, the whole
-/// capture and the jump in, only when the clip changes), writes getting
-/// up and stands on the controller. Returns whether its clip started.
+/// controller; a stagger starts its get-up partway (blend 50 and the jump
+/// in only when the clip changes, the whole capture every time), writes
+/// getting up and stands on the controller. Returns whether its clip started.
 pub(crate) fn begin(
     response: Response,
     body: &mut Ragdoll,
@@ -527,11 +527,11 @@ pub(crate) fn begin(
         }
         Response::Fall(_) => body.fall(),
         Response::Stagger(rise) => {
-            if started {
-                anim.capture_whole();
-                if let Some(clip) = motions.clip(anim, action) {
-                    anim.jump_in(clip, rise.stagger_key());
-                }
+            // The whole capture follows every stagger's start, the clip
+            // new or not; the jump in only a clip that changed.
+            anim.capture_whole();
+            if started && let Some(clip) = motions.clip(anim, action) {
+                anim.jump_in(clip, rise.stagger_key());
             }
             condition.get_up();
             stand(body);

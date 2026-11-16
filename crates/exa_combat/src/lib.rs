@@ -217,6 +217,7 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::wounds::WoundQueue>()
         .bridge_move_resource::<crate::weapon_blood::WeaponBlood>()
         .bridge_message::<crate::condition::Awakened>()
+        .bridge_message::<crate::condition::WeaponSwapDue>()
         .bridge_message::<crate::fighter::SecondWindFired>()
         .bridge_message::<crate::fighter::Weakened>()
         .bridge_message::<crate::impact::BadFall>()
@@ -559,6 +560,14 @@ pub fn knockback_offset(
         push *= step_cm / len2.sqrt();
     }
     Some(push / CM_PER_M)
+}
+
+/// A blow the damage routine does not knock back: an impact of at most one
+/// half (a float compare, so a NaN impact too). The routine then dates the
+/// struck body's step start a second back.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn light_blow(impact: f32) -> bool {
+    !(impact > 0.5)
 }
 
 /// Share of the blade's velocity a struck part takes on contact.
@@ -1218,6 +1227,7 @@ fn react_to_hits(
                                 daze: 0.0,
                                 step: None,
                                 sag: Some(damage::parried(outcome.hit_impact)),
+                                light: false,
                             });
                             f.parry.end();
                             f.guard = damage::Guard::Open;
@@ -1296,6 +1306,7 @@ fn react_to_hits(
                         daze: b.daze,
                         step: None,
                         sag: b.sag,
+                        light: false,
                     });
                     info!(
                         "blow on {:?}'s shield: impact {:.2}, stamina {:.3} left, yellow {:.3}, \
@@ -1373,6 +1384,7 @@ fn react_to_hits(
                     daze: 0.0,
                     step: None,
                     sag: outcome.sag,
+                    light: false,
                 });
                 break 'struck Some(StrikerReaction::Turned(outcome));
             }
@@ -1559,6 +1571,7 @@ fn react_to_hits(
                 daze: outcome.daze,
                 step,
                 sag: outcome.sag,
+                light: light_blow(outcome.impact),
             });
             info!(
                 "hit on {:?} bone {} at tick {tick} by {} ({}), {:.0} of {:.0} cm, {:.1} cm/tick: \
@@ -2184,6 +2197,73 @@ mod tests {
         let whole = exa_physics::body::step_length(1.0, 1.0) / CM_PER_M;
         assert!((step.length() - whole).abs() < 1e-5, "{step} {whole}");
         assert!((step.normalize() - Vec3::new(0.6, 0.0, 0.8)).length() < 1e-5);
+    }
+
+    /// A light blow (impact at most one half) on the live damage path takes
+    /// no knockback step and marks the shove light, so the struck body's
+    /// step start is dated a second back; a heavy one steps and is not light.
+    #[test]
+    fn a_light_blow_dates_the_step_back_instead_of_knocking() {
+        assert!(light_blow(0.5) && light_blow(f32::NAN) && !light_blow(0.51));
+        let hit_on = |bone: usize, strike: Strike| {
+            let mut app = reactions();
+            let attacker = app
+                .world_mut()
+                .spawn((
+                    Fighter::default(),
+                    Animator::new("Default", "Idle"),
+                    SwingState::default(),
+                ))
+                .id();
+            let striker = app
+                .world_mut()
+                .spawn(Blade::new(attacker, 0.9, damage::sword_a()))
+                .id();
+            let fighter = app
+                .world_mut()
+                .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+                .id();
+            let struck = struck_on(&mut app, fighter);
+            app.world_mut().write_message(Hit {
+                attacker,
+                striker,
+                struck,
+                target: fighter,
+                bone,
+                point: Vec3::ZERO,
+                velocity: Vec3::new(3.0, 0.0, 0.0),
+                weapon: damage::sword_a(),
+                strike,
+            });
+            app.update();
+            let s = shoves(&app);
+            let s = s.iter().find(|s| s.body == fighter).copied().unwrap();
+            (s.step, s.light)
+        };
+        let impact = |strike: &Strike| {
+            damage::resolve(
+                &damage::sword_a(),
+                strike,
+                Some((&PartArmour::default(), Roll::default().next())),
+                9,
+                &damage::Victim::new(0.25, 0.0),
+            )
+            .map(|o| o.impact)
+        };
+        // A slow cut is light; the plain cut on the chest is heavy.
+        let slow = Strike {
+            speed: 1.0,
+            ..cut()
+        };
+        assert!(
+            impact(&slow).is_some_and(|i| i <= 0.5),
+            "{:?}",
+            impact(&slow)
+        );
+        let (step, is_light) = hit_on(9, slow);
+        assert!(step.is_none() && is_light);
+        let (step, is_light) = hit_on(9, cut());
+        assert!(step.is_some() && !is_light);
     }
 
     /// A swordsman mid-swing and its blade, in the first held slot, its

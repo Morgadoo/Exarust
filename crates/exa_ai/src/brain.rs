@@ -2276,7 +2276,9 @@ pub fn forget_removed(
 /// walked by the AI's walk ([`crate::route_walk::walk_routes`]); while no
 /// grid route is followed the route is a straight line to the exit
 /// [Exarust: the original fights that tick instead]. A level without a
-/// grid keeps the straight line.
+/// grid keeps the straight line. While it runs, the body's cursor and
+/// wanted directions take its heading; an escape while the walk moves the
+/// body ends in the soft stop.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn flee_walk(
     ticks: Option<Res<BodyTicks>>,
@@ -2366,6 +2368,16 @@ pub fn flee_walk(
                 npc.flee_focus = None;
                 combatant.target = None;
                 npc.flee_calm_until_ms = calm_until_ms;
+                // Escaped while its walk moves the body, the flight ends in
+                // the soft stop (the route, its mode word and the run bit).
+                if crate::flee::escaped(&flight)
+                    && let Some((req, motor, driven, ragdoll)) = walking.as_mut()
+                    && req.moving
+                    && let Ok(root_gt) = roots.get(parent.parent())
+                {
+                    let at = DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
+                    crate::route_walk::stop_request(&mut route, req, &mut driven.0, &at, grid);
+                }
                 info!(
                     "{entity}: the flight ends in room {} (threat room {}, home {}, fresh {}): \
                      level 0, calm until {calm_until_ms} ms",
@@ -2395,6 +2407,12 @@ pub fn flee_walk(
         let Ok(root_gt) = roots.get(parent.parent()) else {
             continue;
         };
+        // The flight runs: the body's cursor and wanted directions take its
+        // heading (the walk, when it runs, writes them again).
+        if let Some((req, ..)) = walking.as_mut() {
+            req.cursor = req.heading;
+            req.desired = req.heading;
+        }
         let feet_cm = root_gt.translation() * 100.0;
         let at_cm = gt.translation() * 100.0;
         // The threat: the object focus the flee start wrote, else the
@@ -4165,6 +4183,85 @@ mod tests {
         assert!((facing - Vec3::X).length() < 1e-5, "{facing:?}");
         let kept = app.world().get::<Transform>(b).unwrap().rotation * Vec3::Z;
         assert!((kept - Vec3::Z).length() < 1e-5, "{kept:?}");
+    }
+
+    /// The flee state on a body its walk moves: running, the body's cursor
+    /// and wanted directions take its heading; escaped (the threat in
+    /// another room than its own and its home), the flight ends in the soft
+    /// stop: the route and its mode word end, the run bit clears and the
+    /// stopping bit is set.
+    #[test]
+    fn an_escaped_flight_soft_stops_its_moving_body() {
+        use exa_physics::body::locomotion::{Locomotion, flags};
+        let run = |threat_room: i32| {
+            let mut app = App::new();
+            app.add_systems(Update, flee_walk);
+            let threat = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+            let root = app
+                .world_mut()
+                .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+                .id();
+            let mut brain = Npc::new([0.0; 4]);
+            brain.pass.level = 4;
+            brain.integration.level = 4;
+            brain.integration.fresh = false;
+            brain.flee_threat_room = threat_room;
+            brain.level_room = 1;
+            brain.previous_room = 3;
+            let mut route = crate::route_walk::AiRoute::default();
+            route.start(
+                vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 900.0)],
+                2,
+                crate::route_walk::Walker::Flight,
+            );
+            route.mode = 4;
+            let combatant = Combatant {
+                target: Some(threat),
+                ..Combatant::default()
+            };
+            let npc = app
+                .world_mut()
+                .spawn((
+                    brain,
+                    crate::Duellist::new(threat),
+                    combatant,
+                    route,
+                    Condition::NORMAL,
+                    GlobalTransform::IDENTITY,
+                    Transform::default(),
+                    ChildOf(root),
+                    Locomotion {
+                        heading: 1.25,
+                        cursor: 0.0,
+                        desired: 0.0,
+                        moving: true,
+                        flags: flags::MOVE | flags::RUN,
+                        ..Locomotion::default()
+                    },
+                    crate::drive::Driven::default(),
+                ))
+                .id();
+            app.update();
+            let w = app.world();
+            (
+                w.get::<crate::route_walk::AiRoute>(npc).unwrap().clone(),
+                *w.get::<Locomotion>(npc).unwrap(),
+                w.get::<Npc>(npc).unwrap().pass.level,
+            )
+        };
+        // The threat in its own room: it runs on.
+        let (route, req, level) = run(1);
+        assert_eq!(level, 4);
+        assert!(route.following);
+        assert_eq!((req.cursor, req.desired), (1.25, 1.25));
+        // The threat in another room: escaped.
+        let (route, req, level) = run(2);
+        assert_eq!(level, 0);
+        assert!(!route.following);
+        assert_eq!(route.mode, 0);
+        assert_eq!(req.flags & (flags::RUN | flags::STOPPING), flags::STOPPING);
+        // In its home room the flight goes on.
+        assert_eq!(run(3).2, 4);
     }
 
     /// A brain the target pass put at level 4 runs out of its room: it

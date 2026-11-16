@@ -293,6 +293,9 @@ pub struct Bearing {
     /// Its behaviour is in combat (the original's in-combat flag): its
     /// standing retention factor is u, not u².
     pub in_combat: bool,
+    /// Its break-tangle counter is above 0: the relaxed arm blend sets
+    /// both arms to 0.5 at once.
+    pub tangled: bool,
     /// The state word's flat-floor (splay) bit: the thighs turn 5° about
     /// the posture axis instead of holding the clip's turns, and the feet
     /// routine runs its flat-floor mode ([`super::FeetMode::FlatFloor`]).
@@ -396,6 +399,7 @@ impl Default for Bearing {
             walking: false,
             attacking: false,
             in_combat: false,
+            tangled: false,
             splay: false,
             off_feet: false,
             progress: 0.0,
@@ -856,7 +860,7 @@ impl Ragdoll {
                 let eased = attack_arms(
                     drive.arms,
                     unsteady.stepping,
-                    false,
+                    unsteady.tangled,
                     drive.race.arm_relaxation,
                     unsteady.turn,
                 );

@@ -311,11 +311,14 @@ attach plans (`spawn::Equipped::shield_record`,
 [`docs/PLAYER.md`](../../docs/PLAYER.md) (Held
 items and their grips).
 
-A weapon switch swaps the two held slots once past 60% of its clip
-(`condition::swap_due`); `exa_character::grip_runtime::swap_on_switch`
-trades the two blades' slots, the attacker's primary and the holder's
-main and second weapon in `Hands`, so the moveset is chosen again from
-the new main weapon.
+A weapon switch posts the body's weapon-set swap once past 60% of its
+clip, when the posture writes the switched word from a condition without
+bit 4 (`condition::swap_due`, the `WeaponSwapDue` message); the frame's
+`exa_game::equip::swap_at_switch_point` asks for the set swap, and the
+new hands choose the moveset again. A light blow (impact not over 0.5,
+`light_blow`) takes no knockback and dates the struck body's step start a
+second back (`Shove::light`). The attack arms read the swing strength
+before the stall drain.
 
 ## Weapon body impacts
 

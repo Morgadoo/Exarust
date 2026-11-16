@@ -600,6 +600,7 @@ pub fn strike_limbs(
                 daze: half,
                 step: None,
                 sag: None,
+                light: false,
             });
             impacts.write(LimbImpact {
                 target: s.target,
@@ -1043,6 +1044,7 @@ pub fn level_impacts(
                     daze: half,
                     step: None,
                     sag: None,
+                    light: false,
                 });
                 info!(
                     "{entity:?} bone {bone} hit the level: impact {:.2}, damage {:.3} (taken {:.3})",

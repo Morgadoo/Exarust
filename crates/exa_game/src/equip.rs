@@ -341,6 +341,26 @@ pub fn apply_pending_hands(
     }
 }
 
+/// The weapon switch's swap point: when the posture's switch arm passes
+/// 60 % of the clip it posts the body's weapon-set swap (the view's
+/// immediate swap) to the main thread's queue, which runs it after the
+/// step ([`exa_combat::condition::WeaponSwapDue`]). The swap is asked for
+/// on every body that keeps possessions, the AI's draw as the player's
+/// switch; [`exa_items::catalogue::swap_weapon_sets`] makes it this frame.
+pub fn swap_at_switch_point(
+    mut commands: Commands,
+    mut due: MessageReader<exa_combat::condition::WeaponSwapDue>,
+    bodies: Query<(), With<Possessions>>,
+) {
+    for swap in due.read() {
+        if bodies.contains(swap.body) {
+            commands
+                .entity(swap.body)
+                .insert(exa_items::catalogue::SwapRequested);
+        }
+    }
+}
+
 /// The record's side of a held weapon coming loose ([`CameLoose`], sent by
 /// the grip stage as it frees the item): the holder's came-loose hook runs
 /// on its possessions ([`Possessions::forget_loose`]): every out hand that
@@ -398,26 +418,31 @@ pub struct EquipPlugin;
 
 impl Plugin for EquipPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            apply_pending_hands
-                .after(exa_items::catalogue::swap_weapon_sets)
-                .before(refresh_encumbrance),
-        )
-        .add_systems(Update, refresh_encumbrance)
-        .add_systems(Update, refresh_worn_specials.after(refresh_encumbrance))
-        .add_message::<exa_physics::grip::CameLoose>()
-        .add_systems(Update, forget_loose_hands.before(refresh_encumbrance))
-        .add_systems(
-            FixedUpdate,
-            apply_head_height.before(exa_physics::grip_solve::GripSolveSet::Build),
-        )
-        .add_systems(
-            FixedUpdate,
-            crate::item_effects::run_worn_effects
-                .after(exa_combat::regen::HealthTick)
-                .before(exa_physics::body::CharacterTicks),
-        );
+        app.add_message::<exa_combat::condition::WeaponSwapDue>()
+            .add_systems(
+                Update,
+                swap_at_switch_point.before(exa_items::catalogue::swap_weapon_sets),
+            )
+            .add_systems(
+                Update,
+                apply_pending_hands
+                    .after(exa_items::catalogue::swap_weapon_sets)
+                    .before(refresh_encumbrance),
+            )
+            .add_systems(Update, refresh_encumbrance)
+            .add_systems(Update, refresh_worn_specials.after(refresh_encumbrance))
+            .add_message::<exa_physics::grip::CameLoose>()
+            .add_systems(Update, forget_loose_hands.before(refresh_encumbrance))
+            .add_systems(
+                FixedUpdate,
+                apply_head_height.before(exa_physics::grip_solve::GripSolveSet::Build),
+            )
+            .add_systems(
+                FixedUpdate,
+                crate::item_effects::run_worn_effects
+                    .after(exa_combat::regen::HealthTick)
+                    .before(exa_physics::body::CharacterTicks),
+            );
     }
 }
 
@@ -425,6 +450,104 @@ impl Plugin for EquipPlugin {
 mod tests {
     use super::*;
     use exa_items::possession::Hand;
+
+    /// A motion set whose action 0x1F is the weapon switch (one key at 10).
+    fn switch_motions() -> exa_anim::Motions {
+        use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
+        let names: Vec<String> = (0..0x20)
+            .map(|i| {
+                if i == 0x1F {
+                    "Switch Weapons".to_string()
+                } else {
+                    format!("Action {i}")
+                }
+            })
+            .collect();
+        let clip = || Clip {
+            mode: 1,
+            keys: vec![Key {
+                time: 10.0,
+                root: [0.0; 3],
+                rotations: vec![],
+                flags: vec![],
+            }],
+        };
+        let set = MotionSet {
+            bone_count: 0,
+            actions: names
+                .iter()
+                .map(|n| Action {
+                    name: n.clone(),
+                    params: [0, 0],
+                })
+                .collect(),
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: names.iter().map(|_| Some(clip())).collect(),
+            }],
+        };
+        exa_anim::Motions::new(
+            std::sync::Arc::new(set),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+            0.0,
+        )
+    }
+
+    /// The weapon switch's swap point through the live posture stage and the
+    /// view's swap: under 60 % of the clip the sets stay; the tick past it
+    /// (the switching word lacks bit 4) posts the swap and the frame trades
+    /// the sets; the next tick (switched, bit 4 set) posts nothing more.
+    #[test]
+    fn the_switch_clip_swaps_the_sets_past_sixty_percent() {
+        use exa_combat::condition::{WeaponSwapDue, track_condition};
+        use exa_physics::body::{Ragdoll, TickedCharacter};
+        let mut app = App::new();
+        app.init_resource::<ItemCatalogue>()
+            .insert_resource(switch_motions())
+            .add_message::<WeaponSwapDue>()
+            .add_systems(
+                Update,
+                (
+                    track_condition,
+                    swap_at_switch_point,
+                    exa_items::catalogue::swap_weapon_sets,
+                )
+                    .chain(),
+            );
+        let body = app
+            .world_mut()
+            .spawn((
+                exa_combat::Fighter::default(),
+                exa_anim::Animator::new("Default", "Switch Weapons"),
+                Ragdoll::new(&[]).with_drive(),
+                Possessions {
+                    out: [Hand::default(), Hand::default()],
+                    stowed: [Hand { id: 6, flags: 0 }, Hand::default()],
+                    ..Default::default()
+                },
+            ))
+            .id();
+        app.insert_resource(TickedCharacter {
+            body,
+            character: None,
+        });
+        let at = |app: &mut App, time: f32| {
+            app.world_mut()
+                .get_mut::<exa_anim::Animator>(body)
+                .unwrap()
+                .time = time;
+            app.update();
+            let word = *app.world().get::<exa_combat::Condition>(body).unwrap();
+            (
+                word,
+                app.world().get::<Possessions>(body).unwrap().out[0].id,
+            )
+        };
+        assert_eq!(at(&mut app, 5.9), (exa_combat::Condition::SWITCHING, 0));
+        assert_eq!(at(&mut app, 6.1), (exa_combat::Condition::SWITCHED, 6));
+        assert_eq!(at(&mut app, 7.0), (exa_combat::Condition::SWITCHED, 6));
+    }
 
     fn item(weapon: Option<u32>, shield: bool, light: bool) -> ItemKind {
         ItemKind {

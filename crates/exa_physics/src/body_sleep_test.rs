@@ -232,6 +232,7 @@ fn a_queued_blow_wakes_a_sleeping_body() {
         daze: 0.0,
         step: None,
         sag: None,
+        light: false,
     });
     for _ in 0..5 {
         app.update();
