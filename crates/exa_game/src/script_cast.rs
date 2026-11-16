@@ -72,13 +72,22 @@ impl Plugin for ScriptCastPlugin {
             .add_systems(
                 Update,
                 (
-                    mirror_player.in_set(exa_physics::FramePhase::Session),
-                    grant_witness_roles.in_set(exa_physics::FramePhase::Session).after(crate::game_event_live::scripted_game_events),
-                    mirror_cast.in_set(exa_physics::FramePhase::Session).after(crate::scene_bodies::reset_kept_bodies),
-                    mirror_items.in_set(exa_physics::FramePhase::Session),
-                    sync_contacts.in_set(exa_physics::FramePhase::Session),
-                    announce_witnessed.in_set(exa_physics::FramePhase::Session),
-                    report_script_problems.in_set(exa_physics::FramePhase::Capture),
+                    mirror_player
+                    .in_set(exa_physics::FramePhase::Session),
+                    grant_witness_roles
+                        .in_set(exa_physics::FramePhase::Session)
+                        .after(crate::game_event_live::scripted_game_events),
+                    mirror_cast
+                        .in_set(exa_physics::FramePhase::Session)
+                        .after(crate::scene_bodies::reset_kept_bodies),
+                    mirror_items
+                    .in_set(exa_physics::FramePhase::Session),
+                    sync_contacts
+                    .in_set(exa_physics::FramePhase::Session),
+                    announce_witnessed
+                    .in_set(exa_physics::FramePhase::Session),
+                    report_script_problems
+                    .in_set(exa_physics::FramePhase::Capture),
                 )
                     .chain(),
             );

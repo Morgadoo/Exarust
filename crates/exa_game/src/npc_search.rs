@@ -2168,11 +2168,20 @@ impl Plugin for NpcSearchPlugin {
             .add_systems(
                 Update,
                 (
-                    load_search_items.in_set(exa_physics::FramePhase::Session).after(load_level_search_items).after(crate::save_level::track_scene_content).after(crate::script_cast::mirror_items),
-                    load_level_search_items.in_set(exa_physics::FramePhase::Session),
-                    make_debug_searcher.in_set(exa_physics::FramePhase::Session).after(crate::script_cast::mirror_cast),
-                    take_search_shots.in_set(exa_physics::FramePhase::Capture),
-                    bark_search_comments.in_set(exa_physics::FramePhase::Audio),
+                    load_search_items
+                        .in_set(exa_physics::FramePhase::Session)
+                        .after(load_level_search_items)
+                        .after(crate::save_level::track_scene_content)
+                        .after(crate::script_cast::mirror_items),
+                    load_level_search_items
+                    .in_set(exa_physics::FramePhase::Session),
+                    make_debug_searcher
+                        .in_set(exa_physics::FramePhase::Session)
+                        .after(crate::script_cast::mirror_cast),
+                    take_search_shots
+                    .in_set(exa_physics::FramePhase::Capture),
+                    bark_search_comments
+                    .in_set(exa_physics::FramePhase::Audio),
                 ),
             )
             // The follow and the search are idle states of the AI tick: they

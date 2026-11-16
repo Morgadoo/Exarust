@@ -1386,8 +1386,8 @@ impl Plugin for CreatorScreenPlugin {
             .add_systems(
                 Update,
                 (
-                    open_from_menu,
-                    open_screens,
+                    open_from_menu.after(crate::save_screen::saves_input),
+                    open_screens.after(crate::destination::paint_screen),
                     input,
                     paint.after(crate::hw_config::cleanup_benchmark),
                 )

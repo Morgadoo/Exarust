@@ -107,9 +107,13 @@ impl Plugin for DivinationPlugin {
             // frame's GUI queue afresh.
             .add_systems(
                 Update,
-                (open_reading.after(crate::dialogue_live::paint_dialogue).after(crate::skill_screen::draw), click_reading, paint_reading.after(crate::arsenal_view::arsenal_live))
+                (open_reading
+                    .after(crate::dialogue_live::paint_dialogue)
+                    .after(crate::skill_screen::draw), click_reading, paint_reading
+                    .after(crate::arsenal_view::arsenal_live))
                     .chain()
-                    .after(crate::gui_screens::draw_screens).in_set(exa_physics::FramePhase::Gui),
+                    .after(crate::gui_screens::draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }

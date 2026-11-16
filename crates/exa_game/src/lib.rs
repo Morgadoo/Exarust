@@ -230,7 +230,8 @@ impl Plugin for GamePlugin {
         ))
         .init_resource::<prelude::Tips>()
         .init_resource::<os_clipboard::SystemClipboard>()
-        .add_systems(Update, prelude::sync_tips_setting.in_set(exa_physics::FramePhase::Gui))
+        .add_systems(Update, prelude::sync_tips_setting
+        .in_set(exa_physics::FramePhase::Gui))
         .add_plugins(prelude::TipsScreenPlugin)
         .add_plugins((
             limp::LimpPlugin,

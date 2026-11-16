@@ -504,12 +504,7 @@ impl Plugin for SplashPlugin {
         app.init_resource::<SplashScreen>()
             .init_resource::<SplashAtStart>()
             .add_systems(Startup, start)
-            .add_systems(
-                Update,
-                tick_splash
-                    .in_set(exa_physics::FramePhase::Gui)
-                    .after(crate::save_screen::saves_input),
-            );
+            .add_systems(Update, tick_splash.in_set(exa_physics::FramePhase::Gui));
     }
 }
 

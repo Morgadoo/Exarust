@@ -2212,9 +2212,7 @@ impl Plugin for ItemCardPlugin {
                     world_cards,
                     figure_cards,
                     tick_card.after(crate::gui_screens::journal_typing),
-                    crate::parchment::open_parchment
-                        .after(crate::dialogue_live::panel_input)
-                        .after(crate::prelude::draw_tips),
+                    crate::parchment::open_parchment.after(crate::dialogue_live::panel_input),
                 )
                     .chain()
                     .after(crate::use_cursor::UseCursorSystems)

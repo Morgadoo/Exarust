@@ -1187,7 +1187,6 @@ impl Plugin for PanelLivePlugin {
                 Update,
                 track_pointer
                     .after(crate::power_screen::hotkeys)
-                    .after(crate::save_screen::saves_input)
                     .after(crate::gui_screens::deactivate_on_focus_loss)
                     .before(crate::hand::HandSystems)
                     .in_set(exa_physics::FramePhase::Gui),

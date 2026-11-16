@@ -3832,21 +3832,33 @@ impl Plugin for FlowPlugin {
             .add_systems(
                 Update,
                 (
-                    (apply_menu_choices.after(crate::arena_match::tick_arena_match), tick.after(crate::follower_travel::restore_arrivals), follow_player).chain(),
+                    (apply_menu_choices
+                        .after(crate::arena_match::tick_arena_match), tick
+                        .after(crate::follower_travel::restore_arrivals), follow_player)
+                        .chain(),
                     notify_gui_scale.before(FlowSystems::ApplySteps),
                     (
                         open_named_level,
                         travel,
                         cross_exit_zones,
-                        crate::game_event_live::run_game_events.before(exa_script::run_conversations).after(crate::experience_live::begin_story_experience).after(crate::thaum::cast::broadcast_level_change),
+                        crate::game_event_live::run_game_events
+                            .before(exa_script::run_conversations)
+                            .after(crate::experience_live::begin_story_experience)
+                            .after(crate::thaum::cast::broadcast_level_change),
                         run_transition.in_set(FlowSystems::Transition),
                         release_after_load.after(crate::revive_pass::reset_brains),
-                        apply_steps.after(crate::crystal_drain::drain_sources).after(exa_script::run_conversations).after(crate::experience_live::tick_story_experience).after(crate::load_reset::reset_on_level_change).in_set(FlowSystems::ApplySteps),
+                        apply_steps
+                            .after(crate::crystal_drain::drain_sources)
+                            .after(exa_script::run_conversations)
+                            .after(crate::experience_live::tick_story_experience)
+                            .after(crate::load_reset::reset_on_level_change)
+                            .in_set(FlowSystems::ApplySteps),
                         reset_level_state,
                     )
                         .chain(),
                 )
-                    .chain().in_set(exa_physics::FramePhase::Session),
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Session),
             );
     }
 }

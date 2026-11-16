@@ -547,13 +547,16 @@ impl Plugin for SaveLivePlugin {
                     // Every save first saves the open screens.
                     crate::gui_screens::save_open_screens_for_saves::<false>,
                     save_to_new_slot.after(crate::world_clock::apply_restore),
-                    run_save_steps::<false>.after(crate::experience_live::store_account_experience).in_set(SaveLiveSystems::Steps),
+                    run_save_steps::<false>
+                        .after(crate::experience_live::store_account_experience)
+                        .in_set(SaveLiveSystems::Steps),
                     load_arena_slot.after(rebuild_player).after(crate::flow::reset_level_state),
                     load_story_slot.after(crate::arena_live::continue_round),
                     take_loaded_journal,
                 )
                     .chain()
-                    .run_if(resource_exists::<SaveFolder>).in_set(exa_physics::FramePhase::Session),
+                    .run_if(resource_exists::<SaveFolder>)
+                    .in_set(exa_physics::FramePhase::Session),
             )
             // The steps a frame asks for are written before a level change
             // asked in the same frame tears the level down, and in the frame
@@ -592,19 +595,24 @@ impl Plugin for SaveLivePlugin {
                 post_loaded_player
                     .after(load_story_slot)
                     .run_if(resource_exists::<LoadedPlayerStream>)
-                    .run_if(resource_exists::<crate::content_requests::ContentRequests>).in_set(exa_physics::FramePhase::Session),
+                    .run_if(resource_exists::<crate::content_requests::ContentRequests>)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 Update,
-                sync_before_level_change.after(crate::level_save::restore_saved_state).after(crate::body_inventory::ensure_possessions)
-                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown).in_set(exa_physics::FramePhase::Session),
+                sync_before_level_change
+                    .after(crate::level_save::restore_saved_state)
+                    .after(crate::body_inventory::ensure_possessions)
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .add_message::<RebuildPlayer>()
             .add_systems(
                 Update,
                 rebuild_player.after(crate::power_save::restore_saved_powers)
                     .after(SaveLiveSystems::Steps)
-                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown).in_set(exa_physics::FramePhase::Session),
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .init_resource::<crate::left_behind::LeftBody>()
             .configure_sets(
@@ -616,20 +624,36 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 (prefer_saved_section, crate::left_behind::forget_on_level_change)
                     .chain()
-                    .in_set(SaveLiveSystems::SavedSection).in_set(exa_physics::FramePhase::Session),
+                    .in_set(SaveLiveSystems::SavedSection)
+                    .in_set(exa_physics::FramePhase::Session),
             )
-            .add_systems(Update, crate::follower_travel::restore_arrivals.in_set(exa_physics::FramePhase::Session).after(crate::body_inventory::activate_cores).after(bench_the_manager).after(crate::mind::runtime::attach_minds))
-            .add_systems(Update, crate::level_save::restore_saved_state.in_set(exa_physics::FramePhase::Session).before(exa_ai::brain::forget_removed).after(crate::follower_travel::restore_arrivals))
+            .add_systems(Update, crate::follower_travel::restore_arrivals
+                .in_set(exa_physics::FramePhase::Session)
+                .after(crate::body_inventory::activate_cores)
+                .after(bench_the_manager)
+                .after(crate::mind::runtime::attach_minds))
+            .add_systems(Update, crate::level_save::restore_saved_state
+                .in_set(exa_physics::FramePhase::Session)
+                .before(exa_ai::brain::forget_removed)
+                .after(crate::follower_travel::restore_arrivals))
             .init_resource::<crate::save_level::SceneContentLists>()
-            .add_systems(Update, crate::save_level::track_scene_content.in_set(exa_physics::FramePhase::Session))
+            .add_systems(Update, crate::save_level::track_scene_content
+                .in_set(exa_physics::FramePhase::Session))
             .add_systems(
                 Update,
                 crate::world_characters::track_local_characters
-                    .before(crate::follower_travel::restore_arrivals).in_set(exa_physics::FramePhase::Session),
+                    .before(crate::follower_travel::restore_arrivals)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 Update,
-                bench_the_manager.after(crate::arena_match::tick_arena_match).after(crate::npc_search::load_search_items).after(crate::character_voice::give_voices).after(crate::equip::redress_bodies).before(crate::arena_live::stand_first_round).in_set(exa_physics::FramePhase::Session),
+                bench_the_manager
+                    .after(crate::arena_match::tick_arena_match)
+                    .after(crate::npc_search::load_search_items)
+                    .after(crate::character_voice::give_voices)
+                    .after(crate::equip::redress_bodies)
+                    .before(crate::arena_live::stand_first_round)
+                    .in_set(exa_physics::FramePhase::Session),
             );
     }
 }

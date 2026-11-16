@@ -945,7 +945,9 @@ impl Plugin for SaveScreenPlugin {
                 (
                     open_saves,
                     saves_input.after(crate::gui_screens::screens_keys),
-                    saves_paint.after(crate::destination::paint_screen),
+                    saves_paint
+                        .after(crate::destination::paint_screen)
+                        .before(crate::creator_screen::open_screens),
                 )
                     .chain()
                     .in_set(CreatorSystems)

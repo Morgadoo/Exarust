@@ -794,21 +794,34 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 Update,
-                (begin_play_session.after(end_play_session), end_play_session, release_on_death).in_set(exa_physics::FramePhase::Controls),
+                (begin_play_session
+                    .after(end_play_session), end_play_session, release_on_death)
+                    .in_set(exa_physics::FramePhase::Controls),
             )
             .add_systems(
                 Update,
                 (
-                    cursor_look.in_set(exa_physics::FramePhase::Input).after(crate::pad_cursor::show_pad_cursor).after(crate::sim_control::sim_keys),
-                    cursor_ground.in_set(exa_physics::FramePhase::Input),
-                    player_combat.after(crate::thaum::cast::run_bar_commands).in_set(exa_physics::FramePhase::Controls),
-                    camera_hits.in_set(exa_physics::FramePhase::Controls),
-                    feel_blows.in_set(exa_physics::FramePhase::Controls),
-                    take_mode_records.in_set(exa_physics::FramePhase::Camera)
+                    cursor_look
+                        .in_set(exa_physics::FramePhase::Input)
+                        .after(crate::pad_cursor::show_pad_cursor)
+                        .after(crate::sim_control::sim_keys),
+                    cursor_ground
+                    .in_set(exa_physics::FramePhase::Input),
+                    player_combat
+                        .after(crate::thaum::cast::run_bar_commands)
+                        .in_set(exa_physics::FramePhase::Controls),
+                    camera_hits
+                    .in_set(exa_physics::FramePhase::Controls),
+                    feel_blows
+                    .in_set(exa_physics::FramePhase::Controls),
+                    take_mode_records
+                    .in_set(exa_physics::FramePhase::Camera)
                         .after(begin_play_session)
                         .after(end_play_session),
-                    chase_camera.in_set(exa_physics::FramePhase::Camera),
-                    crate::pad_cursor::take_pad_view.in_set(exa_physics::FramePhase::Camera),
+                    chase_camera
+                    .in_set(exa_physics::FramePhase::Camera),
+                    crate::pad_cursor::take_pad_view
+                    .in_set(exa_physics::FramePhase::Camera),
                 )
                     .chain(),
             )
@@ -818,7 +831,8 @@ impl Plugin for PlayerPlugin {
                 Update,
                 crate::pad_cursor::show_pad_cursor
                     .before(cursor_ground)
-                    .before(crate::cursor::pick_cursor).in_set(exa_physics::FramePhase::Input),
+                    .before(crate::cursor::pick_cursor)
+                    .in_set(exa_physics::FramePhase::Input),
             );
     }
 }

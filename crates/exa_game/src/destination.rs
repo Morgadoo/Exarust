@@ -252,7 +252,7 @@ fn portal_pointer(
 
 /// Routes the pointer: the leave key, the hover, the click.
 #[allow(clippy::too_many_arguments)]
-fn screen_input(
+pub(crate) fn screen_input(
     mut commands: Commands,
     mut inputs: MessageReader<PortalInput>,
     clock: Res<EffectClock>,

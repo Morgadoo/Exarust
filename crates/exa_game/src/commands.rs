@@ -345,6 +345,7 @@ impl Plugin for CommandPlugin {
                 (
                     run_queued_commands.in_set(exa_physics::FramePhase::Input),
                     view_keys
+                        .after(crate::destination::screen_input)
                         .in_set(exa_physics::FramePhase::Gui)
                         .after(crate::gui_screens::rescale_open_screens)
                         .after(crate::skill_screen::open_skills)

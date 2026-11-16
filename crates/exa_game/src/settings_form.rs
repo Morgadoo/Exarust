@@ -88,9 +88,7 @@ impl Plugin for SettingsFormPlugin {
             .add_systems(
                 Update,
                 (
-                    open_settings
-                        .after(draw)
-                        .after(crate::creator_screen::input),
+                    open_settings.after(crate::creator_screen::input),
                     form_input.after(crate::arsenal_view::arsenal_input),
                     refresh_rows,
                     close_with_menu,
@@ -102,7 +100,11 @@ impl Plugin for SettingsFormPlugin {
             )
             .add_systems(
                 Update,
-                draw.after(crate::creator_screen::open_screens)
+                // The form draws what this frame's open, input and rows
+                // left.
+                draw.after(crate::save_screen::saves_paint)
+                    .after(crate::creator_screen::open_screens)
+                    .after(close_with_menu)
                     .after(MenuScreenSystems)
                     .in_set(exa_physics::FramePhase::Gui),
             );
@@ -946,7 +948,7 @@ pub fn text_colour(palette: &SkinPalette) -> u32 {
 }
 
 /// Draws the form, then the key-read and warm-up screens over it.
-fn draw(
+pub(crate) fn draw(
     settings: Res<SettingsForm>,
     editor: Res<BindingEditor>,
     warm: Res<ShaderWarmScreen>,

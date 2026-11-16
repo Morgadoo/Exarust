@@ -50,7 +50,10 @@ impl Plugin for LimpPlugin {
         bridge_limp_types(app);
         app.add_systems(
             Update,
-            (build_bodies, go_limp).chain().after(AnimSystems).in_set(exa_physics::FramePhase::World),
+            (build_bodies, go_limp)
+                .chain()
+                .after(AnimSystems)
+                .in_set(exa_physics::FramePhase::World),
         )
         // The rise is the AI manager's frame routine, which the original
         // installs as its simulation loop's pre-step hook: it runs before
@@ -83,7 +86,10 @@ impl Plugin for LimpPlugin {
                 .before(exa_physics::body::BodyPreStep)
                 .before(exa_combat::condition::PostureTick),
         )
-        .add_systems(Update, (pace_swings, install_limb_trees.before(exa_combat::weapon_blood::release_gone_blades).after(crate::effects::fire_row::frame_rows)).in_set(exa_physics::FramePhase::World))
+        .add_systems(Update, (pace_swings, install_limb_trees
+            .before(exa_combat::weapon_blood::release_gone_blades)
+            .after(crate::effects::fire_row::frame_rows))
+            .in_set(exa_physics::FramePhase::World))
         .add_plugins(CharacterTickPlugin);
     }
 }

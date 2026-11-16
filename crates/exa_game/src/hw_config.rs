@@ -560,7 +560,7 @@ impl Plugin for HardwareConfigPlugin {
             .add_systems(
                 Update,
                 (
-                    rebind_keys,
+                    rebind_keys.after(crate::settings_form::draw),
                     drive_warm_screen,
                     drive_benchmark,
                     apply_options.after(crate::doll_view::sync_doll),

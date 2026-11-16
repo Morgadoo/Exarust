@@ -342,7 +342,9 @@ impl Plugin for ArenaLivePlugin {
                     arena_pause,
                     open_end_screen.after(crate::arena_fade::start_held_match),
                     update_end_screen,
-                    continue_round.before(exa_world::level_lifecycle::apply_requests).after(crate::equip::apply_pending_hands),
+                    continue_round
+                        .before(exa_world::level_lifecycle::apply_requests)
+                        .after(crate::equip::apply_pending_hands),
                     forfeit_match::<false>,
                     draw_end_screen,
                 )
@@ -350,7 +352,8 @@ impl Plugin for ArenaLivePlugin {
                     .after(crate::gui_screens::draw_screens)
                     // A staging's callback fires in the flow's steps; the
                     // Continue's staging runs in the same frame after them.
-                    .after(crate::flow::FlowSystems::ApplySteps).in_set(exa_physics::FramePhase::Session),
+                    .after(crate::flow::FlowSystems::ApplySteps)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             // The quit's forfeit (the arena pause page's QUIT) settles the
             // match before the quit's saves are written.

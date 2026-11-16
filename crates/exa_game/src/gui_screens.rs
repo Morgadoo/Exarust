@@ -2207,7 +2207,8 @@ impl Plugin for GameScreensPlugin {
                 )
                     .chain()
                     .after(crate::hotkeys::HotkeySet)
-                    .before(crate::player::player_combat).in_set(exa_physics::FramePhase::Gui),
+                    .before(crate::player::player_combat)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .init_resource::<DebugRecordHint>()
             .add_message::<bevy::input::mouse::MouseWheel>()
@@ -2217,45 +2218,61 @@ impl Plugin for GameScreensPlugin {
                     .after(open_requested_screens)
                     .after(close_on_right_release)
                     .after(crate::player::cursor_look)
-                    .before(draw_screens).in_set(exa_physics::FramePhase::Gui),
+                    .before(draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 swap_from_page_button
                     .after(screens_pointer)
-                    .before(exa_items::catalogue::swap_weapon_sets).in_set(exa_physics::FramePhase::Gui),
+                    .before(exa_items::catalogue::swap_weapon_sets)
+                        .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 draw_screens
                     .after(open_requested_screens)
-                    .after(crate::item_icon_render::IconRenderSystems).in_set(exa_physics::FramePhase::Gui),
+                    .after(crate::item_icon_render::IconRenderSystems)
+                        .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
-                (close_on_right_release.after(close_changed_loot_windows), close_changed_loot_windows).after(open_requested_screens).in_set(exa_physics::FramePhase::Gui),
+                (close_on_right_release
+                    .after(close_changed_loot_windows), close_changed_loot_windows)
+                    .after(open_requested_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_message::<bevy::window::WindowFocused>()
-            .add_systems(Update, deactivate_on_focus_loss.after(screens_keys).before(screens_pointer).in_set(exa_physics::FramePhase::Gui))
+            .add_systems(Update, deactivate_on_focus_loss
+                .after(screens_keys)
+                .before(screens_pointer)
+                .in_set(exa_physics::FramePhase::Gui))
             .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_systems(
                 Update,
                 (journal_typing.after(crate::item_card::figure_cards), screens_keys)
                     .before(crate::hotkeys::HotkeySet)
-                    .before(open_requested_screens).in_set(exa_physics::FramePhase::Gui),
+                    .before(open_requested_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
-                inventory_follows_the_set.after(open_requested_containers).after(store_saved_containers)
+                inventory_follows_the_set
+                    .after(open_requested_containers)
+                    .after(store_saved_containers)
                     .after(exa_items::catalogue::swap_weapon_sets)
                     .after(open_requested_screens)
-                    .before(draw_screens).in_set(exa_physics::FramePhase::Gui),
+                    .before(draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
-                (release_closed_icons.after(swap_from_page_button), store_saved_containers.after(release_closed_icons))
+                (release_closed_icons
+                    .after(swap_from_page_button), store_saved_containers
+                    .after(release_closed_icons))
                     .after(close_on_right_release)
-                    .after(close_changed_loot_windows).in_set(exa_physics::FramePhase::Gui),
+                    .after(close_changed_loot_windows)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
