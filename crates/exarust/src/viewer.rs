@@ -1038,14 +1038,7 @@ fn play_level(
     ));
     // The alarm is the simulation's: the reset is a posted write (the
     // frame's copy at once, the simulation's at its next step).
-    commands.queue(|world: &mut World| {
-        world.resource_scope(|world, mut alarm: Mut<exa_game::golem_alarm::GolemAlarm>| {
-            let mut fixed = world.get_resource_mut::<exa_physics::sim_app::FixedCommands>();
-            exa_physics::sim_app::write_resource(fixed.as_deref_mut(), &mut alarm, |a| {
-                *a = exa_game::golem_alarm::GolemAlarm::default();
-            });
-        });
-    });
+    commands.queue(exa_game::golem_alarm::reset_at_level_start);
     // The level's script zones (the story's checkpoint zone among them).
     for zone in &info.script_volumes {
         info!(
