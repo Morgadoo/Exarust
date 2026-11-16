@@ -4,8 +4,11 @@
 //! character's foley when its root is crowded
 //! ([`exa_combat::impact::ImpactSounded`]).
 //!
-//! [inf] The foley is taken from the character's armour as for a body that
-//! is not a golem, as the hit sound is.
+//! The hit sound and the foley read the character's race and a worn golem
+//! suit as the part-sound routine does
+//! ([`exa_combat::sounds::PartSounds`]): a golem's parts ring `HitGlm`, a
+//! skeleton's bare parts `SkelHit`, and a golem body loops `Golem_Foley`
+//! (a suit wearer `FoleyPlH`).
 //!
 //! Both are one-shots from numbered sets, so they go through the mixer's
 //! voice pool and source ranking rather than straight to the backend.
@@ -15,7 +18,7 @@ use exa_assets::Game;
 use exa_combat::Fighter;
 use exa_combat::impact::ImpactSounded;
 use exa_combat::pain::PainSounded;
-use exa_combat::sounds::{LayerSounded, foley, part_hit_sound};
+use exa_combat::sounds::{LayerSounded, PartSounds};
 use exa_combat::voice::{Answer, CharacterVoice};
 use exa_physics::body::BodyTicks;
 
@@ -119,25 +122,29 @@ pub(crate) fn pain_sounds(
 
 /// The set a limb impact plays and its gain, or none: the foley's set at
 /// the volume times the foley's own, else the bone's hit sound's.
+/// Its race and a worn golem suit pick the golem and skeleton sounds
+/// ([`PartSounds`]).
 pub(crate) fn impact_play(
     sound: &ImpactSounded,
     fighter: &Fighter,
+    golem_suit: bool,
 ) -> Option<(SoundSet<'static>, f32)> {
+    let kind = PartSounds::of(&fighter.stats, golem_suit);
     if sound.foley {
-        let loop_ = foley(&fighter.armour, false, false, false);
+        let loop_ = kind.foley(&fighter.armour);
         return foley_set(loop_.kind).map(|set| (set, sound.volume * loop_.volume));
     }
     let armour = sound
         .bone
         .checked_sub(1)
         .and_then(|i| fighter.armour.get(i))?;
-    hit_set(part_hit_sound(armour, false, false)?).map(|set| (set, sound.volume))
+    hit_set(kind.hit(armour)?).map(|set| (set, sound.volume))
 }
 
 pub(crate) fn impact_sounds(
     game: Option<Res<Game>>,
     mut sounded: MessageReader<ImpactSounded>,
-    fighters: Query<&Fighter>,
+    fighters: Query<(&Fighter, Has<exa_combat::GolemSuit>)>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
@@ -148,7 +155,7 @@ pub(crate) fn impact_sounds(
         let Some((set, gain)) = fighters
             .get(sound.target)
             .ok()
-            .and_then(|f| impact_play(sound, f))
+            .and_then(|(f, suit)| impact_play(sound, f, suit))
         else {
             continue;
         };
@@ -221,7 +228,9 @@ pub(crate) fn shield_sounds(
 mod tests {
     use super::*;
     use crate::environment::voice_flags;
-    use crate::sounds::{FOLEY_CLASSES, HIT_FLESH};
+    use crate::sounds::{
+        FOLEY_CLASSES, FOLEY_GOLEM, FOLEY_PLAYER, HIT_FLESH, HIT_GOLEM, HIT_SKELETON,
+    };
     use exa_combat::damage::{Layer, PartArmour};
 
     /// A block rings the struck item's root part's set; an item without a
@@ -274,9 +283,9 @@ mod tests {
             pitch: 0.74,
             foley: false,
         };
-        assert_eq!(impact_play(&sound, &fighter), Some((HIT_FLESH, 0.4)));
+        assert_eq!(impact_play(&sound, &fighter, false), Some((HIT_FLESH, 0.4)));
         sound.foley = true;
-        assert_eq!(impact_play(&sound, &fighter), None);
+        assert_eq!(impact_play(&sound, &fighter, false), None);
         let mail = Layer {
             material: 3,
             coverage: 1.0,
@@ -286,11 +295,47 @@ mod tests {
             outer: Some(mail),
             ..Default::default()
         }; 18];
-        let loop_ = foley(&fighter.armour, false, false, false);
+        let loop_ = exa_combat::sounds::foley(&fighter.armour, false, false, false);
         assert!(loop_.volume > 0.0);
         assert_eq!(
-            impact_play(&sound, &fighter),
+            impact_play(&sound, &fighter, false),
             Some((FOLEY_CLASSES[3].unwrap(), 0.4 * loop_.volume))
+        );
+    }
+
+    /// A golem's limb rings HitGlm and its crowded impact plays the golem
+    /// foley at 6 times the volume; a skeleton's bare limb SkelHit; a suit
+    /// wearer's crowded impact FoleyPlH at twice the volume.
+    #[test]
+    fn a_limb_impact_reads_the_race_and_the_suit() {
+        let mut sound = ImpactSounded {
+            target: Entity::PLACEHOLDER,
+            bone: 3,
+            point: Vec3::ZERO,
+            volume: 0.5,
+            pitch: 1.0,
+            foley: false,
+        };
+        let of_race = |race: u8| {
+            let mut f = Fighter::default();
+            f.stats.race_byte = race;
+            f
+        };
+        let golem = of_race(0x10);
+        let skeleton = of_race(1);
+        assert_eq!(impact_play(&sound, &golem, false), Some((HIT_GOLEM, 0.5)));
+        assert_eq!(
+            impact_play(&sound, &skeleton, false),
+            Some((HIT_SKELETON, 0.5))
+        );
+        sound.foley = true;
+        assert_eq!(
+            impact_play(&sound, &golem, false),
+            Some((FOLEY_GOLEM, 0.5 * 6.0))
+        );
+        assert_eq!(
+            impact_play(&sound, &Fighter::default(), true),
+            Some((FOLEY_PLAYER, 0.5 * 2.0))
         );
     }
 }

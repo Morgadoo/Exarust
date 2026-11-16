@@ -2378,3 +2378,10 @@ Spirit Form's new body SHALL be built disabled down its parts: out of the body-t
 #### Scenario: The spirit body is built
 - **WHEN** the spirit body's simulated body is built
 - **THEN** it is disabled and settles for 16 ticks
+
+### Requirement: Retried bar cast
+A retry of a held slot SHALL cast the picked power as a use does, and its answer SHALL renew the hold on "not now" or let it go otherwise; a retry that casts nothing SHALL let it go.
+
+#### Scenario: Retry answered
+- **WHEN** a retry starts the power
+- **THEN** the hold is gone

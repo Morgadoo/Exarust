@@ -653,6 +653,13 @@ fn reset_character(
             }
             body.wake_to(golem::POSE_TICKS as i32);
         });
+        // The pose reset then puts the body's held items back in its hands
+        // where the placement left them.
+        fixed.post(move |world| {
+            if let Ok(mut e) = world.get_entity_mut(entity) {
+                e.insert(exa_physics::grip::ReplaceHeld);
+            }
+        });
     }
     to
 }
@@ -1368,6 +1375,53 @@ mod tests {
         );
         // The alarm stays armed.
         assert!(w.resource::<GolemAlarm>().armed.armed);
+    }
+
+    /// The pose reset puts a golem's held items back in its hands where
+    /// the reset placed it (the re-place request posted after its move);
+    /// a golem left awake asks for none.
+    #[test]
+    fn the_alarm_return_re_places_a_sent_golems_held_items() {
+        use exa_physics::body::PartSetup;
+        let mut app = return_app();
+        let (_, player) = character(&mut app, Vec3::new(10.5, 0.0, 67.0), 0.0);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((RatedPlayer, Condition::DEAD));
+        let (_, golem) = woken(
+            &mut app,
+            Vec3::new(10.0, 0.0, 66.0),
+            Vec3::new(900.0, 0.0, 7500.0),
+            2.0,
+        );
+        let (_, far) = woken(
+            &mut app,
+            Vec3::new(10.5, 0.0, 98.0),
+            Vec3::new(1050.0, 0.0, 9900.0),
+            0.0,
+        );
+        let part = |bone: usize, parent: Option<usize>| PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        for entity in [golem, far] {
+            let body = Ragdoll::new(&[part(1, None), part(17, Some(0))]).with_drive();
+            app.world_mut().entity_mut(entity).insert(body);
+        }
+        app.update();
+        exa_physics::sim_app::run_fixed_commands(app.world_mut());
+        let w = app.world();
+        assert!(w.get::<exa_physics::grip::ReplaceHeld>(golem).is_some());
+        assert!(w.get::<exa_physics::grip::ReplaceHeld>(far).is_none());
     }
 
     /// With every golem asleep (or none near) the return sends none home

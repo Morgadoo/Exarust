@@ -1845,7 +1845,10 @@ fn spawn_players(
                 exa_formats::races::of_character(&races, exa_character::HUMAN),
                 Spawn { story, dead: false },
             )
-            .with_encumbrance(exa_formats::encumbrance::of_record(record, find));
+            .with_encumbrance(exa_formats::encumbrance::of_record(record, find))
+            .with_weightless(
+                exa_formats::encumbrance::WornSpecials::of_record(record, find).weightless,
+            );
             info!(
                 "player: the saved character {:?} wears {} items and holds {:?}",
                 record.name,
@@ -4190,7 +4193,8 @@ fn spawn_placed_characters(
                 dead: c.dead,
             },
         )
-        .with_encumbrance(c.encumbrance);
+        .with_encumbrance(c.encumbrance)
+        .with_weightless(c.specials.weightless);
         // A body without a physical frame has no links to lie down with.
         if c.dead && !physical {
             missing += 1;

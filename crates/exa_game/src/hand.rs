@@ -193,6 +193,17 @@ pub struct Hand {
     pub last_click: Option<(IVec2, i64)>,
     /// A scene press's point, for the cloth grab that follows it.
     pub scene_press: Option<Vec3>,
+    /// The left button is kept off the world: the press picks nothing.
+    /// Out of combat mode it holds what its last writer left: the combat
+    /// toggle's entry and the spirit form's switch set it, the toggle's
+    /// exit, the controls' switch off and the way home clear it. In combat
+    /// mode the controls' frame writes it every frame (kept unless Ctrl is
+    /// held or the hand holds something), which the press reads directly.
+    pub keeps_left: bool,
+    /// The combat toggle's lift cancel, waiting for the hold frame: the
+    /// lifted item goes back to the frames its lift saved
+    /// ([`crate::hotkeys::enter_combat`]).
+    pub cancel_lift: bool,
 }
 
 /// Where and when the left button went down, and whether its drag started.
@@ -342,13 +353,18 @@ pub fn lets_go(point: Vec3, hip: Vec3) -> bool {
 
 /// The drag's anchor (m): where the cursor's ray from `origin` along `dir`
 /// meets the level plane at `height`, kept within 200 cm of `hip` across
-/// the ground (and then at `height`). `None` when the ray never meets the
-/// plane (the original would take the division's infinity).
-pub fn drag_anchor(origin: Vec3, dir: Vec3, height: f32, hip: Vec3) -> Option<Vec3> {
+/// the ground (and then at `height`) while the drag keeps its reach limit
+/// (`limited`, [`player_controls::PlayerControl::drag_limit`]). `None` when
+/// the ray never meets the plane (the original would take the division's
+/// infinity).
+pub fn drag_anchor(origin: Vec3, dir: Vec3, height: f32, hip: Vec3, limited: bool) -> Option<Vec3> {
     let t = (height - origin.y) / dir.y;
     let at = (origin + dir * t) * CM;
     if !at.is_finite() {
         return None;
+    }
+    if !limited {
+        return Some(at / CM);
     }
     let hip = hip * CM;
     let mut off = at - hip;
@@ -792,7 +808,8 @@ pub fn press_out_of_reach(
 
 /// Whether the frame measures the reach: in combat mode only with Ctrl
 /// held or something held, whatever the right button does; outside it while
-/// the right button is not walking to the cursor (it shows chevrons then).
+/// the behaviour's walk latch does not hold a mouse-driven walk to the
+/// cursor (it shows chevrons then; [`PlayerBody::walking_to_cursor`]).
 pub fn measures_reach(combat: bool, ctrl: bool, holding: bool, walking: bool) -> bool {
     if combat { ctrl || holding } else { !walking }
 }
@@ -1154,6 +1171,7 @@ impl Plugin for HandPlugin {
             .add_systems(
                 Update,
                 (
+                    combat_keeps_left,
                     press_hand,
                     lift_gui_drops,
                     take_cloth,
@@ -1218,6 +1236,14 @@ type PressMechanisms<'w, 's> = (
     Option<ResMut<'w, Messages<MechanismSounded>>>,
     ResMut<'w, exa_physics::sim_app::FixedCommands>,
     Option<Res<'w, player_controls::PlayerControl>>,
+);
+
+/// The press's hooks: the kinesis pick's, the kinesis sight and the
+/// pointer warp a lift asks for.
+type PressHooks<'w> = (
+    Option<Res<'w, KinesisPickHook>>,
+    Option<Res<'w, KinesisSight>>,
+    Option<ResMut<'w, Messages<crate::os_pointer::WarpPointer>>>,
 );
 
 /// What a body's nodes say of the placed object they belong to: its id,
@@ -1438,6 +1464,17 @@ fn lift(
     at: Vec3,
     ids: (u32, u32),
 ) -> Option<HeldItem> {
+    // A frozen object is one a lock holds: the press keeps where its node
+    // stood for the release's relock and drop scripts.
+    let from_lock = ragdoll
+        .frozen()
+        .then(|| {
+            ragdoll
+                .parts
+                .get(part)
+                .map(|p| Vec3::from(p.transform().translation))
+        })
+        .flatten();
     if ragdoll.frozen() {
         ragdoll.freeze(false);
     }
@@ -1482,6 +1519,7 @@ fn lift(
         last: Some(saved_frame),
         item: ids.0,
         model: ids.1,
+        from_lock,
     })
 }
 
@@ -1557,7 +1595,7 @@ fn press_hand(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
-    (kinesis, sight): (Option<Res<KinesisPickHook>>, Option<Res<KinesisSight>>),
+    (kinesis, sight, mut warps): PressHooks,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
     (
         over_gui,
@@ -1660,7 +1698,11 @@ fn press_hand(
         )
     });
     let state = PressState {
-        kept_for_combat: pb.combat && !ctrl && hand.holding == Holding::Nothing,
+        kept_for_combat: if pb.combat {
+            !ctrl && hand.holding == Holding::Nothing
+        } else {
+            hand.keeps_left
+        },
         out_of_reach: press_out_of_reach(
             hand.out_of_reach,
             kinesis.is_some(),
@@ -1806,6 +1848,16 @@ fn press_hand(
                 let dropped = exa_physics::body::hold_entities_out_of_pairs(world, &[body]);
                 debug!("hand: the lifted {body:?} leaves {dropped} kept pair(s)");
             });
+            // The press's lift moves the pointer onto the lifted node's
+            // screen point (the lift start's warp flag), so the item does
+            // not jump to where the button went down.
+            let node_at = held.saved_frame.position;
+            if let Some(warps) = warps.as_deref_mut()
+                && let Ok((camera, eye)) = cameras.single()
+                && let Ok(point) = camera.world_to_viewport(eye, node_at)
+            {
+                warps.write(crate::os_pointer::WarpPointer(point));
+            }
             pb.hold_object(true);
             items.begin(held);
             hand.holding = Holding::Lift;
@@ -1849,7 +1901,7 @@ fn press_hand(
 
 /// The hold each frame: the drag follows the cursor, the release lets go.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn hold_hand(
+pub(crate) fn hold_hand(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
@@ -1871,11 +1923,12 @@ fn hold_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut cloths: Query<(&mut exa_world::cloth::ClothInstance, &GlobalTransform)>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
-    (time, mut show_bars, pad, pad_status): (
+    (time, mut show_bars, pad, pad_status, control): (
         Option<Res<Time<Virtual>>>,
         Option<ResMut<HudShowUntil>>,
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
+        Option<Res<player_controls::PlayerControl>>,
     ),
     (mut clicks, mut objects, rooms, mut character_uses, mut seen): (
         MessageWriter<WorldClick>,
@@ -1903,9 +1956,45 @@ fn hold_hand(
     // and focus bars for 5000 ms. A double click (with Ctrl held in combat
     // mode) then interacts with what is there. The original takes the double
     // click on the second press; Exarust reads it on that press's release.
+    // With the controls off their click, Ctrl and right-button handlers
+    // are not the view's: only the hand's own double-click hook is.
+    let controls_off = player_controls::PlayerControl::is_off(control.as_deref());
     if released {
         let left = hand.left.take();
+        if let Some(left) = left.filter(|l| !l.dragging && l.double)
+            && controls_off
+            && !hand.keeps_left
+            && !hand.out_of_reach
+        {
+            // The hand's idle double click: the pick under the pointer, a
+            // placed object's use or container ([`ObjectClick`] with the
+            // controls off, `crate::object_click`).
+            let window = windows.single().ok();
+            let ray = window
+                .zip(cameras.single().ok())
+                .and_then(|(window, (camera, eye))| window_ray(camera, eye, window, left.at));
+            if let Some(picked) = pick_with(
+                ray,
+                &sources.physics,
+                &sources.stand_ins,
+                &sources.collider_nodes,
+                &bodies,
+                None,
+            ) && !matches!(picked.hit, Hit::Character { .. })
+            {
+                let pointer = window
+                    .map(|window| (left.at * window.scale_factor()).as_ivec2())
+                    .unwrap_or(IVec2::ZERO);
+                objects.write(ObjectClick {
+                    hit: picked.hit,
+                    at: picked.at,
+                    pointer,
+                    double: true,
+                });
+            }
+        }
         if let Some(left) = left.filter(|l| !l.dragging)
+            && !controls_off
             && let Some((_, child)) = player
             && let Ok((pb, own, condition, _)) = player_bodies.get(child)
         {
@@ -1940,7 +2029,11 @@ fn hold_hand(
             {
                 req.heading = yaw;
             }
-            let interact = left.double && (!combat || bindings.pressed(&keys, Action::Interact));
+            // The Ctrl interaction does nothing while a window holds the
+            // controls (the spirit form).
+            let interact = left.double
+                && (!combat || bindings.pressed(&keys, Action::Interact))
+                && !player_controls::PlayerControl::window_holds(control.as_deref());
             // The interaction on a push surface whose operative flag 4 is
             // clear pushes it (and wakes it), while the point is in reach.
             if interact
@@ -2042,6 +2135,17 @@ fn hold_hand(
                 }
             }
         }
+    }
+    // The combat toggle's lift cancel: the item goes back to the frames
+    // its lift saved, the hand already empty.
+    if std::mem::take(&mut hand.cancel_lift) {
+        end_lift(
+            &mut items,
+            &mut bodies,
+            &mut fixed,
+            true,
+            Some(Release::PutBack),
+        );
     }
     match hand.holding {
         Holding::Nothing => {}
@@ -2177,7 +2281,7 @@ fn hold_hand(
                     pb.hold_object(false);
                 }
                 // The lift's own out-of-reach answer cancels it.
-                end_lift(&mut items, &mut bodies, &mut fixed, hand.out_of_reach);
+                end_lift(&mut items, &mut bodies, &mut fixed, hand.out_of_reach, None);
             } else {
                 // The movement inputs turn the item (the lift keeps the
                 // movement request): the pad's raw move stick, or the move
@@ -2205,7 +2309,14 @@ fn hold_hand(
                 let (delta, turned) = items.turn.frame(now, frame_ms, stick, keys_held);
                 if turned {
                     items.offset += delta;
-                    items.rotation *= item_cursor::turn_delta(right, delta);
+                    // Each turn re-orthonormalises the held frame, so long
+                    // turning does not shear it.
+                    items.rotation = crate::control_nodes::Frame::new(
+                        Vec3::ZERO,
+                        items.rotation * item_cursor::turn_delta(right, delta),
+                    )
+                    .orthonormalized()
+                    .rotation;
                 }
                 let Some(held) = items.held.as_ref() else {
                     hand.holding = Holding::Nothing;
@@ -2529,6 +2640,14 @@ fn hold_hand(
             height,
             character,
         } => {
+            // The controls' frame runs the drag's handler every frame; off,
+            // blocked or second-blocked it does not (the controls-off frame
+            // has no drag), so the drag only waits for its release. The
+            // release itself always lets go.
+            let control = control.as_deref();
+            if !released && player_controls::PlayerControl::input_suspended(control) {
+                return;
+            }
             let hip = player.and_then(|(feet, child)| {
                 player_bodies
                     .get(child)
@@ -2544,11 +2663,13 @@ fn hold_hand(
                 "hand: dragged grab point {:.1?} cm",
                 ragdoll.grab_point().map(|p| p * 100.0)
             );
+            let limited = player_controls::PlayerControl::drag_limited(control);
             let lives = character && condition.is_some_and(|c| !c.is_dead());
-            let far = match (ragdoll.grab_point(), hip) {
-                (Some(point), Some(hip)) => lets_go(point, hip),
-                _ => false,
-            };
+            let far = limited
+                && match (ragdoll.grab_point(), hip) {
+                    (Some(point), Some(hip)) => lets_go(point, hip),
+                    _ => false,
+                };
             if released || lives || far {
                 fixed.write(body, &mut ragdoll, |r| r.release_grab());
                 hand.holding = Holding::Nothing;
@@ -2557,7 +2678,7 @@ fn hold_hand(
             if hand.out_of_reach {
                 fixed.write(body, &mut ragdoll, |r| r.hold_grab_still());
             } else if let (Some(ray), Some(hip)) = (ray, hip)
-                && let Some(anchor) = drag_anchor(ray.origin, *ray.direction, height, hip)
+                && let Some(anchor) = drag_anchor(ray.origin, *ray.direction, height, hip, limited)
             {
                 fixed.write(body, &mut ragdoll, move |r| {
                     r.pull_grab_to(anchor);
@@ -2566,6 +2687,30 @@ fn hold_hand(
             }
         }
     }
+}
+
+/// The combat toggle's writes of the hand's left-button keep
+/// ([`Hand::keeps_left`]): entering combat mode keeps the button for the
+/// attacks, leaving it gives the button back. Read off the player's combat
+/// flag, so every path that switches it (the key, the pad, the journal's
+/// opener, a script) writes the byte as the original's toggle does. A
+/// change of body (the spirit form's handover and the way home) is no
+/// toggle: the new body's flag is only noted.
+fn combat_keeps_left(
+    mut hand: ResMut<Hand>,
+    players: Query<(Entity, &PlayerBody)>,
+    mut was: Local<Option<(Entity, bool)>>,
+) {
+    let Some((body, pb)) = players.iter().next() else {
+        return;
+    };
+    match *was {
+        Some((same, combat)) if same == body && combat != pb.combat => {
+            hand.keeps_left = pb.combat;
+        }
+        _ => {}
+    }
+    *was = Some((body, pb.combat));
 }
 
 /// Ends the item cursor's lift, as the lift's release handler does: in
@@ -2580,12 +2725,35 @@ fn end_lift(
     bodies: &mut Query<OtherBodies, Without<PlayerBody>>,
     fixed: &mut exa_physics::sim_app::FixedCommands,
     cancelled: bool,
+    outcome: Option<Release>,
 ) {
     // The last fitting placement is where the item already rests: a frame
     // that does not hold puts it back there, so it still fits.
-    let Some((outcome, held)) = items.end(cancelled, true) else {
+    let Some((released, held)) = items.end(cancelled, true) else {
         return;
     };
+    // The lift cancel (the combat toggle's) puts the item back whatever
+    // the cursor's hover word says, and neither relocks it nor runs the
+    // drop scripts. A release that puts back an item the press took off a
+    // lock locks it again there (the release's lock word).
+    let cancel = outcome.is_some();
+    let mut outcome = outcome.unwrap_or(released);
+    let relock_back = !cancel && held.from_lock.is_some() && outcome == Release::PutBack;
+    if !cancel {
+        let relocked = outcome == Release::Lock || relock_back;
+        let placed = if relock_back {
+            held.from_lock.unwrap_or(held.shown.position)
+        } else {
+            held.shown.position
+        };
+        if let Some(spot) = item_cursor::drop_scripts_at(held.from_lock, relocked, placed) {
+            info!("hand: the lifted item leaves its lock; drop scripts at {spot:.1?} cm");
+            items.script_points_cm.push(spot);
+        }
+    }
+    if relock_back {
+        outcome = Release::Lock;
+    }
     // The let-go queues the held node's box, at the frame the lift saved,
     // for the grid's refresh: the floor the item stood on is refreshed.
     if let Some(&at) = held.saved.get(held.part) {
@@ -2598,7 +2766,6 @@ fn end_lift(
     let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body) else {
         return;
     };
-    items.released_cm.push(held.shown.position * 100.0);
     info!(
         "hand: the lift ends ({outcome:?}) at {:.1?} cm",
         held.shown.position * 100.0
@@ -2607,6 +2774,10 @@ fn end_lift(
     let probe = saved.get(held.part).copied();
     fixed.write(held.body, &mut ragdoll, move |ragdoll| {
         ragdoll.release_grab();
+        if relock_back {
+            // The saved pose back, then the lock's freeze there.
+            ragdoll.place_at(&saved);
+        }
         match outcome {
             Release::Lock => {
                 // The original's lock: the node's locked flag, then the
@@ -2712,7 +2883,6 @@ fn send_let_go(mut items: ResMut<ItemCursor>, mut moved: MessageWriter<exa_world
 #[allow(clippy::too_many_arguments)]
 fn reach_hand(
     keys: Res<ButtonInput<KeyCode>>,
-    buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     scripted: Res<ScriptedPointer>,
     sources: PickSources,
@@ -2749,7 +2919,7 @@ fn reach_hand(
         // The forced release runs the lift's handler with the point out of
         // reach, so the lift ends as a cancelled one.
         if hand.holding == Holding::Lift {
-            end_lift(&mut items, &mut bodies, &mut fixed, true);
+            end_lift(&mut items, &mut bodies, &mut fixed, true, None);
         }
         hand.holding = Holding::Nothing;
         hand.out_of_reach = true;
@@ -2759,7 +2929,10 @@ fn reach_hand(
         return;
     }
     let ctrl = bindings.pressed(&keys, Action::Interact);
-    let walking = buttons.pressed(MouseButton::Right);
+    // The behaviour's walk latch: set when a move starts, held after its
+    // release until the stride reaches a double support; the reach is
+    // measured while it is clear or the keys drive the walk.
+    let walking = pb.walking_to_cursor();
     if !measures_reach(pb.combat, ctrl, hand.holding != Holding::Nothing, walking) {
         return;
     }
@@ -3071,13 +3244,16 @@ mod tests {
     fn the_anchor_follows_the_cursor_within_200_cm() {
         let hip = Vec3::new(0.0, 0.9, 0.0);
         // Straight down onto the plane at 0.3 m, 1.5 m away: kept.
-        let a = drag_anchor(Vec3::new(1.5, 10.0, 0.0), Vec3::NEG_Y, 0.3, hip).unwrap();
+        let a = drag_anchor(Vec3::new(1.5, 10.0, 0.0), Vec3::NEG_Y, 0.3, hip, true).unwrap();
         assert!((a - Vec3::new(1.5, 0.3, 0.0)).length() < 1e-5, "{a}");
         // 3 m and 4 m away (5 m): pulled to 2 m along it, at the height.
-        let a = drag_anchor(Vec3::new(3.0, 10.0, 4.0), Vec3::NEG_Y, 0.3, hip).unwrap();
+        let a = drag_anchor(Vec3::new(3.0, 10.0, 4.0), Vec3::NEG_Y, 0.3, hip, true).unwrap();
         assert!((a - Vec3::new(1.2, 0.3, 1.6)).length() < 1e-5, "{a}");
+        // Without the reach limit the point stays where the ray meets.
+        let a = drag_anchor(Vec3::new(3.0, 10.0, 4.0), Vec3::NEG_Y, 0.3, hip, false).unwrap();
+        assert!((a - Vec3::new(3.0, 0.3, 4.0)).length() < 1e-5, "{a}");
         // A level ray never meets it.
-        assert_eq!(drag_anchor(Vec3::Y, Vec3::X, 0.3, hip), None);
+        assert_eq!(drag_anchor(Vec3::Y, Vec3::X, 0.3, hip, true), None);
     }
 
     #[test]
@@ -3593,6 +3769,141 @@ mod tests {
         let hand = app.world().resource::<Hand>();
         assert_eq!(hand.holding, Holding::Nothing);
         assert!(!hand.out_of_reach);
+    }
+
+    /// The reach follows the behaviour's walk latch, not the right button:
+    /// a latched walk to the cursor (still finishing its stride after the
+    /// release) leaves the reach as it was; with the latch clear the reach
+    /// is measured (here: nothing under the cursor is out of reach), even
+    /// with the right button down.
+    #[test]
+    fn the_reach_waits_for_the_walk_latch() {
+        let run = |body: PlayerBody, right: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<ButtonInput<MouseButton>>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .init_resource::<Time<Real>>()
+                .init_resource::<Bindings>()
+                .init_resource::<ScriptedPointer>()
+                .init_resource::<StandIns>()
+                .init_resource::<ColliderNodes>()
+                .init_resource::<exa_physics::collision_share::FramePhysics>()
+                .init_resource::<Hand>()
+                .init_resource::<ItemCursor>()
+                .add_message::<WorldClick>()
+                .add_message::<ObjectClick>()
+                .add_systems(Update, reach_hand);
+            let child = app.world_mut().spawn(body).id();
+            app.world_mut()
+                .spawn((Player, GlobalTransform::default()))
+                .add_child(child);
+            if right {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<MouseButton>>()
+                    .press(MouseButton::Right);
+            }
+            app.update();
+            app.world().resource::<Hand>().out_of_reach
+        };
+        assert!(!run(PlayerBody::new(0.0).walking_to_the_cursor(), false));
+        assert!(run(PlayerBody::new(0.0), true));
+    }
+
+    /// The live lift frame turns the held item by the move keys and makes
+    /// the turned frame orthonormal again each turn, so a frame that had
+    /// drifted (here sheared) comes back to unit, square axes.
+    #[test]
+    fn a_turned_lift_is_orthonormalised() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<Time<Virtual>>()
+            .init_resource::<Bindings>()
+            .init_resource::<ScriptedPointer>()
+            .init_resource::<StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
+            .add_message::<WorldClick>()
+            .add_message::<ObjectClick>()
+            .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
+        app.world_mut().resource_mut::<Hand>().holding = Holding::Lift;
+        let sheared = Mat3::from_cols(
+            Vec3::new(1.02, 0.03, 0.0),
+            Vec3::new(0.04, 0.97, 0.01),
+            Vec3::new(0.0, 0.02, 1.05),
+        );
+        app.world_mut().resource_mut::<ItemCursor>().rotation = sheared;
+        let forward = app.world().resource::<Bindings>().key_code(Action::Forward);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(forward.expect("the forward key is bound"));
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .advance_by(std::time::Duration::from_millis(16));
+        app.update();
+        let r = app.world().resource::<ItemCursor>().rotation;
+        assert_ne!(r, sheared, "the forward key turns the item");
+        let eps = 1e-3;
+        for axis in [r.x_axis, r.y_axis, r.z_axis] {
+            assert!((axis.length() - 1.0).abs() < eps, "{axis:?}");
+        }
+        assert!(r.x_axis.dot(r.y_axis).abs() < eps);
+        assert!(r.y_axis.dot(r.z_axis).abs() < eps);
+        assert!(r.x_axis.dot(r.z_axis).abs() < eps);
+    }
+
+    /// While the controls are blocked the controls' frame does not run the
+    /// drag: a drag waits (here on a body the frame cannot find, which the
+    /// running drag lets go of at once) and the block lifts the drag's
+    /// reach limit; once released the frame runs it again.
+    #[test]
+    fn a_blocked_frame_leaves_the_drag_waiting() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<Bindings>()
+            .init_resource::<ScriptedPointer>()
+            .init_resource::<StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
+            .init_resource::<player_controls::PlayerControl>()
+            .add_message::<WorldClick>()
+            .add_message::<ObjectClick>()
+            .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
+        let drag = Holding::Drag {
+            body: Entity::PLACEHOLDER,
+            height: 0.3,
+            character: false,
+        };
+        {
+            let mut control = app
+                .world_mut()
+                .resource_mut::<player_controls::PlayerControl>();
+            control.set_off(false);
+            crate::controls_live::block_controls(&mut control, true, "test");
+            assert!(!control.drag_limit);
+        }
+        app.world_mut().resource_mut::<Hand>().holding = drag;
+        app.update();
+        assert_eq!(app.world().resource::<Hand>().holding, drag);
+        {
+            let mut control = app
+                .world_mut()
+                .resource_mut::<player_controls::PlayerControl>();
+            crate::controls_live::block_controls(&mut control, false, "test");
+            assert!(control.drag_limit);
+        }
+        app.update();
+        assert_eq!(app.world().resource::<Hand>().holding, Holding::Nothing);
     }
 
     /// The hand's state keeps the request while a press is refused or a

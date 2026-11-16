@@ -310,6 +310,15 @@ impl PlayerBody {
         self
     }
 
+    /// A body whose behaviour's walk latch holds a mouse-driven walk to
+    /// the cursor (the right button's request, mode `Walk`).
+    #[cfg(test)]
+    pub(crate) fn walking_to_the_cursor(mut self) -> Self {
+        self.steering.requested = true;
+        self.steering.mode = crate::steering::CursorMode::Walk;
+        self
+    }
+
     /// The walk to the cursor is asked by the right button (not the keys'
     /// walk, nor a released walk finishing its stride): the cursor shows its
     /// chevrons.

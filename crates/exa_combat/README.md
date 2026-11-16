@@ -425,8 +425,10 @@ and thin-plate bit off, `Ragdoll::clear_death_strikes`). The status-effect pass
 bit 2 by swapping the last entry in. The reset facing
 (`exa_physics::body::balance::reset_heading`) is the chest over the pelvis,
 flattened and normalised. The attack reach
-(`CharacterStats::attack_reach`) is √scale × (1 − 0.3 age, omitted when
-negative) × (1 − 0.2 encumbrance) × 80 cm.
+(`CharacterStats::attack_reach`) is the step reach
+(`exa_formats::weapon_record::step_reach`): √scale × ((1 − 0.3 feral,
+omitted when negative) × ((1 − 0.2 encumbrance) × 80)) cm in double, in
+that order.
 
 Each living character's posture stage
 (`track_condition` in `exa_physics::body::CharacterStage::Posture`, after
@@ -602,7 +604,12 @@ default, or the golem's `HitGlm`; the foley sums each layer's coverage times
 its bone's weight per class, picks the largest class sum times its factor,
 and above 1 gives the loop's volume (the class's volume factor). The
 golem bodies' `FoleyPlH` (2) and `Golem_Foley` (6, or 1 for race 0x1200)
-are the body loops. `exa_audio` plays them. The classes are the item
+are the body loops. `PartSounds` reads them from the character: the race
+byte's golem bit (0x10) rings `HitGlm`, the skeleton's race (1) `SkelHit`,
+a golem race or a worn golem suit makes a golem body, race 0x12 the quiet
+`Golem_Foley`; the armour pass ends by giving a golem race's first
+covering layer of each part the golem class (`mark_golem_layers`), so its
+wounds ring `HitGlm` too. `exa_audio` plays them. The classes are the item
 byte's as the armour builder copies it (0 flesh, 1 cloth, 2 leather, 3
 mail, 4 plate, 5 `HitHbr`, 6 golem), the order of every per-class table:
 the foley factors (0, 0, 0.3, 0.6, 1, 1) and volumes, the part impact's

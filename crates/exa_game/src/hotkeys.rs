@@ -303,13 +303,19 @@ pub fn pad_hotkeys(bits: u32, c: Context) -> Vec<Hotkey> {
 }
 
 /// Entering combat mode: the hand lets go and the request's backpedal,
-/// keys' heading and turn-about bits clear. The original's cancel puts a
-/// lifted item back where its lift saved it and leaves a drag's link in
-/// place; Exarust lets go of the drag.
+/// keys' heading and turn-about bits clear. A lifted item is cancelled:
+/// the hold frame puts it back where its lift saved it
+/// ([`Hand::cancel_lift`]), as the original's lift cancel restores the
+/// saved frames. The original's cancel leaves a drag's link in place;
+/// Exarust lets go of the drag (the answer is the dragged body).
 pub fn enter_combat(hand: &mut Hand, req: &mut Locomotion) -> Option<Entity> {
     req.flags &= !COMBAT_CLEARS;
     let held = match hand.holding {
         Holding::Drag { body, .. } => Some(body),
+        Holding::Lift => {
+            hand.cancel_lift = true;
+            None
+        }
         _ => None,
     };
     hand.holding = Holding::Nothing;
@@ -332,7 +338,8 @@ impl Plugin for HotkeyPlugin {
             .init_resource::<DialogueFocus>()
             .add_systems(
                 Update,
-                press_hotkeys
+                (retry_power_hold, press_hotkeys)
+                    .chain()
                     .in_set(HotkeySet)
                     .after(crate::player::cursor_ground)
                     .before(crate::player::player_combat),
@@ -343,6 +350,39 @@ impl Plugin for HotkeyPlugin {
 /// The system that reads the player's hotkeys.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HotkeySet;
+
+/// The head of the controls' per-frame pad routine: the power bar's hold
+/// on a slot whose power answered "not now" retries the cast every frame
+/// ([`crate::player_controls::PowerHold::frame`]); past its 500 ms it lets
+/// go and asks once for the picked power. A retry answered with anything
+/// but "not now" lets the hold go, and "not now" renews it
+/// ([`BarAction::Retry`]). The routine runs while the controls are on
+/// (blocked or not); the clock is the powers' tick clock.
+fn retry_power_hold(
+    control: Option<ResMut<PlayerControl>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    players: Query<Entity, (With<PlayerBody>, With<PowerCaster>)>,
+    mut bars: MessageWriter<BarCommand>,
+) {
+    let Some(mut control) = control else {
+        return;
+    };
+    if control.off || control.power_hold.slot == 0 {
+        return;
+    }
+    let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+    let Some(slot) = control.power_hold.frame(now) else {
+        return;
+    };
+    let Some(caster) = players.iter().next() else {
+        return;
+    };
+    debug!("power hold: retry (slot {slot})");
+    bars.write(BarCommand {
+        caster,
+        action: BarAction::Retry,
+    });
+}
 
 /// Releases the hand's grab on `body` (run at the start of a fixed step).
 fn release_grab(In(body): In<Entity>, mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>) {
@@ -375,11 +415,12 @@ fn press_hotkeys(
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
     mut skills: MessageWriter<crate::skill_screen::OpenSkills>,
-    (mut dialogue, control, mut confirms, gui): (
+    (mut dialogue, control, mut confirms, gui, hub): (
         DialogueSide,
         Option<Res<PlayerControl>>,
         MessageWriter<crate::end_menu_screen::EndMenuConfirm>,
         Option<Res<crate::gui_screens::GameScreens>>,
+        Option<Res<crate::hub_windows::HubWindows>>,
     ),
 ) {
     // The controls off, the key-down handler and the pad routine (the
@@ -422,6 +463,15 @@ fn press_hotkeys(
                 .is_some_and(|c| c.engine.panel.open),
             power_bar: caster.is_some_and(|c| c.bar_open),
             powers: caster.map_or(0, |c| c.known.len() as i32),
+            // The controls' permission mask (the spirit form keeps only
+            // the powers'), and the byte a holding window sets: the
+            // spirit form's, or the shop's trade mode.
+            allowed: PlayerControl::hotkey_mask(control.as_deref()),
+            hides_inventory: PlayerControl::window_holds(control.as_deref())
+                || hub
+                    .as_deref()
+                    .and_then(|h| h.shop.as_ref())
+                    .is_some_and(|shop| shop.window.trading),
             ..Context::default()
         };
         let keyed = pressed.iter().filter_map(|&key| {
@@ -866,6 +916,64 @@ mod tests {
         assert!(!run(Condition::DEAD));
     }
 
+    /// The spirit form's switch leaves the hotkeys only the powers': the
+    /// inventory key asks for nothing while it holds the controls (and the
+    /// dialogue is ended), and asks again once the way home lets them go.
+    #[test]
+    fn the_spirit_form_keeps_only_the_powers_keys() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Bindings>()
+            .init_resource::<Hand>()
+            .init_resource::<PlayerControl>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .add_message::<ScreenRequest>()
+            .add_message::<crate::end_menu_screen::EndMenuConfirm>()
+            .add_message::<crate::skill_screen::OpenSkills>()
+            .add_message::<BarCommand>()
+            .add_message::<FlipWeaponRequest>()
+            .init_resource::<DialogueFocus>()
+            .add_message::<exa_script::Talk>()
+            .add_message::<exa_script::PickReply>()
+            .add_message::<exa_script::LeaveDialogue>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .add_systems(Update, press_hotkeys);
+        app.world_mut()
+            .resource_mut::<PlayerControl>()
+            .set_off(false);
+        app.world_mut()
+            .spawn((PlayerBody::new(0.0), Condition::NORMAL));
+        let inventory_requests = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyI);
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .release(KeyCode::KeyI);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .clear();
+            let mut messages = app.world_mut().resource_mut::<Messages<ScreenRequest>>();
+            messages
+                .drain()
+                .filter(|r| r.screen == GameScreen::Inventory)
+                .count()
+        };
+        crate::controls_live::spirit_controls(app.world_mut(), true);
+        assert_eq!(
+            app.world()
+                .resource::<Messages<exa_script::LeaveDialogue>>()
+                .len(),
+            1,
+            "the switch ends the dialogue"
+        );
+        assert!(app.world().resource::<Hand>().keeps_left);
+        assert_eq!(inventory_requests(&mut app), 0);
+        crate::controls_live::spirit_controls(app.world_mut(), false);
+        assert_eq!(inventory_requests(&mut app), 1);
+    }
+
     /// I and J ask for the inventory and the journal; a dead player asks
     /// for nothing.
     #[test]
@@ -930,6 +1038,101 @@ mod tests {
         hand.holding = Holding::Lift;
         assert_eq!(enter_combat(&mut hand, &mut req), None);
         assert_eq!(hand.holding, Holding::Nothing);
+    }
+
+    fn ball_body(at: Vec3) -> Ragdoll {
+        Ragdoll::rigid(&[exa_physics::body::RigidPart {
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::from_translation(at),
+            rest: [
+                Vec3::new(-0.2, 0.0, -0.2),
+                Vec3::new(0.2, 0.0, -0.2),
+                Vec3::new(0.0, 0.0, 0.2),
+                Vec3::new(0.0, 0.4, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: bevy::math::Affine3A::IDENTITY,
+            mobility: 1.0,
+            spheres: vec![(Vec3::ZERO, 0.2)],
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: None,
+            triangles: None,
+        }])
+    }
+
+    /// Tab into combat mode while an item is lifted: the live key handler
+    /// empties the hand and the hold frame puts the item back at the frame
+    /// its lift saved, as the original's lift cancel restores the saved
+    /// frames (not where the cursor last placed it).
+    #[test]
+    fn entering_combat_puts_a_lifted_item_back() {
+        use crate::control_nodes::Frame;
+        use crate::item_cursor::{HeldItem, ItemCursor};
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>()
+            .init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<exa_ui::ScriptedPointer>()
+            .init_resource::<exa_physics::prop::StandIns>()
+            .init_resource::<exa_physics::ColliderNodes>()
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .add_message::<ScreenRequest>()
+            .add_message::<crate::end_menu_screen::EndMenuConfirm>()
+            .add_message::<crate::skill_screen::OpenSkills>()
+            .add_message::<BarCommand>()
+            .add_message::<FlipWeaponRequest>()
+            .init_resource::<DialogueFocus>()
+            .add_message::<exa_script::Talk>()
+            .add_message::<exa_script::PickReply>()
+            .add_message::<exa_script::LeaveDialogue>()
+            .add_message::<crate::hand::WorldClick>()
+            .add_message::<crate::object_click::ObjectClick>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .add_systems(Update, (press_hotkeys, crate::hand::hold_hand).chain());
+        app.world_mut()
+            .spawn((PlayerBody::new(0.0), Condition::NORMAL));
+        let saved_at = Vec3::new(1.0, 0.5, 2.0);
+        let saved = bevy::math::Affine3A::from_translation(saved_at);
+        // The item hangs on the cursor, away from where the lift took it.
+        let item = app
+            .world_mut()
+            .spawn(ball_body(Vec3::new(3.0, 1.5, 0.0)))
+            .id();
+        app.world_mut()
+            .resource_mut::<ItemCursor>()
+            .begin(HeldItem {
+                body: item,
+                part: 0,
+                saved: vec![saved],
+                saved_frame: Frame::new(saved_at, Mat3::IDENTITY),
+                shown: Frame::new(Vec3::new(3.0, 1.5, 0.0), Mat3::IDENTITY),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.2),
+                target: Vec3::new(3.0, 1.5, 0.0),
+                last: Some(Frame::new(Vec3::new(3.0, 1.5, 0.0), Mat3::IDENTITY)),
+                item: 0,
+                model: 0,
+                from_lock: None,
+            });
+        app.world_mut().resource_mut::<Hand>().holding = Holding::Lift;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Tab);
+        app.update();
+        assert_eq!(app.world().resource::<Hand>().holding, Holding::Nothing);
+        assert!(app.world().resource::<ItemCursor>().held.is_none());
+        assert!(!app.world().resource::<Hand>().cancel_lift);
+        let at = Vec3::from(
+            app.world().get::<Ragdoll>(item).unwrap().parts[0]
+                .transform()
+                .translation,
+        );
+        assert!((at - saved_at).length() < 1e-4, "the item is at {at}");
     }
 
     /// The dialogue keys: with the panel open the Talk key ends, the digits

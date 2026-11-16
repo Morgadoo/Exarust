@@ -17,9 +17,9 @@
 use bevy::prelude::*;
 use exa_formats::key_track::{KeyTrack, PlayMode};
 
-/// The debug key that starts every keyframe track of the level (the
-/// original starts an object's tracks when it is used, which Exarust cannot
-/// do yet).
+/// The debug key that starts every keyframe track of the level. In play an
+/// object's tracks start when the player uses it (the double click's use,
+/// `exa_game::object_click`, sends [`StartTracks`]).
 pub const START_ALL_KEY: KeyCode = KeyCode::F7;
 
 /// Starts, and plays every frame, the scene's keyframe tracks.

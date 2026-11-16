@@ -13,11 +13,15 @@ A part's contact SHALL count as a strike only when both the strike window and th
 - **THEN** it strikes after the mark with the mark bit set, and after the clear the window, chain bit and mark bit are all clear
 
 ### Requirement: Part hit sound
-A part's hit sound SHALL skip an armour layer only when its coverage is below 0.5, so a NaN coverage counts as covering.
+A part's hit sound SHALL skip an armour layer only when its coverage is below 0.5, so a NaN coverage counts as covering. A character whose race byte has the golem bit SHALL ring HitGlm, and a bare part of the skeleton's race SHALL ring SkelHit.
 
 #### Scenario: NaN coverage
 - **WHEN** a layer of NaN coverage is the first to cover
 - **THEN** the layer's material class sound is chosen
+
+#### Scenario: A golem's limb
+- **WHEN** a limb of a character of race byte 0x10 is struck
+- **THEN** its hit sound is HitGlm
 
 ### Requirement: Voice request
 The voice request SHALL apply its two volume gains in the original's order and SHALL compute the scream wait as an unwrapped 64-bit sum.
@@ -34,11 +38,15 @@ The wake tone and readiness SHALL be summed in double precision, and the grace s
 - **THEN** the character stays down until the unwrapped sum is reached
 
 ### Requirement: Attack reach
-A character's attack reach SHALL be size × ((1 − 0.3·age) × base) in double precision with base = (1 − 0.2·encumbrance) × 80 and size the square root of the scale; a negative age SHALL use size × base, and a NaN age SHALL give a NaN reach.
+A character's step reach SHALL be size × ((1 − 0.3·feral) × base) in double precision, narrowed once, with base = (1 − 0.2·encumbrance) × 80 and size the single precision square root of the scale; a feral level below 0 SHALL use size × base, and a NaN level SHALL give a NaN reach.
 
-#### Scenario: Human at age 0.5
-- **WHEN** a human of scale 1 and no encumbrance has age 0.5
+#### Scenario: Human at feral level 0.5
+- **WHEN** a human of scale 1 and no encumbrance has feral level 0.5
 - **THEN** the reach is 1 × ((1 − 0.15) × 80) = 68 cm
+
+#### Scenario: Scale 1.1 at level 0.84
+- **WHEN** a character of scale 1.1, feral level 0.84 and no encumbrance is spawned
+- **THEN** its step reach has the bits 1115359994, not those of 80·√scale rounded first
 
 ### Requirement: Live limb impact
 A sounded limb impact that is not dropped SHALL take damage (volume − 0.25)·m, times 1 − s while the root sinks, less the impact damage taken; a positive excess SHALL add to the taken damage, take half as yellow health (vital over 0.6 of total) and daze by half. Then, hurt or not, the root's sound clock SHALL move to 220 + rand(100) − round(170·volume) ms on, the draw made after the damage step. The taken damage SHALL fall 0.01 a tick while over 0.01, except on a dead body.
@@ -363,18 +371,26 @@ A held item's world weld (a grip link without the pivot flag) SHALL move the ite
 - **THEN** the item moves 0.025 cm toward its anchor
 
 ### Requirement: Held item drop words
-A dropped held item SHALL lose only its strike, chain and mark bits (0x30001), keeping its other state bits, and take friction 0.75.
+A dropped weapon SHALL lose its strike, chain and mark bits (0x30001) over its whole tree, a dropped torch on its own body only, and a dropped shield none; every dropped item's own body SHALL take friction 0.75 and its base contact mobility, its children keeping theirs.
 
 #### Scenario: Dropped torch
 - **WHEN** a held torch with the held and mark bits is dropped
 - **THEN** its mark bit clears and its held bit stays
 
+#### Scenario: Dropped shield
+- **WHEN** a held shield with the mark bit is dropped
+- **THEN** its mark bit stays and its friction is 0.75
+
 ### Requirement: Torch friction
-A held torch's body SHALL have friction 0, while a held weapon's or shield's has 0.5.
+A held torch's own body SHALL have friction 0, while a held weapon's or shield's own body has 0.5; the item's other parts keep their friction.
 
 #### Scenario: Torch in hand
 - **WHEN** a torch is held
 - **THEN** its body's friction is 0
+
+#### Scenario: Two-part weapon
+- **WHEN** a weapon of two parts is held
+- **THEN** its top part's friction is 0.5 and its child's is what it was built with
 
 ### Requirement: Factory weapon body
 The body of an assembled factory weapon SHALL be fitted to its merged meshes by the factory-weapon shape builder with the factory's fit record (resolution scale 1.1, even axes, at least 6 cells, no free corners, no side growth), its spheres sorted around the weapon's origin and its mobility 10 000 over the fitted volume.
@@ -427,7 +443,7 @@ The grip mode setter SHALL store the requested mode before running the grip's ca
 - **THEN** the duellist's "Sword GSF 01" lights and its grip logs the turn to mode 1
 
 ### Requirement: Held item re-place after a move
-When the game moves a character to a new place (the player's spawn placement on the ground, a Long Door), every item that character holds SHALL be put back at rest at its place under the holding hand where that hand now is, and woken. An item held flipped since its grip was built SHALL be turned half a turn about its own Y axis.
+When the game moves a character to a new place (the player's spawn placement on the ground, a Long Door, a golem's alarm-return pose reset, a roaming AI's revive placement), every item that character holds SHALL be put back at rest at its place under the holding hand where that hand now is, and woken. An item held flipped since its grip was built SHALL be turned half a turn about its own Y axis.
 
 #### Scenario: A metre away
 - **WHEN** a body holding a weapon is moved 1 m along x and 0.5 m along z and the re-place runs
@@ -436,6 +452,10 @@ When the game moves a character to a new place (the player's spawn placement on 
 #### Scenario: Flipped since built
 - **WHEN** an item that was built unflipped is re-placed while held flipped
 - **THEN** its place is the kept place turned half a turn about its Y axis, at the same point
+
+#### Scenario: A golem sent home
+- **WHEN** the alarm return sends a golem with a body home
+- **THEN** its held items are asked to be re-placed, and a golem left awake asks for none
 
 ### Requirement: Second hand slack after a re-place
 After the re-place, a weapon of an armed grip class (0x30 bits) whose second-hand link is enabled and is not its first link SHALL take the distance that link now spans, summed `(x² + z²) + y²` under the root, as both its slack and its held length.
@@ -643,3 +663,24 @@ A held item freed by the grip stage SHALL become the root of its own tree with a
 #### Scenario: A one-part weapon freed
 - **WHEN** a one-part held weapon whose count was 15 is freed
 - **THEN** its count is 2
+
+### Requirement: Golem foley
+A golem body (a golem race, or a character wearing a golem suit) SHALL play FoleyPlH at volume 2 and base 1 when its race lacks the golem bit, Golem_Foley at 1 and 1 for race 0x12, and Golem_Foley at 6 and 1.5 for another golem race.
+
+#### Scenario: A suit wearer's crowded impact
+- **WHEN** a human wearing a golem suit takes a crowded limb impact of volume 0.5
+- **THEN** FoleyPlH plays at 1.0
+
+### Requirement: Golem layer class
+At the end of every armour pass, a golem race's first armour layer covering at least half of each part (outer, then inner; a NaN coverage covers) SHALL take the golem class 6, so its wounds ring HitGlm.
+
+#### Scenario: Outer layer under a half
+- **WHEN** a golem's part has an outer layer of coverage 0.4 and an inner one of 0.9
+- **THEN** the inner layer takes class 6 and the outer keeps its class
+
+### Requirement: Weightless share
+The armour pass SHALL give the character a weightless share of 0, then 1 or 0 for each pair of shield-lightening gauntlets worn, in wearing order, by whether it is powered; the holding pass SHALL lighten every held item by that share.
+
+#### Scenario: Powered then unpowered gauntlets
+- **WHEN** a character wears powered gauntlets and then unpowered ones
+- **THEN** its weightless share is 0

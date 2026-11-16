@@ -64,6 +64,21 @@ impl Skills {
     }
 }
 
+/// The character's weightless share, as the armour pass leaves it: 0 at the
+/// pass's start, then each worn pair of shield-lightening gauntlets (kind
+/// 6) in wearing order registers 1 while powered and 0 otherwise, so the
+/// last pair decides. The holding pass lightens every held item by it and
+/// the encumbrance's shield term reads it.
+pub fn weightless_share<'a>(worn: impl IntoIterator<Item = &'a Burden>) -> f32 {
+    let mut weightless = 0.0;
+    for b in worn {
+        if b.special == Burden::LIGHT_SHIELD {
+            weightless = if b.powered { 1.0 } else { 0.0 };
+        }
+    }
+    weightless
+}
+
 /// The encumbrance (0…1) of a character wearing `worn` (in its wearing
 /// order) and holding `shield`: 0.0025 per unit of each
 /// item's encumbrance (an unpowered golem suit adds 2), less 0.025 for
@@ -73,12 +88,10 @@ impl Skills {
 /// gauntlets make it weightless); at most 1.
 pub fn encumbrance(worn: &[Burden], shield: Option<&ShieldRecord>, skills: Skills) -> f32 {
     let mut enc = 0.0f32;
-    let mut weightless = 0.0f32;
+    let weightless = weightless_share(worn.iter());
     for b in worn {
-        match b.special {
-            Burden::GOLEM_SUIT if !b.powered => enc += DEAD_SUIT,
-            Burden::LIGHT_SHIELD => weightless = if b.powered { 1.0 } else { 0.0 },
-            _ => {}
+        if b.special == Burden::GOLEM_SUIT && !b.powered {
+            enc += DEAD_SUIT;
         }
         enc = (f64::from(enc) + f64::from(b.encumbrance) * PER_BYTE) as f32;
     }
@@ -168,6 +181,9 @@ pub struct WornSpecials {
     /// ([`FOCUS_CHARM_REGEN`], set rather than added: two charms give the
     /// same), 0 without one.
     pub focus_regen: f32,
+    /// Kind 6: the weightless share the gauntlets register
+    /// ([`weightless_share`]): 1 while the last pair worn is powered.
+    pub weightless: f32,
 }
 
 impl WornSpecials {
@@ -179,6 +195,9 @@ impl WornSpecials {
             match burden.special {
                 Burden::SECOND_WIND => specials.second_wind = true,
                 Burden::HEALING | Burden::GOLEM_SUIT | Burden::LIGHT_SHIELD => {
+                    if burden.special == Burden::LIGHT_SHIELD {
+                        specials.weightless = if burden.powered { 1.0 } else { 0.0 };
+                    }
                     specials.effects.push(EffectItem {
                         special: burden.special,
                         id,

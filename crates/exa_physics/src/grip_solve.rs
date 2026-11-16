@@ -393,9 +393,12 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
                     .state
                     .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK);
             }
-            // A held weapon's and shield's friction is the character
-            // constructor's 0.5; the torch's own attach leaves it 0.
-            part.friction = if grip.kind == HeldKind::Torch {
+        }
+        // A held weapon's and shield's top part takes the character
+        // constructor's friction 0.5 (the attach writes the item's own
+        // body, not its children); the torch's own attach leaves it 0.
+        if let Some(top) = body.parts.get_mut(HeldGrip::ITEM_PART) {
+            top.friction = if grip.kind == HeldKind::Torch {
                 0.0
             } else {
                 0.5
@@ -410,6 +413,20 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
         }
         body.wake_to(crate::body::WAKE_COUNT);
     }
+}
+
+/// The base a held item's contact mobility is scaled from while held and
+/// put back at when it is let go: a weapon's top part's contact mobility
+/// as the holding pass's mass redistribution left it
+/// ([`crate::weapon_mass::WeaponMass::held_contact_base`]), another item's
+/// registered mobility (`top`'s inverse mass) [Exarust stand-in where no
+/// weapon mass ran].
+pub fn held_contact_base(
+    top: &crate::body::Part,
+    mass: Option<&crate::weapon_mass::WeaponMass>,
+) -> f32 {
+    mass.and_then(|m| m.held_contact_base())
+        .unwrap_or(top.inverse_mass)
 }
 
 /// The root walk's base: a freed body's link-iteration count is this plus
@@ -449,6 +466,16 @@ pub fn share_holder_park(
     }
 }
 
+/// A held item the release walks: its grip, its body, whether a collapse
+/// let go of it, and its weapon mass.
+type FreedItem = (
+    Entity,
+    &'static mut HeldGrip,
+    &'static mut Ragdoll,
+    Has<GripRelease>,
+    Option<&'static crate::weapon_mass::WeaponMass>,
+);
+
 /// Releases the items whose holder has left the world, and those a
 /// collapse let go of ([`GripRelease`]): the link records stop acting, the
 /// item body loses its holder and held mask, takes the dropped weapon's
@@ -461,10 +488,11 @@ pub fn share_holder_park(
 /// own tree, its link-iteration count [`LOOSE_ITERATION_BASE`] plus its
 /// parts less one (the count its root walk takes); and a weapon a holder
 /// still in the world let go of tells it ([`CameLoose`], the came-loose
-/// hook).
+/// hook). The item's top part takes its base contact mobility back
+/// ([`held_contact_base`]): the arm setter no longer scales it.
 pub fn release_freed_grips(
     mut commands: Commands,
-    mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll, Has<GripRelease>)>,
+    mut held: Query<FreedItem>,
     bodies: Query<(Entity, &Ragdoll), Without<HeldGrip>>,
     mut loose: MessageWriter<crate::grip::CameLoose>,
 ) {
@@ -475,7 +503,7 @@ pub fn release_freed_grips(
             .map(|(_, grip, ..)| grip.holder_key),
         bodies.iter(),
     );
-    for (entity, mut grip, mut body, released) in &mut held {
+    for (entity, mut grip, mut body, released, mass) in &mut held {
         if !holding(&grip) {
             continue;
         }
@@ -504,15 +532,26 @@ pub fn release_freed_grips(
         grip.links = None;
         body.held_by = None;
         body.reset_groups();
-        for part in &mut body.parts {
-            // The drop clears the strike flags the attach set (`0x30001`),
-            // not every bit the body carries.
-            part.state = part.state.without(
-                crate::part::PartState::STRIKING
-                    | crate::part::PartState::STRIKE_CHAIN
-                    | crate::part::PartState::STRIKE_MARK,
-            );
-            part.friction = 0.75;
+        // The drop clears the strike flags the attach set (`0x30001`), not
+        // every bit the body carries: a weapon's drop over its whole tree,
+        // the torch's on its own body, the shield's not at all.
+        let strike = crate::part::PartState::STRIKING
+            | crate::part::PartState::STRIKE_CHAIN
+            | crate::part::PartState::STRIKE_MARK;
+        let cleared = match grip.kind {
+            HeldKind::Weapon => body.parts.len(),
+            HeldKind::Torch => 1,
+            HeldKind::Shield => 0,
+        };
+        for part in body.parts.iter_mut().take(cleared) {
+            part.state = part.state.without(strike);
+        }
+        // Every drop gives the item's own body the dropped friction 0.75
+        // and its contact mobility back at the base the arm setter scaled
+        // while it was held; its children keep theirs.
+        if let Some(top) = body.parts.get_mut(HeldGrip::ITEM_PART) {
+            top.friction = 0.75;
+            top.pairing.mobility = held_contact_base(top, mass);
         }
         let nodes = body.parts.len() as i32;
         body.set_link_iterations(LOOSE_ITERATION_BASE + nodes - 1);
