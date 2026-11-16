@@ -304,7 +304,11 @@ fn a_level_hit_takes_the_originals_plane_and_spread() {
     assert_eq!(c.plane, plane);
     let (spread, _) = crate::sector::normalise_to_max(w).unwrap();
     for i in 0..4 {
-        assert_eq!(p.positions[i], before[i] + delta * spread[i], "particle {i}");
+        assert_eq!(
+            p.positions[i],
+            before[i] + delta * spread[i],
+            "particle {i}"
+        );
     }
     assert_eq!(p.strain, crate::engine_math::length3(delta));
     // A deepest point far outside: the centre's weights.

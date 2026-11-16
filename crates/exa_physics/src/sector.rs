@@ -517,6 +517,13 @@ pub fn largest_abs(weights: [f32; 4]) -> f32 {
     max_first(max_first(max_first(abs[1], abs[0]), abs[2]), abs[3])
 }
 
+/// Whether a point with these weights lies far outside its tetrahedron for
+/// the contact callbacks: the largest magnitude ([`largest_abs`]) over 1.
+/// The compare is ordered, so a NaN that the maximum chain keeps is not far.
+pub fn far_outside(weights: [f32; 4]) -> bool {
+    largest_abs(weights) > 1.0
+}
+
 /// Weights with negatives (and NaN) dropped and the rest divided by their
 /// sum, so they add to 1; the original's sum normalisation. The original
 /// multiplies by the processor's approximate reciprocal of the sum and has

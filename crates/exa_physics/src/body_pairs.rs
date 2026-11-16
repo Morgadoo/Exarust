@@ -69,9 +69,6 @@ pub(crate) const SWEEP_TRAVEL2: f32 = 0.1;
 /// reported (not clamped, as the original's clamp is dead).
 const MIN_PUSH2: f32 = 1e-5;
 const EXCESSIVE_PUSH2: f32 = 25_600.0;
-/// A contact's weights on the sphere side's particles that reach past this
-/// (a point far outside its tetrahedron) give way to its sphere centre's.
-const MAX_WEIGHT: f32 = 1.0;
 /// Points a pair keeps.
 const POINTS: usize = 4;
 /// Depth (cm) a pair's point may keep before the pair pass corrects it:
@@ -1813,7 +1810,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
 /// the original's maximum chain (so a NaN weight can pass, as there).
 fn deepest_weights(pa: &Part, deepest: Vec3, c: Vec3) -> [f32; 4] {
     match pa.weights_exact(deepest) {
-        Some(w) if !(sector::largest_abs(w) > MAX_WEIGHT) => w,
+        Some(w) if !sector::far_outside(w) => w,
         _ => weights(pa, c),
     }
 }

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
-use exa_physics::body::{PartSetup, Pairs, Ragdoll, SolverStage, solve_with};
+use exa_physics::body::{Pairs, PartSetup, Ragdoll, SolverStage, solve_with};
 
 fn chain(id: u32, at: Vec3) -> Ragdoll {
     let parts: Vec<PartSetup> = (0..3)
@@ -49,7 +49,11 @@ fn solver_tick_time() {
     ];
     let mut bodies: Vec<Ragdoll> = (0..120)
         .map(|i| {
-            let (x, z, y) = ((i % 6) as f32 * 0.4, ((i / 6) % 4) as f32 * 0.3, (i / 24) as f32 * 0.2);
+            let (x, z, y) = (
+                (i % 6) as f32 * 0.4,
+                ((i / 6) % 4) as f32 * 0.3,
+                (i / 24) as f32 * 0.2,
+            );
             chain(i, Vec3::new(x, 0.3 + y, z))
         })
         .collect();

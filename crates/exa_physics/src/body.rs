@@ -914,7 +914,7 @@ impl Part {
         // outside the tetrahedron (the largest weight's magnitude over 1, by
         // the original's maximum chain, so a NaN weight can pass).
         let w = match self.weights_exact(q - delta) {
-            Some(w) if !(crate::sector::largest_abs(w) > 1.0) => w,
+            Some(w) if !crate::sector::far_outside(w) => w,
             _ => weights(self, centre),
         };
         let normal = crate::engine_math::normalize_exact(delta);
