@@ -347,7 +347,10 @@ impl Plugin for ArenaLivePlugin {
                     draw_end_screen,
                 )
                     .chain()
-                    .after(crate::gui_screens::draw_screens),
+                    .after(crate::gui_screens::draw_screens)
+                    // A staging's callback fires in the flow's steps; the
+                    // Continue's staging runs in the same frame after them.
+                    .after(crate::flow::FlowSystems::ApplySteps),
             )
             // The quit's forfeit (the arena pause page's QUIT) settles the
             // match before the quit's saves are written.
@@ -1697,7 +1700,9 @@ mod tests {
             .init_resource::<ArenaEndScreen>()
             .add_systems(
                 Update,
-                (open_end_screen, update_end_screen, continue_round).chain(),
+                (open_end_screen, update_end_screen, continue_round)
+                    .chain()
+                    .after(crate::flow::FlowSystems::ApplySteps),
             );
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>();
@@ -2343,6 +2348,8 @@ mod tests {
                 assert_eq!(exits, vec![ArenaExit::Hub]);
                 break;
             }
+            // The callback's frame settles too: before it nothing is paused.
+            assert_eq!(app.world().resource::<SimPause>().raised(), 0);
             assert_eq!(
                 app.world()
                     .resource::<crate::hub_windows::ArenaCareer>()
