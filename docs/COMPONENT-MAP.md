@@ -9,7 +9,7 @@ Two numbers are published while the function ledger is being completed (see `doc
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - **Estimate 82.3% + 5.1% engine; ledger 56.7% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **56.7% closed**, of which 44.6% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 36.3% partial and 7.1% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **56.7% closed**, of which 44.6% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 36.2% partial and 7.0% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -28,7 +28,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 55% | 51% | 2% | 1% | 39% | 6% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 52% | 49% | 1% | 2% | 46% | 2% |  |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 53% | 50% | 1% | 2% | 46% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 62% | 60% | 1% | 0% | 36% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
@@ -347,7 +347,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TArsenalContFrame | Items, materials & crafting | 0 | 0% | 0% | 0% | 0% | 0% | 0% | 100% |
 | TMotileAI | AI & behaviour | 60 | 99% | 50% | 44% | 0% | 5% | 50% | 0% |
 | SG_PlayerControls | AI & behaviour | 47 | 99% | 55% | 54% | 1% | 0% | 45% | 0% |
-| TPathFinder | AI & behaviour | 32 | 91% | 49% | 49% | 0% | 0% | 48% | 3% |
+| TPathFinder | AI & behaviour | 32 | 91% | 55% | 55% | 0% | 0% | 45% | 0% |
 | TPlayerBehaviour | AI & behaviour | 17 | 99% | 55% | 52% | 3% | 0% | 45% | 0% |
 | TCombatant | AI & behaviour | 17 | 97% | 67% | 60% | 0% | 8% | 28% | 4% |
 | TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 1% |
