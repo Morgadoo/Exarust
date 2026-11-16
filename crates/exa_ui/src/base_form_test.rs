@@ -170,3 +170,42 @@ fn a_press_raises_the_window_under_the_layer_rule() {
     task.release(1);
     assert_eq!(task.draw_order(), vec![root, b, a]);
 }
+
+/// The add-child places a window by its layer: an upper-layer window stays
+/// above windows added after it, a lower-layer one goes under them; a
+/// child form draws with its parent wherever the parent is raised; the
+/// toggle's active test reads the draw order outside the upper layer, and
+/// the tag search finds the visible window with the tag.
+#[test]
+fn an_added_window_takes_its_layers_place_and_the_tag_search_finds_it() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let child_of_root = |attributes: u32, tag: u32| {
+        let mut w = window();
+        w.parent = Some(root);
+        w.attributes |= attributes;
+        w.tag = tag;
+        w
+    };
+    let top = task.add(Box::new(child_of_root(form::attribute::UPPER_LAYER, 0)));
+    let a = task.add(Box::new(child_of_root(0, 0xce1c_2030)));
+    let low = task.add(Box::new(child_of_root(form::attribute::LOWER_LAYER, 0)));
+    let b = task.add(Box::new(child_of_root(0, 0xce1c_2010)));
+    let mut held = window();
+    held.parent = Some(a);
+    let held = task.add(Box::new(held));
+    assert_eq!(task.draw_order(), vec![root, low, a, held, b, top]);
+    assert!(task.is_active(b));
+    assert!(!task.is_active(a));
+    // The upper-layer form whose word is that layer alone is active as the
+    // first child only; this one has the window's other bits.
+    assert!(!task.is_active(top));
+    assert_eq!(task.find_by_tag(0xce1c_2030), Some(a));
+    assert_eq!(task.find_by_tag(0), None);
+    task.activate(a);
+    assert_eq!(task.draw_order(), vec![root, low, b, a, held, top]);
+    assert!(task.is_active(a));
+    assert_eq!(task.active, Some(a));
+    task.form_mut(a).unwrap().base_mut().unwrap().visible = false;
+    assert_eq!(task.find_by_tag(0xce1c_2030), None);
+}

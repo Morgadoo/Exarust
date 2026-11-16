@@ -105,6 +105,8 @@ pub struct BaseForm {
     /// When the held arrow repeats next.
     pub repeat_at: Option<u32>,
     pub doomed: bool,
+    /// The form's type tag (0 none), for the openers' tag search.
+    pub tag: u32,
     pub events: Vec<BaseEvent>,
 }
 
@@ -135,6 +137,7 @@ impl BaseForm {
             clock: 0,
             repeat_at: None,
             doomed: false,
+            tag: 0,
             events: Vec::new(),
         }
     }
@@ -595,6 +598,10 @@ impl FormHost for BaseForm {
 
     fn attributes(&self) -> u32 {
         self.attributes
+    }
+
+    fn tag(&self) -> u32 {
+        self.tag
     }
 
     fn hint_record(&self, control: i32) -> i32 {

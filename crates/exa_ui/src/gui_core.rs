@@ -184,6 +184,11 @@ pub trait FormHost: Send + Sync {
     fn attributes(&self) -> u32 {
         0
     }
+    /// The form's type tag (0 none), which the openers search the task's
+    /// children by ([`GuiTask::find_by_tag`]).
+    fn tag(&self) -> u32 {
+        0
+    }
     /// The default tooltip's text for a record of this form.
     fn tooltip_text(&self, _record: i32) -> Vec<u8> {
         Vec::new()
@@ -797,15 +802,85 @@ impl GuiTask {
         }
     }
 
-    /// Adds a form and returns its id; the first form becomes the root.
+    /// Adds a form and returns its id; the first form becomes the root. A
+    /// form joins its parent's children at its layer's place
+    /// ([`crate::form::add_child_index`]: a lower-layer form above the last
+    /// lower-layer sibling, an upper-layer form on top, any other below the
+    /// trailing upper-layer siblings), as the base form's add-child does.
     pub fn add(&mut self, form: Box<dyn FormHost>) -> FormId {
+        let parent = form.parent();
+        let attributes = form.attributes();
+        let siblings = self.children_of(parent);
+        let words: Vec<u32> = siblings
+            .iter()
+            .map(|&id| self.form(id).map_or(0, FormHost::attributes))
+            .collect();
+        let at = crate::form::add_child_index(&words, attributes);
         self.forms.push(Some(form));
         let id = self.forms.len() as FormId;
-        self.order.push(id);
+        match siblings.get(at).and_then(|s| self.order.iter().position(|o| o == s)) {
+            Some(slot) if self.root.is_some() => self.order.insert(slot, id),
+            _ => self.order.push(id),
+        }
         if self.root.is_none() {
             self.root = Some(id);
         }
         id
+    }
+
+    /// The live children of `parent` in draw order (the last on top); `None`
+    /// lists the forms with no parent.
+    pub fn children_of(&self, parent: Option<FormId>) -> Vec<FormId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|&id| self.form(id).is_some_and(|f| f.parent() == parent))
+            .collect()
+    }
+
+    /// The tag search the openers run over the task's children (the root's,
+    /// in draw order, first first): the first visible child with the tag
+    /// ([`crate::form::find_form_by_tag`]). A tag of 0 finds nothing.
+    pub fn find_by_tag(&self, tag: u32) -> Option<FormId> {
+        let children = self.children_of(self.root);
+        let tagged: Vec<crate::form::TaggedForm> = children
+            .iter()
+            .map(|&id| {
+                let f = self.form(id);
+                crate::form::TaggedForm {
+                    tag: f.map_or(0, FormHost::tag),
+                    visible: f.is_some_and(FormHost::is_visible),
+                }
+            })
+            .collect();
+        crate::form::find_form_by_tag(&tagged, tag).map(|i| children[i])
+    }
+
+    /// Whether `form` is the active one among its parent's children
+    /// ([`crate::form::is_active`]): the topmost outside the upper layer,
+    /// or the first child for a form whose attribute word is the upper
+    /// layer alone. It reads the draw order, not the focus: the openers'
+    /// toggles close a window only when it is on top.
+    pub fn is_active(&self, form: FormId) -> bool {
+        let Some(parent) = self.form(form).map(FormHost::parent) else {
+            return false;
+        };
+        let children = self.children_of(parent);
+        let words: Vec<u32> = children
+            .iter()
+            .map(|&id| self.form(id).map_or(0, FormHost::attributes))
+            .collect();
+        children
+            .iter()
+            .position(|&id| id == form)
+            .is_some_and(|i| crate::form::is_active(&words, i))
+    }
+
+    /// Activates a form: it comes to the front of its siblings and takes
+    /// the focus with no control (the base form's focus routine with no
+    /// control, as the openers call it on a window that is already open).
+    pub fn activate(&mut self, form: FormId) {
+        self.bring_to_front(form, NO_CONTROL);
     }
 
     pub fn form(&self, id: FormId) -> Option<&dyn FormHost> {
@@ -866,13 +941,22 @@ impl GuiTask {
         (Some(form), code, cursor)
     }
 
-    /// The forms in draw order (the last on top).
+    /// The forms in draw order (the last on top): each form, then its
+    /// children in their order, depth first, so a raised window's child
+    /// forms stay with it.
     pub fn draw_order(&self) -> Vec<FormId> {
-        self.order
-            .iter()
-            .copied()
-            .filter(|&id| self.form(id).is_some())
-            .collect()
+        let mut out = Vec::new();
+        let mut stack: Vec<FormId> = self.children_of(None).into_iter().rev().collect();
+        // Every live form is visited once; a parent link that loops (no
+        // parentless form above it) is never reached, as in the hit test.
+        while let Some(id) = stack.pop() {
+            if out.contains(&id) || out.len() > self.forms.len() {
+                continue;
+            }
+            out.push(id);
+            stack.extend(self.children_of(Some(id)).into_iter().rev());
+        }
+        out
     }
 
     /// Raises the top-level form holding `form` among the root's children

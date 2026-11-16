@@ -971,6 +971,7 @@ impl GameScreens {
         );
         form.parent = root;
         form.records = controls;
+        form.tag = kind.tag().unwrap_or(0);
         let form = self.task.add(Box::new(form));
         self.open.push(OpenScreen { kind, form });
         self.task.focus_set(Some(form), NO_CONTROL);
@@ -1285,7 +1286,9 @@ impl GameScreens {
             player_mode_ok: player_alive,
             open: open.is_some(),
             filling: false,
-            active: open.is_some() && self.focused() == Some(GameScreen::Inventory),
+            // The opener's test is the base form's: the window is its
+            // task's topmost child, whatever the pointer hovers.
+            active: open.is_some_and(|screen| self.task.is_active(screen.form)),
             toggle,
         });
         match (action, open) {
@@ -1320,7 +1323,7 @@ impl GameScreens {
                 );
             }
             (ScreenAction::Focused, Some(screen)) => {
-                self.task.focus_set(Some(screen.form), NO_CONTROL);
+                self.task.activate(screen.form);
             }
             (ScreenAction::Closed, _) => {
                 self.close(GameScreen::Inventory);
@@ -1344,12 +1347,18 @@ impl GameScreens {
         player_alive: bool,
         unit: i32,
     ) -> ScreenAction {
-        let open = self.find(GameScreen::Journal);
+        // The opener searches the task's children by the journal's tag (a
+        // hidden journal is not found) and closes it only when it is the
+        // topmost child.
+        let open = self
+            .task
+            .find_by_tag(exa_ui::game_gui::JOURNAL_SCREEN)
+            .and_then(|form| self.open.iter().copied().find(|s| s.form == form));
         let action = journal_screen(JournalInput {
             player_ready,
             player_mode_ok: player_alive,
             open: open.is_some(),
-            active: self.focused() == Some(GameScreen::Journal),
+            active: open.is_some_and(|screen| self.task.is_active(screen.form)),
         });
         match (action, open) {
             (ScreenAction::Opened, _) => {
@@ -1377,7 +1386,7 @@ impl GameScreens {
                 self.journal_selected();
             }
             (ScreenAction::Focused, Some(screen)) => {
-                self.task.focus_set(Some(screen.form), NO_CONTROL);
+                self.task.activate(screen.form);
             }
             (ScreenAction::Closed, _) => {
                 self.close(GameScreen::Journal);
@@ -1404,7 +1413,7 @@ impl GameScreens {
         match action {
             ScreenAction::Focused => {
                 if let Some(form) = existing {
-                    self.task.focus_set(Some(form), NO_CONTROL);
+                    self.task.activate(form);
                 }
             }
             ScreenAction::Opened => {
@@ -4195,6 +4204,77 @@ mod tests {
         let screens = app.world().resource::<GameScreens>();
         assert_eq!(screens.pack.entries.len(), 1);
         assert_eq!(screens.pack.used, 3 + 5 + 7);
+    }
+
+    /// The openers' toggles read the draw order, not the hover focus: the
+    /// journal on top closes on its key even while the pointer focuses the
+    /// inventory under it; the inventory's key then raises it (the
+    /// activation), and only a second press closes it. The journal is
+    /// found by its tag on the task's children.
+    #[test]
+    fn the_toggles_close_the_topmost_window_and_raise_the_others() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions::default(),
+        ));
+        let ask = |app: &mut App, screen: GameScreen| {
+            app.world_mut()
+                .write_message(ScreenRequest::screen(screen, true, true));
+            app.update();
+        };
+        ask(&mut app, GameScreen::Inventory);
+        ask(&mut app, GameScreen::Journal);
+        let (inventory, journal) = {
+            let screens = app.world().resource::<GameScreens>();
+            let inventory = screens.find(GameScreen::Inventory).unwrap().form;
+            let journal = screens.find(GameScreen::Journal).unwrap().form;
+            assert_eq!(
+                screens.task.find_by_tag(exa_ui::game_gui::JOURNAL_SCREEN),
+                Some(journal)
+            );
+            assert!(screens.task.is_active(journal));
+            assert!(!screens.task.is_active(inventory));
+            (inventory, journal)
+        };
+        // The pointer's hover focuses the inventory under the journal.
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .task
+            .focus_set(Some(inventory), NO_CONTROL);
+        assert_eq!(
+            app.world().resource::<GameScreens>().focused(),
+            Some(GameScreen::Inventory)
+        );
+        // The inventory's key raises the inventory over the journal.
+        ask(&mut app, GameScreen::Inventory);
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert!(screens.is_open(GameScreen::Inventory));
+            assert!(screens.task.is_active(inventory));
+            assert_eq!(screens.task.draw_order().last(), Some(&inventory));
+        }
+        // The journal's key now raises the journal (it is not on top) ...
+        ask(&mut app, GameScreen::Journal);
+        assert!(app.world().resource::<GameScreens>().task.is_active(journal));
+        // ... and closes it once it is, whatever the hover focuses.
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .task
+            .focus_set(Some(inventory), NO_CONTROL);
+        ask(&mut app, GameScreen::Journal);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(!screens.is_open(GameScreen::Journal));
+        assert!(screens.is_open(GameScreen::Inventory));
+        assert_eq!(
+            screens.task.find_by_tag(exa_ui::game_gui::JOURNAL_SCREEN),
+            None
+        );
     }
 
     #[test]
