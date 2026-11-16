@@ -955,11 +955,10 @@ mod tests {
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .clear();
             let mut messages = app.world_mut().resource_mut::<Messages<ScreenRequest>>();
-            let n = messages
+            messages
                 .drain()
                 .filter(|r| r.screen == GameScreen::Inventory)
-                .count();
-            n
+                .count()
         };
         crate::controls_live::spirit_controls(app.world_mut(), true);
         assert_eq!(
@@ -1062,8 +1061,6 @@ mod tests {
             triangles: None,
         }])
     }
-
-    /// A cube of half side `h` about the origin, two triangles a face,
 
     /// Tab into combat mode while an item is lifted: the live key handler
     /// empties the hand and the hold frame puts the item back at the frame

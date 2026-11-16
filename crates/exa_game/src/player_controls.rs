@@ -883,12 +883,13 @@ pub fn on_object(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectInteraction {
     Nothing,
-    /// Use kind 0, subtype 1: the object leaves the scene and its use
-    /// sound plays at once; its target's doors open after [`CONSUME_MS`].
+    /// Use kind 0, subtype 1: the object's keyframe tracks start and its
+    /// use sound plays at once; its target's doors open after
+    /// [`CONSUME_MS`] (the secret switch's brick).
     Consume {
         due_ms: u32,
     },
-    /// Use kind 0, another subtype: the object leaves the scene, its use
+    /// Use kind 0, another subtype: the object's tracks start, its use
     /// sound plays, the item card's request closes and the record's use
     /// runs at once ([`take_use`]).
     Open,
@@ -934,9 +935,11 @@ pub fn interact_object(target: ClickTarget, now_ms: u32) -> (ObjectInteraction, 
 }
 
 impl ObjectInteraction {
-    /// Whether the object leaves the scene: both kind 0 branches detach
-    /// and free its node before anything else.
-    pub fn takes_object(self) -> bool {
+    /// Whether the object's use runs: both kind 0 branches start the
+    /// keyframe tracks of the object's node and of every node under it,
+    /// then play its use sound. The object stays in the scene: the
+    /// original's use detaches and frees nothing.
+    pub fn uses_object(self) -> bool {
         matches!(self, Self::Consume { .. } | Self::Open)
     }
 }
@@ -2397,15 +2400,15 @@ mod tests {
         ));
     }
 
-    /// Both kind 0 branches take the object; subtype 7 calls the name
+    /// Both kind 0 branches use the object; subtype 7 calls the name
     /// hook, 5 opens the powers, others nothing; the use sound is the
     /// section's name at 0x10 up to its zero.
     #[test]
-    fn a_taken_object_runs_its_use() {
-        assert!(ObjectInteraction::Open.takes_object());
-        assert!(ObjectInteraction::Consume { due_ms: 1 }.takes_object());
-        assert!(!ObjectInteraction::Push.takes_object());
-        assert!(!ObjectInteraction::UseInHand.takes_object());
+    fn a_used_object_runs_its_use() {
+        assert!(ObjectInteraction::Open.uses_object());
+        assert!(ObjectInteraction::Consume { due_ms: 1 }.uses_object());
+        assert!(!ObjectInteraction::Push.uses_object());
+        assert!(!ObjectInteraction::UseInHand.uses_object());
         assert_eq!(take_use(7), TakeUse::NameHook);
         assert_eq!(take_use(5), TakeUse::Divination);
         assert_eq!(take_use(1), TakeUse::Nothing);

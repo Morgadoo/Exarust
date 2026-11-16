@@ -907,8 +907,6 @@ mod tests {
         }])
     }
 
-    /// A cube of half side `h` about the origin, two triangles a face,
-
     /// The live hand: an item the press took off the device's slot lock is
     /// put down elsewhere; its release runs the drop scripts at the lock's
     /// spot and the device there powers down. Put back on the same spot

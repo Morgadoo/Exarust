@@ -861,7 +861,7 @@ pub fn drop_scripts_at(from_lock: Option<Vec3>, relocked: bool, placed: Vec3) ->
         let d = placed * 100.0 - spot;
         let squared = (d.x * d.x + d.y * d.y) + d.z * d.z;
         // `comiss d², 5; jbe skip` (unordered skips too).
-        if !(squared > DROP_SCRIPT_SQUARED_CM) {
+        if squared.partial_cmp(&DROP_SCRIPT_SQUARED_CM) != Some(std::cmp::Ordering::Greater) {
             return None;
         }
     }
