@@ -2497,7 +2497,7 @@ fn a_duellists_torrent_keeps_its_loops_words() {
         if last.charge_playing {
             let falling = (f64::from(last.charge_volume) - 0.01) as f32;
             assert_eq!(now.charge_volume, falling);
-            assert_eq!(now.charge_playing, !(f64::from(falling) < 0.02));
+            assert_eq!(now.charge_playing, f64::from(falling) >= 0.02);
         }
         last = now;
     }
