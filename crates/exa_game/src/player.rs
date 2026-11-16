@@ -3297,6 +3297,7 @@ pub(crate) fn chase_camera(
         terrain,
         mut logged,
         loading,
+        menu,
     ): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
@@ -3312,8 +3313,26 @@ pub(crate) fn chase_camera(
         Option<Res<exa_world::terrain::ground::TerrainGround>>,
         Local<Option<Vec3>>,
         Option<Res<exa_ui::LoadingStatus>>,
+        Option<Res<crate::level_change::MenuSceneView>>,
     ),
 ) {
+    // Behind the main menu the view stands at the menu scene's fixed camera
+    // (no player is followed, nothing orbits).
+    if let Some(menu) = menu {
+        let placed = menu.camera_transform();
+        for (_, mut t, mut projection) in &mut cameras {
+            if *t != placed {
+                *t = placed;
+            }
+            if let Projection::Perspective(perspective) = &mut *projection {
+                let fov = menu.fov_degrees.to_radians();
+                if perspective.fov != fov {
+                    perspective.fov = fov;
+                }
+            }
+        }
+        return;
+    }
     // The camera's clock stands still behind the loading screen, as the
     // game time does: a load takes a different number of frames from run
     // to run, and a clock that ran through them would tick the camera at a

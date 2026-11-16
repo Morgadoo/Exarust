@@ -126,6 +126,35 @@ pub fn follow_the_view(
     }
 }
 
+/// The level exit's availability check: the current story slot's save holds
+/// the locale's section, or the game archive holds `<locale>.rfc`. The
+/// original asks it before an exit changes anything and does nothing for a
+/// level it does not find. Without the archive (a headless run) every level
+/// counts as there.
+pub fn level_available(
+    lists: Option<&SlotLists>,
+    game: Option<&exa_assets::Game>,
+    locale: &str,
+) -> bool {
+    let Some(game) = game else {
+        return true;
+    };
+    let archive_has = |locale: &str| {
+        let entry = crate::save_scene::archive_level_name(locale);
+        game.0
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get(&entry))
+            .is_some()
+    };
+    match lists.map(|lists| &lists.story) {
+        Some(list) if list.current() > 0 => {
+            list.slots()
+                .level_available(list.current() as u32, locale, archive_has)
+        }
+        _ => archive_has(locale),
+    }
+}
+
 /// The two slot managers' cached lists over the save folder.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct SlotLists {
@@ -216,6 +245,16 @@ pub enum SaveStep {
     /// one exists (the adapter journey's save at its end): the save keeps
     /// the writer's disable check, the copy does not.
     SaveAndCheckpoint,
+    /// The level exit's transition save: when the current slot's save holds
+    /// neither an `exanima04` section nor one for `locale` (the exit's
+    /// destination, entered for the first time), the save is written and
+    /// copied over the checkpoint as [`SaveStep::SaveAndCheckpoint`] does,
+    /// and with `level_time` the engine clock is kept ([`LevelTime`]);
+    /// otherwise it is a plain save without the death rule.
+    TransitionSave {
+        locale: &'static str,
+        level_time: bool,
+    },
 }
 
 /// The engine clock (game milliseconds) the level-6 exit's checkpoint
@@ -319,6 +358,59 @@ fn post_loaded_player(
     );
     requests.request_character(stream.request, job);
     stream.posted = Some(std::time::Instant::now());
+}
+
+/// The story respawn's player rebuild (the death screen's CONTINUE): the
+/// original's respawn saves, clears the scene (the player's body goes with
+/// it) and spawns the player anew from the current record once the level is
+/// in. Exarust's player survives a level change, so the rebuild does that
+/// clear for the player after the respawn's save ([`rebuild_player`]): the
+/// record the save writes as the player's (the stripped record after the
+/// reconstruction device's strip) becomes the next spawn's
+/// ([`SavedPlayer`]) and the player root is despawned. The request to the
+/// content stream was posted at the CONTINUE (`Step::PlayerData`).
+#[derive(Message, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RebuildPlayer;
+
+/// Runs [`RebuildPlayer`] after the respawn's save has read the old body
+/// (the flow's steps, then the save steps, in the same frame) and before
+/// the level change's teardown, while the strip's record is still kept.
+fn rebuild_player(
+    mut commands: Commands,
+    mut rebuilds: MessageReader<RebuildPlayer>,
+    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
+    mut players: PlayerSaveQuery,
+    roots: Query<Entity, With<crate::player::Player>>,
+    created: Option<Res<crate::creator_screen::CreatedCharacter>>,
+    left: Option<Res<crate::left_behind::LeftBody>>,
+) {
+    if rebuilds.read().count() == 0 {
+        return;
+    }
+    sync_players(&mut live, &mut players);
+    let Some(player) =
+        live_story_player_left(&players, created.as_deref(), &|_| None, left.as_deref())
+    else {
+        warn!("respawn: no player to rebuild");
+        return;
+    };
+    let items = world_items(&live.db().world);
+    info!(
+        "respawn: the player {:?} is rebuilt from its record ({} hands held, {} worn, {} carried, pools {}/{}); the old body goes",
+        player.record.name,
+        player.record.held_ids().count(),
+        player.record.worn.len(),
+        player.record.inventory.len(),
+        player.record.pools.yellow,
+        player.record.pools.red,
+    );
+    commands.insert_resource(SavedPlayer {
+        record: player.record,
+        items,
+    });
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
 }
 
 /// What the last live save or load did, for the report and the tests.
@@ -453,10 +545,13 @@ impl Plugin for SaveLivePlugin {
                     .run_if(resource_exists::<SaveFolder>),
             )
             // The steps a frame asks for are written before a level change
-            // asked in the same frame tears the level down.
+            // asked in the same frame tears the level down, and in the frame
+            // the flow applies them (a respawn's save, then its rebuild, see
+            // the old player and the strip's record).
             .configure_sets(
                 Update,
                 SaveLiveSystems::Steps
+                    .after(crate::flow::FlowSystems::ApplySteps)
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             )
             .configure_sets(
@@ -485,11 +580,19 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 post_loaded_player
                     .after(load_story_slot)
-                    .run_if(resource_exists::<LoadedPlayerStream>),
+                    .run_if(resource_exists::<LoadedPlayerStream>)
+                    .run_if(resource_exists::<crate::content_requests::ContentRequests>),
             )
             .add_systems(
                 Update,
                 sync_before_level_change
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+            )
+            .add_message::<RebuildPlayer>()
+            .add_systems(
+                Update,
+                rebuild_player
+                    .after(SaveLiveSystems::Steps)
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             )
             .init_resource::<crate::left_behind::LeftBody>()
@@ -1846,6 +1949,9 @@ type SaveClocks<'w> = (
 /// * A save and checkpoint ([`SaveStep::SaveAndCheckpoint`], the adapter
 ///   journey's end) saves, then copies the save over the story's
 ///   checkpoint whether one exists or not.
+/// * A transition save ([`SaveStep::TransitionSave`], a story level exit
+///   that keeps a checkpoint) does the same when the save holds neither
+///   `exanima04` nor the destination, else saves plainly.
 /// * The forfeit's save ([`SaveStep::ForfeitSave`], the arena match quit)
 ///   writes only the arena's player data, under the hub's locale.
 ///
@@ -1857,6 +1963,7 @@ type SaveClocks<'w> = (
 /// app's state writes.
 #[allow(clippy::too_many_arguments)]
 fn run_save_steps<const AT_QUIT: bool>(
+    mut commands: Commands,
     mut steps: MessageReader<SaveStep>,
     lists: Option<ResMut<SlotLists>>,
     flow: Option<Res<crate::flow::Flow>>,
@@ -1942,16 +2049,41 @@ fn run_save_steps<const AT_QUIT: bool>(
         let number = list.current() as u32;
         match step {
             SaveStep::NewSlot => {}
-            SaveStep::Save { .. } | SaveStep::SaveAndCheckpoint => {
+            SaveStep::Save { .. }
+            | SaveStep::SaveAndCheckpoint
+            | SaveStep::TransitionSave { .. } => {
                 let drop_on_low_health = matches!(
                     step,
                     SaveStep::Save {
                         drop_on_low_health: true
                     }
                 );
-                // The journey's save copies the slot's save over the
-                // checkpoint after it, the disabled save included.
-                let copy = (step == SaveStep::SaveAndCheckpoint && story).then_some(number);
+                // The transition save keeps a checkpoint only for a save
+                // that holds neither `exanima04` nor the destination (the
+                // section lookup on the slot's package, read before this
+                // save writes it).
+                let fresh = match step {
+                    SaveStep::TransitionSave { locale, level_time } if story => {
+                        let slots = list.slots();
+                        let held = slots.has_saved_level(number, "exanima04")
+                            || slots.has_saved_level(number, locale);
+                        info!(
+                            "save: the exit to {locale} {} a checkpoint (the save {} exanima04 or {locale})",
+                            if held { "keeps no" } else { "keeps" },
+                            if held { "holds" } else { "holds neither" }
+                        );
+                        if !held && level_time {
+                            commands.insert_resource(LevelTime(now));
+                        }
+                        !held
+                    }
+                    _ => false,
+                };
+                // The journey's and a fresh transition's save copy the
+                // slot's save over the checkpoint after it, the disabled
+                // save included.
+                let copy =
+                    ((step == SaveStep::SaveAndCheckpoint || fresh) && story).then_some(number);
                 let copy_over = |list: &SlotList| {
                     if let Some(number) = copy {
                         match list.slots().copy_save_over_checkpoint(number) {
@@ -3889,6 +4021,101 @@ mod tests {
             std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap(),
             b"old"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The level exit's transition save: a save holding neither
+    /// `exanima04` nor the destination is written and copied over the
+    /// checkpoint, an existing one overwritten (the original's copy does not
+    /// fail on an existing file), with the sixth level's clock kept; a save
+    /// that already holds the destination's section is written and keeps
+    /// the checkpoint it had.
+    #[test]
+    fn the_transition_save_keeps_a_checkpoint_only_for_a_new_level() {
+        let dir = folder("transition-save");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        let level = exa_formats::rfc_write::export_save_level(
+            &exa_formats::rfc_write::ExportScene {
+                whole_scene: true,
+                ..Default::default()
+            },
+            &exa_formats::rfc_write::ExportOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.insert_resource(exa_world::LevelSource {
+            entry: "exanima02.rfc".to_string(),
+            bytes: level.into(),
+            from_save: false,
+            spawned: Vec::new(),
+        });
+        app.world_mut().spawn(exa_world::LevelRoot {
+            name: "exanima02".to_string(),
+        });
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        let slots = Slots::story(&dir);
+        let checkpoint = slots.file(number, SlotKind::Checkpoint);
+        std::fs::write(&checkpoint, b"old").unwrap();
+        // The save holds exanima02 (its level) but not exanima03.
+        app.world_mut().write_message(SaveStep::TransitionSave {
+            locale: "exanima03",
+            level_time: true,
+        });
+        app.update();
+        assert!(slots.has_saved_level(number, "exanima02"));
+        let save = std::fs::read(slots.file(number, SlotKind::Save)).unwrap();
+        assert_eq!(std::fs::read(&checkpoint).unwrap(), save, "overwritten");
+        assert!(app.world().contains_resource::<LevelTime>());
+        // An exit to a level the save holds: a plain save, the checkpoint
+        // kept.
+        app.world_mut().remove_resource::<LevelTime>();
+        std::fs::write(&checkpoint, b"old").unwrap();
+        app.world_mut().write_message(SaveStep::TransitionSave {
+            locale: "exanima02",
+            level_time: true,
+        });
+        app.update();
+        assert_eq!(std::fs::read(&checkpoint).unwrap(), b"old");
+        assert!(!app.world().contains_resource::<LevelTime>());
+        assert_eq!(app.world().resource::<SaveReport>().saved, Some(number));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The exit's availability check: the archive's shipped levels are
+    /// there, a name it lacks is not unless the current slot's save holds
+    /// its section; with no archive every level counts as there.
+    #[test]
+    fn a_level_is_available_from_the_save_or_the_archive() {
+        assert!(level_available(None, None, "nowhere"));
+        let Some(install) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::Game(std::sync::Arc::new(
+            exa_assets::GameData::open(&install).unwrap(),
+        ));
+        assert!(level_available(None, Some(&game), "exanima03"));
+        assert!(!level_available(None, Some(&game), "exanima99"));
+        let dir = folder("level-available");
+        let mut lists = SlotLists::new(&dir);
+        let number = lists.story.create(Some("Ash")).unwrap();
+        let session = Session::story();
+        let world = crate::slots::SaveWorld {
+            level: Some(("exanima99", b"level bytes")),
+            ..Default::default()
+        };
+        lists
+            .story
+            .slots()
+            .save_full(number, &session, &world)
+            .unwrap();
+        assert!(level_available(Some(&lists), Some(&game), "exanima99"));
+        assert!(level_available(Some(&lists), Some(&game), "exanima03"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

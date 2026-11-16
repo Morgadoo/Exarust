@@ -15,7 +15,9 @@
 //! the scene instead ([`OutOfWorld`]): out of the solver and the character
 //! ticks, and hidden, so it cannot fall through the emptied world, die and
 //! start the death fade over the menu's screens. It comes back once a level
-//! is loaded again.
+//! is loaded again. The main menu's background scene ([`MenuSceneView`]) is
+//! a level with no player: its load takes the body out as a plain teardown
+//! does, and it stays out while the menu scene is shown.
 
 use bevy::prelude::*;
 use exa_physics::body::OutOfScene;
@@ -43,6 +45,11 @@ impl Plugin for LevelChangeBridgePlugin {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct OutOfWorld;
 
+/// Marks a player root whose room anchor the teardown took with its body:
+/// the level shown meanwhile (the menu scene) follows its own anchor.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HeldRoomAnchor;
+
 /// A plain teardown (no level after it): the surviving player's body leaves
 /// the scene with its root hidden.
 #[allow(clippy::type_complexity)]
@@ -51,9 +58,15 @@ fn leave_world(
     mut requests: MessageReader<LevelChangeRequest>,
     bodies: Query<(Entity, Option<&ChildOf>), (With<PlayerBody>, Without<OutOfScene>)>,
 ) {
-    let plain = requests
-        .read()
-        .any(|request| request.teardown && request.level.is_none());
+    // The menu scene's load is a plain teardown for the player: the menu
+    // shows no player.
+    let plain = requests.read().any(|request| {
+        request.teardown
+            && request
+                .level
+                .as_deref()
+                .is_none_or(|level| level == MENU_SCENE_LEVEL)
+    });
     if !plain {
         return;
     }
@@ -62,7 +75,10 @@ fn leave_world(
             .entity(body)
             .insert((OutOfScene, OutOfWorld, Visibility::Hidden));
         if let Some(parent) = parent {
-            commands.entity(parent.parent()).insert(Visibility::Hidden);
+            commands
+                .entity(parent.parent())
+                .insert((Visibility::Hidden, HeldRoomAnchor))
+                .remove::<exa_world::room_view::RoomAnchor>();
         }
         info!(
             "level change: no level follows the teardown; the player's body {body:?} leaves the scene"
@@ -75,10 +91,12 @@ fn leave_world(
 fn return_to_world(
     mut commands: Commands,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    menu: Option<Res<MenuSceneView>>,
     levels: Query<(), With<LevelEntity>>,
     bodies: Query<(Entity, Option<&ChildOf>), With<OutOfWorld>>,
 ) {
-    if bodies.is_empty() || loading.is_some() || levels.is_empty() {
+    // The menu scene is a level with no player: the body stays out.
+    if bodies.is_empty() || loading.is_some() || levels.is_empty() || menu.is_some() {
         return;
     }
     for (body, parent) in &bodies {
@@ -89,7 +107,8 @@ fn return_to_world(
         if let Some(parent) = parent {
             commands
                 .entity(parent.parent())
-                .insert(Visibility::Inherited);
+                .insert((Visibility::Inherited, exa_world::room_view::RoomAnchor))
+                .remove::<HeldRoomAnchor>();
         }
         info!(
             "level change: the level is in; the player's body {body:?} comes back into the scene"
@@ -334,6 +353,44 @@ pub fn nudge_out_of_exits(
     })
 }
 
+/// The level the main menu's background loads.
+pub const MENU_SCENE_LEVEL: &str = "menuscene";
+
+/// The main menu's background scene ([`crate::flow::Step::MenuScene`]):
+/// while it is set, the loaded level is the menu scene, made with no player,
+/// and the view stands at the load's fixed camera. The original's load
+/// writes the camera node's field (60), its position (0, 500, 700) cm and
+/// its target node's (0, 0, −200) cm, then updates the scene's nodes; its
+/// rooms follow that target. Positions here are metres (Exarust's world is
+/// the original's axes in metres).
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct MenuSceneView {
+    pub eye: Vec3,
+    pub target: Vec3,
+    /// The camera's field, degrees (taken as the vertical field of view,
+    /// as the chase camera's zoom field is) [guess at the axis].
+    pub fov_degrees: f32,
+    /// The indoor preset's fog distance the load applies first.
+    pub fog_distance: f32,
+}
+
+impl MenuSceneView {
+    /// The view of the save unit's menu scene load plan.
+    pub fn of_load(load: &crate::save_scene::MenuSceneLoad) -> Self {
+        Self {
+            eye: Vec3::from_array(load.view) * 0.01,
+            target: Vec3::from_array(load.target) * 0.01,
+            fov_degrees: load.camera_field,
+            fog_distance: load.fog_distance,
+        }
+    }
+
+    /// The camera's transform: at the eye, looking at the target.
+    pub fn camera_transform(&self) -> Transform {
+        Transform::from_translation(self.eye).looking_at(self.target, Vec3::Y)
+    }
+}
+
 /// Queues the flow's level change. With no level it is a plain teardown.
 pub fn request(
     writer: &mut MessageWriter<LevelChangeRequest>,
@@ -429,6 +486,100 @@ mod tests {
         // A save's load left no level: nothing matches.
         let none = from(0, exa_assets::content_stream::NO_PREVIOUS_LEVEL);
         assert!(arrival_placement(&markers, none).is_none());
+    }
+
+    /// The return to the title through the flow's, the lifecycle's and this
+    /// bridge's plugins: the leave tears the world down and the menu scene
+    /// is asked for (its fixed view set), the surviving player's body goes
+    /// out of the scene and stays out while the menu scene is in; a new
+    /// level's load ends the menu view and the body comes back.
+    #[test]
+    fn the_title_loads_the_menu_scene_with_no_player() {
+        use crate::flow::{Flow, FlowSteps, Mode, Phase, Step};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .init_resource::<exa_world::gi_volume::GiState>()
+            .init_resource::<exa_world::nav::NavState>()
+            .init_resource::<exa_world::nav::InstalledPathfinder>()
+            .add_plugins((
+                crate::menu_screen::MenuScreenPlugin,
+                crate::flow::FlowPlugin,
+                exa_world::level_lifecycle::LevelChangePlugin,
+                LevelChangeBridgePlugin,
+            ));
+        app.update();
+        {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            flow.mode = Mode::Story;
+            flow.phase = Phase::Playing;
+        }
+        let root = app
+            .world_mut()
+            .spawn((
+                crate::player::Player,
+                exa_world::room_view::RoomAnchor,
+                Transform::default(),
+            ))
+            .id();
+        let body = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), ChildOf(root)))
+            .id();
+        let steps = app.world_mut().resource_mut::<Flow>().quit_to_menu();
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .extend(steps);
+        app.update();
+        app.update();
+        let ready = app
+            .world()
+            .get_resource::<exa_world::level_lifecycle::LevelChangeReady>()
+            .expect("the menu scene's load");
+        assert_eq!(ready.level.as_deref(), Some(MENU_SCENE_LEVEL));
+        assert!(!ready.door);
+        let view = *app.world().resource::<MenuSceneView>();
+        assert_eq!(view.eye, Vec3::new(0.0, 5.0, 7.0));
+        assert_eq!(view.target, Vec3::new(0.0, 0.0, -2.0));
+        assert_eq!(view.fov_degrees, 60.0);
+        assert_eq!(view.fog_distance, 1.8);
+        app.update();
+        assert!(app.world().get::<OutOfWorld>(body).is_some());
+        assert!(
+            app.world()
+                .get::<exa_world::room_view::RoomAnchor>(root)
+                .is_none()
+        );
+        // The menu scene is in: the body stays out.
+        app.world_mut().spawn((LevelEntity, Transform::default()));
+        app.update();
+        app.update();
+        assert!(app.world().get::<OutOfWorld>(body).is_some());
+        // A new game's load ends the menu view; once its level is in the
+        // body comes back with its room anchor.
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::LoadLevel {
+                locale: "exanima01",
+                spawn: 0,
+                teardown: true,
+            });
+        app.update();
+        assert!(app.world().get_resource::<MenuSceneView>().is_none());
+        app.world_mut().spawn((LevelEntity, Transform::default()));
+        app.update();
+        app.update();
+        assert!(app.world().get::<OutOfWorld>(body).is_none());
+        assert!(
+            app.world()
+                .get::<exa_world::room_view::RoomAnchor>(root)
+                .is_some()
+        );
     }
 
     /// A plain teardown takes the player's body out of the scene, a change
