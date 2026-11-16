@@ -1070,6 +1070,7 @@ impl GameScreens {
                 form.over = false;
                 form.repeat_at = None;
             }
+            self.task.rescale_snaps(screen.form);
             if screen.kind == GameScreen::Journal {
                 if let Some(text_box) = self.journal_box.take() {
                     self.task.close_form(text_box.form);
@@ -1132,6 +1133,9 @@ impl GameScreens {
         form.records = controls;
         form.tag = kind.tag().unwrap_or(0);
         let form = self.task.add(Box::new(form));
+        // The show's snap rebuilds (the parent's, the form's, its snap
+        // containers').
+        self.task.show_snaps(form);
         self.open.push(OpenScreen { kind, form });
         if plan.raise {
             self.task.activate(form);
@@ -1183,6 +1187,9 @@ impl GameScreens {
             content: 0,
         });
         let form = self.task.add(Box::new(form));
+        // The box's show rebuilds its parent's snap slots: the journal's
+        // client is cut around the box.
+        self.task.show_snaps(form);
         let fonts =
             exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(self.journal_unit));
         let text =
@@ -4914,6 +4921,53 @@ mod tests {
     /// box closes with it, and the window manager forgets both (the focus,
     /// the pointer's target, the capture and the remembered focus no longer
     /// name them); the focus falls to the window left.
+    #[test]
+    fn the_journals_show_cuts_its_snap_slots_around_the_text_box() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions::default(),
+        ));
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Journal, true, true));
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        let journal = screens.find(GameScreen::Journal).unwrap().form;
+        let text_box = screens.journal_box.as_ref().unwrap().form;
+        let journal = screens.task.form(journal).and_then(|f| f.base()).unwrap();
+        let text_box = screens.task.form(text_box).and_then(|f| f.base()).unwrap();
+        // The box's client in the journal's client coordinates.
+        let (ox, oy) = (
+            journal.bounds.left + journal.client.left,
+            journal.bounds.top + journal.client.top,
+        );
+        let inner = [
+            text_box.bounds.left - ox + text_box.client.left,
+            text_box.bounds.top - oy + text_box.client.top,
+            text_box.bounds.left - ox + text_box.client.right,
+            text_box.bounds.top - oy + text_box.client.bottom,
+        ];
+        assert!(!journal.snaps.is_empty());
+        assert_eq!(journal.state & 0x2_0000, 0);
+        for slot in &journal.snaps {
+            let apart = slot[2] <= inner[0]
+                || inner[2] <= slot[0]
+                || slot[3] <= inner[1]
+                || inner[3] <= slot[1];
+            assert!(apart, "slot {slot:?} overlaps the text box {inner:?}");
+        }
+        // The box holds no form of its own: it is no snap container with
+        // children, and its own slots (no snapping child) are empty.
+        assert!(text_box.snaps.is_empty());
+    }
+
     #[test]
     fn closing_the_journal_closes_its_text_box_and_clears_the_references() {
         let mut app = App::new();

@@ -1597,7 +1597,11 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
 - **Hit test.** Off the client the skin's frame code answers, and the
   resize codes 0x80000011…0x8000001a set the cursor unless the skin's
   cursor is -2. On it the visible children that are hit are tried last
-  first when the content point is strictly inside them; then the records
+  first when the content point is strictly inside them (a point on a
+  child's left or top edge is the parent's), and a child is taken only
+  when its own hit answers a code: one answering 0 lets the next child and
+  then the parent answer (the window manager's hit walks the base forms'
+  children this way); then the records
   that are neither disabled nor style 2 and do not pass the point through
   (0x800000), first on their rectangles (edges included) and then within
   two units (squared distance strictly less). A record answers its 1-based
@@ -1611,7 +1615,11 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   style (or the form's) has 4.
 - **Tab and routes.** Tab moves from the focused record to the next
   enabled tab stop, else wraps to the first tab stop before it (the wrap
-  ignores the disabled bit); Shift+Tab the other way. A key goes to a
+  ignores the disabled bit); Shift+Tab the other way. The hub's forms
+  take Tab this way from the key focus (else the picker's typing spinner,
+  else the record under the pointer): the emblem form cycles its name and
+  its two picture numbers, the focus selects the field's text and waits
+  for the pointer to move before it follows the pointer again. A key goes to a
   record as 0x2000 unless it ignores keys, a press as 0x3000 (a drop's
   payload code to the payload's form), a drag to the held record as 0x4000;
   codes off the records go to the parent when the form passes them up.
@@ -1680,7 +1688,13 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
 - **Snap slots and rescale.** A snap container (attribute 0x20) cuts the
   space between its client's edges and its visible children's widened
   client rectangles into slots: from each free cell the longer free run
-  (the row on a tie) becomes a slot one cell thick. A record rescales from
+  (the row on a tie) becomes a slot one cell thick. A child widens its
+  client by its title spacing reserve (the skin's span with a 0xc0 style
+  bit). The show rebuilds the parent's slots, the form's own and those of
+  each child that is a snap container with children; the rescale walk
+  rebuilds a form that has slots. The only reader of the slots is the draw
+  skin's form page (one quad per slot), which the line skin replaces, so
+  no 0.9.5 form shows them. A record rescales from
   an old unit by whole old units (sizes made even), anchored records from
   their owner's right or bottom, the y moved into and out of the row's
   centre. The control draw skips records whose state has 0x100 and 0x10.
@@ -2554,7 +2568,13 @@ the manual) or the textured skin (dialogue choices, skill selector,
 divination card, item parchment). The line skin overrides the draw skin's
 form draw, hit test, panel, shell, slider and scroll bar, so those four
 control draws of the draw skin run only on forms that keep the default
-instance or the textured skin.
+instance or the textured skin. Of the textured-skin forms, the dialogue
+choices, the divination card and the item parchment hold no control
+records (their constructors set none, and nothing sets their controls
+later) and draw through their own draw slot, which never calls the base
+form's draw, so neither the draw skin's form page nor its panel, box or
+scroll bar runs for them; the skill selector holds the eight power-slot
+rows but is never built in 0.9.5.
 
 The colour picker is made with no owner and sets no skin, so it keeps the
 default instance (`exa_game::base_form`): the default instance's own

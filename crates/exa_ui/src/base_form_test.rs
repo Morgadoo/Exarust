@@ -331,3 +331,117 @@ fn a_press_raises_by_the_child_rule() {
     assert_eq!(task.draw_order(), vec![root, low, plain]);
     assert_eq!(task.active, Some(low));
 }
+
+/// A 100 × 100 snap container at 50, 40 (the base attribute word, client
+/// 2..98) holding a 20 × 20 child placed at 10, 10 in its client (the
+/// child's own client 2..18, no title spacing).
+fn snap_pair(child_visible: bool) -> (GuiTask, FormId, FormId) {
+    let client = ClientRect {
+        left: 2,
+        top: 2,
+        right: 98,
+        bottom: 98,
+    };
+    let (mut task, outer) = task_with(BaseForm::new(
+        GuiRect::new(50, 40, 100, 100),
+        4,
+        (0, 0x3_0022, 0x2_0000),
+        client,
+    ));
+    let mut child = BaseForm::new(
+        GuiRect::new(62, 52, 20, 20),
+        4,
+        (0, 0x3_0022, 0),
+        ClientRect {
+            left: 2,
+            top: 2,
+            right: 18,
+            bottom: 18,
+        },
+    );
+    child.parent = Some(outer);
+    child.visible = child_visible;
+    let child = task.add(Box::new(child));
+    (task, outer, child)
+}
+
+#[test]
+fn a_shown_child_cuts_its_parents_snap_slots_around_it() {
+    let (mut task, outer, child) = snap_pair(true);
+    task.show_snaps(child);
+    // The child's client widened by no spacing is 12..28 on both axes in
+    // the container's client (0..96): the top row, the left column, the
+    // right column and the cell under the child (the scan's tie takes the
+    // row).
+    assert_eq!(
+        base(&task, outer).snaps,
+        vec![
+            [0, 0, 96, 12],
+            [0, 12, 12, 96],
+            [28, 12, 96, 96],
+            [12, 28, 28, 96]
+        ]
+    );
+    // A snap container's rebuild clears its state bit 0x20000.
+    assert_eq!(base(&task, outer).state & 0x2_0000, 0);
+    // The rescale walk rebuilds a form that has slots, and leaves one
+    // without any alone.
+    if let Some(f) = task.form_mut(outer).and_then(FormHost::base_mut) {
+        f.snaps.clear();
+    }
+    task.rescale_snaps(outer);
+    assert!(base(&task, outer).snaps.is_empty());
+}
+
+#[test]
+fn a_hidden_child_or_a_plain_container_leaves_no_snap_slots() {
+    // A hidden child takes no part: the one cell left is no slot.
+    let (mut task, outer, child) = snap_pair(false);
+    task.show_snaps(child);
+    assert!(base(&task, outer).snaps.is_empty());
+    // A container without the 0x20 bit keeps its slots and its state.
+    let (mut task, outer, child) = snap_pair(true);
+    if let Some(f) = task.form_mut(outer).and_then(FormHost::base_mut) {
+        f.attributes &= !0x20;
+        f.snaps = vec![[1, 2, 3, 4]];
+    }
+    task.show_snaps(child);
+    assert_eq!(base(&task, outer).snaps, vec![[1, 2, 3, 4]]);
+    assert_eq!(base(&task, outer).state & 0x2_0000, 0x2_0000);
+}
+
+#[test]
+fn a_base_form_hits_its_children_inside_their_edges_and_only_when_they_answer() {
+    let (mut task, outer, child) = snap_pair(true);
+    // The child's client spans it, so only the parent's edge test decides.
+    if let Some(f) = task.form_mut(child).and_then(FormHost::base_mut) {
+        f.client = ClientRect {
+            left: 0,
+            top: 0,
+            right: 20,
+            bottom: 20,
+        };
+    }
+    // On the child's client (no record): the child answers -1.
+    assert_eq!(task.hit(70, 60).0, Some(child));
+    assert_eq!(task.hit(70, 60).1, -1);
+    // The child's left and top edges are outside it for the parent's test.
+    assert_eq!(task.hit(62, 60).0, Some(outer));
+    assert_eq!(task.hit(70, 52).0, Some(outer));
+    // Its right edge is outside too; the last pixel in is inside.
+    assert_eq!(task.hit(82, 60).0, Some(outer));
+    assert_eq!(task.hit(81, 60).0, Some(child));
+    // A child answering 0 (no 0x30 attribute bits) lets the parent answer.
+    let (mut task, outer, child) = snap_pair(true);
+    if let Some(f) = task.form_mut(child).and_then(FormHost::base_mut) {
+        f.attributes &= !0x30;
+    }
+    assert_eq!(task.hit(70, 60).0, Some(outer));
+    assert_eq!(task.hit(70, 60).1, -1);
+    // A child with the no-hit style bit is passed over.
+    let (mut task, outer, child) = snap_pair(true);
+    if let Some(f) = task.form_mut(child).and_then(FormHost::base_mut) {
+        f.style |= crate::form::style::NO_HIT;
+    }
+    assert_eq!(task.hit(70, 60).0, Some(outer));
+}
