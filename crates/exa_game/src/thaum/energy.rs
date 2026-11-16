@@ -160,17 +160,23 @@ pub fn shock_advice(cost: f32, view: &AiView) -> u32 {
     if use_it { 3 } else { 0 }
 }
 
-/// A shock's charge: its length (the cast clip's milliseconds over 1200)
-/// and its cost (the cost times that times 1.2).
+/// A shock's charge: what one tick adds (the simulation's step milliseconds
+/// over 1200, so a 12 ms step fires the burst on the 101st charging tick,
+/// 1.2 s after the cast) and what one charging tick spends (the cost times
+/// that times 1.2, so the whole charge costs 1.2 times the cost).
+///
+/// The original reads the step from the hand body's scene, whose step word
+/// is the 12 ms every tick advances the game clock by; Exarust had read it
+/// as the cast clip's length, so the burst fired on the second tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShockCharge {
     pub length: f32,
     pub cost: f32,
 }
 
-/// The shock's charge from its cast clip's length.
-pub fn shock_charge(clip_ms: u32, cost: f32) -> ShockCharge {
-    let length = (f64::from(clip_ms) / 1200.0) as f32;
+/// The shock's charge from the simulation's step milliseconds.
+pub fn shock_charge(step_ms: u32, cost: f32) -> ShockCharge {
+    let length = (f64::from(step_ms) / 1200.0) as f32;
     ShockCharge {
         length,
         cost: (f64::from(cost * length) * 1.2) as f32,
@@ -207,22 +213,22 @@ pub struct ShockPower {
 impl ShockPower {
     /// The player's own cast: the charge object with the player controls
     /// told first (the original calls them before it builds the object).
-    pub fn created(owner: u64, player: bool, clip_ms: u32, base_cost: f32) -> Self {
+    pub fn created(owner: u64, player: bool, step_ms: u32, base_cost: f32) -> Self {
         Self {
             player_controls: player,
-            ..shock_power(owner, clip_ms, base_cost)
+            ..shock_power(owner, step_ms, base_cost)
         }
     }
 }
 
-/// Creates the Shock's charge object from the owner, the cast clip's length
-/// and the power's base cost.
-pub fn shock_power(owner: u64, clip_ms: u32, base_cost: f32) -> ShockPower {
+/// Creates the Shock's charge object from the owner, the simulation's step
+/// milliseconds and the power's base cost.
+pub fn shock_power(owner: u64, step_ms: u32, base_cost: f32) -> ShockPower {
     ShockPower {
         owner,
         cast_flag: 1,
         base_cost,
-        charge: shock_charge(clip_ms, base_cost),
+        charge: shock_charge(step_ms, base_cost),
         arcs: super::arcs::hand_arcs(),
         sound: CHARGE_SOUND,
         release_sound: SHOCK_SOUND,
@@ -392,12 +398,23 @@ mod tests {
     }
 
     #[test]
-    fn the_charge_follows_the_clip() {
-        let charge = shock_charge(1200, 0.1);
-        assert_eq!(charge.length, 1.0);
-        assert_eq!(charge.cost, (f64::from(0.1f32) * 1.2) as f32);
-        let half = shock_charge(600, 0.1);
-        assert_eq!(half.length, 0.5);
+    fn the_charge_follows_the_step() {
+        let charge = shock_charge(12, 0.1);
+        assert_eq!(charge.length, (12.0f64 / 1200.0) as f32);
+        assert_eq!(
+            charge.cost,
+            (f64::from(0.1f32 * charge.length) * 1.2) as f32
+        );
+        // The burst fires on the charging tick that passes one: the 101st
+        // (the single-precision sum after 100 is just under 1.0).
+        let mut sum = 0.0f32;
+        let ticks = (1..)
+            .find(|_| {
+                sum += charge.length;
+                sum > 1.0
+            })
+            .unwrap();
+        assert_eq!(ticks, 101);
     }
 
     #[test]
@@ -432,13 +449,13 @@ mod tests {
 
     #[test]
     fn the_shock_creator_builds_its_charge_object() {
-        let power = shock_power(42, 600, 0.1);
+        let power = shock_power(42, 12, 0.1);
         assert_eq!(power.owner, 42);
         assert_eq!(power.cast_flag, 1);
         assert_eq!(power.base_cost, 0.1);
-        // 600 ms is half the charge: 0.5 long, costing 0.1·0.5·1.2.
-        assert_eq!(power.charge.length, 0.5);
-        assert!((power.charge.cost - 0.06).abs() < 1e-6);
+        // A 12 ms step adds 0.01 a tick, each tick costing 0.1·0.01·1.2.
+        assert!((power.charge.length - 0.01).abs() < 1e-9);
+        assert!((power.charge.cost - 0.0012).abs() < 1e-9);
         assert_eq!(power.sound, "thmnrg_chrga");
         assert_eq!(power.release_sound, "thmnrg_shock");
         // The hand arcs: 20 tendrils, 5 segments, life 10, size 2, scale
@@ -455,7 +472,7 @@ mod tests {
         // told to the player controls first.
         assert_eq!(power.active_flags, SHOCK);
         assert!(!power.player_controls);
-        assert!(ShockPower::created(42, true, 1200, 0.1).player_controls);
+        assert!(ShockPower::created(42, true, 12, 0.1).player_controls);
     }
 
     #[test]

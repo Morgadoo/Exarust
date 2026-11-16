@@ -198,6 +198,14 @@ thread (`body_floor_test`), and a scripted run logs the same changes,
 removals, spawns, children and messages on both sides as one world
 (`sim_bridge_test`).
 
+`skip_watch` records every system (or run condition) Bevy did not run for
+a parameter that failed validation (a missing resource or message queue),
+with its world and the parameter, through the fallback error handlers it
+gives each world (`frame_handler`, `sim_handler`); a frame world holding
+`WatchSkips` makes the bridge install the simulation's handler when it
+starts and record its uncovered types instead of stopping. The game binary's
+`app_skips_test` uses it on the game's whole App.
+
 Walk order. The original appends each body (each part is one there) to
 its sector's list when it joins the world, a node before its children, a
 node added later (a spawned character, an item put on) at the next

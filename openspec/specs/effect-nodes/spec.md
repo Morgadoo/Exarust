@@ -84,6 +84,13 @@ The system SHALL keep 4096 rain drops in a box 300 cm to each side and 600 cm ta
 - **WHEN** the intensity is 0.25
 - **THEN** 1024 vertices are drawn and the drops past the 1024th do not move
 
+### Requirement: Whole rain lines
+The rain's line draw SHALL draw only whole lines: an odd drawn count SHALL leave its last head out, and every supersample copy of the streaks SHALL pair each drop's head with its own tail.
+
+#### Scenario: An odd count drawn twice
+- **WHEN** 3527 vertices are drawn on a supersampled target with two copies
+- **THEN** each copy draws 1763 lines, each from a drop's head to its own tail
+
 ### Requirement: Rain update
 A rain update SHALL move each drawn head by (0, −1.5·f, 0) with f = (0.4·intensity + 0.25)·ms, put a head whose height has its sign bit set back up by 600 cm with x and z from the effect's own generator words, and set its tail at the head plus the move times −(8·intensity + 8)/(−f′/(y⁴ + 0.2)), f′ being f capped at 30 and y the backward axis's height.
 

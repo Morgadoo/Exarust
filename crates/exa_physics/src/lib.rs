@@ -44,6 +44,7 @@ pub mod sim_app;
 pub mod sim_bridge;
 pub mod sim_digest;
 pub mod sim_object;
+pub mod skip_watch;
 pub mod step_driver;
 pub mod volume;
 pub mod voxel;

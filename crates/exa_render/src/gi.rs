@@ -1265,15 +1265,18 @@ pub fn shape_draw(volume: ShapeVolume, origin: Vec3, dims: UVec3, voxel: f32) ->
     let half_x = half(volume.half.x);
     let half_z = half(volume.half.z);
     let half_y = half(volume.half.y);
-    let lo =
-        (IVec2::new(centre_x, centre_z) - IVec2::new(half_x, half_z)).max(IVec2::splat(SHAPE_LO));
-    let hi =
-        (IVec2::new(centre_x, centre_z) + IVec2::new(half_x, half_z)).min(IVec2::splat(SHAPE_HI));
+    // The original's integer arithmetic wraps: a box that is not a number
+    // (its centre and half extent at the cast's integer limits) wraps to an
+    // empty or clipped box rather than trapping.
+    let centre = IVec2::new(centre_x, centre_z);
+    let extent = IVec2::new(half_x, half_z);
+    let lo = centre.wrapping_sub(extent).max(IVec2::splat(SHAPE_LO));
+    let hi = centre.wrapping_add(extent).min(IVec2::splat(SHAPE_HI));
     (lo.x < hi.x && lo.y < hi.y && centre_y > 1).then_some(ShapeDraw {
         lo: lo.as_uvec2(),
         hi: hi.as_uvec2(),
-        first: centre_y - half_y,
-        count: half_y * 2 + 1,
+        first: centre_y.wrapping_sub(half_y),
+        count: half_y.wrapping_mul(2).wrapping_add(1),
     })
 }
 
@@ -2031,7 +2034,8 @@ fn gather_lights(
     lights: GiLightQuery,
     sky: Option<Res<GiSkyLight>>,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
-    shapes: Query<(&GiShape, &ShapeVolume, &GlobalTransform)>,
+    shapes: Query<(&GiShape, &ShapeVolume)>,
+    shape_list: Res<GiShapes>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
     neighbours: Res<GiNeighbours>,
@@ -2096,7 +2100,12 @@ fn gather_lights(
             &sources,
             sky_active,
             voxel_lights.iter(),
-            shapes.iter().map(|(shape, volume, _)| (shape, volume)),
+            // The manager draws its shapes in list order (registration
+            // order, swapped by removals); a shape listed twice draws twice.
+            shape_list
+                .shapes()
+                .iter()
+                .filter_map(|&entity| shapes.get(entity).ok()),
             groups,
         );
     };
@@ -2665,6 +2674,22 @@ fn srgb_step_rows() -> [Vec4; 64] {
 /// negatives store 0 and anything from the last step up 255.
 pub fn encode_srgb8(x: f32) -> u8 {
     SRGB8_STEPS.partition_point(|&step| x >= step) as u8
+}
+
+/// One additive pass into the light volume's sRGB8 target, per channel, as
+/// `gi.wesl`'s `blend_srgb8` does it for each voxel light and each shape
+/// after the groups' draw: the stored code is decoded, the pass's colour
+/// (clamped at 0) added, and the sum encoded through the driver's steps
+/// ([`encode_srgb8`]). A pass too faint to reach the next step leaves the
+/// code as it was, however many such passes follow.
+pub fn blend_srgb8(code: u8, add: f32) -> u8 {
+    let s = f32::from(code) / 255.0;
+    let lin = if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    };
+    encode_srgb8(lin + add.max(0.0))
 }
 
 /// [`encode_srgb8`] as `gi.wesl` works it out with one table read: the
@@ -3462,6 +3487,19 @@ fn propagate(
 
 #[cfg(test)]
 mod tests {
+    /// A shape whose box is not a number does not trap: the original's
+    /// integer arithmetic wraps (F552).
+    #[test]
+    fn a_shape_with_a_nan_or_infinite_box_does_not_trap() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let volume = ShapeVolume {
+                position: Vec3::splat(bad),
+                half: Vec3::splat(bad),
+            };
+            let _ = shape_draw(volume, Vec3::ZERO, UVec3::new(256, 256, 64), 0.25);
+        }
+    }
+
     /// The GI parameters must be laid out as a uniform buffer allows: an
     /// array of 4-byte values (a matrix written as `[[f32; 4]; 4]`) has a
     /// stride of 4 and panics at the first upload.
@@ -3481,6 +3519,27 @@ mod tests {
         } else {
             ((s + 0.055) / 1.055).powf(2.4)
         }) as f32
+    }
+
+    /// The voxel lights and the shapes blend one pass at a time into the
+    /// 8-bit target: two passes of a third of a code each leave a dark
+    /// voxel's code where it was, where their sum encoded once would step
+    /// it up.
+    #[test]
+    fn each_additive_pass_is_encoded_on_its_own() {
+        let gap = decode_srgb8(11) - decode_srgb8(10);
+        let add = gap / 3.0;
+        let once = encode_srgb8(decode_srgb8(10) + 2.0 * add);
+        let passes = blend_srgb8(blend_srgb8(10, add), add);
+        assert_eq!((once, passes), (11, 10));
+        // A pass that reaches the step moves the code; nothing negative
+        // takes light away.
+        assert_eq!(blend_srgb8(10, gap), 11);
+        assert_eq!(blend_srgb8(10, -1.0), 10);
+        // The shader's mirror: its blend decodes, adds and encodes.
+        let shader = include_str!("gi.wesl");
+        assert!(shader.contains("fn blend_srgb8"));
+        assert!(shader.contains("rgb = blend_srgb8(rgb, add);"));
     }
 
     #[test]
@@ -4496,6 +4555,60 @@ mod tests {
         // The barricade's box is numbered after the library's six, so the
         // pass's branches stay as they were.
         assert_eq!(GiShapeProgram::CuboidFn.index(), 6);
+    }
+
+    /// The pass takes the shapes in the manager's list order, which a
+    /// removal reorders by swapping the list's end in, not in the order the
+    /// ECS keeps them.
+    #[test]
+    fn the_shapes_inject_in_the_managers_list_order() {
+        let mut app = App::new();
+        app.add_plugins(crate::gi_shape::GiShapePlugin)
+            .init_resource::<GiLights>()
+            .init_resource::<GiNeighbours>()
+            .init_resource::<GiNeighbourLights>()
+            .add_systems(PostUpdate, gather_lights.in_set(GiSystems));
+        let mut t = fake_textures(1);
+        t.dims = BLOCK;
+        t.origin = Vec3::ZERO;
+        t.voxel = 0.2;
+        app.insert_resource(t);
+        app.insert_resource(GiSectorLights(Arc::new(GiSectors {
+            grid: false,
+            ..default()
+        })));
+        let shape = |red: f32| {
+            (
+                GiShape {
+                    program: GiShapeProgram::Cuboid,
+                    colour: Vec3::new(red, 0.0, 0.0),
+                    ..default()
+                },
+                ShapeVolume {
+                    position: Vec3::new(10.0, 2.0, 6.0),
+                    half: Vec3::splat(1.0),
+                },
+            )
+        };
+        let first = app.world_mut().spawn(shape(1.0)).id();
+        app.update();
+        app.world_mut().spawn(shape(2.0));
+        app.update();
+        app.world_mut().spawn(shape(3.0));
+        app.update();
+        let reds = |app: &App| -> Vec<f32> {
+            app.world()
+                .resource::<GiLights>()
+                .shapes
+                .iter()
+                .map(|u| u.colour.x)
+                .collect()
+        };
+        assert_eq!(reds(&app), [1.0, 2.0, 3.0]);
+        // The first shape leaves: the list's last entry takes its place.
+        app.world_mut().despawn(first);
+        app.update();
+        assert_eq!(reds(&app), [3.0, 2.0]);
     }
 
     #[test]

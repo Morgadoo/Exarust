@@ -618,6 +618,12 @@ ripple (`thaum::effect_light::shell_lights`), and a strikes caster's landed
 blow ripples its primary weapon's aura at half the hook's strength with
 `thmfrc_shi` (`thaum::effect_draw::ripple_strikes`, from
 `exa_combat::StrikeHooked`) while Strikes holds the body's strike hook;
+A Shock charges 0.01 a tick (the simulation's 12 ms step over 1200, as the
+original's creator reads its scene's step word) and throws its burst on the
+101st charging tick, about 1.2 s after the cast, its first tendril aimed
+from the hand at the caster's aim point (the player's cursor point, a
+duellist's target's chest) within 45° of the facing
+(`exa_ai::combatant::look_direction`).
 Strikes and Shock Weapons share the body's weapon hook slots
 (`thaum::cast::HookSlots`: the later activation takes the item hook,
 either's end clears both). A cast barricade's floor probe meets floor
@@ -804,7 +810,9 @@ rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,
 the gust walk, the fall, the tilt-dependent streak, the ground wrap on the
 effect's own generator, the colour and the two shaders kept as data; run
 live with the rain loop, thunder and the outdoor arenas' wind bed by
-`weather`; the original's per-sub-frame and reflected draw passes (the
+`weather`, whose streak buffer draws whole lines only, an odd drawn count's
+last head left out of every supersample copy as the original's line draw
+ignores it; the original's per-sub-frame and reflected draw passes (the
 set's 2° tilt scaled by `sqrt(field/70)`, placed at the box centre and
 multiplied by each sub-frame's composite, with its `EyeVec`), the
 program's uniforms and frame-buffer unit are modelled but not drawn),
@@ -1518,8 +1526,12 @@ once with the hub roll and the flow's alternative-music setting, writes the
 track and its start offset through `exa_audio`'s level-music resources,
 installs the click and session hooks and places the manager by
 `arena_spawn::manager_plan` on the hub's known start. The session hook calls
-`hub_fall` every frame; an answer ends the flow's session, and a wipe reaches
-`slots::Slots::drops_after_death` when the host inserted `HubSlots`.
+`hub_fall` every frame once no level loads; an answer ends the flow's
+session through the player's death (`Flow::die`: the screens swept, the
+fall's tip, the controls blocked, the end menu), so a manager the arena sent
+back dead after a fall that was not fatal leaves through the end menu, and
+a wipe reaches `slots::Slots::drops_after_death` when the host inserted
+`HubSlots`; the auto rematch starts nothing once the session has ended.
 `slots::SlotList` is the slot manager's cached list (count −1 until
 scanned, current slot −1, then 0 after a delete or a dropped death) with its
 new-slot, select, touch, delete, death and current-slot load and save.
@@ -2309,7 +2321,13 @@ and a confirmed hub trade the player (`equip::Redress`,
 hand's model from the record's out set). The view's image renders at the settings' supersampling
 (`doll_view::doll_scale`: 2 x 2 with super sampling on, 1 off). The open
 inventory lights the page button of the shown body's set and, after a swap, loads its pack again
-(`gui_screens::inventory_follows_the_set`). `figure_pick` takes items off the figure: the pick
+(`gui_screens::inventory_follows_the_set`). A press on the page button of the other set asks
+the shown body for the swap (`gui_screens::swap_from_page_button`, refused
+while the body is busy or an item drag is in flight), and the journal's
+entry list opens its drop-down list of titles over the windows; a picked row
+stores the text and shows that entry (`GameScreens::journal_pick`). With a
+game screen open, ten idle seconds restamp the idle turn's clock instead of
+turning the camera (`idle_orbit`). `figure_pick` takes items off the figure: the pick
 of the item under the pointer (the CPU-skinned merged runs' faces, whose
 garments name the worn item, then the other drawn meshes, a held item's
 answering its hand and slot), a left-press drag off the figure

@@ -75,6 +75,22 @@ type GiSourceMeshes<'w, 's> = Query<
     ),
 >;
 
+/// The terrain the level's source collects: the tile meshes (with their
+/// tile, when it carries a vertex grid) and the tiles' vertex grids.
+type GiTerrainQuery<'w, 's> = (
+    Query<
+        'w,
+        's,
+        (
+            &'static Mesh3d,
+            &'static GlobalTransform,
+            Option<&'static ChildOf>,
+        ),
+        With<GiTerrain>,
+    >,
+    Query<'w, 's, (&'static GiTerrainHeights, &'static GlobalTransform)>,
+);
+
 /// The GI meshes the dynamic update follows: those the level's source
 /// collected, each with the frames [`GiMoved`] keeps.
 type GiMoverQuery<'w, 's> = Query<
@@ -86,6 +102,7 @@ type GiMoverQuery<'w, 's> = Query<
         &'static mut GiMoved,
         Has<GiThinMesh>,
         Has<GiCentredMesh>,
+        Option<&'static GiBounds>,
     ),
 >;
 
@@ -122,54 +139,108 @@ fn update_dynamic(
             continue;
         }
         Arc::make_mut(block).synced = true;
-        for (points, _, moved, thin, centred) in &movers {
+        for (points, _, moved, thin, centred, bounds) in &movers {
             if moved.source != moved.last {
-                move_points(
-                    block,
-                    &points.0,
-                    moved.source,
-                    moved.last,
+                let mesh = MovingMesh {
+                    points: &points.0,
+                    bounds: bounds.copied(),
                     thin,
                     centred,
-                    &mut sink,
-                );
+                };
+                move_points(block, &mesh, moved.source, moved.last, &mut sink);
             }
         }
     }
-    for (points, at, mut moved, thin, centred) in &mut movers {
+    for (points, at, mut moved, thin, centred, bounds) in &mut movers {
         let now = at.affine();
         if moved.last == now {
             continue;
         }
+        let mesh = MovingMesh {
+            points: &points.0,
+            bounds: bounds.copied(),
+            thin,
+            centred,
+        };
         for block in built.0.values_mut() {
-            move_points(block, &points.0, moved.last, now, thin, centred, &mut sink);
+            move_points(block, &mesh, moved.last, now, &mut sink);
         }
         moved.last = now;
     }
 }
 
-/// Moves one mesh's points from frame `old` to frame `new` in one built
-/// block when the two frames' padded boxes meet it, and queues the changed
-/// region's bytes.
-fn move_points(
-    block: &mut Arc<BuiltBlock>,
-    points: &[Vec3],
-    old: Affine3A,
-    new: Affine3A,
+/// A moving GI mesh as the dynamic update reads it.
+struct MovingMesh<'a> {
+    points: &'a [Vec3],
+    bounds: Option<GiBounds>,
     thin: bool,
     centred: bool,
+}
+
+/// A point in frame `at` in centimetres, in the original's transform order
+/// `(x·r0 + y·r1) + (z·r2 + t)`, the point already in centimetres.
+fn frame_point_cm(at: Affine3A, p: Vec3) -> Vec3 {
+    let t = Vec3::from(at.translation) * CM_PER_M;
+    (Vec3::from(at.matrix3.x_axis) * p.x + Vec3::from(at.matrix3.y_axis) * p.y)
+        + (Vec3::from(at.matrix3.z_axis) * p.z + t)
+}
+
+/// The original's voxel box of a node's bounds in frame `at`: the centre
+/// put in the world, ± the half extents through the frame's absolute axes
+/// (`(|r0|·hx + |r1|·hy) + |r2|·hz` per axis), over the voxel size, less
+/// and plus 1.5, rounded ties to even (`cvtss2si`); whole world voxels.
+fn voxel_box(bounds: GiBounds, at: Affine3A) -> (IVec3, IVec3) {
+    let inv = 1.0 / VOXEL_CM;
+    let centre = frame_point_cm(at, bounds.centre * CM_PER_M);
+    let h = bounds.half * CM_PER_M;
+    let rows = [
+        Vec3::from(at.matrix3.x_axis).abs(),
+        Vec3::from(at.matrix3.y_axis).abs(),
+        Vec3::from(at.matrix3.z_axis).abs(),
+    ];
+    let reach = (rows[0] * h.x + rows[1] * h.y) + rows[2] * h.z;
+    let lo = ((centre - reach) * inv - Vec3::splat(1.5)).map(f32::round_ties_even);
+    let hi = ((centre + reach) * inv + Vec3::splat(1.5)).map(f32::round_ties_even);
+    (lo.as_ivec3(), hi.as_ivec3())
+}
+
+/// Moves one mesh's points from frame `old` to frame `new` in one built
+/// block when the two frames' boxes meet it, and queues the changed
+/// region's bytes. A mesh with its node's bounds is boxed as the original
+/// boxes it (the union of both frames' voxel boxes, tested against the
+/// block's whole-voxel range, both ends included); one without is boxed by
+/// its points' padded extent [adaptation].
+fn move_points(
+    block: &mut Arc<BuiltBlock>,
+    mesh: &MovingMesh,
+    old: Affine3A,
+    new: Affine3A,
     sink: &mut Option<&mut Vec<exa_render::gi::GiOccupancyPatch>>,
 ) {
-    let (Some(before), Some(after)) = (point_bounds(points, old), point_bounds(points, new)) else {
-        return;
-    };
-    // The union of the two frames' boxes, which a touched block must meet.
-    let bounds = (before.0.min(after.0), before.1.max(after.1));
-    if !boxes_meet(bounds, block.bounds()) {
-        return;
+    let points = mesh.points;
+    let (thin, centred) = (mesh.thin, mesh.centred);
+    let node_box = mesh.bounds.map(|bounds| {
+        let (old_lo, old_hi) = voxel_box(bounds, old);
+        let (new_lo, new_hi) = voxel_box(bounds, new);
+        (old_lo.min(new_lo), old_hi.max(new_hi))
+    });
+    if let Some((lo, hi)) = node_box {
+        let first = (block.origin / VOXEL).round().as_ivec3();
+        let last = first + IVec3::new(SIDE as i32, block.depth as i32, SIDE as i32);
+        if first.cmpgt(hi).any() || lo.cmpgt(last).any() {
+            return;
+        }
+    } else {
+        let (Some(before), Some(after)) = (point_bounds(points, old), point_bounds(points, new))
+        else {
+            return;
+        };
+        // The union of the two frames' boxes, which a touched block must meet.
+        let bounds = (before.0.min(after.0), before.1.max(after.1));
+        if !boxes_meet(bounds, block.bounds()) {
+            return;
+        }
     }
-    let old_points: Vec<Vec3> = points.iter().map(|&p| old.transform_point3(p)).collect();
-    let new_points: Vec<Vec3> = points.iter().map(|&p| new.transform_point3(p)).collect();
     let block = Arc::make_mut(block);
     let dims = UVec3::new(SIDE as u32, SIDE as u32, block.depth as u32);
     let sector = block.sector;
@@ -184,7 +255,18 @@ fn move_points(
         lowest: vec![255u8; SIDE * SIDE],
         sector,
     };
-    let region = occupancy.update_dynamic(&old_points, &new_points, thin, centred);
+    // The old frame's points come out, then the new frame's go in, each
+    // through its frame as the build splats them.
+    let region = match node_box {
+        Some((lo, hi)) => occupancy.region_of_box(lo, hi),
+        None => occupancy.region_of(
+            points
+                .iter()
+                .flat_map(|&p| [old.transform_point3(p), new.transform_point3(p)]),
+        ),
+    };
+    occupancy.splat_mesh(points, CM_PER_M, old, -1.0, thin, centred);
+    occupancy.splat_mesh(points, CM_PER_M, new, 1.0, thin, centred);
     *cells = occupancy.cells;
     let Some(region) = region else { return };
     if let (Some(sink), Some(bytes)) = (sink.as_mut(), sub_upload(cells, dims, region)) {
@@ -241,6 +323,15 @@ fn base_ambient_share(high_quality: bool) -> f32 {
 #[derive(Component, Clone, Debug)]
 pub struct GiPoints(pub Arc<Vec<Vec3>>);
 
+/// A GI mesh node's own bounding box (centre and half extents in its
+/// space, metres): the dynamic update boxes a moving mesh by it, as the
+/// original boxes the node's bounds in each frame.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GiBounds {
+    pub centre: Vec3,
+    pub half: Vec3,
+}
+
 /// A GI mesh the original counts as thin: its sample points weigh a quarter
 /// (the node's first surface's material is a class-`0x4000` or opacity-cut
 /// material, `Material::is_thin_for_gi`).
@@ -269,6 +360,19 @@ pub struct GiFloor {
 /// A terrain tile mesh: the voxels below its surface are solid.
 #[derive(Component, Clone, Copy)]
 pub struct GiTerrain;
+
+/// A terrain tile's vertex grid as the GI manager reads it (on the tile's
+/// entity, whose frame stands at the tile's centre): 241 × 241 heights
+/// (metres, row-major, X fastest), the vertex spacing (metres) and which of
+/// its 8 × 8 blocks of 6 m exist (X fastest). The original fills each
+/// interior column of a block from the mean of its quad's anti-diagonal
+/// vertices, over the tile's present blocks only.
+#[derive(Component, Clone, Debug)]
+pub struct GiTerrainHeights {
+    pub spacing: f32,
+    pub heights: Arc<Vec<f32>>,
+    pub blocks: [bool; 64],
+}
 
 /// A level waiting for its GI volume, once its nodes have world transforms.
 #[derive(Resource, Debug, Clone)]
@@ -670,12 +774,22 @@ enum SourceInputs {
 }
 
 struct GiInputs {
-    meshes: usize,
-    /// Every mesh's world points, with its thin and centred flags.
-    points: Vec<(Vec3, bool, bool)>,
-    /// The grid cells' floor points, world space.
-    floor_points: Vec<Vec3>,
+    /// Every GI mesh's points (its own space, metres) with its world frame
+    /// and its thin and centred flags: the builds splat them through the
+    /// frame as the original does.
+    meshes: Vec<(Arc<Vec<Vec3>>, Affine3A, bool, bool)>,
+    /// How many points the meshes hold.
+    points: usize,
+    /// Each grid cell's floor points (the cell's own space, centimetres, as
+    /// the original generates them on the cell's `+Floor` mesh) and where
+    /// the cell sits in the world.
+    floors: Vec<(Vec<Vec3>, Affine3A)>,
+    /// How many floor points the cells hold.
+    floor_points: usize,
+    /// Terrain meshes without a tile vertex grid, as world triangles.
     terrain: Vec<[Vec3; 3]>,
+    /// The terrain tiles' vertex grids, each with its centre in the world.
+    terrain_tiles: Vec<(GiTerrainHeights, Vec3)>,
 }
 
 /// A grid cell's floor as the original merges it: the triangles of every
@@ -693,7 +807,17 @@ impl FloorCell {
     ///
     /// The generator keeps the original's centimetres: the triangles and
     /// their bounds are scaled up, and the points scaled back.
+    #[cfg(test)]
     fn points(&self) -> Vec<Vec3> {
+        self.points_cm()
+            .into_iter()
+            .map(|p| self.to_world.transform_point3(p / CM_PER_M))
+            .collect()
+    }
+
+    /// The cell's floor points in its own space, in centimetres, as the
+    /// original's heightfield leaves them on the cell's `+Floor` mesh.
+    fn points_cm(&self) -> Vec<Vec3> {
         let triangles: Vec<[Vec3; 3]> = self
             .triangles
             .iter()
@@ -713,9 +837,6 @@ impl FloorCell {
             half_extents: (max - min) * 0.5,
         };
         voxel::floor_points(bounds, &triangles, FLOOR_PARAMETER)
-            .into_iter()
-            .map(|p| self.to_world.transform_point3(p / CM_PER_M))
-            .collect()
     }
 }
 
@@ -844,7 +965,7 @@ fn collect_source(
     settings: Res<GiSettings>,
     points: GiSourceMeshes,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
-    terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
+    terrain: GiTerrainQuery,
     meshes: Res<Assets<Mesh>>,
     fires: Query<&crate::fire::Fire>,
     mut state: ResMut<GiState>,
@@ -905,6 +1026,13 @@ pub fn unload_level(commands: &mut Commands, state: &mut GiState) {
     commands.remove_resource::<GiNeighbourVolumes>();
     commands.insert_resource(exa_render::gi::GiTextureCache::default());
     commands.insert_resource(GiBuiltBlocks::default());
+    // The scene clear empties the manager's shape list; shapes that outlive
+    // the level are no longer drawn.
+    commands.queue(|world: &mut World| {
+        if let Some(mut shapes) = world.get_resource_mut::<exa_render::gi::GiShapes>() {
+            shapes.clear();
+        }
+    });
     *state = GiState::Off;
 }
 
@@ -914,7 +1042,7 @@ fn build_level(
     pending: &PendingGi,
     points: GiSourceMeshes,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
-    terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
+    terrain: GiTerrainQuery,
     meshes: Res<Assets<Mesh>>,
     state: &mut GiState,
 ) {
@@ -949,20 +1077,32 @@ fn build_level(
         .iter()
         .filter_map(|(mesh, at, floor)| Some((mesh_copy(mesh, at, &meshes)?, *floor)))
         .collect();
-    let ground = mesh_copies(terrain.iter(), &meshes);
+    let (tile_meshes, tiles) = terrain;
+    // A terrain mesh under a tile with a vertex grid is read from the grid;
+    // any other is voxelised from its triangles.
+    let ground = mesh_copies(
+        tile_meshes
+            .iter()
+            .filter(|(_, _, parent)| parent.is_none_or(|p| tiles.get(p.parent()).is_err()))
+            .map(|(mesh, at, _)| (mesh, at)),
+        &meshes,
+    );
+    let terrain_tiles: Vec<(GiTerrainHeights, Vec3)> = tiles
+        .iter()
+        .map(|(heights, at)| (heights.clone(), at.translation()))
+        .collect();
     let task = AsyncComputeTaskPool::get().spawn(async move {
-        let mut world = Vec::new();
-        for (gi, m, thin, centred) in &points {
-            world.extend(gi.iter().map(|&p| (m.transform_point3(p), *thin, *centred)));
-        }
+        let floors: Vec<(Vec<Vec3>, Affine3A)> = floor_cells(&floors)
+            .iter()
+            .map(|cell| (cell.points_cm(), cell.to_world))
+            .collect();
         GiInputs {
-            meshes: points.len(),
-            points: world,
-            floor_points: floor_cells(&floors)
-                .iter()
-                .flat_map(FloorCell::points)
-                .collect(),
+            points: points.iter().map(|m| m.0.len()).sum(),
+            floor_points: floors.iter().map(|f| f.0.len()).sum(),
+            meshes: points,
+            floors,
             terrain: world_triangles(&ground),
+            terrain_tiles,
         }
     });
     commands.insert_resource(GiSource {
@@ -1047,9 +1187,9 @@ fn follow_camera(
         };
         info!(
             "GI source: {} meshes, {} points, {} floor points, {} terrain triangles",
-            inputs.meshes,
-            inputs.points.len(),
-            inputs.floor_points.len(),
+            inputs.meshes.len(),
+            inputs.points,
+            inputs.floor_points,
             inputs.terrain.len()
         );
         source.inputs = SourceInputs::Ready(Arc::new(inputs));
@@ -1491,14 +1631,17 @@ fn build_block(
     for &t in &inputs.terrain {
         ground.add(t);
     }
+    for (tile, centre) in &inputs.terrain_tiles {
+        ground.add_tile(tile, *centre);
+    }
     let terrain_columns = ground.apply(&mut occupancy);
-    for &(p, thin, centred) in &inputs.points {
-        occupancy.splat_styled(p, 1.0, thin, centred);
+    for (points, at, thin, centred) in &inputs.meshes {
+        occupancy.splat_mesh(points, CM_PER_M, *at, 1.0, *thin, *centred);
     }
-    for &p in &inputs.floor_points {
-        occupancy.splat(p);
+    for (points, at) in &inputs.floors {
+        occupancy.splat_mesh(points, 1.0, *at, 1.0, false, false);
     }
-    let floor_points = inputs.floor_points.len();
+    let floor_points = inputs.floor_points;
     let floors = occupancy.floors();
     if let Some(path) = std::env::var_os("EXA_GI_DUMP") {
         let _ = std::fs::write(&path, &occupancy.cells);
@@ -1550,6 +1693,7 @@ const SECTOR_RADIUS_CM: f32 = f32::from_bits(0x4454_21cd);
 /// The top of the terrain over the block, per whole column (X fastest).
 struct TerrainColumns {
     origin: Vec3,
+    /// Each column's surface in voxels above the block's bottom.
     tops: Vec<f32>,
 }
 
@@ -1558,6 +1702,46 @@ impl TerrainColumns {
         Self {
             origin: o.origin,
             tops: vec![f32::NEG_INFINITY; SIDE * SIDE],
+        }
+    }
+
+    /// Fills the interior columns a terrain tile covers from its vertex
+    /// grid, as the original does: the column over quad (column, row) takes
+    /// the mean of the quad's anti-diagonal vertices (column + 1, row) and
+    /// (column, row + 1), in centimetres, over the voxel size plus the
+    /// block's vertical offset, `((a + b)·0.5)/fc + b4`, for the quads of
+    /// the tile's present 6 m blocks. A tile whose spacing is not the voxel
+    /// size has no column-to-quad match and is left out.
+    fn add_tile(&mut self, tile: &GiTerrainHeights, centre: Vec3) {
+        const N: i64 = exa_formats::terrain::TILE_VERTICES as i64;
+        if (tile.spacing - VOXEL).abs() > 1e-6 || tile.heights.len() != (N * N) as usize {
+            return;
+        }
+        // Whole voxels from the world origin to the block's first voxel and
+        // to the tile's first vertex (the tile is 240 quads of one voxel).
+        let first = (self.origin / VOXEL).round();
+        let corner = (centre / VOXEL).round() - Vec3::splat(((N - 1) / 2) as f32);
+        let below = -first.y;
+        let height = |i: i64, j: i64| (tile.heights[(j * N + i) as usize] + centre.y) * CM_PER_M;
+        for z in MARGIN..SIDE - MARGIN {
+            let row = first.z as i64 + z as i64 - corner.z as i64;
+            if !(0..N - 1).contains(&row) {
+                continue;
+            }
+            for x in MARGIN..SIDE - MARGIN {
+                let col = first.x as i64 + x as i64 - corner.x as i64;
+                if !(0..N - 1).contains(&col) {
+                    continue;
+                }
+                let block = (col / SECTOR as i64 + (row / SECTOR as i64) * 8) as usize;
+                if !tile.blocks[block] {
+                    continue;
+                }
+                let h = (height(col + 1, row) + height(col, row + 1)) * 0.5;
+                let g = h / VOXEL_CM + below;
+                let top = &mut self.tops[x + z * SIDE];
+                *top = top.max(g);
+            }
         }
     }
 
@@ -1584,7 +1768,7 @@ impl TerrainColumns {
                 }
                 let h = wa * t[0].y + wb * t[1].y + wc * t[2].y;
                 let top = &mut self.tops[x + z * SIDE];
-                *top = top.max(h);
+                *top = top.max((h - self.origin.y) / VOXEL);
             }
         }
     }
@@ -1602,11 +1786,10 @@ impl TerrainColumns {
         let top_slice = o.depth as i32 - 1;
         for z in MARGIN..SIDE - MARGIN {
             for x in MARGIN..SIDE - MARGIN {
-                let top = self.tops[x + z * SIDE];
-                if !top.is_finite() {
+                let g = self.tops[x + z * SIDE];
+                if !g.is_finite() {
                     continue;
                 }
-                let g = (top - self.origin.y) / VOXEL;
                 // The original truncates (towards zero), so a surface less
                 // than a voxel below slice 0 still counts as slice 0.
                 let mut k = g as i32;
@@ -1743,9 +1926,54 @@ impl Occupancy {
     /// a normal point (the original's 20) and −1 to take an old position back
     /// out.
     pub fn splat_styled(&mut self, p: Vec3, weight: f32, thin: bool, centred: bool) {
-        let weight = weight * POINT_WEIGHT * if thin { 0.25 } else { 1.0 };
         let g = (p - self.origin) / VOXEL - Vec3::splat(0.5)
             + if centred { Vec3::Y * 0.5 } else { Vec3::ZERO };
+        self.splat_voxel(g, weight, thin, centred);
+    }
+
+    /// Splats a mesh's points through its world frame `at` (metres), as the
+    /// original's splat does: the points are taken in centimetres (`scale`
+    /// times the given units: 100 for metres, 1 for centimetres), the
+    /// frame's three axis rows are scaled by one over the voxel size, and
+    /// its translation becomes `T/fc − 0.5` plus the block's whole-voxel
+    /// offset (eight margin voxels and 30 a cell from the grid's middle in
+    /// X and Z, the level's vertical offset in Y), so each point lands at
+    /// `(x·r0 + y·r1) + (z·r2 + t)` in voxel units, the original's sum
+    /// order. A centred mesh then adds half a voxel in height.
+    pub fn splat_mesh(
+        &mut self,
+        points: &[Vec3],
+        scale: f32,
+        at: Affine3A,
+        weight: f32,
+        thin: bool,
+        centred: bool,
+    ) {
+        let inv = 1.0 / VOXEL_CM;
+        let rows = [
+            Vec3::from(at.matrix3.x_axis) * inv,
+            Vec3::from(at.matrix3.y_axis) * inv,
+            Vec3::from(at.matrix3.z_axis) * inv,
+        ];
+        // The block's first voxel counted from the world origin: whole
+        // voxels, so its negation is the original's integer offset.
+        let first = (self.origin / VOXEL).round();
+        let t = Vec3::from(at.translation) * CM_PER_M * inv - Vec3::splat(0.5);
+        let t = Vec3::new(t.x - first.x, t.y - first.y, t.z - first.z);
+        for &p in points {
+            let p = p * scale;
+            let mut g = (rows[0] * p.x + rows[1] * p.y) + (rows[2] * p.z + t);
+            if centred {
+                g.y += 0.5;
+            }
+            self.splat_voxel(g, weight, thin, centred);
+        }
+    }
+
+    /// Splats one point already in voxel units (cell-centred: voxel `i`
+    /// spans `i..i + 1`).
+    fn splat_voxel(&mut self, g: Vec3, weight: f32, thin: bool, centred: bool) {
+        let weight = weight * POINT_WEIGHT * if thin { 0.25 } else { 1.0 };
         let base = g.trunc();
         let f = g - base;
         let (x, y, z) = (base.x as i64, base.y as i64, base.z as i64);
@@ -1789,9 +2017,19 @@ impl Occupancy {
             return None;
         }
         let inv = Vec3::splat(1.0 / VOXEL);
-        let first = (self.origin * inv).round();
-        let lo = (lo * inv - Vec3::splat(1.5)).map(f32::round_ties_even) - first;
-        let hi = (hi * inv + Vec3::splat(1.5)).map(f32::round_ties_even) - first;
+        let lo = (lo * inv - Vec3::splat(1.5)).map(f32::round_ties_even);
+        let hi = (hi * inv + Vec3::splat(1.5)).map(f32::round_ties_even);
+        self.region_of_box(lo.as_ivec3(), hi.as_ivec3())
+    }
+
+    /// The region of the volume a box of whole world voxels (both corners
+    /// included) touches, for a sub-upload: the block's first voxel taken
+    /// off, clamped to the block with its end one short of the size, as the
+    /// original's upload does; `None` when it is empty.
+    pub fn region_of_box(&self, lo: IVec3, hi: IVec3) -> Option<VoxelRegion> {
+        let first = (self.origin / VOXEL).round();
+        let lo = lo.as_vec3() - first;
+        let hi = hi.as_vec3() - first;
         // Texture axes: X, then Z, then height.
         let dims = UVec3::new(SIDE as u32, SIDE as u32, self.depth as u32);
         let lo = Vec3::new(lo.x.max(0.0), lo.z.max(0.0), lo.y.max(0.0));
@@ -2003,6 +2241,65 @@ mod tests {
     /// frame, as the original returns while its build count is above zero;
     /// a block built afterwards gets the mesh moved from where the source
     /// collected it to where it last was.
+    /// A mesh with its node's bounds is boxed as the original boxes it:
+    /// each frame's bounds centre ± the half extents through the frame's
+    /// absolute axes, in voxels less and plus 1.5, rounded ties to even, the
+    /// union of both frames; a block whose whole-voxel range that box
+    /// misses is left alone.
+    #[test]
+    fn a_moving_mesh_is_boxed_by_its_nodes_bounds() {
+        use exa_render::gi::GiOccupancyPatches;
+
+        let at = Vec3::new(20.1, 1.1, 20.1);
+        let mut app = App::new();
+        app.insert_resource(one_point_block(at, true))
+            .insert_resource(GiOccupancyPatches::default())
+            .add_systems(Update, update_dynamic);
+        let e = app
+            .world_mut()
+            .spawn((
+                GiPoints(Arc::new(vec![at])),
+                GiBounds {
+                    centre: at,
+                    half: Vec3::new(0.3, 0.1, 0.1),
+                },
+                GlobalTransform::IDENTITY,
+                GiMoved {
+                    source: Affine3A::IDENTITY,
+                    last: Affine3A::IDENTITY,
+                },
+            ))
+            .id();
+        let moved = Affine3A::from_translation(Vec3::new(VOXEL, 0.0, 0.0));
+        *app.world_mut().get_mut::<GlobalTransform>(e).unwrap() = moved.into();
+        app.update();
+        let patches = app.world().resource::<GiOccupancyPatches>();
+        assert_eq!(patches.0.len(), 1);
+        // X: (2010 − 30)/20 − 1.5 = 97.5 → 98 and (2060/20) + 1.5 = 104.5
+        // → 104; Z 98.5 → 98 and 102.5 → 102; height 3.5 → 4 and 7.5 → 8.
+        assert_eq!(patches.0[0].lo, UVec3::new(98, 98, 4));
+        assert_eq!(patches.0[0].hi, UVec3::new(104, 102, 8));
+        assert_eq!(cell_at(&app, at), 0);
+        assert_eq!(cell_at(&app, at + Vec3::X * VOXEL), 20);
+        // Far beyond the block's 256 voxels along X: the block is not
+        // touched and nothing is uploaded.
+        let far = Affine3A::from_translation(Vec3::new(60.0, 0.0, 0.0));
+        let block = app.world().resource::<GiBuiltBlocks>().0[&0].clone();
+        let mut sink = None;
+        let mut copy = block.clone();
+        let mesh = MovingMesh {
+            points: &[at],
+            bounds: Some(GiBounds {
+                centre: at + Vec3::X * 60.0,
+                half: Vec3::splat(0.1),
+            }),
+            thin: false,
+            centred: false,
+        };
+        move_points(&mut copy, &mesh, far, far, &mut sink);
+        assert!(Arc::ptr_eq(&copy, &block));
+    }
+
     #[test]
     fn the_dynamic_update_waits_for_a_build_and_syncs_new_blocks() {
         use exa_render::gi::GiOccupancyPatches;
@@ -2137,6 +2434,47 @@ mod tests {
             assert_eq!(volume.origin, layout.blocks[i].origin);
         }
         assert!(neighbours.len() < exa_render::gi::RESIDENT_BLOCKS);
+    }
+
+    /// The live build fills a block's terrain columns from a tile's vertex
+    /// grid: a flat 40 cm tile over the camera's block gives every interior
+    /// column the floor two slices above the block's vertical offset.
+    #[test]
+    fn a_level_build_reads_the_terrain_tiles_grid() {
+        const N: usize = exa_formats::terrain::TILE_VERTICES;
+        let mut app = App::new();
+        app.add_plugins((TaskPoolPlugin::default(), GiVolumePlugin))
+            .init_resource::<Assets<Mesh>>();
+        app.world_mut()
+            .spawn((Camera3d::default(), GlobalTransform::default()));
+        // The camera's block starts at world voxel -8 (sector 16 of 32), so
+        // a tile centred 24 m along X and Z covers its interior.
+        app.world_mut().spawn((
+            GiTerrainHeights {
+                spacing: VOXEL,
+                heights: Arc::new(vec![0.4; N * N]),
+                blocks: [true; 64],
+            },
+            GlobalTransform::from_xyz(24.0, 0.0, 24.0),
+        ));
+        let level = PendingGi {
+            centre: Vec3::ZERO,
+            top: 6.0,
+            bottom: 0.0,
+            base_ambient: [0.04, 0.04, 0.04],
+            grid: open_grid(32),
+            top_slice: false,
+        };
+        app.insert_resource(level);
+        update_until(&mut app, |w| w.contains_resource::<GiVolume>());
+        let built = app.world().resource::<GiBuiltBlocks>();
+        let block = built
+            .0
+            .values()
+            .find(|b| b.sector == IVec2::new(16, 16))
+            .expect("the camera's block is built");
+        assert_eq!(block.terrain_columns, 240 * 240);
+        assert_eq!(block.floors[8 + 8 * SIDE], 36);
     }
 
     #[test]
@@ -2468,6 +2806,39 @@ mod tests {
         assert_eq!(alone[0].points().len(), 15 * 30);
     }
 
+    /// A mesh's points go through its frame in centimetres with the
+    /// block's whole-voxel offset, as the original's splat forms them: a
+    /// lattice point at 650 cm (6.5 m once read) lands on voxel 160's
+    /// centre and marks column 160, where measuring from the block's corner
+    /// in metres puts it a hair short, in column 159.
+    #[test]
+    fn a_mesh_splats_through_its_frame_in_centimetres() {
+        let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        assert_eq!(o.origin.x, -25.6);
+        // Slice 34 is world height 0..20 cm (the lid is at 6 m, 64 slices).
+        let point = Vec3::new(650.0, 10.0, 650.0) * 0.01;
+        o.splat_mesh(&[point], CM_PER_M, Affine3A::IDENTITY, 1.0, false, false);
+        let column = |x: usize, z: usize| x + z * SIDE;
+        assert_eq!(o.lowest[column(160, 160)], 34);
+        assert_eq!(o.lowest[column(159, 159)], 255);
+        let cell = |x: usize, y: usize, z: usize| o.cells[x + z * SIDE + y * SIDE * SIDE];
+        assert_eq!(cell(160, 34, 160), 20);
+        // The metre route starts the point in the column before.
+        let mut m = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        m.splat_styled(point, 1.0, false, false);
+        assert_eq!(m.lowest[column(159, 159)], 34);
+        // A frame moves the points with its rotation and centimetre
+        // translation: a quarter turn about Y and 3 m along X.
+        let mut r = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        let at = Affine3A::from_mat3_translation(
+            Mat3::from_cols(Vec3::NEG_Z, Vec3::Y, Vec3::X),
+            Vec3::new(3.0, 0.0, 0.0),
+        );
+        r.splat_mesh(&[Vec3::splat(0.1)], CM_PER_M, at, 1.0, false, false);
+        assert_eq!(r.lowest[column(143, 127)], 34);
+        assert_eq!(r.cells[143 + 127 * SIDE + 34 * SIDE * SIDE], 20);
+    }
+
     #[test]
     fn a_thin_point_weighs_a_quarter_and_a_centred_one_straddles_slices() {
         let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
@@ -2592,13 +2963,51 @@ mod tests {
         assert!(layout.block_at(Vec3::splat(-10_000.0)).is_none());
     }
 
+    /// A terrain column takes the mean of its quad's anti-diagonal
+    /// vertices from the tile's grid, in centimetres over the voxel size
+    /// plus the block's vertical offset, and only over the tile's present
+    /// blocks.
+    #[test]
+    fn terrain_columns_read_the_tiles_anti_diagonal() {
+        const N: usize = exa_formats::terrain::TILE_VERTICES;
+        // The block's interior columns 8.. are world voxels 0.., and the
+        // tile's first vertex sits at world voxel 0.
+        let mut o = Occupancy::new_at(Vec3::new(-1.6, -6.8, -1.6), 64, IVec2::ZERO);
+        let mut heights = vec![0.0f32; N * N];
+        heights[1] = 0.5; // vertex (1, 0)
+        heights[N] = 0.3; // vertex (0, 1)
+        heights[0] = 9.0; // vertex (0, 0): off the anti-diagonal
+        heights[N + 1] = 9.0; // vertex (1, 1)
+        let mut blocks = [true; 64];
+        blocks[1] = false;
+        let tile = GiTerrainHeights {
+            spacing: VOXEL,
+            heights: Arc::new(heights),
+            blocks,
+        };
+        let mut ground = TerrainColumns::new(&o);
+        ground.add_tile(&tile, Vec3::new(24.0, 0.0, 24.0));
+        let filled = ground.apply(&mut o);
+        // Every column of the 63 present blocks.
+        assert_eq!(filled, 63 * 30 * 30);
+        let column = 8 + 8 * SIDE;
+        let cell = |o: &Occupancy, x: usize, y: usize| o.cells[x + 8 * SIDE + y * SIDE * SIDE];
+        // (50 + 30)/2 = 40 cm: 2 voxels over the offset 34.
+        assert_eq!(o.lowest[column], 36);
+        assert_eq!(cell(&o, 8, 35), 20);
+        assert_eq!(cell(&o, 8, 36), 0);
+        // Block (1, 0) is absent: its columns keep no terrain.
+        assert_eq!(o.lowest[8 + 30 + 8 * SIDE], 255);
+        assert_eq!(cell(&o, 8 + 30, 0), 0);
+    }
+
     #[test]
     fn terrain_at_or_above_the_lid_clamps_to_the_top_slice() {
         let column = 20 + 20 * SIDE;
         let fill = |top: f32| {
             let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
             let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
-            tops[column] = top;
+            tops[column] = top / VOXEL;
             let ground = TerrainColumns {
                 origin: Vec3::ZERO,
                 tops,
@@ -2637,7 +3046,7 @@ mod tests {
         // A whole voxel below is skipped.
         let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
         let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
-        tops[column] = -0.25;
+        tops[column] = -0.25 / VOXEL;
         let ground = TerrainColumns {
             origin: Vec3::ZERO,
             tops,

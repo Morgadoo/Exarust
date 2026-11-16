@@ -40,19 +40,30 @@ pub const COMPASS: &str = "compass.rfi";
 pub const GUITEX_FILE: &str = "guitex.rfi";
 pub const GUITEX_STEM: &str = "guitex";
 
-/// The game skins' unit after a unit change. The original stores the unit
-/// on the GUI unit's global and on the guitex and menu-cursor skins that
-/// exist.
+/// The pointer slot the game skins and new character views show. The
+/// original keeps one slot for the GUI unit: the controls' start sets
+/// [`SKIN_CURSOR_HIDDEN`] (the pointer hidden, the game drawing its world
+/// cursor) and the game's end sets [`SKIN_CURSOR_DEFAULT`] (slot 0, the
+/// menu cursor); the setter writes it on the guitex and menu-cursor skins
+/// that exist, and every inventory's character view takes it when it is
+/// made. Exarust folds the rule into the cursor draw
+/// ([`crate::cursor::pointer_visibility`]: in play the world cursor is
+/// drawn and the system pointer hidden over the game screens too).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GameSkins {
-    pub unit: i32,
+    pub cursor: i32,
     pub guitex: bool,
     pub menu_cursor: bool,
 }
 
-/// Sets the unit the game skins are built at.
-pub fn set_skin_unit(skins: &mut GameSkins, unit: i32) {
-    skins.unit = unit;
+/// The slot the controls' start sets: negative, so the pointer hides.
+pub const SKIN_CURSOR_HIDDEN: i32 = -2;
+/// The slot the game's end sets: the default slot (the menu cursor).
+pub const SKIN_CURSOR_DEFAULT: i32 = 0;
+
+/// Sets the pointer slot the game skins and new character views show.
+pub fn set_skin_cursor(skins: &mut GameSkins, cursor: i32) {
+    skins.cursor = cursor;
 }
 
 /// The compass's installation values: the callback id the unit registers
@@ -362,9 +373,12 @@ pub fn crystal_item(items: &[(i32, i32)]) -> (i32, i32) {
         .unwrap_or((0, 0))
 }
 
-/// Whether the record callback rescales the character view: its state
-/// word has either of the 0x60 bits.
-pub fn rescales_view(state: u32) -> bool {
+/// Whether the inventory's page-button callback (Primary and Secondary
+/// share it) asks the shown character to swap its weapon sets: the button
+/// that reported has either of the 0x60 bits (on, lit), as the radio
+/// group's newly pressed member does; the member it turned off reports
+/// with neither and does nothing.
+pub fn page_button_swaps(state: u32) -> bool {
     state & 0x60 != 0
 }
 

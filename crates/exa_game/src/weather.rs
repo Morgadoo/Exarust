@@ -196,11 +196,17 @@ pub fn thunder_offset(thunder: &Thunder) -> Vec3 {
 /// the box's frame (cm), its colour bytes as plain numbers, and the copy
 /// index the shader shifts by that many target pixels; `copies` copies of
 /// every line (one window pixel's width on a supersampled target).
+///
+/// An odd drawn count leaves its last head without a tail: the original's
+/// line draw ignores that vertex, so it is left out here. Kept, it would
+/// pair each later copy's tails with the next drops' heads, long lines
+/// across the rain box in every direction (F550).
 pub fn streak_vertices(rain: &Rain, copies: u32) -> StreakVertices {
     let drawn = rain.vertices();
+    let whole = drawn.len() & !1;
     let mut out = StreakVertices::default();
     for copy in 0..copies.max(1) {
-        for (p, c) in &drawn {
+        for (p, c) in &drawn[..whole] {
             out.positions.push(p.to_array());
             out.colours.push(c.map(f32::from));
             out.copies.push([copy as f32, 0.0]);
@@ -683,6 +689,24 @@ mod tests {
         let t = streak_transform(&rain, 70.0);
         assert_eq!(t.translation, Vec3::new(1.0, 2.0, -4.5));
         assert!((t.scale.x - 0.01).abs() < 1e-8);
+    }
+
+    /// An odd drawn count (`round(4096·intensity)`) draws only whole
+    /// lines: every copy pairs each drop's head with its own tail.
+    #[test]
+    fn an_odd_drawn_count_keeps_each_copys_lines_whole() {
+        let mut rain = Rain::new(&mut Mt19937::new(RAIN_RANDOM_SEED));
+        rain.set_intensity(3527.0 / 4096.0);
+        assert_eq!(rain.drawn, 3527);
+        let two = streak_vertices(&rain, 2);
+        assert_eq!(two.positions.len(), 2 * 3526);
+        for (i, line) in two.positions.chunks(2).enumerate() {
+            let drop = &rain.drops[i % 1763];
+            assert_eq!(line, [drop.head.to_array(), drop.tail.to_array()]);
+        }
+        for colours in two.colours.chunks(2) {
+            assert_eq!((colours[0][3], colours[1][3]), (0.0, 255.0));
+        }
     }
 
     /// The arena setup's choice for the arenas: the indoor ones clear the

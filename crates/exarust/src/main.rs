@@ -335,6 +335,8 @@
 //! navigation grid, F7 start every keyframe track of the level, P pause,
 //! `.` step one tick, `[` / `]` slower / faster.
 
+#[cfg(test)]
+mod app_skips_test;
 mod column;
 mod draw_trace;
 mod frame_loop;
@@ -1059,6 +1061,40 @@ fn main() -> AppExit {
         Some("grid-shot") => return grid::shot(&all[1..]),
         _ => {}
     }
+    let (options, view, game_dir) = match parse_command_line(all) {
+        Ok(parsed) => parsed,
+        Err(exit) => return exit,
+    };
+
+    let Some(root) = locate_install(game_dir.as_deref()) else {
+        eprintln!(
+            "no Exanima installation: pass --game <dir> or set EXANIMA_DIR (see .env.example)"
+        );
+        return AppExit::from_code(2);
+    };
+    let data = match GameData::open(&root) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("cannot open {}: {e}", root.display());
+            return AppExit::from_code(2);
+        }
+    };
+    let (mut app, user) = match build_app(options, view, Some(data), Shell::Display) {
+        Ok(built) => built,
+        Err(exit) => return exit,
+    };
+    let exit = app.run();
+    exa_physics::exit_trace::stage("main: the app's run returned");
+    if let Some(user) = &user {
+        user.save_store_at_exit();
+    }
+    exa_physics::exit_trace::stage("main: returns");
+    exit
+}
+
+/// Reads the game's command line (the arguments after the program's name,
+/// the grid's own modes left out): the options, the view and `--game`.
+fn parse_command_line(all: Vec<String>) -> Result<(Options, View, Option<PathBuf>), AppExit> {
     let mut args = all.into_iter().peekable();
     let mut game_dir: Option<PathBuf> = None;
     let mut options = Options {
@@ -1096,7 +1132,7 @@ fn main() -> AppExit {
                     Some(cap) => options.max_fps = Some(cap),
                     None => {
                         eprintln!("--max-fps: cannot read {value:?} (a rate, auto or 0)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1123,7 +1159,7 @@ fn main() -> AppExit {
                         eprintln!(
                             "--physique: cannot read {text:?} (x,y[,height,age,feral,female])"
                         );
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1189,7 +1225,7 @@ fn main() -> AppExit {
                     }
                     None => {
                         eprintln!("--opponent-powers: cannot read {list:?} (id,id,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1215,7 +1251,7 @@ fn main() -> AppExit {
                     exa_game::item_ability::DebugAbilityItem::item(k).map(|item| (k, item))
                 }) else {
                     eprintln!("--ability-item: 1, 2 or 3 [,cold][,npc], not {text:?}");
-                    return AppExit::from_code(2);
+                    return Err(AppExit::from_code(2));
                 };
                 let mut item = exa_game::item_ability::DebugAbilityItem::new(
                     kind,
@@ -1247,7 +1283,7 @@ fn main() -> AppExit {
                     "controls" => Some(1),
                     _ => {
                         eprintln!("--open-settings: settings or controls, not {page:?}");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 };
             }
@@ -1260,7 +1296,7 @@ fn main() -> AppExit {
                     eprintln!(
                         "--open-creator: story, story-all, story:N, begin:N, powers, practice, expert, arena, recruit or versus, not {word:?}"
                     );
-                    return AppExit::from_code(2);
+                    return Err(AppExit::from_code(2));
                 }
                 options.open_creator = Some(word);
             }
@@ -1321,7 +1357,7 @@ fn main() -> AppExit {
                     Some(p) => options.press = p,
                     None => {
                         eprintln!("--press: cannot read {list:?} (key@frame,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1347,7 +1383,7 @@ fn main() -> AppExit {
                     Some(ids) => options.give = ids,
                     None => {
                         eprintln!("--give: cannot read {list:?} (id,id,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1360,11 +1396,11 @@ fn main() -> AppExit {
                         eprintln!(
                             "--new-game arena: the arena career starts at the character creator's commit, which the flow has no starter for; use --open-creator arena"
                         );
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                     None => {
                         eprintln!("--new-game: story or story:N (N 0 to 3), not {word:?}");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1376,7 +1412,7 @@ fn main() -> AppExit {
                         eprintln!(
                             "--env-seed: a nonzero u32 (decimal or 0x hex), not {word:?} (zero is the original's word for a fresh clock seed)"
                         );
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1404,7 +1440,7 @@ fn main() -> AppExit {
                     Ok(row) => options.shop_buy = Some(row),
                     Err(_) => {
                         eprintln!("--shop-buy: cannot read {value:?} (a row number)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1416,7 +1452,7 @@ fn main() -> AppExit {
                         eprintln!(
                             "--board-table: cannot read {value:?} (roster:ROW, lineup:ROW, drag:ROW:TO, back:ROW, tab:N or winner:ROW, comma separated)"
                         );
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1428,7 +1464,7 @@ fn main() -> AppExit {
                         eprintln!(
                             "--manage-table: cannot read {value:?} (drag:FROM:TO, roster:ROW or report:LINE, comma separated)"
                         );
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1443,7 +1479,7 @@ fn main() -> AppExit {
                     Some(id) => options.shop_sell = Some(id),
                     None => {
                         eprintln!("--shop-sell: cannot read {value:?} (an item id)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1454,7 +1490,7 @@ fn main() -> AppExit {
                         "--open-hub-window: one of {:?}, not {name:?}",
                         exa_game::hub_forms::HUB_WINDOW_NAMES
                     );
-                    return AppExit::from_code(2);
+                    return Err(AppExit::from_code(2));
                 }
                 options.open_hub_window = Some(name);
             }
@@ -1467,7 +1503,7 @@ fn main() -> AppExit {
                     Some(cast) => options.debug_casts.push(cast),
                     None => {
                         eprintln!("--debug-cast: cannot read {text:?} (slot@frame[~release])");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1483,7 +1519,7 @@ fn main() -> AppExit {
                     Some(at) => options.debug_bubble = Some(at),
                     None => {
                         eprintln!("--debug-bubble: cannot read {text:?} (frame[,hold])");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1500,7 +1536,7 @@ fn main() -> AppExit {
                     Some(powers) => options.powers = powers,
                     None => {
                         eprintln!("--powers: cannot read {list:?} (id,id,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1523,7 +1559,7 @@ fn main() -> AppExit {
                     Some(p) => options.perks = p,
                     None => {
                         eprintln!("--perks: cannot read {list:?} (remise,feint,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1542,7 +1578,7 @@ fn main() -> AppExit {
                     Some(w) => options.wheels = w,
                     None => {
                         eprintln!("--wheel: cannot read {list:?} (delta@frame,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1553,7 +1589,7 @@ fn main() -> AppExit {
                     Some(d) => options.drags_at = d,
                     None => {
                         eprintln!("--drag-at: cannot read {list:?} (x,y>x,y@frame;...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1563,7 +1599,7 @@ fn main() -> AppExit {
                     Some(c) => options.clicks_at = c,
                     None => {
                         eprintln!("--click-at: cannot read {list:?} (x,y@frame;...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1573,7 +1609,7 @@ fn main() -> AppExit {
                     Some(items) => options.hub_arsenal = items,
                     None => {
                         eprintln!("--hub-arsenal: cannot read {list:?} (id,id,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1583,7 +1619,7 @@ fn main() -> AppExit {
                     Some(items) => options.hub_stash = items,
                     None => {
                         eprintln!("--hub-stash: cannot read {list:?} (id,id,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1597,7 +1633,7 @@ fn main() -> AppExit {
                     Some(slots) if !slots.is_empty() => options.hub_enter = slots,
                     _ => {
                         eprintln!("--hub-enter: cannot read {value:?} (slot,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1607,7 +1643,7 @@ fn main() -> AppExit {
                     Some(kit) => options.hub_employee_kit.push(kit),
                     None => {
                         eprintln!("--hub-employee-kit: cannot read {value:?} (NAME:id,id,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1617,7 +1653,7 @@ fn main() -> AppExit {
                     Some(c) => options.clicks = c,
                     None => {
                         eprintln!("--click: cannot read {list:?} (frame,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1627,7 +1663,7 @@ fn main() -> AppExit {
                     Some(script) => options.character_use = script,
                     None => {
                         eprintln!("--character-use: cannot read {text:?} (ID@FRAME[+],...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1640,7 +1676,7 @@ fn main() -> AppExit {
                     Some(script) => options.game_events = Some(script),
                     None => {
                         eprintln!("--game-event: cannot read {list:?} (CODE@FRAME,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1655,7 +1691,7 @@ fn main() -> AppExit {
                 };
                 if ok.is_none() {
                     eprintln!("{a}: cannot read {text:?} (FROM>TO@FRAME or AT@FRAME)");
-                    return AppExit::from_code(2);
+                    return Err(AppExit::from_code(2));
                 }
             }
             "--kit-use" => {
@@ -1664,7 +1700,7 @@ fn main() -> AppExit {
                     Some(script) => options.kit_use = script,
                     None => {
                         eprintln!("--kit-use: cannot read {text:?} (clean|repair:ID@FRAME,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1685,7 +1721,7 @@ fn main() -> AppExit {
                     };
                 if ok.is_none() {
                     eprintln!("{a}: cannot read {text:?} (ID@FRAME)");
-                    return AppExit::from_code(2);
+                    return Err(AppExit::from_code(2));
                 }
             }
             "--object-click" => {
@@ -1694,7 +1730,7 @@ fn main() -> AppExit {
                     Some(c) => options.object_clicks = c,
                     None => {
                         eprintln!("--object-click: cannot read {list:?} (frame[d][l][#id],...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1705,7 +1741,7 @@ fn main() -> AppExit {
                     Some(pad) => options.pad_press = Some(pad),
                     None => {
                         eprintln!("--pad-press: cannot read {list:?} (name@frame,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1719,7 +1755,7 @@ fn main() -> AppExit {
                     Some(frames) => options.save_at = frames,
                     None => {
                         eprintln!("--save-at: cannot read {list:?} (frame,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1730,7 +1766,7 @@ fn main() -> AppExit {
                     "arena" => Some(exa_game::save_screen::ARENA),
                     _ => {
                         eprintln!("--open-saves: story or arena, not {word:?}");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 };
             }
@@ -1741,7 +1777,7 @@ fn main() -> AppExit {
                     "no" => Some(false),
                     _ => {
                         eprintln!("--portal-reset: yes or no, not {word:?}");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 };
             }
@@ -1757,7 +1793,7 @@ fn main() -> AppExit {
                         eprintln!(
                             "--saves-press: cannot read {list:?} (previous, next, delete, toggle, continue, back, confirm, cancel)"
                         );
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1770,7 +1806,7 @@ fn main() -> AppExit {
                     }
                     _ => {
                         eprintln!("--load-slot: cannot read {text:?} (1-999[:save|:checkpoint])");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1780,7 +1816,7 @@ fn main() -> AppExit {
                     Ok(number) if (1..=999).contains(&number) => options.arena_slot = Some(number),
                     _ => {
                         eprintln!("--arena-slot: cannot read {text:?} (1-999)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1790,7 +1826,7 @@ fn main() -> AppExit {
                     Some(changes) => options.level_changes = changes,
                     None => {
                         eprintln!("--level-change: cannot read {list:?} (level@frame,...)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1802,7 +1838,7 @@ fn main() -> AppExit {
                         eprintln!(
                             "--debug-wound: cannot read {text:?} (bone,radius_cm[,dx,dy,dz])"
                         );
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1812,7 +1848,7 @@ fn main() -> AppExit {
                     Some(s) => options.debug_sprays.push(s),
                     None => {
                         eprintln!("--debug-spray: cannot read {text:?} (bone,R[,dx,dy,dz])");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1822,7 +1858,7 @@ fn main() -> AppExit {
                     Some(b) => options.weapon_blood = Some(b),
                     None => {
                         eprintln!("--weapon-blood: cannot read {text:?} (a number from 0 to 1)");
-                        return AppExit::from_code(2);
+                        return Err(AppExit::from_code(2));
                     }
                 }
             }
@@ -1920,26 +1956,32 @@ fn main() -> AppExit {
             motion: motion.join(" "),
         },
         [] => View::Texture("humandiff".into()),
-        _ => return usage(),
+        _ => return Err(usage()),
     };
+    Ok((options, view, game_dir))
+}
 
-    let Some(root) = locate_install(game_dir.as_deref()) else {
-        eprintln!(
-            "no Exanima installation: pass --game <dir> or set EXANIMA_DIR (see .env.example)"
-        );
-        return AppExit::from_code(2);
-    };
-    let data = match GameData::open(&root) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("cannot open {}: {e}", root.display());
-            return AppExit::from_code(2);
-        }
-    };
-    let user = if options.no_settings {
-        None
-    } else {
-        user_settings::load(&data.project().name)
+/// Where the frames go: a window, an offscreen image, or nowhere (a
+/// headless check: no window, no GPU, no audio device).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shell {
+    Display,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Headless,
+}
+
+/// Builds the game's App from the parsed command line, as `main` runs it
+/// (the checks in `app_skips_test` build it headless). `data` is the opened
+/// installation; without one (a data-free check) `Game` is left out.
+fn build_app(
+    mut options: Options,
+    view: View,
+    data: Option<GameData>,
+    shell: Shell,
+) -> Result<(App, Option<user_settings::UserSettings>), AppExit> {
+    let user = match &data {
+        Some(data) if !options.no_settings => user_settings::load(&data.project().name),
+        _ => None,
     };
     if let Some(user) = &user {
         user.apply_to(&mut options);
@@ -1975,7 +2017,7 @@ fn main() -> AppExit {
     {
         Some(Err(e)) => {
             eprintln!("cannot write the trace: {e}");
-            return AppExit::from_code(2);
+            return Err(AppExit::from_code(2));
         }
         Some(Ok(t)) => Some(t.every_body(options.trace_all)),
         None => None,
@@ -1987,7 +2029,7 @@ fn main() -> AppExit {
     {
         Some(Err(e)) => {
             eprintln!("cannot write the joint trace: {e}");
-            return AppExit::from_code(2);
+            return Err(AppExit::from_code(2));
         }
         Some(Ok(t)) => Some(t),
         None => None,
@@ -1999,7 +2041,7 @@ fn main() -> AppExit {
     {
         Some(Err(e)) => {
             eprintln!("cannot write the pair trace: {e}");
-            return AppExit::from_code(2);
+            return Err(AppExit::from_code(2));
         }
         Some(Ok(t)) => Some(t),
         None => None,
@@ -2029,8 +2071,10 @@ fn main() -> AppExit {
     // Winit's low-power reactive mode wakes on the window's own events and
     // otherwise waits 32 ms. Unattended runs (a screenshot, fixed frames)
     // keep running at full speed in the background.
-    let unattended =
-        options.screenshot.is_some() || options.fixed_frames || options.offscreen.is_some();
+    let unattended = shell == Shell::Headless
+        || options.screenshot.is_some()
+        || options.fixed_frames
+        || options.offscreen.is_some();
     app.insert_resource(bevy::winit::WinitSettings {
         focused_mode: bevy::winit::UpdateMode::Continuous,
         unfocused_mode: if unattended {
@@ -2076,7 +2120,7 @@ fn main() -> AppExit {
             }
             Err(e) => {
                 eprintln!("cannot write the draw trace: {e}");
-                return AppExit::from_code(2);
+                return Err(AppExit::from_code(2));
             }
         }
     }
@@ -2092,6 +2136,7 @@ fn main() -> AppExit {
     message_box::install_log_boxes(!unattended);
     if !options.no_settings
         && let Some(folder) = user_settings::folder()
+        && let Some(data) = &data
     {
         exa_game::engine_log::set_log_file(Some(exa_game::engine_log::log_file_path(
             &folder,
@@ -2148,7 +2193,22 @@ fn main() -> AppExit {
                 filter: format!("{},rodio::stream=off", bevy::log::DEFAULT_FILTER),
                 ..default()
             });
-    if let Some(path) = &offscreen {
+    if shell == Shell::Headless {
+        // No OS window, no renderer and nothing to run the frames: the
+        // check updates the App itself. The primary window stays (as
+        // offscreen) for the systems that read its size.
+        plugins = plugins
+            .disable::<bevy::winit::WinitPlugin>()
+            .set(bevy::render::RenderPlugin {
+                render_creation: bevy::render::settings::WgpuSettings {
+                    backends: None,
+                    ..default()
+                }
+                .into(),
+                ..default()
+            });
+        app.add_plugins(plugins);
+    } else if let Some(path) = &offscreen {
         // No OS window: Bevy's schedule runner drives the frames (the
         // frame-rate cap paces them) and the cameras draw into an image.
         let (w, h) = options.size.unwrap_or((1280, 720));
@@ -2172,8 +2232,10 @@ fn main() -> AppExit {
     );
     // `--debug-lights` lists around the camera in a level view.
     let level_view = matches!(view, View::Level(_));
+    if let Some(data) = data {
+        app.insert_resource(Game(Arc::new(data)));
+    }
     app.add_plugins(exa_game::GamePlugin)
-        .insert_resource(Game(Arc::new(data)))
         .insert_resource(exa_game::flow::BootToMenu(false))
         .insert_resource(view)
         .insert_resource(options.gi)
@@ -2473,13 +2535,7 @@ fn main() -> AppExit {
             render.insert_resource(ExitTraceMarker::<2>(DropStage("the render world")));
         }
     }
-    let exit = app.run();
-    exa_physics::exit_trace::stage("main: the app's run returned");
-    if let Some(user) = &user {
-        user.save_store_at_exit();
-    }
-    exa_physics::exit_trace::stage("main: returns");
-    exit
+    Ok((app, user))
 }
 
 /// The window position from `--window-at`, else `EXA_WINDOW_AT`.
