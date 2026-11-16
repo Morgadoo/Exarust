@@ -2549,8 +2549,25 @@ step becomes a `SettingsEntry` message that the binary writes and flushes
 into the user's store, as the original's settings writer does, so a later
 launch greys EXPERT differently. The camera shots (offsets added to the framed point)
 with their cursor warps, the spawn turns (the engine's angle builder), the
-exit-trigger nudge, the practice scene filter, the practice and menu music,
-the unlock words and the save managers' signatures are pinned by tests.
+exit-trigger nudge, the practice and menu music,
+the unlock words and the save managers' signatures are pinned by tests. A
+shot's warp is applied while the window has the focus
+(`os_pointer::WarpPointer`, the client point over the scale factor). The
+practice start gives the player its roles anew (cleared, then Unaligned).
+The practice fights and the respawn write their frame height before the
+placement (`Step::PlacedFrame` → `level_change::PlacedFrame`, taken with
+the placement; the viewer then skips the save landing's floor probe): the
+start the pose's pelvis target plus 5 cm and each next fight its stand
+height over the origin, the portal placement the frame 15 cm up as the
+pelvis's own (`limp::FrameHeight::Given`). The original passes its practice
+scene filter to level loads that never read it, so Exarust has none. The
+session leave and the story exit end every conversation
+(`exa_script::EndAllConversations`). The in-game GUI (`GameView`, the HUD)
+goes on with each start and continue once its level is in and off with the
+session's leave; the death, the knock-out, the level exit and the story
+exit sweep the game screens instead (`Step::SweepScreens`). The new story
+sets the first wake-up's flag once its level is in (`Step::FirstWake`),
+after the load's GUI reset (`load_reset`) cleared it, as every load's does.
 Rules: `docs/UI.md` (The game flow).
 
 `splash` is the start-up splash screen: the black backdrop, the one-second

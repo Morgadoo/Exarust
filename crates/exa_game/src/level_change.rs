@@ -123,6 +123,18 @@ impl PlayerPlacement {
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacedSettle(pub i32);
 
+/// The frame height the next [`PlayerPlacement`] puts the player's pelvis
+/// at ([`crate::flow::Step::PlacedFrame`]): its position's height is the
+/// frame's floor and the living placement takes the height from the rule,
+/// with no floor probe. Without it the placement lands on the floor the
+/// save landing probes. The practice start writes the pose's pelvis target
+/// plus 5 cm over the origin, each next fight the stand height over the
+/// origin, and a respawn at its portal the portal's frame 15 cm up as the
+/// pelvis's own height ([`crate::limp::FrameHeight::Given`]). Taken with the
+/// placement.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct PlacedFrame(pub crate::limp::FrameHeight);
+
 /// A respawn's placement at the respawn portal, carried across the level
 /// load ([`crate::flow::Step::PlaceAtPortal`]). The original's story
 /// respawn and its load of a save written while a respawn was pending set
