@@ -1631,6 +1631,8 @@ the motile body and balance lane from the triage's port queue: the golem-suit le
 
 the function oracle covers 110 original functions bit for bit over 5000 cases each; its second pass switched the callers to the original's exact normaliser and lerp, fixed the swing time on non-finite input, and found and fixed about fifteen small port defects (NaN and negative-zero handling, a sine kept for a denormal, reciprocal-first weight normalisations, a bearing worked in double, a wrapped tick count, integer conversions past range); the simulation changes from the first tick in the last bit and diverges after (expected); determinism holds per binary. F569 opened: the barricade's AI placement measures from the body, not the scored place, and writes its keep weight to the wrong word. The sector and sweep ports' exact reciprocals wait on DEC-7.
 
+the frame's Update and PostUpdate are fully ordered in named phases that follow the original's frame order (input, GUI, hub, session, controls, camera, hand, cursor, world, audio, draw, capture; prepare, placed, view, trace), and the schedule test now holds every schedule to zero unordered conflicting pairs, apart from seven documented pairs with private engine systems; ordering the frame fixed a GUI bug: paints that ran before the game screens' per-frame clear were wiped every frame (the story death's tip banner now shows). Determinism unchanged; the golden story_death scene changes by the banner.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
