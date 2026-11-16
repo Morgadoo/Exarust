@@ -27,6 +27,9 @@ const WHOLE_FROM: f32 = 100.0;
 pub const MAX_CELL_LIGHTS: usize = 12;
 /// The flood stops when its stack holds more entries than this.
 const STACK_LIMIT: usize = 31;
+/// The engine's small-value threshold (2⁻²³ as stored, `0x33FFFFD7`) under
+/// which a downward-shaped light's vertical term stops the flood.
+const SHAPED_CUTOFF: f32 = f32::from_bits(0x33ff_ffd7);
 /// Cell size, metres.
 const CELL: f32 = 6.0;
 /// Plane A's bit for a built cell.
@@ -367,7 +370,7 @@ impl CellLights {
                 // shaping lets them at the light's height.
                 let h = ((light.position.y * 100.0 + 1000.0) / 600.0).min(reach);
                 let c = h / (h * h + d2).sqrt().max(1e-6);
-                if c + (1.0 - c) * y < 1.19e-7 {
+                if c + (1.0 - c) * y < SHAPED_CUTOFF {
                     continue;
                 }
             }
@@ -398,6 +401,10 @@ impl CellLights {
                 let next = (cell.0 + STEP[side].0, cell.1 + STEP[side].1);
                 stack.push((next, o0, o1));
             }
+        }
+        if stack.len() > STACK_LIMIT {
+            // The original's warning, titled "Light propagation".
+            bevy::log::warn!("Light propagation: Stack size exceeded {}", stack.len());
         }
     }
 

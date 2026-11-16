@@ -3264,6 +3264,40 @@ mod tests {
         assert_eq!(transform[3], [1.0, 0.0, 0.0]);
     }
 
+    /// No shipped light node carries the world-light option bit (`flags2`
+    /// bit 2; skipped without the game): the scene registration's
+    /// world-light branch, which clears the light's fixture parts instead of
+    /// listing it, is reached only by a light the scene editor flags. Every
+    /// file of every pack that reads as a scene is walked.
+    #[test]
+    fn no_shipped_light_is_a_world_light() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let (mut scenes, mut lights, mut world, mut ranged) = (0, 0, 0, 0);
+        for (_, pack) in game.packs() {
+            for e in pack.entries() {
+                let Ok(scene) = Scene::parse(pack.bytes(e)) else {
+                    continue;
+                };
+                scenes += 1;
+                for node in scene.nodes.iter().filter(|n| n.kind == NODE_LIGHT) {
+                    lights += 1;
+                    if node.flags2 & 2 != 0 {
+                        world += 1;
+                    }
+                    if node.flags2 & RANGED != 0 {
+                        ranged += 1;
+                    }
+                }
+            }
+        }
+        println!("{scenes} scenes, {lights} light nodes, {ranged} ranged, {world} world lights");
+        assert!(lights > 500, "{lights} light nodes");
+        assert_eq!(world, 0);
+    }
+
     /// The installed levels' props carry node overrides (skipped without the
     /// game): every level has transform records (the arena's dummy bases),
     /// and exanima01 replaces a banner mesh's 228 positions.

@@ -26,6 +26,7 @@
 //!          --no-shadows               lights cast no shadows (for software rendering)
 //!          --no-cube-lids             debug: the room's lid stays out of its lights' cube shadows (to compare)
 //!          --no-sector-cull           debug: the scene's visible pass leaves the main view's list alone (to compare)
+//!          --no-alias-links           debug: the scene's node passes skip the alias link tests (to compare)
 //!          --no-sector-scissor        debug: surfaces seen through doorways are not clipped to the doorways' rectangle (to compare)
 //!          --no-list-depth-bias       debug: decal and blended surfaces draw without the original's projection depth bias (to compare)
 //!          --no-registration-order    debug: one blended state in one room keeps Bevy's distance order (to compare)
@@ -373,6 +374,8 @@ pub struct Options {
     pub no_cube_lids: bool,
     /// Debug: the scene's visible pass leaves the main view's list alone.
     pub no_sector_cull: bool,
+    /// Debug: the scene's node passes skip the alias link tests.
+    pub no_alias_links: bool,
     /// Debug: no portal scissor on the decal and blended surfaces.
     pub no_sector_scissor: bool,
     /// Debug: decal and blended surfaces draw without the original's
@@ -1075,6 +1078,7 @@ fn main() -> AppExit {
             "--no-shadows" => options.no_shadows = true,
             "--no-cube-lids" => options.no_cube_lids = true,
             "--no-sector-cull" => options.no_sector_cull = true,
+            "--no-alias-links" => options.no_alias_links = true,
             "--no-sector-scissor" => options.no_sector_scissor = true,
             "--no-list-depth-bias" => options.no_list_depth_bias = true,
             "--no-registration-order" => options.no_registration_order = true,
@@ -2202,6 +2206,7 @@ fn main() -> AppExit {
         .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
         .insert_resource(exa_render::cube_shadows::CubeLids(!options.no_cube_lids))
         .insert_resource(exa_world::scene_live::SectorCull(!options.no_sector_cull))
+        .insert_resource(exa_world::scene_live::AliasLinks(!options.no_alias_links))
         .insert_resource(exa_render::sector_walk::SectorScissors {
             enabled: !options.no_sector_scissor,
             ..default()

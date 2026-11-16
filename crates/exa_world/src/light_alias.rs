@@ -164,6 +164,10 @@ pub struct AliasHit {
     pub mask: u32,
     /// The weight passed the cutoff.
     pub lit: bool,
+    /// The test got as far as the face mask (the gated test past its
+    /// intensity gate, the plain test lit): only then does the original
+    /// write the alias's shadow map word.
+    pub tested: bool,
 }
 
 /// The cube faces a node is reached through: all six unless one of a
@@ -194,6 +198,7 @@ pub fn reach_plain(light: &AliasLight, node: &AliasNode) -> AliasHit {
         weight,
         mask: u32::from(lit),
         lit,
+        tested: lit,
     }
 }
 
@@ -202,16 +207,23 @@ pub fn reach_plain(light: &AliasLight, node: &AliasNode) -> AliasHit {
 /// reports a zero weight and mask, and lit only when the node's bucket held
 /// a mask before. See the module docs for the rule. The negated compares
 /// are the original's unordered branches.
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn reach(light: &AliasLight, node: &AliasNode, gate: bool) -> AliasHit {
+    reach_with(light, node, || gate)
+}
+
+/// [`reach`] with the cell flood's answer asked only once the sphere and
+/// box tests have passed. The original asks the flood first; every step
+/// before the weight is a pure test whose failure gives the same miss, so
+/// asking it last gives the same answer and spares the angular wall test
+/// for the nodes out of the light's reach.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn reach_with(light: &AliasLight, node: &AliasNode, gate: impl FnOnce() -> bool) -> AliasHit {
     let miss = AliasHit {
         weight: 0.0,
         mask: 0,
         lit: node.mask != 0,
+        tested: false,
     };
-    if !gate {
-        return miss;
-    }
     // The spheres must overlap; an unordered compare misses.
     let delta = light.position - node.centre;
     let centre_sq = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
@@ -222,6 +234,9 @@ pub fn reach(light: &AliasLight, node: &AliasNode, gate: bool) -> AliasHit {
     let obb = node.obb();
     let box_sq = point_obb_distance_squared(light.position, &obb);
     if !(box_sq < light.radius * light.radius) {
+        return miss;
+    }
+    if !gate() {
         return miss;
     }
     // The shell distance when the node's centre lies outside its own radius
@@ -265,7 +280,12 @@ pub fn reach(light: &AliasLight, node: &AliasNode, gate: bool) -> AliasHit {
     let weight = luma(product.to_array()) * weight;
     let lit = light.cutoff < weight;
     let mask = face_mask(node.centre, light.position, node.radius);
-    AliasHit { weight, mask, lit }
+    AliasHit {
+        weight,
+        mask,
+        lit,
+        tested: true,
+    }
 }
 
 /// `MAXSS`: the first operand when it is larger, else the second.
