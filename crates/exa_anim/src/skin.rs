@@ -529,9 +529,12 @@ pub fn tint_alpha(vertex: Vec3, stored: u8, light: &TintLight, roll: f64) -> Opt
     }
 }
 
-/// The alpha a mesh attached at `attached` shows at `now` while it fades
-/// in: `1 − (now − attached)/600` in double, single, floored at zero with
-/// an ordered compare.
+/// The alpha a mesh attached at `attached` would show at `now` while it
+/// fades in: `1 − (now − attached)/600` in double, single, floored at zero
+/// with an ordered compare. The original's per-frame deform computes it
+/// when the controller's fade flag is set, then makes a buffer-bind call
+/// that takes no float and never reads the value again: no draw shows it,
+/// so nothing live calls this either.
 pub fn fade_alpha(now: u32, attached: u32) -> f32 {
     let ticks = i64::from(now) - i64::from(attached);
     let alpha = (1.0 - ticks as f64 * (1.0 / 600.0)) as f32;

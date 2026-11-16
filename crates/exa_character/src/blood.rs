@@ -71,6 +71,7 @@ impl Plugin for BloodPlugin {
         app.add_message::<PaintWound>()
             .add_message::<Bleed>()
             .init_resource::<WoundRng>()
+            .init_resource::<ClothBloodRoll>()
             .add_systems(
                 PostUpdate,
                 (
@@ -225,6 +226,12 @@ impl WoundRng {
     }
 }
 
+/// The generator state of the cloths' blood painter: the engine's step
+/// ([`exa_physics::cloth::next_random`]), its own stream here (the
+/// original draws from the engine's shared generator).
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct ClothBloodRoll(pub u32);
+
 /// The blood values of a mesh: its blood stream's alphas, or all clean.
 fn blood_of(mesh: &Mesh) -> Vec<u8> {
     match mesh.attribute(BLOOD_STREAM.id) {
@@ -352,10 +359,12 @@ pub fn paint_wounds(
         Option<&SkinnedMesh>,
         Option<&mut SkinnedPart>,
         Has<Bloodied>,
+        Has<exa_world::cloth::ClothInstance>,
     )>,
     transforms: Query<&GlobalTransform>,
     bindposes: Res<Assets<SkinnedMeshInverseBindposes>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut roll: ResMut<ClothBloodRoll>,
 ) {
     // Parts given their own copy this frame: `Bloodied` lands only when the
     // commands apply, and a later wound in the same frame paints the copy.
@@ -363,9 +372,28 @@ pub fn paint_wounds(
     for wound in wounds.read() {
         let (mut painted, mut copied, mut vertices, mut bytes) = (0, 0, 0, 0);
         for part in wound_targets(wound.body, &children, &parents, &parts, &candidates) {
-            let Ok((mut mesh3d, skin, skinned, bloodied)) = meshes_of.get_mut(part) else {
+            let Ok((mut mesh3d, skin, skinned, bloodied, cloth)) = meshes_of.get_mut(part) else {
                 continue;
             };
+            // A cloth (long hair) has its own mesh, which its simulation
+            // moves: the cloth's painter paints it in place.
+            if cloth {
+                let Ok(at) = transforms.get(part) else {
+                    continue;
+                };
+                let Some(mut mesh) = meshes.get_mut(&mesh3d.0) else {
+                    continue;
+                };
+                let changed = paint_cloth(&mut mesh, at, wound, &mut roll.0);
+                if changed > 0 {
+                    painted += 1;
+                    vertices += changed;
+                    if !bloodied {
+                        commands.entity(part).insert(Bloodied);
+                    }
+                }
+                continue;
+            }
             let Some(mesh) = meshes.get(&mesh3d.0) else {
                 continue;
             };
@@ -416,6 +444,45 @@ pub fn paint_wounds(
             bytes / 1024
         );
     }
+}
+
+/// Paints `wound` on a cloth's own mesh in place, as the original's cloth
+/// painter does (`exa_physics::cloth::paint_blood`): in the cloth's
+/// centimetres, the wound's point taken into the node's frame by `at` and
+/// its travel left a world one. Returns how many vertices changed.
+pub fn paint_cloth(
+    mesh: &mut Mesh,
+    at: &GlobalTransform,
+    wound: &PaintWound,
+    roll: &mut u32,
+) -> usize {
+    const CM: f32 = 100.0;
+    let Some(positions) = mesh
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .and_then(|a| a.as_float3())
+    else {
+        return 0;
+    };
+    let vertices: Vec<Vec3> = positions.iter().map(|p| Vec3::from(*p) * CM).collect();
+    let mut colours: Vec<[u8; 4]> = blood_of(mesh).iter().map(|&a| [255, 255, 255, a]).collect();
+    let into_node = Affine3A::from_scale(Vec3::splat(CM))
+        * at.affine().inverse()
+        * Affine3A::from_scale(Vec3::splat(1.0 / CM));
+    let radius = wound.radius * CM;
+    let changed = exa_physics::cloth::paint_blood(
+        &vertices,
+        &mut colours,
+        wound.contact * CM,
+        wound.travel * CM,
+        Some(&into_node),
+        radius * radius,
+        roll,
+    );
+    if changed > 0 {
+        let alphas: Vec<u8> = colours.iter().map(|c| c[3]).collect();
+        mesh.insert_attribute(BLOOD_STREAM, blood_stream(&alphas));
+    }
+    changed
 }
 
 /// Bytes of a mesh's vertex and index data.
@@ -1188,6 +1255,66 @@ mod tests {
         let both = alphas(&app, b.chest).unwrap();
         assert_eq!((both[3], both[7]), (0, 0));
         assert_eq!(both[5], 255);
+    }
+
+    /// A head wound paints the long hair's cloth in place, through the
+    /// cloth's painter: its own mesh (the one its simulation moves) keeps
+    /// its handle and takes the blood, in the node's frame, while the
+    /// wound's travel stays a world direction.
+    #[test]
+    fn a_head_wound_paints_the_hair_cloth_in_place() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
+            .add_plugins(BloodPlugin);
+        let (skinned, rigid, hair) = {
+            let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+            (
+                meshes.add(strip(true)),
+                meshes.add(strip(false)),
+                meshes.add(strip(false)),
+            )
+        };
+        let a = body(app.world_mut(), 0.0, &skinned, &rigid);
+        let head = app
+            .world_mut()
+            .query::<(Entity, &BodyPart)>()
+            .iter(app.world())
+            .find(|(_, p)| p.bone == HEAD)
+            .unwrap()
+            .0;
+        // The hair node hangs 1 m up, turned a quarter about y: its local
+        // x strip runs along world −z.
+        let turned = Transform::from_xyz(0.0, 1.0, 0.0)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        let cloth = app
+            .world_mut()
+            .spawn((
+                Mesh3d(hair.clone()),
+                MeshMaterial3d::<ExaMaterial>(Handle::default()),
+                exa_world::cloth::ClothInstance {
+                    mesh: hair.clone(),
+                    ..Default::default()
+                },
+                GlobalTransform::from(turned),
+                ChildOf(head),
+            ))
+            .id();
+        // At the strip's local x = 0.3 (world z = −0.3), radius 15 cm.
+        app.world_mut().write_message(PaintWound {
+            body: a.root,
+            contact: Vec3::new(0.0, 1.0, -0.3),
+            travel: Vec3::ZERO,
+            radius: 0.15,
+        });
+        app.update();
+        let world = app.world();
+        assert_eq!(world.get::<Mesh3d>(cloth).unwrap().0, hair);
+        assert!(world.get::<Bloodied>(cloth).is_some());
+        let painted = alphas(&app, cloth).unwrap();
+        assert_eq!(painted[8], 0);
+        assert!(painted[..6].iter().all(|&v| v == 255), "{painted:?}");
     }
 
     /// The original's one-handed sword `sword_a` (90 cm): a cut 70 cm along
