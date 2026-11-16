@@ -2996,6 +2996,38 @@ pub(crate) fn close_on_right_release(
     }
 }
 
+/// The dead powers' loot close: Raise Dead and Command Dead close the first
+/// loot window open on the body they raise, as the original's routine walks
+/// the GUI task's forms for the loot tag and the body.
+pub fn close_loot_on_body(world: &mut World, body: Entity) {
+    let Some(mut screens) = world.get_resource_mut::<GameScreens>() else {
+        return;
+    };
+    let character = body.index().index() as i32;
+    if screens.close_loot(character) {
+        info!("raise dead: the loot window on {body:?} closes");
+    }
+}
+
+/// The GUI callback a Loyalty or Command Dead mark posts as it ends on its
+/// body: the task's root takes the focus, and an inventory window open on
+/// the body (the original looks it up by its owner and its visible byte)
+/// closes.
+pub fn release_marked_body(world: &mut World, body: Entity) {
+    let Some(mut screens) = world.get_resource_mut::<GameScreens>() else {
+        return;
+    };
+    if let Some(root) = screens.task.root {
+        screens.task.activate(root);
+    }
+    if screens.inventory_body == Some(body)
+        && screens.is_open(GameScreen::Inventory)
+        && screens.close(GameScreen::Inventory)
+    {
+        info!("mind: the mark on {body:?} ends: its inventory closes");
+    }
+}
+
 /// Closes the loot windows the original's deferred close takes: a window
 /// whose body's state word has `0x80000`, or whose condition is no longer
 /// the dead mode `0xa00`. Exarust keeps no copy of the body's state word, so

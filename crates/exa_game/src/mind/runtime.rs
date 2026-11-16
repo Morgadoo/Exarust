@@ -710,6 +710,10 @@ enum MindAction {
     },
     /// The body's AI re-arms its behaviour (the original's behaviour byte).
     Rearm(Entity),
+    /// A Loyalty or Command Dead mark ended on the body: the GUI focuses
+    /// its root and closes an inventory open on the body
+    /// ([`crate::gui_screens::release_marked_body`]).
+    ReleaseScreens(Entity),
     /// A Command Dead caster's end lays its raised body down again.
     LayDown(BodyId),
     /// A loaded Loyalty or Command Dead found its target: the marker `id`
@@ -940,6 +944,7 @@ pub fn tick_minds(
                                 target: own_id,
                             });
                         }
+                        actions.push(MindAction::ReleaseScreens(entity));
                         actions.push(MindAction::Rearm(entity));
                         play_mind_sound(&mut sounds, casts::END_SOUND);
                     }
@@ -982,6 +987,7 @@ pub fn tick_minds(
                                 target: own_id,
                             });
                         }
+                        actions.push(MindAction::ReleaseScreens(entity));
                         actions.push(MindAction::Rearm(entity));
                     }
                     result
@@ -1064,6 +1070,15 @@ pub fn tick_minds(
                     });
                 }
             }
+            MindAction::ReleaseScreens(body) => {
+                let run = move |world: &mut World| {
+                    crate::gui_screens::release_marked_body(world, body);
+                };
+                match frame.as_deref_mut() {
+                    Some(frame) => frame.send(run),
+                    None => commands.queue(run),
+                }
+            }
             MindAction::Rearm(body) => {
                 commands.queue(move |world: &mut World| {
                     if let Some(mut mind) = world.get_mut::<MindBody>(body) {
@@ -1140,7 +1155,8 @@ pub fn post_raise(
 }
 
 /// The dead powers' raise of a corpse, in the original's order: the loot
-/// panel open on the body closes (Exarust opens none on a corpse: logged),
+/// window open on the body closes ([`crate::gui_screens::close_loot_on_body`],
+/// on the frame's GUI),
 /// a body without decay is revived (its record's and its character's feral
 /// level become the revival's 0.2, its rules gain the decayed bit and its
 /// most energy follows), the body is revived as the AI manager's rise
@@ -1165,8 +1181,18 @@ pub fn raise_corpse(
         Option<&exa_items::possession::Possessions>,
         Option<&mut exa_character::record::CharacterData>,
     )>,
+    mut frame: Option<ResMut<exa_physics::sim_app::FrameCommands>>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as u32);
+    // The dead powers close the loot window open on the body before they
+    // raise it, on the frame's GUI.
+    let close = move |world: &mut World| {
+        crate::gui_screens::close_loot_on_body(world, entity);
+    };
+    match frame.as_deref_mut() {
+        Some(frame) => frame.send(close),
+        None => commands.queue(close),
+    }
     let Ok((
         mut condition,
         flags,
@@ -1191,7 +1217,6 @@ pub fn raise_corpse(
         );
         return;
     }
-    debug!("raise dead: no loot panel is open on {entity:?} (Exarust opens none on a corpse)");
     if let Some(revival) = revival {
         if let Some(mut data) = data {
             data.record.feral = revival.decay;
@@ -2348,6 +2373,68 @@ mod tests {
                 .is_empty()
         );
         assert!(app.world().get::<MindBody>(target).unwrap().ai.rearm);
+    }
+
+    /// The mark's end posts the GUI callback: the task's root takes the
+    /// focus and the inventory open on the marked body closes; one open on
+    /// another body stays, behind the focused root.
+    #[test]
+    fn a_marks_end_closes_the_inventory_open_on_its_body() {
+        let run = |on_target: bool| {
+            let mut app = walk_app();
+            app.init_resource::<crate::gui_screens::GameScreens>();
+            let caster = character(app.world_mut(), true);
+            let target = character(app.world_mut(), false);
+            {
+                let mut mind = app.world_mut().get_mut::<MindBody>(caster).unwrap();
+                mind.cast.focus = 1.0;
+                mind.cast.slots = 3;
+            }
+            assert_eq!(
+                cast_at(app.world_mut(), casts::LOYALTY, caster, target, 0),
+                casts::STARTED
+            );
+            {
+                let mut screens = app
+                    .world_mut()
+                    .resource_mut::<crate::gui_screens::GameScreens>();
+                let owner = if on_target { target } else { caster };
+                screens.show_inventory(true, true, 4, true, owner.index().index() as i32);
+                screens.inventory_body = Some(owner);
+                assert!(screens.is_open(exa_ui::game_gui::GameScreen::Inventory));
+            }
+            walk_at(&mut app, 1);
+            app.world_mut().get_mut::<MindBody>(target).unwrap().powers[0].end();
+            walk_at(&mut app, 2);
+            let screens = app.world().resource::<crate::gui_screens::GameScreens>();
+            (
+                screens.is_open(exa_ui::game_gui::GameScreen::Inventory),
+                screens.task.active == screens.task.root,
+            )
+        };
+        // The closed inventory was the last window: nothing keeps a focus.
+        assert!(!run(true).0);
+        // Another body's inventory stays open, the root focused.
+        assert_eq!(run(false), (true, true));
+    }
+
+    /// Raise Dead's raise closes the loot window open on the corpse first.
+    #[test]
+    fn the_raise_closes_the_loot_window_on_the_corpse() {
+        let mut world = world();
+        world.init_resource::<crate::gui_screens::GameScreens>();
+        let corpse = character(&mut world, false);
+        let other = character(&mut world, false);
+        {
+            let mut screens = world.resource_mut::<crate::gui_screens::GameScreens>();
+            screens.open_loot(corpse.index().index() as i32, 0, 4);
+            screens.open_loot(other.index().index() as i32, 0, 4);
+            assert_eq!(screens.loot.len(), 2);
+        }
+        let _ = world.run_system_cached_with(raise_corpse, (corpse, None));
+        let screens = world.resource::<crate::gui_screens::GameScreens>();
+        assert_eq!(screens.loot.len(), 1);
+        assert_eq!(screens.loot[0].character, other.index().index() as i32);
     }
 
     /// A character: a root with a body under it.
