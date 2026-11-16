@@ -179,11 +179,7 @@ pub fn export_level_scene(
             first: settings.first,
             saved: settings.saved,
         });
-    export_save_level(
-        &export,
-        &ExportOptions::save(),
-        settings,
-    )
+    export_save_level(&export, &ExportOptions::save(), settings)
 }
 
 /// The whole level change: the exported section, the landing plan and the

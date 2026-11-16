@@ -259,6 +259,77 @@ pub fn props_after(props: &mut [exa_formats::level::Prop], live: &[LiveProp]) ->
     counts
 }
 
+/// A debug helper for the saved props' evidence (`EXA_PROP_NUDGE=dx,dy,dz`,
+/// metres): once the player stands in a level, the prop root nearest to the
+/// player at the level's root is logged with its section index and place,
+/// then moved by the offset (an offset of zero only logs it, which a load
+/// of the save uses to show where the prop came back).
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct PropNudge {
+    pub offset: Vec3,
+    pub done: bool,
+}
+
+impl PropNudge {
+    /// `dx,dy,dz` in metres.
+    pub fn parse(text: &str) -> Option<Self> {
+        let v: Vec<f32> = text
+            .split(',')
+            .map(|w| w.trim().parse().ok())
+            .collect::<Option<_>>()?;
+        let [x, y, z] = v[..] else {
+            return None;
+        };
+        Some(Self {
+            offset: Vec3::new(x, y, z),
+            done: false,
+        })
+    }
+}
+
+/// Runs the [`PropNudge`] once.
+pub fn nudge_prop(
+    mut nudge: ResMut<PropNudge>,
+    players: Query<&GlobalTransform, With<crate::player::PlayerBody>>,
+    mut props: Query<(
+        &exa_world::PropIndex,
+        &Name,
+        &GlobalTransform,
+        &mut Transform,
+        &ChildOf,
+    )>,
+    roots: Query<(), With<exa_world::LevelRoot>>,
+) {
+    if nudge.done {
+        return;
+    }
+    let Ok(player) = players.single() else {
+        return;
+    };
+    let at = player.translation();
+    let Some((index, name, global, mut transform, _)) = props
+        .iter_mut()
+        .filter(|(.., parent)| roots.contains(parent.parent()))
+        .min_by(|a, b| {
+            let da = a.2.translation().distance_squared(at);
+            let db = b.2.translation().distance_squared(at);
+            da.total_cmp(&db)
+        })
+    else {
+        return;
+    };
+    nudge.done = true;
+    info!(
+        "prop nudge: prop {} ({}) at {:.3} m, {:.2} m from the player, moved by {:.3}",
+        index.0,
+        name.as_str(),
+        global.translation(),
+        global.translation().distance(at),
+        nudge.offset
+    );
+    transform.translation += nudge.offset;
+}
+
 /// A character as it stands in the running scene, for the save's
 /// character section.
 #[derive(Debug, Clone, PartialEq)]
@@ -830,10 +901,7 @@ impl LevelSaveScene<'_, '_> {
         let motion = self.body_motion();
         let world = |entity: Entity| -> Option<Affine3A> {
             let affine = self.globals.get(entity).ok()?.affine();
-            let moved_directly = self
-                .props
-                .get(entity)
-                .is_ok_and(|(.., directly)| directly);
+            let moved_directly = self.props.get(entity).is_ok_and(|(.., directly)| directly);
             Some(match motion.get(&entity) {
                 Some(delta) if !moved_directly => *delta * affine,
                 _ => affine,
@@ -1319,11 +1387,7 @@ mod tests {
         let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
         let source = pack.get("exanima01.rfc").unwrap();
         let scene = Scene::parse(source).unwrap();
-        let top = scene
-            .props
-            .iter()
-            .position(|p| p.parent.is_none())
-            .unwrap();
+        let top = scene.props.iter().position(|p| p.parent.is_none()).unwrap();
         #[derive(Resource, Default)]
         struct Out(Vec<LiveProp>, Option<(String, Vec<u8>)>);
         let mut app = App::new();
@@ -1335,13 +1399,10 @@ mod tests {
                 from_save: false,
                 spawned: Vec::new(),
             })
-            .add_systems(
-                Update,
-                |mut scene: LevelSaveScene, mut out: ResMut<Out>| {
-                    out.0 = scene.live_props();
-                    out.1 = scene.section(&exa_formats::objdb::ObjectDb::default(), false, None);
-                },
-            );
+            .add_systems(Update, |mut scene: LevelSaveScene, mut out: ResMut<Out>| {
+                out.0 = scene.live_props();
+                out.1 = scene.section(&exa_formats::objdb::ObjectDb::default(), false, None);
+            });
         let root = app
             .world_mut()
             .spawn((Transform::default(), GlobalTransform::default()))

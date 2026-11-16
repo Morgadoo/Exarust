@@ -182,11 +182,8 @@ impl StoryExperience {
                 raised, techniques, ..
             } = convert_companion(now, companion);
             if let (Some(skill), Some(word)) = (raised, techniques) {
-                self.companion_rises.push((
-                    index,
-                    word,
-                    skill == crate::experience::ARMOUR_SKILL,
-                ));
+                self.companion_rises
+                    .push((index, word, skill == crate::experience::ARMOUR_SKILL));
             }
         }
         if let Some(word) = techniques {
@@ -607,7 +604,10 @@ impl Plugin for ExperienceLivePlugin {
                         .after(crate::flow::apply_steps)
                         .after(crate::thaum::cast::broadcast_level_change)
                         .after(crate::save_live::save_to_new_slot),
-                    refresh_armour,
+                    // After the flow's level-state reset, which the
+                    // player's placement (also a simulation write) runs
+                    // before.
+                    refresh_armour.after(crate::flow::reset_level_state),
                     store_account_experience,
                 )
                     .chain()

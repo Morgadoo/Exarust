@@ -655,6 +655,16 @@ impl Plugin for SaveLivePlugin {
                     .before(crate::arena_live::stand_first_round)
                     .in_set(exa_physics::FramePhase::Session),
             );
+        // A debug helper for the saved props' evidence (off unless asked).
+        if let Some(nudge) = std::env::var("EXA_PROP_NUDGE")
+            .ok()
+            .and_then(|v| crate::level_save::PropNudge::parse(&v))
+        {
+            app.insert_resource(nudge).add_systems(
+                Update,
+                crate::level_save::nudge_prop.in_set(exa_physics::FramePhase::Session),
+            );
+        }
     }
 }
 
