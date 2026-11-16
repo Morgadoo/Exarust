@@ -463,6 +463,37 @@ impl FormHost for BaseForm {
         self.hover
     }
 
+    /// The key slot ([`form::form_key`]): with a focused record (the hover
+    /// code), Tab moves the focus among the tab stops and any other key is
+    /// the record's key message 0xa0 (the key and the mask word), which it
+    /// takes when its answer has both low bits. The 0.9.5 record classes
+    /// other than the text field and the combo box (buttons, check boxes,
+    /// labels, trackbars, icon buttons, pictures, separators, swatches)
+    /// have no arm for it and answer 0, so their key goes on to the parent.
+    fn key(&mut self, key: u32, flags: u32) -> form::FormKey {
+        let tabs: Vec<form::ControlTab> = self
+            .records
+            .iter()
+            .map(|r| form::ControlTab {
+                tab_stop: r.style & form::record_style::TAB_STOP != 0,
+                disabled: r.state & record_state::DISABLED != 0,
+            })
+            .collect();
+        let focus = self.hover;
+        let mut answers = |i: usize| {
+            self.send(
+                i,
+                Message {
+                    message: message::KEY_DOWN,
+                    param: key,
+                    extra: flags,
+                    ..Message::default()
+                },
+            )
+        };
+        form::form_key(key, flags, focus, &tabs, &mut answers)
+    }
+
     fn set_pointer(&mut self, at: (i32, i32), press: (i32, i32)) {
         self.pointer = at;
         self.press_point = press;

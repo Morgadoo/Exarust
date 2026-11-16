@@ -1615,7 +1615,10 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   style (or the form's) has 4.
 - **Tab and routes.** Tab moves from the focused record to the next
   enabled tab stop, else wraps to the first tab stop before it (the wrap
-  ignores the disabled bit); Shift+Tab the other way. The hub's forms
+  ignores the disabled bit); a key-down whose word has 0x10 goes the other
+  way. Shift held gives a key-down the word 0x20, so Shift+Tab steps
+  forward too; only a repeat after a key-up with Shift still held carries
+  0x10 (see the key path below). The hub's forms
   take Tab this way from the key focus (else the picker's typing spinner,
   else the record under the pointer): the emblem form cycles its name and
   its two picture numbers, the focus selects the field's text and waits
@@ -1623,6 +1626,26 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   record as 0x2000 unless it ignores keys, a press as 0x3000 (a drop's
   payload code to the payload's form), a drag to the held record as 0x4000;
   codes off the records go to the parent when the form passes them up.
+- **The key path.** A key-down goes to the focused form's key slot with
+  the GUI's modifier word (`exa_ui::gui_keys`): the first key-down of a
+  key with Shift, Ctrl or Alt held recomputes it as 0x20, 0x40 and 0x80, a
+  key-down with none held keeps it, a repeat adds 1; a key-up recomputes it
+  one bit lower (Shift 0x10); a typed character above 0x1f follows with
+  the word 2. The base form's key slot steps Tab among the tab stops and
+  sends any other key to the focused record as the key message 0xa0 (key
+  and word); only the text field and the combo box answer it, every other
+  record class answers 0. A key nobody took goes to the parent's key slot
+  unless the word has a low bit, up to the task, whose shortcuts get it
+  (`GuiTask::key`, `KeyRoute`). The 3-D view's key slot runs its key
+  handler (the player's hotkeys) and then its parent's. The game windows
+  hang from the task, not the view, so with a game screen under the
+  pointer (the focus follows it) the hotkeys hear nothing
+  (`GameScreens::keys_to_window`); the game screens and the manual hand
+  the frame's keys (`exa_game::gui_keys::GuiKeyFrame`) to their focused
+  form. The openers' activation raises a window without moving the key
+  focus (the focus call runs only for a nonzero control, which the press
+  passes); a new inventory's and journal's open and every hide end with
+  the forced pointer update, so the focus is the form under the pointer.
 - **Press, drag and release.** A left press on a grip saves the form's x
   or width and y or height (the codes are bit sets, so corners move two
   edges), on the title (-3) its place unless fixed, on a thumb its offset

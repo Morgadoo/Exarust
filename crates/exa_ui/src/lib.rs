@@ -57,6 +57,7 @@ pub mod gui_core;
 pub mod gui_draw;
 pub mod gui_font;
 pub mod gui_glyphs;
+pub mod gui_keys;
 pub mod gui_level;
 pub mod gui_rescale;
 pub mod gui_task;

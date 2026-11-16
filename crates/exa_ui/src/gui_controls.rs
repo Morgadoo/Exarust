@@ -181,6 +181,10 @@ pub mod message {
     pub const HOVER: u32 = 0x30;
     pub const PRESS: u32 = 0x40;
     pub const RELEASE: u32 = 0x50;
+    /// A key-down or typed character the form's key slot hands the focused
+    /// record (the key and the mask word). Only the text field and the
+    /// combo box answer it; every other class answers 0.
+    pub const KEY_DOWN: u32 = 0xa0;
     pub const KEY: u32 = 0xc0;
     pub const SET: u32 = 0x200;
     pub const RESYNC: u32 = 0x300;

@@ -149,6 +149,7 @@ pub struct ArenaHubPlugin;
 
 impl Plugin for ArenaHubPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<ArenaHub>()
             .init_resource::<HubRoll>()
             .init_resource::<crate::thaum::live::FrameEffectRoll>()
