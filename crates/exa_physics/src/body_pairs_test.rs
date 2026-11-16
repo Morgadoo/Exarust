@@ -1818,3 +1818,62 @@ fn a_pair_push_multiplies_the_share_and_the_weight_first() {
     assert_ne!(0.945f32, 3.0f32 * 0.7 * 0.45);
     assert_eq!(&moved[1..], &[0.0, 0.0, 0.0]);
 }
+
+/// The placement sweep's ball against a part: its stored sphere when it
+/// has no mesh (the ball stops a sum of radii short), its mesh when it has
+/// one (both faces), nothing past the reach, and no contact for a ball
+/// that starts touching.
+#[test]
+fn a_ball_is_cast_against_a_part() {
+    let mut body = crate::body::Ragdoll::rigid(&[crate::body::RigidPart {
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 3.0)),
+        rest: [
+            Vec3::new(-0.2, 0.0, -0.2),
+            Vec3::new(0.2, 0.0, -0.2),
+            Vec3::new(0.0, 0.0, 0.2),
+            Vec3::new(0.0, 0.4, 0.0),
+        ],
+        point_masses: [4.0; 4],
+        parent_world: Affine3A::IDENTITY,
+        mobility: 1.0,
+        spheres: vec![(Vec3::ZERO, 0.2)],
+        origin: Vec3::ZERO,
+        links: Vec::new(),
+        mesh: None,
+        triangles: None,
+    }]);
+    let origin_z = body.parts[0].transform().translation.z;
+    let t = super::ball_cast(&body.parts[0], Vec3::ZERO, Vec3::Z, 10.0, 0.1).unwrap();
+    assert!((t - (origin_z - 0.3)).abs() < 1e-4, "{t}");
+    assert_eq!(
+        super::ball_cast(&body.parts[0], Vec3::ZERO, Vec3::Z, 1.0, 0.1),
+        None
+    );
+    assert_eq!(
+        super::ball_cast(&body.parts[0], Vec3::ZERO, Vec3::X, 10.0, 0.1),
+        None
+    );
+    // A quad facing away from the ball still stops it (both faces).
+    let quad = vec![
+        [
+            Vec3::new(-1.0, -1.0, 0.0),
+            Vec3::new(-1.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        ],
+        [
+            Vec3::new(-1.0, -1.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(1.0, -1.0, 0.0),
+        ],
+    ];
+    body.set_part_mesh(0, std::sync::Arc::new(quad));
+    let t = super::ball_cast(&body.parts[0], Vec3::ZERO, Vec3::Z, 10.0, 0.1).unwrap();
+    assert!((t - (origin_z - 0.1)).abs() < 1e-4, "{t}");
+    let touching = Vec3::new(0.0, 0.0, origin_z - 0.05);
+    assert_eq!(
+        super::ball_cast(&body.parts[0], touching, Vec3::Z, 10.0, 0.1),
+        None
+    );
+}

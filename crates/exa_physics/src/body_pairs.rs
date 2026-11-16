@@ -607,6 +607,81 @@ pub fn swept_touches(p: &Part, start: Vec3, end: Vec3, r: f32) -> bool {
         .any(|&(c, rc)| swept_on_sphere(s, e, r, c, rc).is_some())
 }
 
+/// How far along `dir` (unit, world) a ball of radius `r` from `start`
+/// first touches part `p` within `max` (world metres): the part's mesh,
+/// each triangle cast in the part's frame (both faces), or its stored
+/// spheres when it has no mesh. A ball that starts touching is no contact.
+/// A triangle whose box the swept ball's box misses is not cast.
+pub fn ball_cast(p: &Part, start: Vec3, dir: Vec3, max: f32, r: f32) -> Option<f32> {
+    use rapier3d::parry::query::{ShapeCastOptions, cast_shapes};
+    use rapier3d::parry::shape::{Ball, Triangle};
+    if max.is_nan() || max <= 0.0 {
+        return None;
+    }
+    let to_part = p.transform().inverse();
+    let local = to_part.transform_vector3(dir);
+    let scale = local.length();
+    if scale.is_nan() || scale <= 0.0 {
+        return None;
+    }
+    let (s, d, reach, radius) = (
+        to_part.transform_point3(start),
+        local / scale,
+        max * scale,
+        r * scale,
+    );
+    let end = s + d * reach;
+    let (lo, hi) = (
+        s.min(end) - Vec3::splat(radius),
+        s.max(end) + Vec3::splat(radius),
+    );
+    let ball = Ball::new(radius);
+    let from = rapier3d::math::Pose::from_translation(s);
+    let still = rapier3d::math::Pose::from_translation(Vec3::ZERO);
+    let options = ShapeCastOptions::with_max_time_of_impact(reach);
+    let cast = |shape: &dyn rapier3d::parry::shape::Shape| {
+        cast_shapes(&from, d, &ball, &still, Vec3::ZERO, shape, options)
+            .ok()
+            .flatten()
+            .map(|hit| hit.time_of_impact)
+            .filter(|t| *t > 0.0)
+    };
+    let mut best: Option<f32> = None;
+    let mut keep = |t: f32| {
+        if best.is_none_or(|b| t < b) {
+            best = Some(t);
+        }
+    };
+    match p.triangles.as_deref() {
+        Some(triangles) => {
+            for t in triangles {
+                let (tlo, thi) = (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]));
+                if tlo.cmpgt(hi).any() || thi.cmplt(lo).any() {
+                    continue;
+                }
+                if let Some(at) = cast(&Triangle::new(t[0], t[1], t[2])) {
+                    keep(at);
+                }
+            }
+        }
+        None => {
+            for &(c, rc) in p.spheres.iter() {
+                let other = Ball::new(rc * scale);
+                let at = rapier3d::math::Pose::from_translation(c);
+                if let Some(t) = cast_shapes(&from, d, &ball, &at, Vec3::ZERO, &other, options)
+                    .ok()
+                    .flatten()
+                    .map(|hit| hit.time_of_impact)
+                    .filter(|t| *t > 0.0)
+                {
+                    keep(t);
+                }
+            }
+        }
+    }
+    best.map(|t| t / scale)
+}
+
 /// Sphere of radius `r` moving from `start` to `end` against the sphere
 /// `c`, `rc`. One that starts touching, or that ends touching on the near
 /// side of the other's centre, is pushed off where it ends; one whose path
