@@ -810,7 +810,9 @@ rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,
 the gust walk, the fall, the tilt-dependent streak, the ground wrap on the
 effect's own generator, the colour and the two shaders kept as data; run
 live with the rain loop, thunder and the outdoor arenas' wind bed by
-`weather`; the original's per-sub-frame and reflected draw passes (the
+`weather`, whose streak buffer draws whole lines only, an odd drawn count's
+last head left out of every supersample copy as the original's line draw
+ignores it; the original's per-sub-frame and reflected draw passes (the
 set's 2° tilt scaled by `sqrt(field/70)`, placed at the box centre and
 multiplied by each sub-frame's composite, with its `EyeVec`), the
 program's uniforms and frame-buffer unit are modelled but not drawn),
