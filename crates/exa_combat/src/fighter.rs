@@ -34,6 +34,7 @@ pub struct GolemSuit;
     FallDeath,
     crate::impact::ImpactBook,
     crate::strike_body::TangleCount,
+    crate::burn::Burn,
     CombatScore
 )]
 pub struct Fighter {

@@ -198,6 +198,14 @@ impl Plugin for CombatPlugin {
             // The waiting wounds count down before the characters' ticks,
             // as the original's body tick paints its queued marks.
             .add_systems(FixedUpdate, wounds::count_down_wounds.in_set(BodyPreStep))
+            // The particles' doses through the bodies' dose slots, after the
+            // solver whose object stage made them.
+            .add_systems(
+                FixedUpdate,
+                burn::take_particle_doses
+                    .after(BodySystems)
+                    .before(BodyPostStep),
+            )
             .configure_sets(FixedUpdate, CombatSystems.in_set(BodyPostStep));
         exa_physics::sim_app::add_frame_start(app);
     }
@@ -239,6 +247,7 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::PowerFactors>()
         .bridge_copy::<crate::block::ShieldHold>()
         .bridge_copy::<crate::burn::Burn>()
+        .bridge_move_resource::<exa_physics::body::SolverStages>()
         .bridge_copy::<crate::condition::KnockOut>()
         .bridge_copy_in_resource::<crate::fighter::StoryMode>()
         .bridge_copy::<crate::impact::ImpactBook>()

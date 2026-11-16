@@ -661,6 +661,10 @@ impl Plugin for CastPlugin {
             )
             .add_systems(
                 FixedUpdate,
+                super::pre_pass::meet_bodies_first.in_set(exa_physics::body::BodyPreStep),
+            )
+            .add_systems(
+                FixedUpdate,
                 (
                     tick_casters,
                     follow_weapon_changes.after(tick_casters),
@@ -1493,7 +1497,7 @@ fn begin_cast(
 /// through its domain's AI evaluator, over what the duellist sees of its
 /// target. The pool is the caster's focus.
 #[allow(clippy::type_complexity)]
-fn advise_duellists(
+pub(crate) fn advise_duellists(
     mut duellists: Query<(
         &mut DuelPowers,
         &mut PowerCaster,
@@ -1608,7 +1612,7 @@ fn advise_duellists(
 /// [inf: the AI's cast is taken to start the power as the bar's dispatcher
 /// does, without the bar's slot rules.]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn cast_for_duellists(
+pub(crate) fn cast_for_duellists(
     mut commands: Commands,
     mut duellists: Query<(
         Entity,
