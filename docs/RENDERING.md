@@ -820,10 +820,15 @@ compare: a NaN stays) and then:
   sets bit 4, the shadow links' rebuild flags.
 
 A light alias's reach (`exa_world::light_alias`) is the original's
-per-node weighting, a tested model with no caller yet: the plain test is
-the luma of the alias and node colours against the alias's 0.01 cutoff;
-the gated test (behind the cell flood when the light's flags carry
-`0x2000000`) adds the sphere overlap, the oriented-box distance under the
+per-node weighting, which the live scene's node passes run for every mesh
+that takes light buckets (`exa_world::scene_nodes::Scene::alias_reach`).
+The alias constructor picks the test on the light's ranged bit (the level
+record's node flag `0x40000`): an unranged light runs the plain test, the
+luma of the alias and node colours against the alias's 0.01 cutoff; a
+ranged one runs the gated test (behind the cell flood's wall test when
+the alias's sector carries the grid bit, which the grid setup sets on the
+scene and the room manager on each room sector), which adds the sphere
+overlap, the oriented-box distance under the
 light radius, the falloff distance (the box distance, or the squared
 sphere shell when that is larger), `max(1 − d·falloff, 0)⁴`, the spot's
 vertical blend from the box's lowest point and
@@ -834,8 +839,17 @@ node lies beyond it by more than the node's bounding radius).
 `SpotShape::of` builds the light's three spot constants from the record's
 `(q, p)`: `1/(2^(p+1) − 1)` with the same fast functions, the flat factor
 `sin(q·π/2)/2` (or `3 − 3/cos(q·π/2)` below zero) in double, and `p + 1`.
-The cell flood that answers the gate is the scene-node unit's; the alias's
-field copy and construction are not modelled beyond these values. The sun
+The cell flood that answers the gate is the scene-node unit's. The node
+colour is the mesh's colour bound: per channel the largest of its parts'
+materials' specular colour times its level plus the diffuse, the sum the
+material's activation stores; a bound over the engine's epsilon asks for
+light buckets even without a shadow. The alias takes the light's values
+when the light activates (the alias sync after its flood): the direct
+colour, its luma as the intensity gate, the falloff and the radius, at
+the light's frame; the light's flicker copies only its render colours to
+the aliases, so the link weights follow the light's intensity at its last
+activation. The weights order each mesh's light buckets; the renderer
+still picks a mesh's six lights from the shadow links' own weights. The sun
 map's two matrix builders are `sun_fit::light_view_matrix` (rows
 `dir × up_hint`, `right × dir` and `dir`, column-major, with the negated
 dot products as the translation) and `sun_fit::orthographic_matrix` (the box's `2/span`

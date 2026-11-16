@@ -147,12 +147,22 @@ pub const LIGHT_NO_SNAPSHOT: u32 = 0x10;
 pub const NEEDS_BUCKETS: u32 = 0x3_0000;
 /// Light word ([`SceneNode::light_flags`]): the light flickers.
 pub const LIGHT_FLICKER: u32 = 0x1_0000;
-/// Option word ([`SceneNode::flags`]): the alias gate's bit. A light that
-/// carries it only spreads an alias to a sector its sphere reaches. The
-/// name is a guess: the bit sits next to [`NEEDS_BUCKETS`] in the option
-/// word, the alias refresh copies it with the word's third byte, and the
-/// model reads it as the light carrying a shadow cube map.
-pub const LIGHT_SHADOW_CUBE: u32 = 0x4_0000;
+/// Option word ([`SceneNode::flags`]) of a light: it falls off with
+/// distance (the level record's node flag `0x40000`,
+/// `exa_formats::rfc::RANGED`). A ranged light only spreads an alias to a
+/// sector its sphere reaches, and its aliases link nodes by the gated reach
+/// test ([`crate::light_alias::reach`]); an unranged one by the plain luma
+/// test ([`crate::light_alias::reach_plain`]), as the alias constructor
+/// installs one or the other on this bit.
+pub const LIGHT_RANGED: u32 = 0x4_0000;
+/// Option word ([`SceneNode::flags`]) of a mesh: its parts' materials give
+/// it a non-zero colour bound ([`SceneNode::colour`]), so it takes light
+/// buckets even when it casts no shadow (the geometry activation's bit,
+/// [`crate::geometry_node::HAS_BOUNDS`]).
+pub const HAS_COLOUR: u32 = 0x2_0000;
+/// The alias constructor's link cutoff: a node whose weight is not above it
+/// is unlit (0.01 as stored).
+pub const LINK_CUTOFF: f32 = 0.01;
 /// Option word bits that pick how a light's activation snapshot is taken;
 /// [`SNAPSHOT_FLAT`] in them drops the snapshot's height.
 pub const SNAPSHOT_MODE: u32 = 0x300;
@@ -841,6 +851,14 @@ pub struct LightAlias {
     pub flooded: u32,
     /// The light values the last alias sync copied ([`Scene::sync_light_aliases`]).
     pub values: Option<crate::light_source::AliasValues>,
+    /// The link test's light values the activation's alias sync copied
+    /// from the light ([`SceneNode::link_light`], at the light's frame in
+    /// the sector): `None` until a sync runs, and the link test then
+    /// misses.
+    pub link: Option<crate::light_alias::AliasLight>,
+    /// The light's node directly under its sector ([`Scene::sector_child`]),
+    /// which the alias sync stores in the alias (its reader is not traced).
+    pub anchor: Option<usize>,
 }
 
 impl LightAlias {
@@ -858,6 +876,8 @@ impl LightAlias {
             stamp,
             flooded: 0,
             values: None,
+            link: None,
+            anchor: None,
         }
     }
 }
@@ -871,6 +891,23 @@ pub struct AliasLink {
     pub weight: f32,
     pub faces: u32,
     pub lit: bool,
+    /// What the test writes into the alias's shadow map word.
+    pub shadow: ShadowWrite,
+}
+
+/// How an alias link test touches the alias's shadow map word (only when
+/// the alias has one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShadowWrite {
+    /// The gated test past its intensity gate: for a node whose option
+    /// word carries [`BOUNDS_SPLIT`], the needed faces gain the new and the
+    /// old face masks (`mask | word | (!mask & old)`).
+    #[default]
+    Merge,
+    /// The word is left alone (a miss).
+    Keep,
+    /// The word is set (the plain test sets 1 for a lit node).
+    Set(u32),
 }
 
 /// One entry of a node's per-alias bucket list: a doubly linked list over
@@ -957,6 +994,14 @@ pub struct SceneNode {
     /// luminance, falloff, softness, reach and flag byte); `None` until one
     /// runs.
     pub alias_values: Option<crate::light_source::AliasValues>,
+    /// A light's link-test values, kept by the caller (colour, its luma,
+    /// falloff, radius, spot shaping, the spot bits); the activation's
+    /// alias sync copies them, at the light's frame, into every alias.
+    pub link_light: Option<crate::light_alias::AliasLight>,
+    /// A mesh's colour bound: per channel, the largest colour its parts'
+    /// materials share (specular times its level plus the diffuse), which
+    /// the alias link tests multiply the light's colour by.
+    pub colour: Vec3,
     /// The node's cell and spill mask.
     pub cell: CellSpill,
     /// The frame word bits [`INHERIT_FADE`]/[`INHERIT_HIDDEN`].
@@ -1034,6 +1079,8 @@ impl SceneNode {
             removed: false,
             aliases: Vec::new(),
             alias_values: None,
+            link_light: None,
+            colour: Vec3::ZERO,
             cell: CellSpill::MARKED,
             inherited: 0,
             mask: 0,
@@ -1294,6 +1341,10 @@ pub struct Scene {
     /// methods (direct field writes do not wake a sector), so it is off
     /// unless the caller sets it.
     pub quiet_passes: bool,
+    /// The activation's alias sync runs ([`Scene::sync_alias_links`]): on
+    /// unless the caller turns it off, to compare with the scene before
+    /// its link values were kept.
+    pub alias_sync: bool,
     /// The frame counter the passes and the flood's alias stamps compare
     /// with (the engine's global frame word): [`Scene::frame_with`] counts
     /// it up at the start of every frame, so the first frame is 1 and an
@@ -1313,6 +1364,7 @@ impl Scene {
             geometry: Vec::new(),
             grid,
             grid_mode: grid.0 > 0 && grid.1 > 0,
+            alias_sync: true,
             detail: 0,
             detail_scale: DEFAULT_DETAIL_SCALE,
             transitions: Vec::new(),
@@ -2199,7 +2251,7 @@ impl Scene {
     /// Returns whether a visible pass saw a change (an alias moved, a seen
     /// mesh or a seen mesh's part moved).
     pub fn update_visibility(&mut self, dt_ms: i32) -> bool {
-        let mut no_link = |_: usize, _: usize| AliasLink::default();
+        let mut no_link = |_: &Scene, _: usize, _: usize| AliasLink::default();
         self.update_visibility_with(dt_ms, &mut no_link)
     }
 
@@ -2207,7 +2259,7 @@ impl Scene {
     pub fn update_visibility_with(
         &mut self,
         dt_ms: i32,
-        link: &mut dyn FnMut(usize, usize) -> AliasLink,
+        link: &mut dyn FnMut(&Scene, usize, usize) -> AliasLink,
     ) -> bool {
         for sector in 0..self.sectors.len() {
             if self.sectors[sector].changes & MEMBERSHIP_CHANGED != 0 {
@@ -2245,7 +2297,7 @@ impl Scene {
         main: &[ConvexVolume],
         project: &dyn Fn(Vec3) -> Vec2,
     ) -> FrameEvents {
-        let mut no_link = |_: usize, _: usize| AliasLink::default();
+        let mut no_link = |_: &Scene, _: usize, _: usize| AliasLink::default();
         let mut no_flood = |_: &Scene, _: usize| None;
         self.frame_with(dt_ms, eye, main, project, &mut no_link, &mut no_flood)
     }
@@ -2259,7 +2311,7 @@ impl Scene {
         eye: Vec3,
         main: &[ConvexVolume],
         project: &dyn Fn(Vec3) -> Vec2,
-        link: &mut dyn FnMut(usize, usize) -> AliasLink,
+        link: &mut dyn FnMut(&Scene, usize, usize) -> AliasLink,
         flood: &mut dyn FnMut(&Scene, usize) -> Option<Vec<usize>>,
     ) -> FrameEvents {
         self.frame_count = self.frame_count.wrapping_add(1).max(1);
@@ -2624,11 +2676,11 @@ impl Scene {
     /// (a guess: the original copies the light's shadow map into the
     /// alias, which the model has no record of).
     pub fn find_or_create_alias(&mut self, light: usize, sector: usize) -> Option<usize> {
-        if self.nodes[light].flags & LIGHT_SHADOW_CUBE != 0 && !self.light_reaches(light, sector) {
+        if self.nodes[light].flags & LIGHT_RANGED != 0 && !self.light_reaches(light, sector) {
             return None;
         }
         let stamp = self.nodes[light].link_stamp;
-        let shadow = self.nodes[light].flags & LIGHT_SHADOW_CUBE != 0;
+        let shadow = self.nodes[light].flags & LIGHT_RANGED != 0;
         if let Some(index) = self.sectors[sector]
             .aliases
             .iter()
@@ -2784,6 +2836,9 @@ impl Scene {
                 events.flicker.push((light, false));
             }
             if !self.nodes[light].aliases.is_empty() {
+                if self.alias_sync {
+                    self.sync_alias_links(light);
+                }
                 events.alias_updates.push(light);
             }
             at += 1;
@@ -3262,34 +3317,157 @@ impl Scene {
         }
     }
 
+    /// The alias link methods of the original, as the alias constructor
+    /// installs them: the link test of the sector's alias `alias` for mesh
+    /// `node`. A ranged light's alias ([`LIGHT_RANGED`]) runs the gated reach
+    /// test ([`crate::light_alias::reach_with`]); in grid mode (the option
+    /// bit the grid setup sets on the scene and the room manager on each
+    /// room sector) its gate is `gate(scene, light, node)`, the cell
+    /// flood's wall test, else it passes. Any other light runs the plain
+    /// luma test ([`crate::light_alias::reach_plain`]). The node's colour is
+    /// [`SceneNode::colour`] and its bucket's face mask before the call
+    /// decides an early miss's answer. An alias no sync has written misses.
+    ///
+    /// The plain test's unlit answer is, in the original, the low byte of a
+    /// stack address left in the return register (the luma call returns
+    /// its argument pointer); that byte is zero for one stack alignment in
+    /// sixteen only, so the model answers lit, which orders the node's
+    /// buckets again.
+    pub fn alias_reach(
+        &self,
+        node: usize,
+        alias: usize,
+        gate: &dyn Fn(&Scene, usize, usize) -> bool,
+    ) -> AliasLink {
+        let miss = AliasLink {
+            shadow: ShadowWrite::Keep,
+            ..AliasLink::default()
+        };
+        let Some(sector) = self.nodes[node].sector else {
+            return miss;
+        };
+        let Some(entry) = self.sectors.get(sector).and_then(|s| s.aliases.get(alias)) else {
+            return miss;
+        };
+        let n = &self.nodes[node];
+        let old = n.buckets.get(alias).map_or(0, |b| b.faces);
+        let Some(mut light) = entry.link else {
+            return AliasLink {
+                lit: old != 0,
+                ..miss
+            };
+        };
+        light.has_mask = entry.shadow_faces.is_some();
+        let (obb, radius) = n.obb();
+        let target = crate::light_alias::AliasNode {
+            centre: obb.centre,
+            radius,
+            half: obb.half_extents,
+            axes: obb.axes,
+            colour: n.colour,
+            mask: old,
+        };
+        let ranged = self.nodes[entry.light].flags & LIGHT_RANGED != 0;
+        if ranged {
+            let gated = self.grid_mode;
+            let hit = crate::light_alias::reach_with(&light, &target, || {
+                !gated || gate(self, entry.light, node)
+            });
+            AliasLink {
+                weight: hit.weight,
+                faces: hit.mask,
+                lit: hit.lit,
+                shadow: if hit.tested {
+                    ShadowWrite::Merge
+                } else {
+                    ShadowWrite::Keep
+                },
+            }
+        } else {
+            let hit = crate::light_alias::reach_plain(&light, &target);
+            AliasLink {
+                weight: hit.weight,
+                faces: hit.mask,
+                lit: true,
+                shadow: if hit.lit {
+                    ShadowWrite::Set(1)
+                } else {
+                    ShadowWrite::Keep
+                },
+            }
+        }
+    }
+
+    /// The activation's alias sync, as the original runs it over the
+    /// light's alias list after the light's flood: every alias takes the
+    /// light's values ([`SceneNode::alias_values`]), its link values
+    /// ([`SceneNode::link_light`]) at the light's frame in the sector and
+    /// the light's node under its sector ([`LightAlias::anchor`]), and is
+    /// marked moved (the original sets the alias's moved word), so the
+    /// next node passes run its link tests. Returns how many aliases were
+    /// written.
+    pub fn sync_alias_links(&mut self, light: usize) -> usize {
+        let values = self.nodes[light].alias_values;
+        let link = self.nodes[light].link_light.map(|mut l| {
+            l.position = self.nodes[light].world;
+            l
+        });
+        let anchor = self.sector_child(light);
+        let mut written = 0;
+        for &sector in &self.nodes[light].aliases {
+            if let Some(alias) = self.sectors.get_mut(sector).and_then(|s| {
+                s.aliases
+                    .iter_mut()
+                    .find(|a| a.light == light && a.owner == Some(sector))
+            }) {
+                if values.is_some() {
+                    alias.values = values;
+                }
+                alias.link = link;
+                alias.anchor = Some(anchor);
+                alias.moved = true;
+                written += 1;
+            }
+        }
+        written
+    }
+
     /// One alias's link test for a node, as the original calls the alias's
     /// link method: the caller's test answers the weight, the faces and
     /// whether the node is lit, and the node's bucket for that alias takes
-    /// the weight and faces. For a node whose option word carries
-    /// [`BOUNDS_SPLIT`] (the bit the original's test checks on the node)
-    /// and an alias with a shadow map, the needed faces gain both the new
-    /// and the old faces, so a face the node left is redrawn too. Returns
-    /// whether the node is lit (the original's answer, which decides
-    /// whether an unmoved node's buckets are ordered again).
+    /// the weight and faces. An alias with a shadow map takes the test's
+    /// [`ShadowWrite`]: the gated test past its intensity gate, for a node
+    /// whose option word carries [`BOUNDS_SPLIT`] (the bit the original's
+    /// test checks on the node), merges both the new and the old faces into
+    /// the needed faces, so a face the node left is redrawn too; the plain
+    /// test sets the word for a lit node. Returns whether the node is lit
+    /// (the original's answer, which decides whether an unmoved node's
+    /// buckets are ordered again).
     fn alias_link(
         &mut self,
         node: usize,
         alias: usize,
-        link: &mut dyn FnMut(usize, usize) -> AliasLink,
+        link: &mut dyn FnMut(&Scene, usize, usize) -> AliasLink,
     ) -> bool {
-        let hit = link(node, alias);
+        let hit = link(self, node, alias);
         let mut old = 0;
         if let Some(bucket) = self.nodes[node].buckets.get_mut(alias) {
             old = bucket.faces;
             bucket.weight = hit.weight;
             bucket.faces = hit.faces;
         }
-        if self.nodes[node].flags & BOUNDS_SPLIT != 0
-            && let Some(sector) = self.nodes[node].sector
+        let split = self.nodes[node].flags & BOUNDS_SPLIT != 0;
+        if let Some(sector) = self.nodes[node].sector
             && let Some(entry) = self.sectors[sector].aliases.get_mut(alias)
             && let Some(shadow) = entry.shadow_faces
         {
-            entry.shadow_faces = Some(shadow | hit.faces | old);
+            match hit.shadow {
+                ShadowWrite::Merge if split => {
+                    entry.shadow_faces = Some(hit.faces | shadow | (!hit.faces & old));
+                }
+                ShadowWrite::Set(word) => entry.shadow_faces = Some(word),
+                _ => {}
+            }
         }
         hit.lit
     }
@@ -3323,7 +3501,7 @@ impl Scene {
     fn hidden_pass(
         &mut self,
         sector: usize,
-        link: &mut dyn FnMut(usize, usize) -> AliasLink,
+        link: &mut dyn FnMut(&Scene, usize, usize) -> AliasLink,
         events: &mut FrameEvents,
     ) {
         let woken = std::mem::take(&mut self.sectors[sector].woken);
@@ -3390,7 +3568,7 @@ impl Scene {
         &mut self,
         index: usize,
         dt_ms: i32,
-        link: &mut dyn FnMut(usize, usize) -> AliasLink,
+        link: &mut dyn FnMut(&Scene, usize, usize) -> AliasLink,
         events: &mut FrameEvents,
     ) -> bool {
         self.sectors[index].quiet = false;
@@ -5120,6 +5298,8 @@ mod tests {
                 stamp: 0,
                 flooded: 0,
                 values: None,
+                link: None,
+                anchor: None,
                 owner: Some(sector),
             };
             3
@@ -5142,6 +5322,8 @@ mod tests {
             stamp: 0,
             flooded: 0,
             values: None,
+            link: None,
+            anchor: None,
             owner: Some(sector),
         });
         scene.rebuild_buckets(sector, mesh, 3);
@@ -5168,6 +5350,8 @@ mod tests {
                 stamp: 0,
                 flooded: 0,
                 values: None,
+                link: None,
+                anchor: None,
                 owner: Some(sector),
             };
             2
@@ -5225,6 +5409,8 @@ mod tests {
             stamp: 0,
             flooded: 0,
             values: None,
+            link: None,
+            anchor: None,
         }
     }
 
@@ -5609,10 +5795,11 @@ mod tests {
             scene.flood_hook(light, sector);
         }
         // The first frame links the waiting aliases and builds the buckets.
-        let mut weigh = |_: usize, alias: usize| AliasLink {
+        let mut weigh = |_: &Scene, _: usize, alias: usize| AliasLink {
             weight: [1.0, 3.0][alias],
             faces: 1,
             lit: true,
+            ..AliasLink::default()
         };
         scene.update_visibility_with(16, &mut weigh);
         assert_eq!(scene.nodes[mesh].buckets.len(), 2);
@@ -5622,6 +5809,117 @@ mod tests {
         assert_eq!(chain_of(&scene.nodes[mesh]), vec![1, 0]);
         assert_eq!(scene.nodes[mesh].buckets[1].weight, 3.0);
         assert_eq!(scene.nodes[mesh].buckets[0].faces, 1);
+    }
+
+    #[test]
+    fn the_alias_link_methods_weigh_a_mesh_by_reach_and_luma() {
+        use crate::light_alias::{AliasLight, AliasNode, reach, reach_plain};
+        let (mut scene, sector, mesh) = node_scene();
+        scene.nodes[mesh].flags |= BOUNDS_SPLIT;
+        scene.nodes[mesh].colour = Vec3::new(0.5, 0.4, 0.3);
+        let values = |radius: f32, falloff: f32| {
+            let colour = Vec3::new(2.0, 1.5, 1.0);
+            AliasLight {
+                position: Vec3::ZERO,
+                radius,
+                colour,
+                intensity: exa_formats::colour::luma(colour.to_array()),
+                cutoff: LINK_CUTOFF,
+                falloff,
+                flags: 0,
+                spot: None,
+                has_mask: false,
+            }
+        };
+        // A ranged light two metres off the mesh, an unranged one far off.
+        let near = scene.add_node(NodeKind::Light, None);
+        let far = scene.add_node(NodeKind::Light, None);
+        scene.nodes[near].flags |= LIGHT_RANGED;
+        scene.nodes[near].link_light = Some(values(8.0, 0.1));
+        scene.nodes[far].link_light = Some(values(f32::MAX, 0.0));
+        for (light, at) in [
+            (near, Vec3::new(3.0, 1.0, 1.0)),
+            (far, Vec3::new(90.0, 1.0, 1.0)),
+        ] {
+            scene.set_frame(light, at, Mat3::IDENTITY, Vec3::splat(0.1));
+            scene.refresh(light);
+            scene.register(light, sector);
+        }
+        let mut events = FrameEvents::default();
+        scene.activate_lights(sector, &mut events);
+        // The sync wrote each alias's link values at its light's frame and
+        // marked it moved.
+        let aliases = &scene.sectors[sector].aliases;
+        assert_eq!(
+            aliases.iter().map(|a| a.light).collect::<Vec<_>>(),
+            [near, far]
+        );
+        assert_eq!(aliases[0].link.unwrap().position, Vec3::new(3.0, 1.0, 1.0));
+        assert!(aliases.iter().all(|a| a.moved));
+        assert!(aliases.iter().all(|a| a.anchor == Some(a.light)));
+        let open = |_: &Scene, _: usize, _: usize| true;
+        let mut link = |s: &Scene, n: usize, a: usize| s.alias_reach(n, a, &open);
+        scene.update_visibility_with(16, &mut link);
+        scene.refresh(mesh);
+        scene.update_visibility_with(16, &mut link);
+        let (obb, radius) = scene.nodes[mesh].obb();
+        let target = AliasNode {
+            centre: obb.centre,
+            radius,
+            half: obb.half_extents,
+            axes: obb.axes,
+            colour: scene.nodes[mesh].colour,
+            mask: 0,
+        };
+        let link_of = |at: usize| scene.sectors[sector].aliases[at].link.unwrap();
+        let gated = reach(&link_of(0), &target, true);
+        let plain = reach_plain(&link_of(1), &target);
+        assert!(gated.lit && gated.weight > 0.0 && gated.weight < plain.weight);
+        let buckets = &scene.nodes[mesh].buckets;
+        assert_eq!(
+            (buckets[0].weight, buckets[0].faces),
+            (gated.weight, gated.mask)
+        );
+        assert_eq!((buckets[1].weight, buckets[1].faces), (plain.weight, 1));
+        // The heavier link leads the chain.
+        assert_eq!(chain_of(&scene.nodes[mesh]), vec![1, 0]);
+        // The walls shut the ranged light out in grid mode: its weight goes
+        // and the plain light's stays.
+        let shut = |_: &Scene, _: usize, _: usize| false;
+        let mut link = |s: &Scene, n: usize, a: usize| s.alias_reach(n, a, &shut);
+        assert!(scene.grid_mode);
+        scene.refresh(mesh);
+        scene.update_visibility_with(16, &mut link);
+        let buckets = &scene.nodes[mesh].buckets;
+        assert_eq!((buckets[0].weight, buckets[0].faces), (0.0, 0));
+        assert_eq!(buckets[1].weight, plain.weight);
+    }
+
+    #[test]
+    fn a_gated_miss_keeps_the_shadow_word_and_a_lit_plain_test_sets_it() {
+        let (mut scene, sector, mesh) = node_scene();
+        scene.nodes[mesh].flags |= BOUNDS_SPLIT;
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.flood_hook(light, sector);
+        scene.update_visibility_with(16, &mut |_: &Scene, _: usize, _: usize| {
+            AliasLink::default()
+        });
+        scene.sectors[sector].aliases[0].shadow_faces = Some(0b100);
+        scene.nodes[mesh].buckets[0].faces = 0b10;
+        let mut answer = AliasLink {
+            faces: 0b1,
+            shadow: ShadowWrite::Keep,
+            ..AliasLink::default()
+        };
+        scene.alias_link(mesh, 0, &mut |_: &Scene, _: usize, _: usize| answer);
+        assert_eq!(scene.sectors[sector].aliases[0].shadow_faces, Some(0b100));
+        answer.shadow = ShadowWrite::Merge;
+        scene.nodes[mesh].buckets[0].faces = 0b10;
+        scene.alias_link(mesh, 0, &mut |_: &Scene, _: usize, _: usize| answer);
+        assert_eq!(scene.sectors[sector].aliases[0].shadow_faces, Some(0b111));
+        answer.shadow = ShadowWrite::Set(1);
+        scene.alias_link(mesh, 0, &mut |_: &Scene, _: usize, _: usize| answer);
+        assert_eq!(scene.sectors[sector].aliases[0].shadow_faces, Some(1));
     }
 
     #[test]
@@ -5842,6 +6140,8 @@ mod tests {
             stamp: 7,
             flooded: 0,
             values: None,
+            link: None,
+            anchor: None,
         });
         scene.spread_aliases(light, 1);
         assert!(scene.sectors[3].aliases.is_empty());
@@ -5881,7 +6181,7 @@ mod tests {
         assert_eq!(scene.sectors[2].aliases[0].shadow_faces, None);
         // With one, the sphere (radius sqrt 3 at the origin) misses the far
         // box: no alias.
-        scene.nodes[light].flags |= LIGHT_SHADOW_CUBE;
+        scene.nodes[light].flags |= LIGHT_RANGED;
         scene.nodes[light].link_stamp = 2;
         scene.sectors[2].aliases.clear();
         scene.spread_aliases(light, 1);
