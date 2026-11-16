@@ -245,7 +245,6 @@ impl SetSizes {
         self.0.insert(name.to_owned(), n);
         Some(n)
     }
-
 }
 
 /// The impact class of each newly registered plain body's parts: as the
