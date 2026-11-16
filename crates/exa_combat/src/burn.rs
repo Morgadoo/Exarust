@@ -734,6 +734,7 @@ mod tests {
                         emitter,
                         parent: None,
                         contacts: true,
+                        step: None,
                     }],
                     Default::default(),
                 ));
@@ -744,5 +745,99 @@ mod tests {
         // (skin bone 0: the pelvis, or a prop's only part) keeps nothing.
         assert_eq!(run(8), 0.5);
         assert_eq!(run(1), 0.0);
+    }
+
+    /// The whole chain behind the simulation's bridge, in lockstep: a
+    /// medium fire (dose 1 a particle) under a character's sleeping lumbar
+    /// part steps in the solver, its particles meet the part, and the doses
+    /// reach the character's burn in the simulation, whose copy the frame
+    /// reads.
+    #[test]
+    fn a_fires_flame_burns_the_character_above_it_behind_the_bridge() {
+        use bevy::math::Affine3A;
+        use exa_physics::body::{PartSetup, Ragdoll, Sleep};
+        use exa_physics::sim_app::{SimMode, SimShellPlugin};
+        use exa_physics::sim_bridge::{SimBridgeAppExt, SimBridgePlugin};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin))
+            .add_plugins((exa_physics::PhysicsPlugin, exa_world::flame::FlamePlugin))
+            .init_resource::<Assets<Mesh>>()
+            .add_plugins((
+                SimShellPlugin {
+                    mode: SimMode::Inline,
+                },
+                SimBridgePlugin { extra: Vec::new() },
+            ))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / 60.0),
+            ))
+            .add_systems(
+                FixedUpdate,
+                take_particle_doses
+                    .after(exa_physics::body::BodySystems)
+                    .before(exa_physics::body::BodyPostStep),
+            )
+            .bridge_copy::<Burn>()
+            // The physics' fixed systems touch these too; the game's other
+            // plugins register them.
+            .bridge_snapshot::<exa_physics::body::plate_body::PlateBody>()
+            .bridge_copy::<exa_physics::body::slide_body::SlideBody>()
+            .bridge_copy::<exa_physics::grip::GripRelease>()
+            .bridge_copy::<exa_physics::prop::PropBody>()
+            .bridge_copy_in_resource::<exa_physics::prop::StandIns>()
+            .bridge_copy::<exa_physics::weapon_mass::WeaponMass>();
+        let node = app
+            .world_mut()
+            .spawn((Transform::IDENTITY, GlobalTransform::IDENTITY))
+            .id();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, app.world());
+        exa_world::fire::spawn_fire(&mut commands, node, 0.8);
+        queue.apply(app.world_mut());
+        let at = Vec3::new(0.0, 0.35, 0.0);
+        let part = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(at),
+                GlobalTransform::from_translation(at),
+            ))
+            .id();
+        let mut body = Ragdoll::new(&[PartSetup {
+            bone: 8,
+            entity: part,
+            parent: None,
+            world: Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.15),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: Some(vec![(Vec3::ZERO, 0.15)]),
+        }]);
+        let h = 0.15;
+        let mut faces = Vec::new();
+        for axis in 0..3 {
+            for sign in [-1.0f32, 1.0] {
+                let n = Vec3::AXES[axis] * sign;
+                let (u, v) = (Vec3::AXES[(axis + 1) % 3], Vec3::AXES[(axis + 2) % 3]);
+                let (u, v) = if sign > 0.0 { (u, v) } else { (v, u) };
+                let c = n * h;
+                faces.push([c - u * h - v * h, c + u * h - v * h, c + u * h + v * h]);
+                faces.push([c - u * h - v * h, c + u * h + v * h, c - u * h + v * h]);
+            }
+        }
+        body.set_part_triangles(0, faces);
+        body.sleep = Sleep::Deep;
+        let character = app.world_mut().spawn((body, Burn::default())).id();
+        let mut strengths = Vec::new();
+        for _ in 0..240 {
+            app.update();
+            strengths.push(app.world().get::<Burn>(character).unwrap().strength);
+        }
+        // No upkeep here: the strength only grows, a whole dose at a time.
+        let last = *strengths.last().unwrap();
+        assert!(last >= 1.0 && last.fract() == 0.0, "{last}");
+        assert!(strengths.windows(2).all(|w| w[1] >= w[0]));
     }
 }

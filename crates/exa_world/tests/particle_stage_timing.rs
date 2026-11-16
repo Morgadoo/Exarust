@@ -108,6 +108,7 @@ fn particle_stage_tick_time() {
                 emitter: fire(Vec3::new(x * 100.0, 10.0, z * 100.0)),
                 parent: None,
                 contacts: true,
+                step: None,
             })
             .collect()
     };

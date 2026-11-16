@@ -476,7 +476,11 @@ pub fn light_portals(
             .spawn((
                 Name::new(PORTAL_NODE_NAME),
                 PortalSparks,
-                Flame::new(emitter, 0.0, PARTICLE_TEXTURE, seed).additive(),
+                // The marker's sparks meet no body: their builder clears
+                // the system's body-contact class bit (the dissolve keeps it).
+                Flame::new(emitter, 0.0, PARTICLE_TEXTURE, seed)
+                    .additive()
+                    .without_contacts(),
                 Transform::IDENTITY,
                 ChildOf(marker),
             ))
