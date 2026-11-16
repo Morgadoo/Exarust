@@ -409,6 +409,14 @@ pub(crate) fn refresh_weapon_copy(
     }
 }
 
+impl LiveShopStock {
+    /// Clears the refresh seed a graded copy parked (outside a stock
+    /// update's weapon copy, which takes it back itself).
+    pub fn take_refresh_state(&mut self) -> Option<u32> {
+        self.refresh_state.take()
+    }
+}
+
 impl LiveShopWorld<'_> {
     /// Without a base tier (no game data) the copies are the stock's own
     /// stand-ins. [Exarust stand-in]

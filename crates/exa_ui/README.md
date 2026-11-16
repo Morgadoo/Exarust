@@ -366,7 +366,14 @@ marked teammate, and the company table stays in pool-slot order. The
 standard tab scales the standard match's fee and prize by the rank plus one
 with the original's coin packing; a rank change moves the tier with it and
 the tier rows above the rank are greyed. A weapon event (flag 4) names its
-weapon on the tournament tab and checks the first entrant's weapon. The
+weapon on the tournament tab and checks the first entrant's weapon; its
+weapon restriction pane is built from three records of its own
+(`WEAPON_PANEL_RECORDS`, moved up in the compact form): the caption, the
+weapon's name and the Choose button (`BoardAction::ChooseLineup`, disabled
+on the tournament's day). A lineup row dropped on the lineup moves within
+it (`Board::reorder_team`). The winner cell names the field's company `c`
+by the names' entry `c - 1`, the season table a week slot `s` by `s - 2`,
+as the original's two tables do. The
 calendar gives a tournament day every seventh day, a season of four weeks,
 the season index `((day + 6) / 28) mod 4`, the reward picture
 `seasonrwrd{a..d}.rfi` and the reward order first, third, second, fourth.

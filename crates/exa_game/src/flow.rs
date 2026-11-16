@@ -1417,6 +1417,11 @@ pub enum Step {
     ArenaPaused,
     /// The session forfeits the match.
     Forfeit,
+    /// The arena's EXIT from the in-game page, before its transition: every
+    /// game screen and the power tree's bar close, the first unfit
+    /// specialist leaves the company, the career is saved without the death
+    /// rule and the arena's leave runs.
+    ArenaExit,
     /// A story hook another unit installed runs.
     CustomHook,
     /// The end menu's click sound: at this volume and pitch.
@@ -3049,6 +3054,17 @@ impl Flow {
         steps
     }
 
+    /// The in-game page's EXIT in the arena, as the main menu's click runs
+    /// it: the arena's exit ([`Step::ArenaExit`]: the screens closed, the
+    /// unfit specialist's departure, the save, the arena's leave), then the
+    /// leave to the title behind the transition. [A fourth word the click
+    /// clears before the transition is not traced.]
+    pub fn arena_exit(&mut self) -> Vec<Step> {
+        let mut steps = vec![Step::ArenaExit];
+        steps.extend(self.transition(Action::QuitToMenu, true));
+        steps
+    }
+
     /// The story end menu's EXIT row: the game view and the dialogue close.
     /// A player the reconstruction device stripped clears its story bit and
     /// is saved without the death rule; any other story writes its save with
@@ -4060,6 +4076,7 @@ fn apply_menu_choices(
                 info!("game flow: VERSUS: the mode becomes {VERSUS_MODE:#x}");
                 flow.switch_mode(Mode::Other(VERSUS_MODE), now)
             }
+            MenuCommand::ExitArena if flow.mode == Mode::Arena => flow.arena_exit(),
             MenuCommand::ExitArena | MenuCommand::ExitToTitle => flow.quit_to_menu(),
             MenuCommand::QuitStory => flow.story_exit(),
             MenuCommand::FinishMatch { forfeit } => {
@@ -4884,6 +4901,25 @@ fn apply_steps(
                     });
                 }
             }
+            Step::ArenaExit => {
+                info!("game flow: the arena's exit");
+                commands.queue(|world: &mut World| {
+                    crate::gui_screens::sweep_screens(
+                        world,
+                        crate::gui_screens::ScreenSweep::EveryAndBar,
+                    );
+                    if let Some(mut career) =
+                        world.get_resource_mut::<crate::hub_windows::ArenaCareer>()
+                        && let Some(departure) = career.leave_before_match()
+                    {
+                        info!("arena exit: specialist left ({departure:?})");
+                    }
+                    world.write_message(crate::save_live::SaveStep::Save {
+                        drop_on_low_health: false,
+                    });
+                });
+                out.arena_leave.write(crate::arena_hub_live::ArenaLeave);
+            }
             Step::ScriptMode {
                 mode: ARENA_MODE,
                 hook: ScriptHook::Leave,
@@ -5583,6 +5619,74 @@ mod tests {
 
     /// Leaving an arena session runs the arena's leave: the hub is busy and
     /// its click hook gone until the next entry.
+    /// The in-game page's EXIT in the arena, through the live step pass:
+    /// the unfit specialist leaves the company with his log record, the
+    /// save is asked for without the death rule, the arena's leave runs
+    /// (the hub busy, its click hook gone) and the transition starts.
+    #[test]
+    fn the_arenas_exit_sends_the_unfit_away_saves_and_leaves() {
+        use crate::arena_hub::HubHook;
+        use crate::arena_hub_live::ArenaHub;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .insert_resource(ArenaHub {
+                entered: true,
+                busy: false,
+                click_hook: HubHook::Click,
+                ..Default::default()
+            })
+            .add_systems(
+                Update,
+                (apply_steps, crate::arena_hub_live::leave_arena).chain(),
+            );
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career
+            .company
+            .hire("Doc", crate::career::Profession::Physician)
+            .unwrap();
+        career.company.roster[0].health = 500;
+        app.insert_resource(career);
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = flow.arena_exit();
+        assert_eq!(steps.first(), Some(&Step::ArenaExit));
+        assert!(steps.contains(&Step::Transition));
+        assert!(flow.transition.is_some());
+        app.insert_resource(flow);
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert!(career.company.roster.is_empty());
+        assert_eq!(career.staff_left, vec![0]);
+        let saves: Vec<crate::save_live::SaveStep> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::save_live::SaveStep>>()
+            .drain()
+            .collect();
+        assert!(saves.contains(&crate::save_live::SaveStep::Save {
+            drop_on_low_health: false
+        }));
+        let hub = app.world().resource::<ArenaHub>();
+        assert!(hub.busy);
+        assert_eq!(hub.click_hook, HubHook::None);
+    }
+
     #[test]
     fn leaving_an_arena_session_runs_the_arenas_leave() {
         use crate::arena_hub::HubHook;

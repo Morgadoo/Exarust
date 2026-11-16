@@ -2222,6 +2222,128 @@ pub fn restore_arena(
     }
 }
 
+/// The arena load's id pass over the live stores, as the original runs it
+/// after the arena chunk and before the continue fixups: every arsenal
+/// entry's id goes through `map_item` (the load instances an untagged base
+/// record with the instance bit into the local tier,
+/// [`exa_formats::objdb::ObjectDb::instance_of`]); an entry whose id changed
+/// has its holders remapped by its flags
+/// ([`crate::arena_ids::remap_arsenal_ids`]): `0x400` the stash and the
+/// manager's per-rank loadouts, else the first employee whose list (his
+/// kit) holds it and that employee's loadouts; `0x200` the manager's four
+/// hands and carried items, then each employee's two hands and own items.
+/// The manager's hands and pack are the hub body's possessions (the out
+/// set, then the stowed one); employee `i`'s loadouts are the roster's
+/// member `i`. Returns how many arsenal entries took a new id.
+pub fn remap_loaded_items(
+    stores: &mut ArenaStores,
+    career: &mut crate::hub_windows::ArenaCareer,
+    body: Option<&mut exa_items::possession::Possessions>,
+    mut map_item: impl FnMut(u32) -> u32,
+) -> usize {
+    use exa_items::possession::Hand;
+    let hand_ref = |hand: &Hand| ItemRef {
+        id: hand.id,
+        flags: hand.flags,
+    };
+    let carried = |ids: &[u32]| -> Vec<Carried> {
+        ids.iter()
+            .map(|&item| Carried {
+                item,
+                flags: 0,
+                extra: 0,
+            })
+            .collect()
+    };
+    let mut manager = CharacterRecord::new();
+    manager.loadouts = career.player.loadouts.to_vec();
+    if let Some(body) = body.as_deref() {
+        manager.hands = [
+            hand_ref(&body.out[0]),
+            hand_ref(&body.out[1]),
+            hand_ref(&body.stowed[0]),
+            hand_ref(&body.stowed[1]),
+        ];
+        let ids: Vec<u32> = body.carried.iter().map(|c| c.id).collect();
+        manager.inventory = carried(&ids);
+    }
+    let mut employees: Vec<crate::arena_ids::EmployeeRefs> = stores
+        .staff
+        .employees
+        .iter()
+        .enumerate()
+        .map(|(i, employee)| {
+            let mut record = CharacterRecord::new();
+            if let Some(member) = career.company.roster.get(i) {
+                record.loadouts = member.loadouts.to_vec();
+            }
+            record.hands[0].id = employee.hands[0];
+            record.hands[1].id = employee.hands[1];
+            record.inventory = carried(&employee.carried);
+            crate::arena_ids::EmployeeRefs {
+                record,
+                items: employee
+                    .kit
+                    .iter()
+                    .map(|&id| ItemEntry {
+                        id,
+                        flags: 0,
+                        extra: crate::arena_ids::LIST_ENTRY_EXTRA,
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    let mut changed = 0;
+    crate::arena_ids::remap_arsenal_ids(
+        &mut stores.arsenal,
+        &mut stores.stash,
+        &mut manager,
+        &mut employees,
+        |id| {
+            let new = map_item(id);
+            if new != id {
+                changed += 1;
+            }
+            new
+        },
+    );
+    if changed == 0 {
+        return 0;
+    }
+    for (loadout, remapped) in career.player.loadouts.iter_mut().zip(manager.loadouts) {
+        *loadout = remapped;
+    }
+    if let Some(body) = body {
+        for (hand, remapped) in body
+            .out
+            .iter_mut()
+            .chain(body.stowed.iter_mut())
+            .zip(manager.hands)
+        {
+            hand.id = remapped.id;
+        }
+        for (item, remapped) in body.carried.iter_mut().zip(&manager.inventory) {
+            item.id = remapped.item;
+        }
+    }
+    for (i, (employee, refs)) in stores.staff.employees.iter_mut().zip(employees).enumerate() {
+        employee.hands = [refs.record.hands[0].id, refs.record.hands[1].id];
+        for (item, remapped) in employee.carried.iter_mut().zip(&refs.record.inventory) {
+            *item = remapped.item;
+        }
+        for (item, remapped) in employee.kit.iter_mut().zip(&refs.items) {
+            *item = remapped.id;
+        }
+        if let Some(member) = career.company.roster.get_mut(i) {
+            for (loadout, remapped) in member.loadouts.iter_mut().zip(refs.record.loadouts) {
+                *loadout = remapped;
+            }
+        }
+    }
+    changed
+}
+
 /// The reader's closing regeneration over the tables it read: runs only
 /// when the load's mask holds the arsenal chunk's id, and writes the merged
 /// employee lists and stash back into `tables`.
@@ -2286,6 +2408,7 @@ fn load_arena_slot(
     mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
     mut report: ResMut<SaveReport>,
     mut live: ResMut<exa_assets::live_objects::LiveObjects>,
+    mut players: Query<&mut exa_items::possession::Possessions, With<crate::player::PlayerBody>>,
 ) {
     let (Some(request), Some(mut lists)) = (request, lists) else {
         return;
@@ -2328,6 +2451,18 @@ fn load_arena_slot(
         crate::slots::world_object_tier(&loaded.package),
     );
     let restored = restore_arena(&loaded, &kinds, career, &mut stores);
+    // The arena's id pass: base records the arsenal names become local
+    // instances, their holders following.
+    let remapped = {
+        let db = live.db_mut();
+        remap_loaded_items(
+            &mut stores,
+            career,
+            players.iter_mut().next().map(|p| p.into_inner()),
+            |id| db.instance_of(id, exa_formats::objdb::Tier::Local),
+        )
+    };
+    info!("save: the arena's id pass gave {remapped} arsenal entries new instances");
     // The continued career's fixups follow the read.
     let fixups = crate::arena_session::continue_career(career);
     info!(
@@ -4320,6 +4455,83 @@ mod tests {
         // The week's events came back; the unfit entrant left his event.
         assert!(career.tournament.is_some());
         assert_eq!(career.entries[0].count, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The arena load's id pass, through the live slot save and load: an
+    /// arsenal entry flagged `0x400` naming a base record with the instance
+    /// bit comes back as a fresh local instance, and the stash item that
+    /// held the same id follows it; an unflagged base id the database lacks
+    /// stays as it was.
+    #[test]
+    fn an_arena_load_instances_the_arsenals_base_items_and_their_holders() {
+        use exa_formats::objdb::{INSTANCE_ON_USE, LOCAL, ObjectDb, Store};
+        let dir = folder("load-remap");
+        let mut app = new_game_app(&dir, crate::flow::Mode::Arena, "Manager");
+        app.insert_resource(crate::hub_windows::ArenaCareer::default());
+        let kind = ItemKind {
+            known: true,
+            apparel_layer: Some(1),
+            ..Default::default()
+        };
+        {
+            let mut stores = app.world_mut().resource_mut::<ArenaStores>();
+            stores
+                .arsenal
+                .stow(1175, kind, crate::arena_ids::EMPLOYEE_REF);
+            stores.arsenal.stow(4321, kind, 0);
+            stores.stash.push(1175);
+        }
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: false,
+        });
+        app.update();
+        // The load's database knows 1175 as an instanced record.
+        let mut name = vec![0u8; 0x20];
+        name[0x10..0x14].copy_from_slice(&INSTANCE_ON_USE.to_le_bytes());
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0x1000_0000u32.to_le_bytes());
+        payload.extend_from_slice(&((name.len() + 8) as u32).to_le_bytes());
+        payload.extend_from_slice(&name);
+        let mut db = ObjectDb::default();
+        db.base = Store::from_records([(1175, 0x1000_0000, payload.as_slice())]);
+        app.insert_resource(exa_assets::live_objects::LiveObjects::of(db));
+        app.insert_resource(crate::arena_hub_live::ArenaHub {
+            entered: true,
+            ..Default::default()
+        });
+        app.insert_resource(ArenaSlotLoad { number: 1 });
+        app.update();
+        assert_eq!(
+            app.world().resource::<SaveReport>().loaded.map(|l| l.0),
+            Some(1)
+        );
+        let stores = app.world().resource::<ArenaStores>();
+        let entries: Vec<(u32, u32)> = stores
+            .arsenal
+            .shelves
+            .iter()
+            .flatten()
+            .flatten()
+            .map(|entry| (entry.item, entry.flags))
+            .collect();
+        let made = entries
+            .iter()
+            .find(|(_, flags)| flags & crate::arena_ids::EMPLOYEE_REF != 0)
+            .map(|e| e.0)
+            .expect("the flagged entry");
+        assert_ne!(made & LOCAL, 0, "{entries:#x?}");
+        assert_eq!(
+            app.world()
+                .resource::<exa_assets::live_objects::LiveObjects>()
+                .db()
+                .template_of(made),
+            1175
+        );
+        assert_eq!(stores.stash, vec![made]);
+        assert!(entries.iter().any(|&(item, _)| item == 4321));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -543,6 +543,89 @@ const fn season_item(x: i32, y: i32) -> FormRecord {
     }
 }
 
+/// The weapon restriction panel's caption.
+pub const WEAPON_RESTRICTION_CAPTION: &str = "Weapon Restriction";
+/// The weapon restriction panel's button, which opens the event's lineup.
+pub const CHOOSE_LABEL: &str = "Choose";
+
+/// The weapon restriction panel's records, in order: its caption, the
+/// weapon row's name and the Choose button.
+pub mod weapon_panel {
+    pub const CAPTION: usize = 0;
+    pub const WEAPON: usize = 1;
+    pub const CHOOSE: usize = 2;
+}
+
+/// The tournament tab's weapon restriction panel ([`BoardLayout::reward_panel`],
+/// a child pane of the board) is built from a template of its own: three
+/// records handed to the pane's table builder (last index 2), the caption
+/// "Weapon Restriction" and the weapon row's name (labels 276 wide, style
+/// 0x3300) and the Choose button (128 by 28, its callback the event's
+/// lineup). The compact form moves the three up (rows 2, 8 and 16 for 3,
+/// 10 and 19), as the constructor writes into the template.
+///
+/// Evidence: the board's constructor and the template array it passes the
+/// pane (`docs/UI.md`, Arena match board).
+const fn weapon_panel_records(compact: bool) -> [FormRecord; 3] {
+    let rows = if compact {
+        [2, 8, 0x10]
+    } else {
+        [3, 0xa, 0x13]
+    };
+    [
+        FormRecord {
+            text: Some(WEAPON_RESTRICTION_CAPTION),
+            style: 0x3300,
+            ..record(0x5, 0x0, 0x8, rows[0], 0x114, 0x0)
+        },
+        FormRecord {
+            style: 0x3300,
+            ..record(0x5, 0x0, 0x8, rows[1], 0x114, 0x0)
+        },
+        FormRecord {
+            text: Some(CHOOSE_LABEL),
+            reports: true,
+            ..record(0x1, 0x0, 0x50, rows[2], 0x80, 0x1c)
+        },
+    ]
+}
+
+/// The weapon restriction panel's records in the full form.
+pub const WEAPON_PANEL_RECORDS: [FormRecord; 3] = weapon_panel_records(false);
+/// The weapon restriction panel's records in the compact form.
+pub const COMPACT_WEAPON_PANEL_RECORDS: [FormRecord; 3] = weapon_panel_records(true);
+
+/// The weapon restriction panel's records laid out by the toolkit's pass in
+/// the pane's client (pane-local, at `unit`), the pane being the reward
+/// panel's 292 by 120 (100 compact) at unit 4.
+pub fn weapon_panel_rects(compact: bool, unit: i32) -> [Rect; 3] {
+    let records: &'static [FormRecord] = if compact {
+        &COMPACT_WEAPON_PANEL_RECORDS
+    } else {
+        &WEAPON_PANEL_RECORDS
+    };
+    let spec = FormSpec {
+        size: (292, if compact { 100 } else { 120 }),
+        border: crate::settings::BORDER,
+        placement: 0,
+        attributes: 0,
+        title: "",
+        records,
+        children: &[],
+    };
+    let geometry = crate::record_form::geometry(&spec, spec.size, unit);
+    let mut rects = [Rect::default(); 3];
+    for (rect, c) in rects.iter_mut().zip(&geometry.controls) {
+        *rect = Rect {
+            x: c.x + geometry.border,
+            y: c.y + geometry.border,
+            w: c.w,
+            h: c.h,
+        };
+    }
+    rects
+}
+
 /// The board's form: 604 wide and 656 tall (636 in the compact form, which
 /// the constructor picks from a display flag), the placement word the
 /// arena's windows OR in, and the base form's border and attribute word,
@@ -1878,6 +1961,101 @@ impl Board {
         true
     }
 
+    /// A lineup row dropped on the lineup itself: the original's lineup drop
+    /// reads the dragged row from whichever table it came from, so a row of
+    /// its own is moved within it. A marked fighter swaps with the first
+    /// marked teammate (with the drop's row when that is itself); a drop on
+    /// a row swaps the two; a drop on no row moves the fighter to the end
+    /// (the full lineup's bench path, the row coming from the lineup, ends
+    /// the same). The Captain event's rank guard and its first-place fixup
+    /// are as for a company fighter ([`Self::move_to_team`]); then the
+    /// tournament event's entrants are rewritten from the lineup, or off
+    /// the tournament tab the fighter's place in the lineup order becomes
+    /// the row it went to (the first place after a marked swap or a full
+    /// lineup's bench path, as the original leaves its target unset).
+    /// Returns whether the lineup changed.
+    pub fn reorder_team(&mut self, index: usize, target: Option<usize>) -> bool {
+        if self.assignment_locked() || index >= self.team.len() {
+            return false;
+        }
+        let slot = self.team[index];
+        let Some((rank, marked)) = self
+            .fighters
+            .get(slot)
+            .map(|fighter| (fighter.rank as i32, fighter.marked))
+        else {
+            return false;
+        };
+        let unknown_rank = self.match_id() == CAPTAIN_EVENT
+            && rank < self.rank_floor()
+            && self.team.len() > 2
+            && self
+                .team
+                .iter()
+                .filter(|&&member| self.ranked(member))
+                .count()
+                < 2;
+        let target = target.filter(|&row| row < self.team.len());
+        let full = self.team_full();
+        let before = self.team.clone();
+        let mut order_target = 0;
+        let mut placed = false;
+        if !self.free_lineup() && marked {
+            let found = self.team.iter().position(|&member| {
+                self.fighters
+                    .get(member)
+                    .is_some_and(|fighter| fighter.marked)
+            });
+            if let Some(found) = found {
+                let row = if self.team[found] == slot {
+                    target.unwrap_or(found)
+                } else {
+                    found
+                };
+                if unknown_rank && self.ranked(self.team[row]) {
+                    return false;
+                }
+                self.team.swap(index, row);
+                placed = true;
+            }
+        }
+        if !placed {
+            match target {
+                Some(row) => {
+                    if unknown_rank && self.ranked(self.team[row]) {
+                        return false;
+                    }
+                    self.team.swap(index, row);
+                    order_target = row;
+                }
+                None => {
+                    let moved = self.team.remove(index);
+                    self.team.push(moved);
+                    if !full {
+                        order_target = self.team.len() - 1;
+                    }
+                }
+            }
+        }
+        if self.match_id() == CAPTAIN_EVENT
+            && self.team.len() > 2
+            && !self.ranked(self.team[0])
+            && let Some(found) = (1..self.team.len()).find(|&row| self.ranked(self.team[row]))
+        {
+            self.team.swap(0, found);
+        }
+        if self.team == before {
+            return false;
+        }
+        if self.tab == BoardTab::Tournament {
+            self.record_participants();
+        } else {
+            self.move_in_lineup(slot, order_target);
+        }
+        self.refresh_enter();
+        true
+    }
+
     /// Moves a lineup fighter back to the company table, inserting it in
     /// slot order. The original's two removal paths do not change the
     /// lineup order, so a later rebuild can select the fighter again; this
@@ -2037,6 +2215,21 @@ impl Board {
     /// day of a weapon event.
     pub fn reward_panel_locked(&self) -> bool {
         self.weapon_event() && is_tournament_day(self.day)
+    }
+
+    /// The weapon restriction panel's records in the board's client, while
+    /// the tournament tab shows a weapon event; `None` otherwise (the pane
+    /// is hidden).
+    pub fn weapon_panel(&self) -> Option<[Rect; 3]> {
+        if self.tab != BoardTab::Tournament || !self.weapon_event() {
+            return None;
+        }
+        let panel = self.layout().reward_panel;
+        Some(weapon_panel_rects(self.compact, self.unit).map(|r| Rect {
+            x: panel.x + r.x,
+            y: panel.y + r.y,
+            ..r
+        }))
     }
 
     /// The season tab's four winner lines.
@@ -2451,6 +2644,12 @@ impl Board {
         {
             return BoardHit::Forfeit;
         }
+        if let Some(records) = self.weapon_panel()
+            && !self.reward_panel_locked()
+            && records[weapon_panel::CHOOSE].contains(point.0, point.1)
+        {
+            return BoardHit::Choose;
+        }
         for &slot in self.visible_tables() {
             let table = self.table_layout(slot);
             if !table.rect.contains(point.0, point.1) {
@@ -2476,6 +2675,7 @@ impl Board {
             BoardHit::Close => self.handle(BoardInput::Close),
             BoardHit::EndDay => BoardAction::EndDay,
             BoardHit::Forfeit => BoardAction::Forfeit,
+            BoardHit::Choose => BoardAction::ChooseLineup,
             BoardHit::Table { slot, .. } => self.press_table(slot, point),
             BoardHit::Outside => BoardAction::None,
         }
@@ -2543,6 +2743,7 @@ impl Board {
                 changed(self.can_drop_index(from) && self.move_to_team(from, to))
             }
             BoardInput::DropOnAvailable(index) => changed(self.move_to_available(index)),
+            BoardInput::ReorderTeam { from, to } => changed(self.reorder_team(from, to)),
             BoardInput::Confirm => self.confirm(),
             BoardInput::Close => BoardAction::Close,
         }
@@ -2615,7 +2816,10 @@ impl Board {
             usize::try_from(winner - 2)
                 .ok()
                 .and_then(|index| self.tournament_companies.get(index))
-                .and_then(|&company| self.rival_name(i64::from(company) + 1))
+                // The original names the field's company `c` (stored here
+                // as `c - 1`) by the name table's entry `c - 1`, one before
+                // the season table's entry `c` for the same company: kept.
+                .and_then(|&company| self.rival_name(i64::from(company) + 2))
                 .unwrap_or_default()
         };
         Some([
@@ -2729,17 +2933,17 @@ impl Board {
                     widget: Widget::Picture,
                     rect: layout.picture,
                 });
-                if self.weapon_event() {
+                if let Some(records) = self.weapon_panel() {
                     paint.push(BoardPaint::Frame {
                         widget: Widget::RewardPanel,
                         rect: layout.reward_panel,
                     });
-                    let note = Rect {
-                        x: layout.reward_panel.x + 4,
-                        y: layout.reward_panel.y + 4,
-                        w: layout.reward_panel.w - 8,
-                        h: table_view::ROW_UNITS * self.unit,
-                    };
+                    paint.push(BoardPaint::Label {
+                        widget: Widget::WeaponCaption,
+                        rect: Some(records[weapon_panel::CAPTION]),
+                        text: WEAPON_RESTRICTION_CAPTION.to_string(),
+                    });
+                    let note = records[weapon_panel::WEAPON];
                     paint.push(BoardPaint::Label {
                         widget: Widget::RewardPanel,
                         rect: Some(note),
@@ -2751,6 +2955,12 @@ impl Board {
                             rect: note,
                         });
                     }
+                    paint.push(BoardPaint::Button {
+                        widget: Widget::ChooseButton,
+                        rect: records[weapon_panel::CHOOSE],
+                        text: CHOOSE_LABEL,
+                        disabled: self.reward_panel_locked(),
+                    });
                 }
                 self.paint_table(&mut paint, &layout.winners_table, &|board, row| {
                     board
@@ -3003,8 +3213,13 @@ pub enum Widget {
     Form,
     /// The tournament picture.
     Picture,
-    /// The tournament reward panel.
+    /// The tournament reward panel: the weapon restriction pane, and its
+    /// weapon row's name.
     RewardPanel,
+    /// The weapon restriction pane's caption.
+    WeaponCaption,
+    /// The weapon restriction pane's Choose button.
+    ChooseButton,
     /// The weapon check's mark on the reward panel.
     WeaponMark,
     /// The tournament prize item.
@@ -3091,6 +3306,14 @@ pub enum BoardPaint {
         rect: Option<Rect>,
         text: String,
     },
+    /// A button record of a child pane (the weapon restriction panel's
+    /// Choose), which the board's form template does not hold.
+    Button {
+        widget: Widget,
+        rect: Rect,
+        text: &'static str,
+        disabled: bool,
+    },
 }
 
 fn paint_table_rows(
@@ -3174,6 +3397,8 @@ pub enum BoardHit {
     EndDay,
     /// The tournament's Forfeit button.
     Forfeit,
+    /// The weapon restriction pane's Choose button.
+    Choose,
     /// Nothing the board handles.
     Outside,
 }
@@ -3189,8 +3414,17 @@ pub enum BoardInput {
     ClickWinner(usize),
     DoubleClickAvailable(usize),
     DoubleClickTeam(usize),
-    DropOnTeam { from: usize, to: Option<usize> },
+    DropOnTeam {
+        from: usize,
+        to: Option<usize>,
+    },
     DropOnAvailable(usize),
+    /// A lineup row dropped on the lineup: `to` is the zero-based row it
+    /// was dropped on, `None` past the rows.
+    ReorderTeam {
+        from: usize,
+        to: Option<usize>,
+    },
     Confirm,
     Close,
 }
@@ -3212,6 +3446,9 @@ pub enum BoardAction {
     EndDay,
     /// The company forfeits its tournament place.
     Forfeit,
+    /// The weapon restriction pane's Choose: the selected tournament event's
+    /// lineup opens on its first entrant ([`Board::winner_selection`]).
+    ChooseLineup,
     /// The form closes.
     Close,
 }
@@ -4169,9 +4406,11 @@ mod tests {
             ])
         );
         let winner = |board: &Board, row| board.winner_cells(row).map(|cells| cells[2].clone());
-        // Entry 5 is company 6; entry 1 is company 2.
-        assert_eq!(winner(&board, 1), Some(CellValue::Text("Company 6".into())));
-        assert_eq!(winner(&board, 2), Some(CellValue::Text("Company 2".into())));
+        // Entry 5 is the field's word 6, named by the name table's entry 5
+        // (the rivals' sixth, "Company 7" here); entry 1 is word 2, named
+        // by entry 1 ("Company 3"), as the original's winner cell reads it.
+        assert_eq!(winner(&board, 1), Some(CellValue::Text("Company 7".into())));
+        assert_eq!(winner(&board, 2), Some(CellValue::Text("Company 3".into())));
         assert_eq!(winner(&board, 3), Some(CellValue::Text("-".into())));
         assert_eq!(winner(&board, 4), Some(CellValue::Text(String::new())));
         assert_eq!(winner(&board, 5), Some(CellValue::Text("-".into())));
@@ -4269,9 +4508,83 @@ mod tests {
             }
         )));
 
+        // The pane's Choose button: painted, and a click on it asks for
+        // the event's lineup; on a tournament day it is disabled.
+        let choose = board.weapon_panel().unwrap()[weapon_panel::CHOOSE];
+        assert!(paint.iter().any(|item| matches!(
+            item,
+            BoardPaint::Button {
+                widget: Widget::ChooseButton,
+                disabled: false,
+                ..
+            }
+        )));
+        let centre = (choose.x + choose.w / 2, choose.y + choose.h / 2);
+        assert_eq!(board.click(centre), BoardAction::ChooseLineup);
+        board.day = 7;
+        assert!(board.reward_panel_locked());
+        assert_ne!(board.click(centre), BoardAction::ChooseLineup);
+        board.day = 1;
+
         // Leaving the tab restores the lineup's height.
         assert!(board.switch_tab(BoardTab::Matches).is_some());
         assert_eq!(board.lineup_height(), 224);
+        assert_eq!(board.weapon_panel(), None);
+    }
+
+    /// A lineup row dropped on the lineup: a drop on a row swaps, a drop
+    /// on no row moves the fighter to the end; a locked lineup refuses.
+    #[test]
+    fn a_lineup_row_moves_within_the_lineup() {
+        let mut board = board();
+        board.handle(BoardInput::SelectMatch(2));
+        while !board.team_full() {
+            assert!(board.move_to_team(0, None));
+        }
+        let team = board.team.clone();
+        assert_eq!(team.len(), 3);
+        assert_eq!(
+            board.handle(BoardInput::ReorderTeam {
+                from: 0,
+                to: Some(2)
+            }),
+            BoardAction::Changed
+        );
+        assert_eq!(board.team, vec![team[2], team[1], team[0]]);
+        assert_eq!(
+            board.handle(BoardInput::ReorderTeam { from: 0, to: None }),
+            BoardAction::Changed
+        );
+        assert_eq!(board.team, vec![team[1], team[0], team[2]]);
+        // A drop on its own row changes nothing.
+        assert_eq!(
+            board.handle(BoardInput::ReorderTeam {
+                from: 1,
+                to: Some(1)
+            }),
+            BoardAction::None
+        );
+        board.switch_tab(BoardTab::Tournament);
+        board.day = 7;
+        assert!(!board.reorder_team(0, None));
+    }
+
+    /// The weapon pane's records at unit 4: the caption and the weapon name
+    /// across the pane, the Choose button below them; the compact form
+    /// moves them up.
+    #[test]
+    fn the_weapon_panes_records_are_laid_out_in_the_pane() {
+        let wide = weapon_panel_rects(false, 4);
+        let compact = weapon_panel_rects(true, 4);
+        assert_eq!(wide[weapon_panel::CHOOSE].w, 0x80);
+        assert_eq!(wide[weapon_panel::CHOOSE].h, 0x1c);
+        assert!(wide[0].y < wide[1].y && wide[1].y < wide[2].y);
+        for i in 0..3 {
+            assert!(compact[i].y < wide[i].y, "{i}: {compact:?} {wide:?}");
+        }
+        // The button sits inside the pane.
+        assert!(wide[2].y + wide[2].h <= 120);
+        assert!(compact[2].y + compact[2].h <= 100);
     }
 
     #[test]
