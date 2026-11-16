@@ -1541,6 +1541,8 @@ the hinged door's drive is pushed after the leaf's next integration, as the orig
 
 the game main unit's session steps follow the original: the HUD is no longer hidden at deaths, knock-outs, level exits and practice starts, where the original only sweeps the game screens (it stayed hidden after a door and in any later session), and goes on with each start and continue and off only at the leave; the practice start gives the player its role; the practice and respawn placements take the original's frame heights with no floor probe; the session leave and the story exit end every conversation; the first-wake flag is set after the load's reset; camera shots warp the pointer while the window has the focus. The practice scene filter is unreachable. Scenes owed while the GPU is on hold.
 
+F544 closed: every practice and arena staging (practice start, next fight, the arena's first round, next round and bracket round) sets the original's staging flag, under which the AI tick runs the idle stand (a soft stop, then the out-of-combat turn) instead of its state, while the target pass still enters combat; the flag clears when the transition screen's fade-in ends, about 1.1 s later. Exarust holds the AI states for 92 simulation ticks from each staging. Arena and practice traces change in the first 1.1 s of each fight; determinism runs owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the

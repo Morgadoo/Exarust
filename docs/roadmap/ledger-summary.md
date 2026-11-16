@@ -15,8 +15,8 @@ The strongest proof each live row carries (roadmap C1.4): retail comparison, a g
 |---|---|---|
 | retail | 12 | 3,114 |
 | scene | 304 | 132,481 |
-| test | 2,238 | 855,011 |
-| code | 314 | 101,963 |
+| test | 2,237 | 854,720 |
+| code | 315 | 102,254 |
 
 ## By state
 
