@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 56.6% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 56.7% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **56.6% closed**, of which 44.5% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 36.3% partial and 7.1% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **56.7% closed**, of which 44.6% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 36.3% partial and 7.1% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -32,7 +32,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 62% | 60% | 1% | 0% | 36% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
-| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 60% | 58% | 2% | 0% | 34% | 6% |  |
+| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 61% | 59% | 2% | 0% | 33% | 6% |  |
 | UI | 959 | 312 | 63 | 86% | 0% | 59% | 49% | 1% | 9% | 27% | 14% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
@@ -305,7 +305,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TWeaponBlood | Combat, weapons & damage | 2 | 85% | 20% | 20% | 0% | 0% | 80% | 0% |
 | RFE_Effects_Blood | Combat, weapons & damage | 1 | 80% | 41% | 32% | 9% | 0% | 59% | 0% |
 | TBloodSprays | Combat, weapons & damage | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 85% | 85% | 0% | 0% | 9% | 6% |
+| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 86% | 85% | 0% | 0% | 9% | 6% |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
 | Item description phrases | Items, materials & crafting | 16 | 86% | 71% | 65% | 2% | 3% | 29% | 0% |
 | SG_ItemGUI | Items, materials & crafting | 15 | 84% | 67% | 61% | 2% | 4% | 21% | 13% |
@@ -460,7 +460,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TJournal | Script, dialogue & story | 0 | 78% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TScriptActor | Script, dialogue & story | 0 | 80% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TScriptClass | Script, dialogue & story | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
-| XA_Arena | Game modes, arena & session | 71 | 96% | 73% | 71% | 2% | 0% | 24% | 3% |
+| XA_Arena | Game modes, arena & session | 71 | 96% | 75% | 73% | 2% | 0% | 23% | 2% |
 | XA_SaveGames | Game modes, arena & session | 27 | 96% | 55% | 52% | 3% | 0% | 42% | 3% |
 | SG_GameMain | Game modes, arena & session | 20 | 87% | 70% | 64% | 2% | 4% | 28% | 2% |
 | TMatchBoard | Game modes, arena & session | 17 | 90% | 63% | 62% | 1% | 0% | 37% | 0% |

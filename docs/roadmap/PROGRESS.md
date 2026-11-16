@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r259, 11-16) | target |
+| measure | start (r186, 11-10) | now (r260, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **56.6%** | **100%** |
+| **Ledger: bytes in a final state** | — | **56.66%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,934 | all |
+| Tests passing | 8,489 | 8,943 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -105,8 +105,8 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Characters, motion & animation | 8 | 8 | 234 | 107,087 |
 | AI & behaviour | 8 | 8 | 146 | 100,541 |
 | World, levels & terrain | 5 | 5 | 168 | 87,048 |
-| Game modes, arena & session | 7 | 7 | 189 | 77,986 |
-| Items, materials & crafting | 5 | 5 | 141 | 65,038 |
+| Game modes, arena & session | 7 | 7 | 182 | 76,611 |
+| Items, materials & crafting | 5 | 5 | 140 | 64,930 |
 | Data, assets & I/O | 6 | 6 | 140 | 44,077 |
 | Runtime & platform | 5 | 5 | 70 | 20,869 |
 | Core, math & threading | 3 | 3 | 80 | 15,688 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,181** | **1,088,978** |
+| **Total** | **90** | **90** | **2,173** | **1,087,495** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 260 | The arena's return to the hub and the dead manager's leave to the title run behind the transition screen; both round stagings write the company's health back first; later tournament rounds keep the company's living bodies instead of rebuilding them, which had reset health and could bring a dead fighter back; the wind call is the cloth wake (an older reading had the wrong slot); the arsenal's shelves load and store, the board's item slots open cards, the hub entry plays the manager's motion (arena3). Arena scenes and determinism runs owed (GPU on hold) |
 | 2026-11-16 | 259 | The base form's show rebuilds its snap slots on every screen, journal, manual and settings open, the form hit walks its children as the original does, and Tab moves the hub forms' focus; the snap slots' only reader is the draw skin's page, which the line skin replaces, and the textured-skin forms hold no control records, so the draw skin's panel, box and scroll-bar slots have no textured-skin arm (guiform2). Hub and journal scenes owed (GPU on hold) |
 | 2026-11-16 | 258 | The lift's placement follows the original: the item's box centre starts 600 cm back along the cursor ray and slides to its spheres' first contact within 1000 cm (the level, the other props and the loose props' meshes); each sphere starts at the camera's near plane, which an older reading had taken for a support plane; with the controls off the hand's own frame places the lift and a block holds it (playerctl2). Lift scenes owed and their traces change (GPU on hold) |
 | 2026-11-16 | 257 | The duellist drops a collapsing or dead target and leaves combat instead of standing guard; apply roles reads the fierce bit and drives the party list (companions join the story experience, are written back to their records, leave on death); an arriving follower restarts its idle search; the idle driver's room-walk goal proven unreachable (motileai3). Arena and story scenes and determinism runs owed (GPU on hold) |

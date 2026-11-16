@@ -5,9 +5,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 691 | 166,123 | B1 wire (or prove unreachable) |
-| partial | 1,440 | 911,982 | B4 complete the port |
-| missing | 58 | 11,783 | B4 port |
+| uncalled | 687 | 165,900 | B1 wire (or prove unreachable) |
+| partial | 1,439 | 911,138 | B4 complete the port |
+| missing | 55 | 11,367 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
 ## By section (open bytes)
@@ -21,8 +21,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | characters | 89,749 | 15,241 | 2,097 |
 | ai | 97,107 | 3,406 | 28 |
 | world | 65,469 | 21,016 | 563 |
-| modes | 66,538 | 10,669 | 779 |
-| items | 55,764 | 8,673 | 601 |
+| modes | 65,694 | 10,554 | 363 |
+| items | 55,764 | 8,565 | 601 |
 | data | 31,939 | 12,138 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
 | core | 12,324 | 3,305 | 59 |
@@ -40,7 +40,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TSimSector | physics | 28 / 21,578 | 0 / 0 | 0 / 0 | 21,578 |
 | SG_PlayerControls (unit routines) | ai | 37 / 21,364 | 0 / 0 | 0 / 0 | 21,364 |
 | TMotilePart | characters | 37 / 17,208 | 5 / 1,341 | 2 / 1,370 | 19,919 |
-| XA_Arena (unit routines) | modes | 29 / 17,125 | 6 / 1,436 | 7 / 779 | 19,340 |
+| XA_Arena (unit routines) | modes | 28 / 16,281 | 3 / 1,321 | 4 / 363 | 17,965 |
 | RF_SceneNodes (unit routines) | world | 10 / 15,347 | 12 / 2,377 | 0 / 0 | 17,724 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
@@ -125,8 +125,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Materials (unit routines) | render | 2 / 3,866 | 0 / 0 | 0 / 0 | 3,866 |
 | RF_Intersection (unit routines) | physics | 2 / 288 | 10 / 3,570 | 0 / 0 | 3,858 |
 | RFT_BoundSphere (unit routines) | core | 2 / 3,851 | 0 / 0 | 0 / 0 | 3,851 |
-| TGUIItemContainer | items | 3 / 2,250 | 2 / 1,584 | 0 / 0 | 3,834 |
 | TShellEffect | powers | 5 / 2,730 | 0 / 0 | 1 / 1,070 | 3,800 |
+| TGUIItemContainer | items | 3 / 2,250 | 1 / 1,476 | 0 / 0 | 3,726 |
 | FLX_Character_Motions (unit routines) | characters | 1 / 1,612 | 8 / 2,034 | 0 / 0 | 3,646 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
 | RF_Terrain (unit routines) | world | 1 / 609 | 2 / 2,801 | 0 / 0 | 3,410 |
