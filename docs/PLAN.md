@@ -1597,6 +1597,8 @@ garments take the body's skin through the original's morph transfer (about 27 pe
 
 the death CONTINUE rebuilds the player from the saved record (a bug fixed: the respawned player had woken wearing the gear the corpse also kept); the title loads the menu scene with no player under the original's fixed camera, after the splash and on every return to the title (shown on the build worker's GPU against main); early level exits make the checkpoint by the original's rule (only for a destination the save lacks and before the fourth level, overwriting the old checkpoint); exits ask whether the level is available, save first then archive; save steps run in the frame the flow applies them. A reading corrected (the between-round reload's first call is a form activation). Left: the arena's between-round reimport, the menu scene's indoor preset.
 
+the factory paint job's shade scratch, the texture-only overlay regions (fullers, axe holes), the steel normal's mirrored-tile turn and the Gemstone alpha job with its refracting material are ported; the apparel job takes its tile offsets from the item's paint seed and its wear table by the stored material byte; the painter's passes share each region's coverage and split rows over threads (about 30 percent less wall time on both generators). Readings corrected (every factory region reads the scratch; the old strength table is the wear table). DEC-12 opened (the generated textures' GPU job queue, surface cache and program builders as engine-replaced): its twenty rows keep their state until the owner decides. Picture checks owed: a fuller sword, a gem weapon, a mirrored cap.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
