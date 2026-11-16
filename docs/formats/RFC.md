@@ -726,7 +726,11 @@ target × t:
 ```
 
 V is the mesh's position-stream count; the chunk ends with the last
-target. Target roles from their offsets: 0, 2, 3 and 1 the physique
+target. The race loader takes the set of the file's first root; only
+when that root has none does it fall back to the first mesh node carrying
+a set anywhere in its scene, else to a set built from numbered nodes.
+Both shipped files carry the set on their first root, so the fallback is
+never reached. Target roles from their offsets: 0, 2, 3 and 1 the physique
 picker's corners (1 broadens hips and shoulders by up to 11.6 cm), 4 age
 (a stoop), 5 female (narrower shoulders), 6 its feral extra, 10 height
 (the body comes down onto its feet: pelvis 11.20 cm, knees 6.21, head
@@ -756,14 +760,21 @@ triangle's offsets, less the offset of the landmark nearest the piece's
 origin, turned into the piece's frame. Elements with no surface within
 10 cm take, pass after pass, the inverse-distance mean of their
 neighbours (each triangle corner's next corner) set before the pass;
-those never reached keep minus the landmark's offset. A garment's
+those never reached keep minus the landmark's offset. An element's
+neighbours are walked in the mesh's incidence as the load leaves it (its
+last face first, each face's corners last first, split into smoothing-key
+runs), which sets the float order of the mean and, in the skin branch
+below, the slot order of the merged records. A garment's
 pieces sit on the base body part of the bone their node names before
 the transfer (their own file frames are the artist's layout). Every
 `humanbase.rfc` element finds the surface; each part's nearest landmark
-is its own bone's. Per character, positions = base + Σ wₜ·offsetₜ over
-targets weighed at least ≈1.2e-7, the piece's box and sphere refitted
-(half extents at least 0.001 cm), and each morphed body part's origin
-moved by its landmark's Σ wₜ·offsetₜ, its translation recomputed in its
+is its own bone's. Per character, positions = base, then
++ offsetₜ·wₜ added in place target by target (so `((base + d₀w₀) + d₁w₁)
++ …`, not the base plus a summed offset) over targets weighed at least
+≈1.2e-7 (a NaN weight is applied), the piece's box and sphere refitted as
+after any edit (half extents at least 1e-4 then 0.001 cm, the farthest
+position's squared distance rooted above ≈1.2e-7 cm²), and each morphed
+body part's origin moved the same way by its landmark's offsets, its translation recomputed in its
 parent's moved frame (rotations kept; a node without a set ends the
 walk). This runs before the limb bodies and the motion binder read the
 nodes, so physique moves the joints and the links; the dressed mesh is

@@ -198,6 +198,8 @@ fn shipped_bodies_hand_their_skin_to_the_garments() {
         let (mut vertices, mut moved_bone, mut unreached) = (0usize, 0usize, 0usize);
         let (mut own_seam, mut own_transfer) = (0usize, 0usize);
         let mut l1 = 0.0f64;
+        let (mut walk_reordered, mut walk_reweighed, mut walk_rejointed) = (0usize, 0usize, 0usize);
+        let mut walk_max_weight = 0.0f32;
         for entry in characters.entries() {
             let Ok(scene) = Scene::parse(characters.bytes(entry)) else {
                 continue;
@@ -227,6 +229,43 @@ fn shipped_bodies_hand_their_skin_to_the_garments() {
                 };
                 let m = body.transfer(mesh, &frame);
                 let records = m.skin.unwrap();
+                // The same transfer walking the neighbours in triangle
+                // order (Exarust's walk before it followed the incidence).
+                let mut face_order = vec![Vec::new(); mesh.position_count];
+                for t in mesh.indices.as_chunks::<3>().0 {
+                    let e = t.map(|v| mesh.position_ids[v as usize]);
+                    for k in 0..3 {
+                        face_order[e[k] as usize].push(e[(k + 1) % 3]);
+                    }
+                }
+                let before = body.transfer_with(mesh, &frame, &face_order).skin.unwrap();
+                for (a, b) in records.iter().zip(&before) {
+                    if a == b {
+                        continue;
+                    }
+                    let held = |r: &exa_formats::rfc::SkinWeights| {
+                        let mut v: Vec<(u32, u32)> = (0..4)
+                            .filter(|&k| r.bones[k] > 0)
+                            .map(|k| (r.bones[k], r.weights[k].to_bits()))
+                            .collect();
+                        v.sort_unstable();
+                        v
+                    };
+                    let (ha, hb) = (held(a), held(b));
+                    if ha == hb {
+                        walk_reordered += 1;
+                    } else if ha.iter().map(|x| x.0).eq(hb.iter().map(|x| x.0)) {
+                        walk_reweighed += 1;
+                        let w = |h: &[(u32, u32)]| {
+                            h.iter().map(|x| f32::from_bits(x.1)).collect::<Vec<_>>()
+                        };
+                        for (x, y) in w(&ha).iter().zip(w(&hb)) {
+                            walk_max_weight = walk_max_weight.max((x - y).abs());
+                        }
+                    } else {
+                        walk_rejointed += 1;
+                    }
+                }
                 for (k, r) in records.iter().enumerate() {
                     assert!(
                         r.weights.iter().all(|w| w.is_finite()),
@@ -273,6 +312,12 @@ fn shipped_bodies_hand_their_skin_to_the_garments() {
             l1 / vertices.max(1) as f64,
             100.0 * own_seam as f64 / vertices.max(1) as f64,
             100.0 * own_transfer as f64 / vertices.max(1) as f64,
+        );
+        eprintln!(
+            "{stem}: walking the neighbours in the incidence's order instead of triangle order \
+             changes {} element records: {walk_reordered} only in slot order, {walk_reweighed} in \
+             weight (largest {walk_max_weight:.3e}), {walk_rejointed} in their joints",
+            walk_reordered + walk_reweighed + walk_rejointed
         );
         assert!(flagged > 1000, "{flagged}");
     }

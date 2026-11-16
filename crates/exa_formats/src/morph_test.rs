@@ -275,14 +275,35 @@ fn parts_follow_the_nearest_surface() {
     assert!(close3(lift(0, 4), [0.0, -0.01, 0.0]));
     // Target 1: element 0 lies over (0.2, 0.1), 0.3 of corner 0.
     assert!(close3(lift(1, 0), [0.03, 0.0, 0.0]), "{:?}", lift(1, 0));
-    // At weights ½ and 1.
-    let (origin, offsets) = m.offsets(&[0.5, 1.0]);
-    assert!(close3(origin, [0.0, 0.005, 0.0]));
-    assert!(close3(offsets[0], [0.03, 0.005, 0.0]));
+    // At weights ½ and 1, from the part's own base.
+    let base = element_positions(&part);
+    let (origin, moved) = m.apply(frame[3], &base, &[0.5, 1.0]);
+    assert!(close3(origin, [0.0, 1.025, 0.0]));
+    assert!(close3(moved[0], [0.23, 0.035, 0.1]));
     // Weights below the smallest leave everything.
-    let (origin, offsets) = m.offsets(&[1e-8, -1e-8]);
-    assert_eq!(origin, [0.0; 3]);
-    assert!(offsets.iter().all(|&d| d == [0.0; 3]));
+    let (origin, moved) = m.apply(frame[3], &base, &[1e-8, -1e-8]);
+    assert_eq!(origin, frame[3]);
+    assert_eq!(moved, base);
+}
+
+/// The apply adds each target's offsets to the base in target order, as
+/// the original does in place, rather than summing the offsets first:
+/// `(1 + 2⁻²⁴) + 2⁻²⁴` rounds back to 1 twice, while `1 + (2⁻²⁴ + 2⁻²⁴)`
+/// is the next float up. A NaN weight is applied, as there.
+#[test]
+fn the_apply_adds_each_target_to_the_base_in_turn() {
+    let tiny = f32::EPSILON / 2.0;
+    let m = PartMorph {
+        origin: vec![[tiny, 0.0, 0.0], [tiny, 0.0, 0.0]],
+        positions: vec![vec![[tiny, 0.0, 0.0]], vec![[tiny, 0.0, 0.0]]],
+        skin: None,
+    };
+    let (origin, moved) = m.apply([1.0, 0.0, 0.0], &[[1.0, 0.0, 0.0]], &[1.0, 1.0]);
+    assert_eq!(origin[0], 1.0);
+    assert_eq!(moved[0][0], 1.0);
+    assert!(1.0 + (tiny + tiny) > 1.0);
+    let (origin, moved) = m.apply([1.0, 0.0, 0.0], &[[1.0, 0.0, 0.0]], &[f32::NAN, 0.0]);
+    assert!(origin[0].is_nan() && moved[0][0].is_nan());
 }
 
 #[test]
@@ -312,7 +333,7 @@ fn normals_follow_the_new_shape() {
     m.recompute_normals();
     assert!(close3(m.normals[0], [0.0, 1.0, 0.0]));
     // Tipped up along x, the face turns toward −x.
-    morph_mesh(&mut m, &[[0.0; 3], [0.0, 1.0, 0.0], [0.0; 3]]);
+    morph_mesh(&mut m, &[[0.0; 3], [1.0, 1.0, 0.0], [0.0, 0.0, -1.0]]);
     let n = m.normals[0];
     assert!(close3(n, [-0.70710677, 0.70710677, 0.0]), "{n:?}");
     // A mesh with stray indices or keys never panics.
@@ -362,16 +383,6 @@ fn scene(nodes: Vec<Node>) -> Scene {
         unknown_chunks: Vec::new(),
         level_errors: Vec::new(),
     }
-}
-
-#[test]
-fn bounds_keep_a_least_extent() {
-    let (c, h, r) = bounds(&[[0.0, 1.0, 0.0], [0.2, 1.0, 0.0]]);
-    assert!(close3(c, [0.1, 1.0, 0.0]) && close(r, 0.1));
-    // A flat part keeps 0.001 cm.
-    assert_eq!(h, [0.1, MIN_HALF_EXTENT, MIN_HALF_EXTENT]);
-    let (_, h, _) = bounds(&[]);
-    assert_eq!(h, [MIN_HALF_EXTENT; 3]);
 }
 
 #[test]
@@ -901,4 +912,128 @@ fn flagged_corners_relax_towards_their_neighbours() {
         }
     }
     assert_eq!(relaxed, r);
+}
+
+/// An element's neighbours come in the order the original's transfer
+/// walks the load's incidence: its last face first, each giving the
+/// element at its next corner.
+#[test]
+fn neighbours_follow_the_incidence_last_face_first() {
+    let part = mesh(&[[0.0; 3]; 7], &[[0, 1, 2], [3, 0, 4], [5, 6, 0]]);
+    let n = element_neighbours(&part, 7);
+    assert_eq!(n[0], [5, 4, 1]);
+    assert_eq!(n[1], [2]);
+}
+
+/// The skin fill merges an off-body element's neighbours in that order:
+/// the neighbour of its last face takes the first slot.
+#[test]
+fn the_skin_fill_merges_the_last_faces_neighbour_first() {
+    let body = skinned_square();
+    // Element 0 30 cm above the body; its next corners are element 1 (over
+    // body corner 0, bone 1) in face 0 and element 2 (over corner 1, bone
+    // 2) in face 1.
+    let mut part = mesh(
+        &[
+            [0.0, 0.3, 0.0],
+            [-0.5, -0.01, -0.5],
+            [0.5, -0.01, -0.5],
+            [-0.5, -0.01, 0.5],
+            [0.5, -0.01, 0.5],
+        ],
+        &[[0, 1, 3], [0, 2, 4]],
+    );
+    part.render_flags = BODY_SKIN;
+    let mut frame = IDENTITY;
+    frame[3] = [0.0, 1.02, 0.0];
+    let skin = body.transfer(&part, &frame).skin.unwrap();
+    assert_eq!(skin[1].bones[0], 1);
+    assert_eq!(skin[2].bones[0], 2);
+    assert_eq!(skin[0].bones, [2, 1, 0, 0]);
+}
+
+/// The neighbours in triangle order (first face first), as Exarust walked
+/// them before it followed the load's incidence.
+fn face_order_neighbours(mesh: &Mesh, n: usize) -> Vec<Vec<u32>> {
+    let mut out = vec![Vec::new(); n];
+    for t in element_triangles(mesh) {
+        for k in 0..3 {
+            out[t[k] as usize].push(t[NEXT_CORNER[k]]);
+        }
+    }
+    out
+}
+
+/// Over the shipped garments on the human body: how much walking the
+/// neighbours in the incidence's order instead of triangle order changes
+/// the transferred morph offsets (`EXANIMA_DIR`; prints the counts; the
+/// skin records are compared in exa_assets' body skin test).
+#[test]
+fn shipped_garments_walk_the_incidence() {
+    let Some(game) = game() else {
+        return;
+    };
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let characters = game.pack(exa_rpk::PackKind::Characters).unwrap();
+    let morph = Scene::parse(resource.get("humanmorph.rfc").unwrap()).unwrap();
+    let body = MorphBody::of_scene(&morph).expect("a morph body");
+    let base = Scene::parse(resource.get("humanbase.rfc").unwrap()).unwrap();
+    let base_frames = model_frames(&base);
+    let bone_frame = |bone: usize| {
+        base.nodes
+            .iter()
+            .zip(&base_frames)
+            .find(|(n, _)| crate::rsq::bone_index(&n.name) == Some(bone))
+            .map(|(_, f)| *f)
+    };
+    let (mut pieces, mut changed_pieces, mut elements) = (0, 0, 0usize);
+    let (mut shape_changed, mut max_moved) = (0usize, 0.0f32);
+    for entry in characters.entries() {
+        let Ok(scene) = Scene::parse(characters.bytes(entry)) else {
+            continue;
+        };
+        for node in &scene.nodes {
+            let NodeBody::Mesh(mesh) = &node.body else {
+                continue;
+            };
+            let Some(frame) = crate::rsq::bone_index(&node.name)
+                .filter(|b| (1..=18).contains(b))
+                .and_then(bone_frame)
+            else {
+                continue;
+            };
+            let n = mesh.position_count;
+            let new = body.transfer(mesh, &frame);
+            let old = body.transfer_with(mesh, &frame, &face_order_neighbours(mesh, n));
+            pieces += 1;
+            elements += n;
+            let mut piece_changed = false;
+            for e in 0..n {
+                if new
+                    .positions
+                    .iter()
+                    .zip(&old.positions)
+                    .any(|(a, b)| a[e] != b[e])
+                {
+                    let moved = new
+                        .positions
+                        .iter()
+                        .zip(&old.positions)
+                        .map(|(a, b)| dist_sq(a[e], b[e]).sqrt())
+                        .fold(0.0f32, f32::max);
+                    shape_changed += 1;
+                    piece_changed = true;
+                    max_moved = max_moved.max(moved);
+                }
+            }
+            changed_pieces += piece_changed as usize;
+        }
+    }
+    eprintln!(
+        "human body: garment pieces {pieces} ({elements} elements); changed by the incidence walk: \
+         {changed_pieces} pieces, morph offsets of {shape_changed} elements (largest {:.3e} m \
+         at weight 1)",
+        max_moved
+    );
+    assert!(pieces > 100);
 }
