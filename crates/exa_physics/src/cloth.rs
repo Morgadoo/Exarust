@@ -375,10 +375,12 @@ pub struct Cloth {
     /// Distance along the mesh from the nearest pin, in centimetres.
     /// Unreachable vertices stay infinite. With no pins, vertex 0 is the source.
     pub distances: Vec<f32>,
+    /// Whether the rustle loop plays this tick, and at what volume and
+    /// pitch ([`settle_rustle`]).
     pub rustle: bool,
     pub rustle_volume: f32,
     pub rustle_pitch: f32,
-    /// The rustle envelope, which decays by 0.9 each tick.
+    /// The rustle's energy tail, which decays by 0.9 each awake tick.
     pub rustle_tail: f32,
     /// The hand's grab: the vertex it holds and the point it is pulled to
     /// (centimetres, the cloth's own frame).
@@ -821,7 +823,7 @@ pub fn step_before_level_in(
         }
     }
     // The step itself runs only for an awake cloth; a sleeping one keeps
-    // its countdown (never below its owner's) and lets the rustle fade.
+    // its countdown (never below its owner's).
     cloth.mean_velocity = sum * (1.0 / count as f32);
     if awake {
         settle_sleep(cloth, sum.length_squared());
@@ -839,7 +841,10 @@ pub fn step_before_level_in(
             particle.position += direction * push;
         }
     }
-    settle_rustle(cloth, sum);
+    // The rustle is the integrate slot's, which only an awake cloth runs.
+    if awake {
+        settle_rustle(cloth, sum);
+    }
     if awake {
         // The triangle mode makes one pass here, the particle mode all.
         for _ in 0..cloth.record.step_passes() {
@@ -1310,20 +1315,43 @@ fn settle_sleep(cloth: &mut Cloth, sum_sq: f32) {
     }
 }
 
+/// The integrate slot's rustle, for a cloth whose record names a rustle
+/// sound: while the squared velocity sum is above 400 the loop plays at
+/// `0.5·tail + 0.0001·|sum|` (the half in single, the sum in double) and the
+/// pitch `min(0.5·volume + 0.5, 2)` (`minss`: a NaN takes 2); otherwise it
+/// is stopped. Every awake tick the tail decays by 0.9 in double. (The
+/// tail is what the body contact adds to the cloth's energy; Exarust's
+/// body contact does not add it yet, so the loop plays from the sum
+/// alone.)
 fn settle_rustle(cloth: &mut Cloth, sum: Vec3) {
-    let speed_sq = sum.length_squared();
-    if speed_sq > RUSTLE_SPEED_SQ {
-        let speed = speed_sq.sqrt();
-        cloth.rustle_volume = 0.5 * cloth.rustle_volume + 0.0001 * speed;
-        cloth.rustle_pitch = (0.5 * cloth.rustle_volume + 0.5).min(2.0);
-        cloth.rustle = true;
-        cloth.rustle_tail = cloth.rustle_volume;
-    } else {
-        cloth.rustle = false;
-        cloth.rustle_volume = 0.0;
-        cloth.rustle_pitch = 0.0;
-        cloth.rustle_tail *= 0.9;
+    if cloth.record.rustle.is_some() {
+        let speed_sq = (sum.x * sum.x + sum.y * sum.y) + sum.z * sum.z;
+        if speed_sq > RUSTLE_SPEED_SQ {
+            let volume = (f64::from(cloth.rustle_tail * 0.5) + f64::from(speed_sq.sqrt()) * 0.0001)
+                as f32;
+            let pitch = volume * 0.5 + 0.5;
+            cloth.rustle = true;
+            cloth.rustle_volume = volume;
+            cloth.rustle_pitch = if pitch < 2.0 { pitch } else { 2.0 };
+        } else {
+            cloth.rustle = false;
+        }
     }
+    cloth.rustle_tail = (f64::from(cloth.rustle_tail) * 0.9) as f32;
+}
+
+/// A cloth's rustle loop as the step leaves it, for the sound to follow:
+/// playing at a place (world, metres) with a volume and pitch, or stopped.
+/// Sent while it plays and once when it stops.
+#[derive(bevy::prelude::Message, Debug, Clone, PartialEq)]
+pub struct ClothRustled {
+    pub cloth: bevy::prelude::Entity,
+    /// The record's rustle sound set.
+    pub sound: &'static str,
+    pub position: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+    pub playing: bool,
 }
 
 fn push_plane(particle: &mut Particle, plane: LevelPlane, padding: f32) -> bool {
@@ -1805,20 +1833,33 @@ mod tests {
         step(&mut cloth, Vec3::ZERO);
         assert!((cloth.particles[0].position.y - PADDING_CM).abs() < 1e-3);
 
+        // The rustle, worked from the integrate slot's assembly: a 30 cm
+        // tick over 400 squared plays at `0.5·tail + 0.0001·30`, pitch
+        // `0.5·v + 0.5`; the tail decays by 0.9 in double each awake tick.
         let mut cloth = Cloth::new(vec![Particle {
             position: Vec3::ZERO,
             previous: Vec3::new(-30.0, 0.0, 0.0),
         }]);
+        cloth.rustle_tail = 0.2;
         step(&mut cloth, Vec3::ZERO);
         assert!(cloth.rustle);
-        assert!(cloth.rustle_volume > 0.0);
-        assert!((0.5..=2.0).contains(&cloth.rustle_pitch));
+        let volume = (f64::from(0.2f32 * 0.5) + f64::from(30.0f32) * 0.0001) as f32;
+        assert_eq!(cloth.rustle_volume, volume);
+        assert_eq!(cloth.rustle_pitch, volume * 0.5 + 0.5);
+        assert_eq!(cloth.rustle_tail, (f64::from(0.2f32) * 0.9) as f32);
         let tail = cloth.rustle_tail;
         cloth.particles[0].previous = cloth.particles[0].position;
         step(&mut cloth, Vec3::ZERO);
         assert!(!cloth.rustle);
-        assert_eq!(cloth.rustle_volume, 0.0);
-        assert!((cloth.rustle_tail - tail * 0.9).abs() < 1e-5);
+        assert_eq!(cloth.rustle_tail, (f64::from(tail) * 0.9) as f32);
+        // A record without a rustle sound never rustles.
+        let mut quiet = Cloth::new(vec![Particle {
+            position: Vec3::ZERO,
+            previous: Vec3::new(-30.0, 0.0, 0.0),
+        }]);
+        quiet.record.rustle = None;
+        step(&mut quiet, Vec3::ZERO);
+        assert!(!quiet.rustle);
 
         let mut cloth = Cloth::new(vec![still(Vec3::new(0.0, 100.0, 0.0))]);
         let rest = cloth.vertices();

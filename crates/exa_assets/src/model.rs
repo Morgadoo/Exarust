@@ -261,6 +261,10 @@ pub struct ClothMesh {
     /// For each drawn part of the node, in [`ModelNode::parts`] order, the
     /// position element of each of its vertices.
     pub part_elements: Vec<Vec<u32>>,
+    /// For each drawn part, the smoothing key of each of its vertices (in
+    /// the same order): the cloth's normal rebuild shares a normal between
+    /// the vertices of one key.
+    pub part_keys: Vec<Vec<u32>>,
     /// The cloth's links over the elements, in the order its edge pass
     /// visits them: the original's walk out from the pins over the mesh's
     /// incidence ([`exa_physics::cloth::walk_links`]), from each element's
@@ -284,7 +288,8 @@ impl ClothMesh {
             .triangle_flags
             .clone()
             .unwrap_or_else(|| vec![0; faces.len()]);
-        let part_elements = groups
+        let key = |i: u32| mesh.smoothing.get(i as usize).copied().unwrap_or_else(|| element(i));
+        let part_vertices: Vec<Vec<u32>> = groups
             .iter()
             .map(|&g| {
                 let group = &mesh.groups[g];
@@ -296,12 +301,16 @@ impl ClothMesh {
                 // The part's vertices in the order the part's mesh lists
                 // them (`group_mesh`'s first-use order).
                 let mut seen = std::collections::HashSet::with_capacity(indices.len());
-                indices
-                    .iter()
-                    .filter(|&&i| seen.insert(i))
-                    .map(|&i| element(i))
-                    .collect()
+                indices.iter().copied().filter(|&i| seen.insert(i)).collect()
             })
+            .collect();
+        let part_elements = part_vertices
+            .iter()
+            .map(|part| part.iter().map(|&i| element(i)).collect())
+            .collect();
+        let part_keys = part_vertices
+            .iter()
+            .map(|part| part.iter().map(|&i| key(i)).collect())
             .collect();
         let links = Self::walk(mesh, &faces, &face_flags);
         Self {
@@ -309,6 +318,7 @@ impl ClothMesh {
             faces,
             face_flags,
             part_elements,
+            part_keys,
             links,
         }
     }

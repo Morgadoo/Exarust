@@ -2589,6 +2589,27 @@ fn face_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
 /// unweighted sum of its faces' unit normals, walked in the incidence order
 /// (the first face's normal sets it and the rest are added), normalised. A
 /// group no face reaches keeps +Y (a labelled safety deviation).
+/// The cloth pass's normals of a drawn mesh ([`flat_face_normals`]): each
+/// vertex's smoothing key `keys[v]` gets the unweighted sum of the unit
+/// normals of the faces about its element `elements[v]`, walked in the
+/// incidence order, normalised. A triangle naming a missing vertex is
+/// left out.
+pub fn cloth_normals(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    keys: &[u32],
+    elements: &[u32],
+) -> Vec<[f32; 3]> {
+    let n = positions.len();
+    let mut kept = Vec::with_capacity(indices.len());
+    for t in indices.as_chunks::<3>().0 {
+        if t.iter().all(|&i| (i as usize) < n) {
+            kept.extend_from_slice(t);
+        }
+    }
+    flat_face_normals(positions, &kept, keys, elements)
+}
+
 fn flat_face_normals(
     positions: &[[f32; 3]],
     indices: &[u32],
