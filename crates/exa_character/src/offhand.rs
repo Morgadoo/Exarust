@@ -65,7 +65,7 @@ pub const SHIELD_CLASS: u32 = 0x10;
 
 /// Marks an [`OffHeld`] already attached.
 #[derive(Component)]
-struct OffAttached;
+pub(crate) struct OffAttached;
 
 /// The shield a character carries and its block factors: the combat
 /// crate's marker, which the blade striking the shield's own body reads
@@ -82,7 +82,7 @@ fn off_weapon_grip(class: u32) -> Option<&'static Grip> {
 /// weapon's striking blade. The holder's body may come later: the grip
 /// waits for it ([`PendingGrip`]).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn attach_off_hands(
+pub(crate) fn attach_off_hands(
     mut commands: Commands,
     game: Option<Res<Game>>,
     mut bodies: Query<
@@ -448,7 +448,8 @@ impl Plugin for OffHandPlugin {
             Update,
             attach_off_hands
                 .run_if(resource_exists::<Game>)
-                .after(super::equip_outfits),
+                .after(super::equip_outfits)
+                .in_set(exa_physics::FramePhase::World),
         )
         .add_systems(
             FixedUpdate,

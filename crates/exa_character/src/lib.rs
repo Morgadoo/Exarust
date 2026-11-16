@@ -85,15 +85,15 @@ impl Plugin for CharacterPlugin {
         .add_systems(
             Update,
             (
-                apply_skin_looks.run_if(resource_exists::<Game>),
-                hair::attach_hair.run_if(resource_exists::<Game>),
+                apply_skin_looks.after(exa_world::flame::load_flame_assets).run_if(resource_exists::<Game>),
+                hair::attach_hair.before(exa_assets::texture_stream::run_texture_loader).run_if(resource_exists::<Game>),
                 load_underwear_items
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),
                 keep_underwear.run_if(resource_exists::<UnderwearItems>),
                 refit::request_refits,
-                equip_outfits,
-                finish_skin_composites.run_if(resource_exists::<Game>),
+                equip_outfits.after(exa_combat::weapon_blood::clear_at_world_reset).after(exa_combat::swing::pace_swings),
+                finish_skin_composites.after(crate::offhand::attach_off_hands).run_if(resource_exists::<Game>),
                 held::choose_held_movesets,
             )
                 .chain()
@@ -101,7 +101,7 @@ impl Plugin for CharacterPlugin {
                 // frame they appear: a skinned mesh drawn before it is
                 // bound fails wgpu validation (a skinned pipeline with the
                 // unskinned mesh bind group).
-                .before(exa_anim::AnimSystems),
+                .before(exa_anim::AnimSystems).in_set(exa_physics::FramePhase::World),
         );
     }
 }
@@ -333,7 +333,7 @@ fn skin_material_of_look(
 /// maps plus tone when it has no job). A body without a look keeps the
 /// middle tone the model was built with.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn apply_skin_looks(
+pub fn apply_skin_looks(
     game: Option<Res<Game>>,
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -461,20 +461,20 @@ fn keep_underwear(
 /// main thread stalled the window for seconds. A body is dressed once all
 /// its paints are in.
 #[derive(Resource, Default)]
-struct Painting(HashMap<(String, Appearance), Task<PaintedSet>>);
+pub struct Painting(HashMap<(String, Appearance), Task<PaintedSet>>);
 
 /// Apparel models being built on the async compute pool, by their cache key
 /// (the entry, then the physique a morphed variant is fitted to): fitting a
 /// garment's weights to the body and building its meshes took a frame up to
 /// a few hundred milliseconds.
 #[derive(Resource, Default)]
-struct Fitting(HashMap<String, Task<model::BuiltModel>>);
+pub struct Fitting(HashMap<String, Task<model::BuiltModel>>);
 
 /// Skin composites being generated off the main thread, by
 /// [`exa_assets::SkinCompositeJob::key`], with the merged skin runs drawing
 /// the race maps until each is ready.
 #[derive(Resource, Default)]
-struct PendingSkins(HashMap<String, PendingSkin>);
+pub struct PendingSkins(HashMap<String, PendingSkin>);
 
 struct PendingSkin {
     job: exa_assets::SkinCompositeJob,
@@ -487,7 +487,7 @@ struct PendingSkin {
 /// wait for it. A run whose material changed meanwhile (a look change)
 /// keeps its own.
 #[allow(clippy::too_many_arguments)]
-fn finish_skin_composites(
+pub fn finish_skin_composites(
     game: Res<Game>,
     mut pending: ResMut<PendingSkins>,
     mut cache: ResMut<ModelCache>,
@@ -535,7 +535,7 @@ fn finish_skin_composites(
 /// body slots and armour of the first item worn as it, and the weapon
 /// section of the first item that shows it.
 #[derive(Debug, Clone, Default)]
-struct ItemInfo {
+pub struct ItemInfo {
     apparel: Option<ApparelInfo>,
     weapon: Option<objdb::Weapon>,
 }
@@ -1479,7 +1479,7 @@ fn spawn_merged_character(
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn equip_outfits(
+pub fn equip_outfits(
     mut commands: Commands,
     game: Option<Res<Game>>,
     mut infos: Local<Option<HashMap<String, ItemInfo>>>,

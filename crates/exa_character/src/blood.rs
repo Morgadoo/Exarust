@@ -76,19 +76,21 @@ impl Plugin for BloodPlugin {
                 (
                     paint_debug_wounds.run_if(resource_exists::<DebugWounds>),
                     bleed_wounds,
-                    paint_wounds,
-                    bloody_debug_weapons.run_if(resource_exists::<DebugWeaponBlood>),
+                    paint_wounds.before(exa_physics::build_static_colliders).after(crate::spray::fire_debug_sprays).after(exa_world::nav::view::collect_source).after(exa_world::room_view::give_lights_lids),
+                    bloody_debug_weapons.after(exa_world::nav::view::finish_build).run_if(resource_exists::<DebugWeaponBlood>),
                     load_stain_gradient
                         .run_if(resource_exists::<Game>)
                         .run_if(not(resource_exists::<StainGradient>))
                         .run_if(any_with_component::<WeaponStain>),
-                    stain_weapons.run_if(any_with_component::<WeaponStain>),
+                    stain_weapons
+                        .before(bevy::mesh::mark_3d_meshes_as_changed_if_their_assets_changed)
+                        .run_if(any_with_component::<WeaponStain>),
                 )
                     .chain()
                     // Vertices are taken where this frame's pose puts them,
                     // after the combat's wounds bled.
                     .after(TransformSystems::Propagate)
-                    .after(CombatSystems),
+                    .after(CombatSystems).in_set(exa_physics::FramePostPhase::Placed),
             );
     }
 }
@@ -327,7 +329,7 @@ fn bleed_wounds(mut bleeds: MessageReader<Bleed>, mut out: MessageWriter<PaintWo
 
 /// Paints every wound sent this frame onto its character's meshes.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn paint_wounds(
+pub fn paint_wounds(
     mut commands: Commands,
     mut wounds: MessageReader<PaintWound>,
     mut rng: ResMut<WoundRng>,
