@@ -936,11 +936,6 @@ impl GameScreens {
 
     fn push(&mut self, kind: GameScreen, bounds: GuiRect, unit: i32) -> FormId {
         let root = self.task.root;
-        let controls = match kind {
-            GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
-            GameScreen::Journal => ScreenLayout::journal(self.journal_unit).controls_at(bounds),
-            _ => screen_controls(kind, bounds),
-        };
         let (words, border) = match kind {
             GameScreen::Inventory => (
                 gui_paint::FormWords {
@@ -955,6 +950,37 @@ impl GameScreens {
         };
         let unit = unit.max(1);
         let committed = gui_paint::commit_words(words.style, words.attributes, true);
+        // The base form's show: a window with a parent is raised in it, and
+        // a centring style re-centres it in the parent's client after the
+        // layout (no game screen's style centres in 0.9.5: their places
+        // come from their openers).
+        let plan = exa_ui::form::show_plan(exa_ui::form::ShowInput {
+            has_parent: root.is_some(),
+            raise: true,
+            y_unset: bounds.top == UNPLACED,
+            style: words.style,
+            adopt_title: false,
+            parent_not_root: false,
+            unit,
+        });
+        let bounds = if plan.recentre_x || plan.recentre_y {
+            let (x, y) = exa_ui::form::show_place(
+                bounds.left,
+                bounds.top,
+                bounds.width(),
+                bounds.height(),
+                words.style,
+                self.root_client(),
+            );
+            GuiRect::new(x, y, bounds.width(), bounds.height())
+        } else {
+            bounds
+        };
+        let controls = match kind {
+            GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
+            GameScreen::Journal => ScreenLayout::journal(self.journal_unit).controls_at(bounds),
+            _ => screen_controls(kind, bounds),
+        };
         let client = exa_ui::line_skin::line_client(
             bounds.width(),
             bounds.height(),
@@ -974,7 +1000,11 @@ impl GameScreens {
         form.tag = kind.tag().unwrap_or(0);
         let form = self.task.add(Box::new(form));
         self.open.push(OpenScreen { kind, form });
-        self.task.focus_set(Some(form), NO_CONTROL);
+        if plan.raise {
+            self.task.activate(form);
+        } else {
+            self.task.focus_set(Some(form), NO_CONTROL);
+        }
         form
     }
 
