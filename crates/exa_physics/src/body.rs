@@ -2285,6 +2285,13 @@ pub struct Drive {
     pub race: RaceMuscles,
     /// What the body takes from its own character's stats.
     pub stats: BodyStats,
+    /// Its golem suit is powered, which halves the standing thigh factor
+    /// and quarters the leg limit ([`Bearing::golem_powered`] each tick).
+    /// The character init sets it for a golem race; the armour pass's
+    /// golem-suit registration sets it from the suit's charge, and the
+    /// suit's worn tick turns it on while the charge still rises and off
+    /// once it does not.
+    pub golem_powered: bool,
     /// What the character tick knows of the body's character this tick.
     pub bearing: Bearing,
     /// Stance factor s: the share of its tone the body uses (T = tone·s).
@@ -2491,6 +2498,7 @@ impl Drive {
             race,
             stance: race.stance,
             stats,
+            golem_powered: race.golem,
             ..Self::default()
         }
     }
@@ -2512,6 +2520,7 @@ impl Default for Drive {
             supported: true,
             race: RaceMuscles::HUMAN,
             stats: BodyStats::HUMAN,
+            golem_powered: false,
             bearing: Bearing::default(),
             stance: RaceMuscles::HUMAN.stance,
             arm: 0.0,
@@ -3615,6 +3624,8 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.race = race;
             d.stance = race.stance;
+            // The init's golem branch powers the body's golem suit.
+            d.golem_powered = race.golem;
         }
         if race.golem {
             self.smooth_golem_links();

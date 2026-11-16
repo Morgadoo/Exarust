@@ -104,6 +104,9 @@ pub(crate) fn take_bearing(
         locomotion.is_some_and(|(walk, _)| walk.slow_turn) || statue.is_some_and(|s| s.0);
     if let Some(drive) = body.drive.as_mut() {
         drive.dormant = dormant;
+        // The golem-suit byte the leg routine reads: the race's or the
+        // suit's (`exa_physics::body::Drive::golem_powered`).
+        bearing.golem_powered = drive.golem_powered;
     }
     body.set_bearing(bearing);
     // The body tick's timers, from what the bearing just measured.

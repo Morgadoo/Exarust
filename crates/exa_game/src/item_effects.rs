@@ -521,6 +521,12 @@ pub struct WornEffects {
     pub list: EffectList,
     pub items: Vec<exa_formats::encumbrance::EffectItem>,
     pub next_run_ms: u32,
+    /// The golem suit's registration, not yet applied to the body: the
+    /// armour pass powers the suit when its kind is odd and its charge
+    /// byte is under 0xff, and unpowers it otherwise
+    /// ([`Self::golem_power`]); [`run_worn_effects`] writes it to the
+    /// body's [`exa_physics::body::Drive::golem_powered`].
+    pub pending_power: Option<bool>,
 }
 
 /// What one run of a body's list did, for the caller to apply.
@@ -558,7 +564,20 @@ impl WornEffects {
                 effects.items.push(*item);
             }
         }
+        effects.pending_power = effects.golem_power();
         (!effects.list.entries.is_empty()).then_some(effects)
+    }
+
+    /// What the armour pass's golem-suit registration makes of the body's
+    /// golem-suit byte: powered with an odd kind and a charge under 0xff
+    /// ([`register_worn`]'s light), `None` with no golem suit listed.
+    pub fn golem_power(&self) -> Option<bool> {
+        let suit = self.list.entries.iter().find_map(|entry| {
+            (entry.kind == EffectTick::Worn)
+                .then(|| self.items.iter().find(|item| item.id as i32 == entry.id))
+                .flatten()
+        })?;
+        Some(register_worn(u16::from(suit.power_flags), suit.charge, 0.0, 0.0).0.lit)
     }
 
     /// One body tick: when the game clock `now_ms` is past the stored clock
@@ -569,7 +588,18 @@ impl WornEffects {
     /// [`step_apparel`]), their light and garment switches having no
     /// drawing counterpart yet. Every entry stays: a worn item does not
     /// leave a spawned body.
-    pub fn run(&mut self, now_ms: u32, red: &mut f32, max: f32, is_player: bool) -> EffectRun {
+    ///
+    /// A golem suit's tick reads and writes the body's golem-suit byte
+    /// `golem_powered`: on while its charge still rises, off once it does
+    /// not.
+    pub fn run(
+        &mut self,
+        now_ms: u32,
+        red: &mut f32,
+        max: f32,
+        is_player: bool,
+        golem_powered: &mut bool,
+    ) -> EffectRun {
         let mut outcome = EffectRun::default();
         if self.next_run_ms >= now_ms {
             return outcome;
@@ -595,7 +625,11 @@ impl WornEffects {
                     }
                 }
                 EffectTick::Worn => {
-                    step_worn(kind, &mut item.charge, false, 0.0, impacts);
+                    match step_worn(kind, &mut item.charge, *golem_powered, 0.0, impacts).action {
+                        GlowAction::On => *golem_powered = true,
+                        GlowAction::Off => *golem_powered = false,
+                        GlowAction::None => {}
+                    }
                 }
                 EffectTick::Apparel => {
                     let value = part_glow(kind, item.charge);
@@ -631,12 +665,20 @@ pub fn run_worn_effects(
         let mut red = fighter.health.red;
         // The two use counters are the body's: its tick feeds them
         // (`exa_physics::body::Drive::item_use`), the run spends them.
-        let drive = body.as_mut().and_then(|b| b.drive.as_mut());
+        let mut drive = body.as_mut().and_then(|b| b.drive.as_mut());
         if let Some(d) = drive.as_ref() {
             effects.list.impacts = d.item_use();
         }
+        // The armour pass's golem-suit registration, once.
+        if effects.pending_power.is_some() {
+            let power = effects.pending_power.take();
+            if let (Some(power), Some(d)) = (power, drive.as_mut()) {
+                d.golem_powered = power;
+            }
+        }
+        let mut powered = drive.as_ref().is_some_and(|d| d.golem_powered);
         let fed = effects.list.impacts;
-        let run = effects.run(now_ms, &mut red, max, is_player);
+        let run = effects.run(now_ms, &mut red, max, is_player, &mut powered);
         if run.ran {
             bevy::log::debug!(
                 "worn effects ran: use counters {:?} -> {:?}, {} entries",
@@ -645,10 +687,13 @@ pub fn run_worn_effects(
                 effects.list.entries.len()
             );
         }
-        if let Some(d) = body.as_mut().and_then(|b| b.drive.as_mut())
-            && d.item_use() != effects.list.impacts
-        {
-            d.set_item_use(effects.list.impacts);
+        if let Some(d) = body.as_mut().and_then(|b| b.drive.as_mut()) {
+            if d.item_use() != effects.list.impacts {
+                d.set_item_use(effects.list.impacts);
+            }
+            if d.golem_powered != powered {
+                d.golem_powered = powered;
+            }
         }
         if run.ran && red.to_bits() != fighter.health.red.to_bits() {
             fighter.health.red = red;
@@ -960,27 +1005,27 @@ mod tests {
         let mask = specials(&[(Burden::HEALING, 7, 2, 0)]);
         let mut effects = WornEffects::of_specials(&mask, HELD_EFFECTS_BIT).unwrap();
         let mut red = 0.1f32;
-        assert!(!effects.run(0, &mut red, 0.25, false).ran);
-        let run = effects.run(12, &mut red, 0.25, true);
+        assert!(!effects.run(0, &mut red, 0.25, false, &mut false).ran);
+        let run = effects.run(12, &mut red, 0.25, true, &mut false);
         assert!(run.ran && run.flash);
         assert_eq!(red, (0.1f32 as f64 + 0.25f32 as f64 * 0.004) as f32);
         assert_eq!(effects.items[0].charge, 1);
         assert_eq!(effects.next_run_ms, 1012);
-        assert!(!effects.run(1012, &mut red, 0.25, false).ran);
-        assert!(effects.run(1013, &mut red, 0.25, false).ran);
+        assert!(!effects.run(1012, &mut red, 0.25, false, &mut false).ran);
+        assert!(effects.run(1013, &mut red, 0.25, false, &mut false).ran);
         assert_eq!(effects.items[0].charge, 2);
         let mut full = 0.2495f32;
-        effects.run(3000, &mut full, 0.25, true);
+        effects.run(3000, &mut full, 0.25, true, &mut false);
         assert_eq!(full, 0.25);
         assert_eq!(effects.items[0].charge, 2);
         // A spent crystal (0xFF) or a record kind other than 2 heals nothing.
         effects.items[0].charge = 0xff;
         let mut low = 0.1f32;
-        effects.run(5000, &mut low, 0.25, false);
+        effects.run(5000, &mut low, 0.25, false, &mut false);
         assert_eq!(low, 0.1);
         let other = specials(&[(Burden::HEALING, 7, 1, 0)]);
         let mut other = WornEffects::of_specials(&other, HELD_EFFECTS_BIT).unwrap();
-        other.run(12, &mut low, 0.25, false);
+        other.run(12, &mut low, 0.25, false, &mut false);
         assert_eq!(low, 0.1);
     }
 
@@ -991,7 +1036,7 @@ mod tests {
         let mut effects = WornEffects::default();
         effects.list.impacts = [3.0, 2.0];
         let mut red = 0.1;
-        assert!(!effects.run(5, &mut red, 0.25, false).ran);
+        assert!(!effects.run(5, &mut red, 0.25, false, &mut false).ran);
         assert_eq!(effects.list.impacts, [0.0, 0.0]);
         assert_eq!(effects.next_run_ms, 1005);
     }
@@ -1023,6 +1068,45 @@ mod tests {
             .health
             .red;
         assert_eq!(red, (0.1f32 as f64 + 0.25f32 as f64 * 0.004) as f32);
+    }
+
+    /// The golem-suit byte the leg routine reads: the init powers a golem
+    /// race's body, the armour pass's suit registration powers or unpowers
+    /// it from the suit's charge, and the suit's worn tick turns it off once
+    /// the charge no longer rises.
+    #[test]
+    fn the_golem_suit_powers_and_unpowers_the_legs() {
+        use bevy::prelude::*;
+        use exa_formats::objdb::Burden;
+        use exa_physics::body::{RaceMuscles, Ragdoll};
+        let golem = RaceMuscles {
+            golem: true,
+            ..RaceMuscles::HUMAN
+        };
+        let race_body = || Ragdoll::new(&[]).with_drive().with_race(golem);
+        assert!(race_body().drive.unwrap().golem_powered);
+        assert!(!Ragdoll::new(&[]).with_drive().drive.unwrap().golem_powered);
+        let run = |charge: u8| {
+            let mut app = App::new();
+            app.insert_resource(exa_physics::body::BodyTicks(10));
+            app.add_systems(Update, run_worn_effects);
+            let suit = specials(&[(Burden::GOLEM_SUIT, 9, 1, charge)]);
+            let effects = WornEffects::of_specials(&suit, 0).unwrap();
+            let body = app
+                .world_mut()
+                .spawn((exa_combat::Fighter::default(), effects, race_body()))
+                .id();
+            app.update();
+            let ragdoll = app.world().get::<Ragdoll>(body).unwrap();
+            ragdoll.drive.as_ref().unwrap().golem_powered
+        };
+        // A spent suit (0xff) unpowers a golem at its registration.
+        assert!(!run(0xff));
+        // Still rising: registered powered, and the tick keeps it.
+        assert!(run(0xfd));
+        // Registered powered, but one more step would reach 0xff: the
+        // tick turns it off.
+        assert!(!run(0xfe));
     }
 
     /// A step of the player's healing charge holds the HUD's bars for a
