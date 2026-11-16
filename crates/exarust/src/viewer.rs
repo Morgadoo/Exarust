@@ -319,9 +319,7 @@ fn setup(
                     });
                 }
                 if let Some(w) = &options.weapon {
-                    commands
-                        .entity(root)
-                        .insert(exa_character::Wielded::model(w.clone()));
+                    commands.entity(root).insert(wielded(&options, w));
                 }
                 // A weapon is held as the race holds it.
                 if let Some(r) = &race {
@@ -2047,9 +2045,7 @@ fn spawn_players(
             commands.entity(model).insert(exa_game::torch::CarriesTorch);
         }
         if let Some(w) = &options.weapon {
-            commands
-                .entity(model)
-                .insert(exa_character::Wielded::model(w.clone()));
+            commands.entity(model).insert(wielded(options, w));
         }
         // An arena level's bodies come from the scene generator
         // (`exa_game::arena_live`); `--opponent` on any other level is the
@@ -2363,6 +2359,18 @@ fn spawn_players(
             })
             .collect();
         spawn_placed_characters(commands, loader, &placing, &spawned, None);
+    }
+    // `--fire`: fires standing in the level (a debug tool for the fires'
+    // body contacts and burns).
+    for &(at, size) in &options.fires {
+        let node = commands
+            .spawn((
+                Transform::from_translation(Vec3::from(at)),
+                Visibility::default(),
+            ))
+            .id();
+        exa_world::fire::spawn_fire(commands, node, size);
+        info!("--fire: a fire of size {size} stands at {at:?} m");
     }
     // A new story's companion: the unknown background (a new character's
     // here) starts with Derrin in the first level, where the story start's
@@ -3368,7 +3376,7 @@ const POKE_DOOR_FRAMES: u32 = 120;
 const POKE_LEVER_FRAMES: u32 = 90;
 const POKE_DOOR_LEAD: f32 = 0.5;
 
-/// `--mechanism-poke`: at that frame after loading the hand takes the
+/// `--mechanism-poke`: at each of its frames after loading the hand takes the
 /// nearest unlatched hinged door at its handle and pulls it open (its
 /// anchor kept half a metre along the leaf's opening side, its local z) for
 /// [`POKE_DOOR_FRAMES`], then lets go; the nearest lever is held at its
@@ -3383,13 +3391,21 @@ fn poke_mechanisms_at_frame(
     mut frames: Local<u32>,
     mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
-    let Some(at) = options.mechanism_poke else {
-        return;
-    };
-    if loading.is_some() {
+    if options.mechanism_poke.is_empty() || loading.is_some() {
         return;
     }
     *frames += 1;
+    // The latest poke due: each one turns the lever back to its other
+    // detent (a second poke sends the opposite signal).
+    let Some(at) = options
+        .mechanism_poke
+        .iter()
+        .copied()
+        .filter(|&f| f <= *frames)
+        .max()
+    else {
+        return;
+    };
     // The pokes write to the mechanisms' bodies: they land at the start of
     // the next fixed step, one per frame, in order.
     if *frames >= at {
@@ -5215,4 +5231,21 @@ mod placement_tests {
         assert_eq!(asked.height, FrameHeight::Stand);
         assert_eq!(asked.frame.translation.y, 0.0);
     }
+}
+
+/// The `--weapon` held, built from `--weapon-seeds` when given (a factory
+/// weapon's paint seeds and quality, as an item's weapon record has them).
+fn wielded(options: &crate::Options, model: &str) -> exa_character::Wielded {
+    let mut held = exa_character::Wielded::model(model.to_string());
+    if let Some((seeds, quality)) = options.weapon_seeds {
+        // Held with the plain sword's class word (0x11), as a factory
+        // weapon without a record is.
+        held.weapon = Some(exa_formats::objdb::Weapon {
+            flags: 0x11,
+            seeds,
+            quality,
+            ..Default::default()
+        });
+    }
+    held
 }

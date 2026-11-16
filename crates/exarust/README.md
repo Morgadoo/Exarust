@@ -53,7 +53,8 @@ flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--click`, `--level-change`, `--cursor`, `--searcher`, `--searcher-shots`, `--still-opponent`, `--opponent-race`, `--arena-match`, `--arena-level`,
 `--arena-tier`, `--arena-weapons`, `--debug-wound`, `--debug-nav`,
 `--bevy-sun-cascades`, `--floor-torch` (with an optional frame),
-`--weapon-blood`, `--debug-spray`, `--perks`, `--env-seed`, `--new-game`) and keys are in
+`--weapon-blood`, `--debug-spray`, `--perks`, `--env-seed`, `--new-game`, `--fire`,
+`--weapon-seeds`, `--mechanism-poke` with several frames) and keys are in
 [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md). `--versus` sets the versus
 lobby's flag, which Exanima 0.9.5 never sets, so the arena page shows VERSUS;
 a `--press` letter or digit is also typed (a scripted run can name a
