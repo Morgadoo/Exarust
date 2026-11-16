@@ -24,11 +24,14 @@
 //! its form ([`arsenal_input`] hands the open window the frame's pressed
 //! keys and that release).
 //!
-//! The hub's Arsenal row sends [`OpenArsenal`]. Not wired: no arena store
-//! fills the columns
-//! ([`ArsenalWindow::set_column`]), so the close does not write them back
-//! (an empty column would clear the store); the drop rules stay the tested
-//! `exa_items::arsenal::drop_in` and `column_hook`.
+//! The hub's Arsenal row sends [`OpenArsenal`]. The open loads the first
+//! shelf's five boxes into the columns ([`load_shelf`], from the arena's
+//! stores, [`crate::save_live::ArenaStores`]); a shelf button stores the
+//! columns into the shown shelf's boxes and loads the shelf it names, the
+//! arrows scroll and the toggle shows or hides the inventory (a left
+//! release over a control, [`ArsenalButton`]); the close stores the columns
+//! back. The drop rules stay the tested `exa_items::arsenal::drop_in` and
+//! `column_hook`; the embedded inventory's pack is not bound.
 //!
 //! Evidence: the arsenal view's constructor, layout routine, close, key,
 //! scroll and drop handlers and the item container's constructor.
@@ -42,6 +45,7 @@ use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinPalette;
 
+use crate::arsenal as arsenal_store;
 use crate::gui_paint::{self, Painted};
 use crate::item_container::Container;
 use crate::item_panel_draw::PanelIcons;
@@ -81,6 +85,12 @@ pub struct ArsenalScroll(pub u32);
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArsenalMouse(pub u32);
 
+/// A left release over one of the form's eight controls (its index in the
+/// control template, [`exa_items::arsenal::CONTROLS`]): the control's
+/// callback runs.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArsenalButton(pub usize);
+
 /// The hub's Arsenal row asks the window to open.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpenArsenal;
@@ -103,6 +113,9 @@ pub struct ArsenalWindow {
     pub pack: Container,
     /// The inventory key (the letter `I` by default).
     pub inventory_key: u32,
+    /// The eight controls' state words (the down bits of the shelf radio
+    /// group and of the inventory toggle).
+    pub states: [u32; arsenal::LAST_CONTROL + 1],
 }
 
 impl Default for ArsenalWindow {
@@ -120,6 +133,7 @@ impl Default for ArsenalWindow {
             columns: std::array::from_fn(|_| Container::default()),
             pack: Container::default(),
             inventory_key: arsenal::INVENTORY_KEY,
+            states: arsenal::CONTROLS.map(|control| control.state),
         }
     }
 }
@@ -139,6 +153,7 @@ impl ArsenalWindow {
         self.scroll = 0;
         self.inventory_shown = true;
         self.compact = false;
+        self.states = arsenal::CONTROLS.map(|control| control.state);
         for column in &mut self.columns {
             *column = Container::default();
         }
@@ -193,9 +208,40 @@ impl ArsenalWindow {
     pub fn key(&mut self, code: u32, flags: u32) {
         match arsenal::key(code, flags, self.inventory_key) {
             Key::Close => self.close(),
-            Key::ToggleInventory => self.inventory_shown = !self.inventory_shown,
+            Key::ToggleInventory => self.show_inventory(!self.inventory_shown),
             Key::None => {}
         }
+    }
+
+    /// Shows or hides the embedded inventory; the toggle control's down
+    /// bits follow ([`exa_items::arsenal::toggle_flags`]).
+    pub fn show_inventory(&mut self, shown: bool) {
+        self.inventory_shown = shown;
+        self.states[TOGGLE_CONTROL] = arsenal::toggle_flags(self.states[TOGGLE_CONTROL], shown);
+    }
+
+    /// A click on control `index`: the control's state changes
+    /// ([`exa_items::arsenal::click_states`]) and its callback runs. The
+    /// arrows scroll one column (the left one only while past zero) and lay
+    /// out; the toggle shows the inventory while it is down. A shelf
+    /// button that is down returns the shelf it names, for the caller's
+    /// [`load_shelf`].
+    pub fn click(&mut self, index: usize) -> Option<usize> {
+        let record = arsenal::CONTROLS.get(index)?;
+        arsenal::click_states(&mut self.states, index);
+        match record.action {
+            arsenal::ControlAction::ScrollLeft => self.scroll_press(0x1002),
+            arsenal::ControlAction::ScrollRight => self.scroll_press(0x2002),
+            arsenal::ControlAction::ToggleInventory => {
+                self.inventory_shown = self.states[index] & arsenal::DOWN != 0;
+            }
+            arsenal::ControlAction::Shelf => {
+                if self.states[index] & arsenal::DOWN != 0 {
+                    return Some(record.value as usize);
+                }
+            }
+        }
+        None
     }
 
     /// A scroll button's press: the layout clamps the new scroll.
@@ -205,12 +251,116 @@ impl ArsenalWindow {
         self.scroll = self.layout().scroll;
     }
 
-    /// Sets one column's panel (for an arena store to fill; none does yet).
+    /// Sets one column's panel directly (the shelf load fills them from the
+    /// stores, [`load_shelf`]).
     pub fn set_column(&mut self, column: usize, items: Container) {
         if let Some(slot) = self.columns.get_mut(column) {
             *slot = items;
         }
     }
+}
+
+/// A shelf box's entries as the list a column loads: the item, its
+/// flags and its place in sixteenths of a unit.
+fn box_children(entries: &[arsenal_store::ArsenalEntry]) -> Vec<crate::item_container::ListChild> {
+    entries
+        .iter()
+        .map(|entry| crate::item_container::ListChild {
+            id: entry.item,
+            flags: entry.flags,
+            x: entry.first as i16,
+            y: entry.second as i16,
+        })
+        .collect()
+}
+
+/// A column's list back as a shelf box's entries.
+fn box_entries(children: &[crate::item_container::ListChild]) -> Vec<arsenal_store::ArsenalEntry> {
+    children
+        .iter()
+        .map(|child| arsenal_store::ArsenalEntry {
+            item: child.id,
+            flags: child.flags,
+            first: child.x as u16,
+            second: child.y as u16,
+        })
+        .collect()
+}
+
+/// Stores the five columns into the shown shelf's boxes (column `b` into
+/// box `b`), when a shelf is shown.
+pub fn store_columns(window: &ArsenalWindow, stores: &mut arsenal_store::Arsenal) {
+    let Some(shelf) = usize::try_from(window.set)
+        .ok()
+        .and_then(|set| stores.shelves.get_mut(set))
+    else {
+        return;
+    };
+    for (column, entries) in window.columns.iter().zip(shelf.iter_mut()) {
+        *entries = box_entries(&column.save_list());
+    }
+}
+
+/// The shelf load of a shelf button that went down: the columns go into
+/// the shown shelf's boxes, the shown shelf becomes `shelf`, and each
+/// column gives its icons back and loads its box of the new shelf. Every
+/// entry is kept, with the icon slot the item manager gives it (none
+/// without one), so a store written back loses nothing. [The original
+/// then sorts a box once when its dirty byte is set; nothing Exarust runs
+/// sets one, so no sort runs.]
+pub fn load_shelf(
+    window: &mut ArsenalWindow,
+    stores: &mut arsenal_store::Arsenal,
+    shelf: usize,
+    mut icons: Option<&mut PanelIcons>,
+    catalogue: Option<&exa_items::catalogue::ItemCatalogue>,
+) {
+    if shelf >= arsenal_store::SHELVES {
+        return;
+    }
+    store_columns(window, stores);
+    window.set = shelf as i32;
+    let places = arsenal::column_places(window.compact);
+    let vscale = if window.compact {
+        arsenal::COMPACT_COLUMN_SCALE
+    } else {
+        1.0
+    };
+    for (index, column) in window.columns.iter_mut().enumerate() {
+        if let Some(icons) = icons.as_deref_mut() {
+            icons.release_container(column);
+        }
+        let place = places[index];
+        column.client = (place.width, place.height);
+        column.vscale = vscale;
+        column.green_mask = place.green;
+        column.yellow_mask = place.yellow;
+        let children = box_children(&stores.shelves[shelf][index]);
+        let slots: Vec<usize> = children
+            .iter()
+            .map(|child| {
+                icons
+                    .as_deref_mut()
+                    .map_or(0, |icons| icons.reserve(child.id, child.flags, catalogue).0)
+            })
+            .collect();
+        let mut next = slots.into_iter();
+        let icons_ref = icons.as_deref();
+        column.load_list(
+            &children,
+            |id, _| {
+                Some((
+                    next.next().unwrap_or(0),
+                    crate::body_inventory::item_bulk(id, catalogue),
+                ))
+            },
+            |slot| icons_ref.and_then(|icons| icons.half(slot)),
+        );
+    }
+    info!(
+        "arsenal: shelf {shelf} loaded, {} items over its five boxes",
+        window.columns.iter().map(|c| c.entries.len()).sum::<usize>()
+    );
 }
 
 /// The form's painted frame and the geometry its children need.
@@ -418,24 +568,42 @@ pub fn column_layers(
     layers
 }
 
-/// Sends the arsenal's key and scroll presses to the open window and draws
-/// it into the shared GUI frames after the screens.
-/// Opens the window when the hub asks. The set stays 0 until a store fills it.
-/// The open turns the player's controls off first, as the original's
-/// arsenal open does.
+/// Opens the window when the hub asks: the player's controls go off
+/// first, as the original's arsenal open does, and the open loads the
+/// first shelf (its button starts down) from the arena's stores; with no
+/// stores the columns stay empty and no shelf is shown, so the close
+/// writes nothing back.
 fn open_arsenal(
     mut window: ResMut<ArsenalWindow>,
     mut open: MessageReader<OpenArsenal>,
     control: Option<ResMut<crate::player_controls::PlayerControl>>,
+    (mut stores, mut icons, catalogue): ArsenalStores<'_>,
 ) {
     if open.read().next().is_some() {
         if let Some(mut control) = control {
             crate::controls_live::switch_controls(&mut control, true, "arsenal opens");
         }
-        window.open(0);
+        window.open(-1);
+        if let Some(stores) = stores.as_deref_mut() {
+            load_shelf(
+                &mut window,
+                &mut stores.arsenal,
+                0,
+                icons.as_deref_mut(),
+                catalogue.as_deref(),
+            );
+        }
         info!("arsenal window opens");
     }
 }
+
+/// The arena's stores the columns show, the item manager's icons and the
+/// item catalogue.
+type ArsenalStores<'w> = (
+    Option<ResMut<'w, crate::save_live::ArenaStores>>,
+    Option<ResMut<'w, PanelIcons>>,
+    Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
+);
 
 /// The open arsenal's input as the window manager hands it to the form:
 /// each key pressed this frame (its virtual-key code; the inventory key is
@@ -447,7 +615,7 @@ pub fn arsenal_input(
     bindings: Option<Res<crate::bindings::Bindings>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut out: MessageWriter<ArsenalKey>,
-    mut mouse: MessageWriter<ArsenalMouse>,
+    (mut mouse, mut clicks): (MessageWriter<ArsenalMouse>, MessageWriter<ArsenalButton>),
 ) {
     if !window.open {
         return;
@@ -481,6 +649,26 @@ pub fn arsenal_input(
             mouse.write(ArsenalMouse(0x2002));
         }
     }
+    // A left release over a control runs its callback.
+    if buttons
+        .as_deref()
+        .is_some_and(|b| b.just_released(MouseButton::Left))
+        && let Some(point) = windows.single().ok().and_then(|w| {
+            w.cursor_position()
+                .map(|p| (p * w.scale_factor()).as_ivec2())
+        })
+    {
+        // The control drawn last is on top where two overlap.
+        let paint = paint_arsenal(&window, &GuiTextures::default());
+        if let Some(&(index, _)) = paint
+            .buttons
+            .iter()
+            .rev()
+            .find(|(_, rect)| rect.contains(point.x, point.y))
+        {
+            clicks.write(ArsenalButton(index));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -489,22 +677,17 @@ fn arsenal_live(
     mut keys: MessageReader<ArsenalKey>,
     mut mouse: MessageReader<ArsenalMouse>,
     mut scrolls: MessageReader<ArsenalScroll>,
-    mut icons: Option<ResMut<PanelIcons>>,
+    mut clicks: MessageReader<ArsenalButton>,
+    (mut stores, mut icons, catalogue): ArsenalStores<'_>,
     mut frames: ResMut<GuiFrames>,
     textures: Option<Res<GuiTextures>>,
     mut control: Option<ResMut<crate::player_controls::PlayerControl>>,
     mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
 ) {
+    let was_open = window.open;
     for key in keys.read() {
         if window.open {
             window.key(key.code, key.flags);
-            // The close gives the player's controls back, as the
-            // original's arsenal close does.
-            if !window.open
-                && let Some(control) = control.as_deref_mut()
-            {
-                crate::controls_live::switch_controls(control, false, "arsenal closes");
-            }
         }
     }
     // The form's mouse slot: a right release closes, as a key's close
@@ -513,15 +696,52 @@ fn arsenal_live(
         if window.open && arsenal::closes_on_release(event.0) {
             window.close();
             info!("arsenal: a right release closes it");
-            if let Some(control) = control.as_deref_mut() {
-                crate::controls_live::switch_controls(control, false, "arsenal closes");
-            }
         }
     }
     for scroll in scrolls.read() {
         if window.open {
             window.scroll_press(scroll.0);
         }
+    }
+    // The controls' callbacks: the arrows, the shelf buttons and the
+    // inventory toggle.
+    for click in clicks.read() {
+        if !window.open {
+            continue;
+        }
+        if let Some(shelf) = window.click(click.0)
+            && let Some(stores) = stores.as_deref_mut()
+        {
+            load_shelf(
+                &mut window,
+                &mut stores.arsenal,
+                shelf,
+                icons.as_deref_mut(),
+                catalogue.as_deref(),
+            );
+        }
+    }
+    // The close (by a key or a right release): the player's controls come
+    // back and the shown shelf's columns are stored, as the original's
+    // close does in that order.
+    if was_open && !window.open {
+        if let Some(control) = control.as_deref_mut() {
+            crate::controls_live::switch_controls(control, false, "arsenal closes");
+        }
+        let close = arsenal::arsenal_close(window.set, control.is_some(), stores.is_some());
+        if close.save_columns
+            && let Some(stores) = stores.as_deref_mut()
+        {
+            store_columns(&window, &mut stores.arsenal);
+            info!("arsenal: shelf {} stored at the close", window.set);
+        }
+        let mut columns = std::mem::take(&mut window.columns);
+        if let Some(icons) = icons.as_deref_mut() {
+            for column in &mut columns {
+                icons.release_container(column);
+            }
+        }
+        window.columns = columns;
     }
     // The pad's word goes to the view's key slot: the scroll stick's left
     // and right steps scroll the columns as the buttons do; any other word
@@ -576,6 +796,7 @@ impl Plugin for ArsenalViewPlugin {
             .add_message::<ArsenalKey>()
             .add_message::<ArsenalMouse>()
             .add_message::<ArsenalScroll>()
+            .add_message::<ArsenalButton>()
             .add_message::<OpenArsenal>()
             .add_systems(
                 Update,
@@ -741,6 +962,129 @@ mod tests {
         };
         assert!(!release(&mut app, (500.0, 300.0)));
         assert!(release(&mut app, (1100.0, 300.0)));
+    }
+
+    fn stores() -> crate::save_live::ArenaStores {
+        let mut stores = crate::save_live::ArenaStores::default();
+        let entry = |item| arsenal_store::ArsenalEntry {
+            item,
+            flags: 0,
+            first: 0x28,
+            second: 4,
+        };
+        stores.arsenal.shelves[0][0].push(entry(11));
+        stores.arsenal.shelves[1][2].push(entry(22));
+        stores
+    }
+
+    fn live_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ArsenalViewPlugin)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<crate::bindings::Bindings>()
+            .insert_resource(window())
+            .insert_resource(stores());
+        let primary = app
+            .world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        (app, primary)
+    }
+
+    fn column_items(app: &App, column: usize) -> Vec<u32> {
+        app.world().resource::<ArsenalWindow>().columns[column]
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    /// The open loads the first shelf's boxes into the columns; the second
+    /// shelf button stores them back and loads its own shelf; the close
+    /// stores the shown shelf, so the stores come out as they went in.
+    #[test]
+    fn the_open_loads_the_first_shelf_and_a_shelf_button_loads_its_own() {
+        let (mut app, _) = live_app();
+        app.world_mut().write_message(OpenArsenal);
+        app.update();
+        let window = app.world().resource::<ArsenalWindow>();
+        assert!(window.open);
+        assert_eq!(window.set, 0);
+        assert_eq!(column_items(&app, 0), vec![11]);
+        assert!(column_items(&app, 2).is_empty());
+        app.world_mut()
+            .write_message(ArsenalButton(arsenal::FIRST_SHELF_CONTROL + 1));
+        app.update();
+        let window = app.world().resource::<ArsenalWindow>();
+        assert_eq!(window.set, 1);
+        assert_eq!(window.states[arsenal::FIRST_SHELF_CONTROL] & arsenal::DOWN, 0);
+        assert!(column_items(&app, 0).is_empty());
+        assert_eq!(column_items(&app, 2), vec![22]);
+        let stored = &app.world().resource::<crate::save_live::ArenaStores>().arsenal;
+        assert_eq!(stored.shelves[0][0][0].item, 11);
+        assert_eq!(
+            (stored.shelves[0][0][0].first, stored.shelves[0][0][0].second),
+            (0x28, 4)
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert!(!app.world().resource::<ArsenalWindow>().open);
+        assert_eq!(
+            app.world().resource::<crate::save_live::ArenaStores>().clone(),
+            stores()
+        );
+    }
+
+    /// A left release over the right arrow scrolls one column; the left
+    /// arrow scrolls back; the toggle hides the inventory and shows it again.
+    #[test]
+    fn the_arrows_and_the_toggle_answer_a_left_release() {
+        let (mut app, primary) = live_app();
+        app.world_mut().write_message(OpenArsenal);
+        app.update();
+        let click = |app: &mut App, index: usize| {
+            let paint = paint_arsenal(
+                app.world().resource::<ArsenalWindow>(),
+                &GuiTextures::default(),
+            );
+            let at = paint
+                .buttons
+                .iter()
+                .position(|(at, _)| *at == index)
+                .unwrap();
+            let rect = paint.buttons[at].1;
+            // A point of the control no later (upper) control covers.
+            let y = rect.top + rect.height() / 2;
+            let x = (rect.left..rect.right)
+                .find(|&x| {
+                    paint.buttons[at + 1..]
+                        .iter()
+                        .all(|(_, upper)| !upper.contains(x, y))
+                })
+                .unwrap();
+            let centre = bevy::math::DVec2::new(f64::from(x), f64::from(y));
+            app.world_mut()
+                .get_mut::<Window>(primary)
+                .unwrap()
+                .set_physical_cursor_position(Some(centre));
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.reset_all();
+            buttons.press(MouseButton::Left);
+            buttons.release(MouseButton::Left);
+            app.update();
+        };
+        click(&mut app, 1);
+        assert_eq!(app.world().resource::<ArsenalWindow>().scroll, 1);
+        click(&mut app, 0);
+        assert_eq!(app.world().resource::<ArsenalWindow>().scroll, 0);
+        click(&mut app, TOGGLE_CONTROL);
+        assert!(!app.world().resource::<ArsenalWindow>().inventory_shown);
+        click(&mut app, TOGGLE_CONTROL);
+        assert!(app.world().resource::<ArsenalWindow>().inventory_shown);
     }
 
     #[test]
