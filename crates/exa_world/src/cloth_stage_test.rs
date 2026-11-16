@@ -163,3 +163,143 @@ fn the_cloths_meet_the_bodies_in_a_fixed_order() {
     assert_eq!(first.2, second.2);
     assert!(first.2 >= 3, "the bodies met the sheets: {} pushes", first.2);
 }
+
+/// A sheet like [`sheet`] at (x, z) in metres.
+fn sheet_at(app: &mut App, x: f32, y: f32, z: f32) -> Entity {
+    let entity = sheet(app, x, y);
+    let mut instance = app.world_mut().get_mut::<ClothInstance>(entity).unwrap();
+    let cloth = &mut instance.cloth;
+    for p in &mut cloth.particles {
+        p.position.z += z * 100.0;
+        p.previous.z += z * 100.0;
+    }
+    for p in &mut cloth.pins {
+        p.rest.z += z * 100.0;
+    }
+    for r in &mut cloth.rest {
+        r.z += z * 100.0;
+    }
+    entity
+}
+
+/// The cloths' object grid is the scene's (8 × 8 cells about the origin
+/// cell (4, 4) here): a cell is its flat index, so the cell after the last
+/// column is the next row's first, and a body linked there is offered to a
+/// cloth in that last column, as the original's flat neighbour table
+/// offers it; a cloth in the first row is parked at `columns + 1`, as the
+/// overflow guard parks it. The stand-in grid offers neither.
+#[test]
+fn the_cloths_take_the_scene_grid() {
+    let shape = sector::GridShape::of_scene(8, 8, Vec3::ZERO);
+    assert_eq!(shape.origin, (4, 4));
+    let offered = |scene: bool| {
+        let mut app = app();
+        if scene {
+            app.insert_resource(exa_physics::SceneGrid::Grid(shape));
+        }
+        // The cloth in column 7, row 4 (x 18-24 m); the body in column 0,
+        // row 5 (x −24 m, z 6-12 m).
+        let cloth = sheet_at(&mut app, 20.0, 1.0, 0.5);
+        let b = body(&mut app, Vec3::new(-23.0, 1.0, 7.0), 0.1);
+        app.world_mut().spawn(b);
+        // A cloth in the first row (z −24 m).
+        let parked = sheet_at(&mut app, 0.5, 1.0, -23.0);
+        app.world_mut().run_schedule(FixedUpdate);
+        let debug = app.world().resource::<ClothDebug>();
+        let parts = debug
+            .cloths
+            .iter()
+            .find(|(e, ..)| *e == cloth)
+            .map_or(0, |(_, w, _)| w.parts);
+        let objects = app.world().resource::<ClothObjects>();
+        let id = objects.order.iter().position(|&e| e == parked).unwrap();
+        (parts, objects.grid.cell_of_id(id))
+    };
+    let (parts, parked) = offered(true);
+    assert_eq!(parts, 1, "the next row's first cell is a neighbour");
+    assert_eq!(parked, Some(sector::cell_of_index(sector::overflow_cell(8), 8)));
+    let (parts, parked) = offered(false);
+    assert_eq!(parts, 0);
+    assert_ne!(parked, Some(sector::cell_of_index(sector::overflow_cell(8), 8)));
+}
+
+/// The draw update rebuilds a normal-mapped cloth mesh's tangents from its
+/// moved faces (the cloth's centimetres, the rebuilt normals), keeping each
+/// tangent's fourth lane (the handedness it was loaded with); a later part
+/// of the node keeps its tangents, as the original rebuilds the first
+/// part's only.
+#[test]
+fn the_draw_rebuilds_a_normal_mapped_cloths_tangents() {
+    use crate::cloth::{ClothMeshUpdate, ClothShading, ClothSource, write_cloth_meshes};
+    let run = |part: usize| {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ClothPlugin))
+            .init_resource::<Assets<Mesh>>();
+        let positions = vec![[0.0f32, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]];
+        let mesh = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 0.0, 1.0]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[0.0f32, 0.0, 0.0, -1.0]; 3])
+        .with_inserted_indices(bevy::mesh::Indices::U32(vec![0, 1, 2]));
+        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+        let cloth = cloth_of(
+            &positions.iter().map(|p| Vec3::from_array(*p)).collect::<Vec<_>>(),
+            &[[0, 1, 2]],
+            &[],
+        );
+        let source = std::sync::Arc::new(exa_assets::ClothMesh {
+            elements: 3,
+            faces: vec![[0, 1, 2]],
+            face_flags: vec![0],
+            part_elements: vec![vec![0, 1, 2]; 2],
+            part_keys: vec![vec![0, 0, 0]; 2],
+            links: Vec::new(),
+        });
+        app.world_mut().spawn((
+            ClothInstance::new(cloth, handle.clone(), vec![0, 1, 2]),
+            ClothShading {
+                keys: vec![0, 0, 0],
+                elements: vec![0, 1, 2],
+            },
+            ClothSource { mesh: source, part },
+            GlobalTransform::default(),
+        ));
+        // The cloth moved: its corner 1 rose 5 cm.
+        let current = vec![[0.0f32, 0.0, 0.0], [10.0, 0.0, 5.0], [0.0, 10.0, 0.0]];
+        app.world_mut().write_message(ClothMeshUpdate {
+            mesh: handle.clone(),
+            previous: current.clone(),
+            current: current.clone(),
+        });
+        app.world_mut().run_system_cached(write_cloth_meshes).unwrap();
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        let mesh = meshes.get(&handle).unwrap();
+        let tangents = match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x4(t)) => t.clone(),
+            _ => panic!("no tangents"),
+        };
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .and_then(|a| a.as_float3())
+            .unwrap()
+            .to_vec();
+        (tangents, normals, current)
+    };
+    let (tangents, normals, current) = run(0);
+    let mut want = vec![[0.0f32, 0.0, 0.0, -1.0]; 3];
+    cloth::rebuild_tangents(
+        &current,
+        &normals,
+        &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        &[0, 1, 2],
+        &mut want,
+    );
+    assert_eq!(tangents, want);
+    assert!(tangents.iter().all(|t| t[3] == -1.0 && t[0] > 0.8));
+    let (tangents, ..) = run(1);
+    assert_eq!(tangents, vec![[0.0f32, 0.0, 0.0, -1.0]; 3]);
+}

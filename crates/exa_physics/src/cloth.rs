@@ -1102,6 +1102,63 @@ pub fn finish_step(cloth: &mut Cloth, before: &[Vec3], awake: bool) {
     }
 }
 
+/// The draw update's tangent rebuild for a normal-mapped first part (the
+/// original's, after the normals are rebuilt): each face's tangent from its
+/// corners' places `positions` and texture coordinates `uvs`,
+/// `t = (Δv₂·e₁ − Δv₁·e₂) · (1 / (Δu₁·Δv₂ − Δu₂·Δv₁))` with `e₁ = p₁ − p₀`,
+/// `e₂ = p₂ − p₀` and `Δ` the coordinates' differences from corner 0 (an
+/// exact reciprocal, no floor: a degenerate face gives infinities as the
+/// original's), summed unweighted into its three vertices; then each
+/// vertex's sum loses its part along its normal (`t + n·(−((tₓnₓ + t_yn_y)
+/// + t_zn_z))`) and is scaled by the processor's approximate reciprocal
+/// square root (zero stays zero), into the first three lanes of
+/// `tangents`. The fourth lane (the handedness sign the mesh was loaded
+/// with, Bevy's tangent sign) is left as it is: the original writes only
+/// three. Faces naming a missing vertex, and vertices past any of the
+/// arrays, are skipped.
+pub fn rebuild_tangents(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[u32],
+    tangents: &mut [[f32; 4]],
+) {
+    let count = positions.len().min(uvs.len());
+    let mut sums = vec![Vec3::ZERO; positions.len()];
+    for face in indices.chunks_exact(3) {
+        let [a, b, c] = [face[0] as usize, face[1] as usize, face[2] as usize];
+        if a >= count || b >= count || c >= count {
+            continue;
+        }
+        let p = |i: usize| Vec3::from_array(positions[i]);
+        let e1 = p(b) - p(a);
+        let e2 = p(c) - p(a);
+        let (u0, u1, u2) = (uvs[a], uvs[b], uvs[c]);
+        let du1 = u1[0] - u0[0];
+        let dv1 = u1[1] - u0[1];
+        let du2 = u2[0] - u0[0];
+        let dv2 = u2[1] - u0[1];
+        let r = 1.0 / (du1 * dv2 - du2 * dv1);
+        let t = Vec3::new(
+            (dv2 * e1.x - dv1 * e2.x) * r,
+            (dv2 * e1.y - dv1 * e2.y) * r,
+            (dv2 * e1.z - dv1 * e2.z) * r,
+        );
+        sums[a] += t;
+        sums[b] += t;
+        sums[c] += t;
+    }
+    for ((slot, t), n) in tangents.iter_mut().zip(&sums).zip(normals) {
+        let n = Vec3::from_array(*n);
+        let along = (t.x * n.x + t.y * n.y) + t.z * n.z;
+        let across = *t + n * -along;
+        let unit = crate::engine_math::normalize_approx(across);
+        slot[0] = unit.x;
+        slot[1] = unit.y;
+        slot[2] = unit.z;
+    }
+}
+
 /// One pass of the double-sided cloth draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrawPass {
@@ -2687,6 +2744,41 @@ mod tests {
         assert!(cloth.particles[0].position.z < at.z);
         cloth.grab(9, target);
         assert!(cloth.grabs.is_empty());
+    }
+
+    /// The tangent rebuild: a face's u-gradient through the exact
+    /// reciprocal, summed into its vertices, made perpendicular to each
+    /// vertex's normal and normalised by the approximate root, with the
+    /// fourth lane (the loaded handedness) kept.
+    #[test]
+    fn the_tangents_are_rebuilt_from_the_moved_faces() {
+        let positions = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [10.0, 10.0, 5.0]];
+        let uvs = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let tilted = Vec3::new(0.0, 0.6, 0.8);
+        let normals = [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], tilted.to_array(), [0.0, 0.0, 1.0]];
+        let indices = [0, 1, 2];
+        let mut tangents = [[9.0, 9.0, 9.0, -1.0], [0.0, 0.0, 0.0, 1.0], [0.0; 4], [7.0, 7.0, 7.0, 1.0]];
+        rebuild_tangents(&positions, &normals, &uvs, &indices, &mut tangents);
+        // Δu₁ = 1, Δv₂ = 1: t = e₁ = (10, 0, 0) at each corner.
+        let unit = crate::engine_math::normalize_approx(Vec3::new(10.0, 0.0, 0.0));
+        assert_eq!(&tangents[0][..3], &unit.to_array());
+        assert_eq!(tangents[0][3], -1.0);
+        assert_eq!(tangents[1], [unit.x, unit.y, unit.z, 1.0]);
+        // Already across the tilted normal: unchanged but for the root.
+        assert_eq!(&tangents[2][..3], &unit.to_array());
+        // A vertex no face reaches: its zero sum stays zero.
+        assert_eq!(tangents[3], [0.0, 0.0, 0.0, 1.0]);
+        // A sum with a part along the normal loses it.
+        let uvs = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]];
+        let normals = [tilted.to_array(); 4];
+        let mut tangents = [[0.0; 4]; 4];
+        rebuild_tangents(&positions, &normals, &uvs, &[0, 1, 2], &mut tangents);
+        // Δu₂ = 1, Δv₁ = 1: r = −1, t = −(−1·e₂) = e₂ = (0, 10, 0).
+        let t = Vec3::new(0.0, 10.0, 0.0);
+        let along = (t.x * tilted.x + t.y * tilted.y) + t.z * tilted.z;
+        let want = crate::engine_math::normalize_approx(t + tilted * -along);
+        assert_eq!(&tangents[0][..3], &want.to_array());
+        assert!(Vec3::from_slice(&tangents[0][..3]).dot(tilted).abs() < 1e-3);
     }
 
     /// A hold made on a triangle point measures its radius in the mesh to

@@ -778,7 +778,7 @@ pub fn write_cloth_meshes(
     mut updates: MessageReader<ClothMeshUpdate>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut debug: ResMut<ClothDebug>,
-    mut instances: Query<(&mut ClothInstance, Option<&ClothShading>)>,
+    mut instances: Query<(&mut ClothInstance, Option<&ClothShading>, Option<&ClothSource>)>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     time: Option<Res<Time<Fixed>>>,
     mut drawing: Local<bevy::platform::collections::HashMap<AssetId<Mesh>, ClothDraw>>,
@@ -804,7 +804,14 @@ pub fn write_cloth_meshes(
     let mut settled = Vec::new();
     let shading: bevy::platform::collections::HashMap<AssetId<Mesh>, &ClothShading> = instances
         .iter()
-        .filter_map(|(instance, shading)| Some((instance.mesh.id(), shading?)))
+        .filter_map(|(instance, shading, _)| Some((instance.mesh.id(), shading?)))
+        .collect();
+    // The meshes of a node's later parts: the original rebuilds the
+    // tangents of the first part only.
+    let later: bevy::platform::collections::HashSet<AssetId<Mesh>> = instances
+        .iter()
+        .filter(|(_, _, source)| source.is_some_and(|s| s.part != 0))
+        .map(|(instance, ..)| instance.mesh.id())
         .collect();
     for (&id, draw) in drawing.iter() {
         let Some(mesh) = meshes.get_mut(id) else {
@@ -812,15 +819,16 @@ pub fn write_cloth_meshes(
             continue;
         };
         let mut mesh = mesh;
-        let places: Vec<[f32; 3]> = draw
+        let places_cm: Vec<Vec3> = draw
             .previous
             .iter()
             .zip(&draw.current)
             .map(|(a, b)| {
                 let (a, b) = (Vec3::from_array(*a), Vec3::from_array(*b));
-                ((a + (b - a) * alpha) * 0.01).to_array()
+                a + (b - a) * alpha
             })
             .collect();
+        let places: Vec<[f32; 3]> = places_cm.iter().map(|p| (*p * 0.01).to_array()).collect();
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(values)) =
             mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
         else {
@@ -853,17 +861,24 @@ pub fn write_cloth_meshes(
                 }
             }
         }
+        // A normal-mapped mesh (one carrying tangents and texture
+        // coordinates) has its tangents rebuilt from the moved faces, in
+        // the cloth's centimetres, after its normals
+        // ([`exa_physics::cloth::rebuild_tangents`]).
+        if !later.contains(&id) {
+            rebuild_mesh_tangents(&mut mesh, &places_cm);
+        }
         written += 1;
         if draw.previous == draw.current {
             settled.push(id);
         }
     }
-    drop(shading);
+    drop((shading, later));
     for id in settled {
         drawing.remove(&id);
     }
     if fixed.as_ref().is_some_and(|f| f.bridged()) && !newest.is_empty() {
-        for (mut instance, _) in &mut instances {
+        for (mut instance, ..) in &mut instances {
             let Some(update) = newest.get(&instance.mesh.id()) else {
                 continue;
             };
@@ -883,6 +898,32 @@ pub fn write_cloth_meshes(
             d.meshes_written += written;
             d.write_micros += micros;
         });
+    }
+}
+
+/// The tangent rebuild of one cloth mesh whose places are `places_cm`
+/// (cm), when it carries tangents and texture coordinates.
+fn rebuild_mesh_tangents(mesh: &mut Mesh, places_cm: &[Vec3]) {
+    use bevy::mesh::VertexAttributeValues as Values;
+    let (Some(Values::Float32x2(uvs)), Some(Values::Float32x3(normals))) = (
+        mesh.attribute(Mesh::ATTRIBUTE_UV_0),
+        mesh.attribute(Mesh::ATTRIBUTE_NORMAL),
+    ) else {
+        return;
+    };
+    if mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
+        return;
+    }
+    let (uvs, normals) = (uvs.clone(), normals.clone());
+    let Some(indices) = mesh
+        .indices()
+        .map(|indices| indices.iter().map(|i| i as u32).collect::<Vec<u32>>())
+    else {
+        return;
+    };
+    let positions: Vec<[f32; 3]> = places_cm.iter().map(|p| p.to_array()).collect();
+    if let Some(Values::Float32x4(tangents)) = mesh.attribute_mut(Mesh::ATTRIBUTE_TANGENT) {
+        cloth::rebuild_tangents(&positions, &normals, &uvs, &indices, tangents);
     }
 }
 

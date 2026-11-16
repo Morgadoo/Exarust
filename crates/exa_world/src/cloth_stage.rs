@@ -652,9 +652,20 @@ pub(crate) fn finish_cloths(
     let started = on.then(std::time::Instant::now);
     if !stage.contacted && !stage.staged.is_empty() {
         let (mut awake, mut sleeping) = walk_bodies(&mut bodies);
-        let mut awake: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
-        let mut sleeping: Vec<&mut Ragdoll> = sleeping.iter_mut().map(|b| &mut **b).collect();
-        stage.contact(&mut awake, &mut sleeping);
+        let mut awake_refs: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
+        // Untouched, as the solver leaves them, so a deep sleeper is not
+        // marked changed; one the contact woke is.
+        let mut sleeping_refs: Vec<&mut Ragdoll> = sleeping
+            .iter_mut()
+            .map(|b| b.bypass_change_detection())
+            .collect();
+        stage.contact(&mut awake_refs, &mut sleeping_refs);
+        drop((awake_refs, sleeping_refs));
+        for body in &mut sleeping {
+            if !body.asleep() {
+                body.set_changed();
+            }
+        }
     }
     let live = stage.live;
     let staged: EntityHashMap<std::sync::Mutex<Option<Staged>>> = std::mem::take(&mut stage.staged)
