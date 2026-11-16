@@ -562,6 +562,26 @@ const PUSH_WEIGHT: f32 = 4.0;
 const PUSH_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
 
 /// Barycentric weights of a point given in a part's space.
+/// The level friction pass's correction for a contact point that slipped
+/// `slip` (m) this tick, in the original's cm: the slip across the normal
+/// (`slip + n·(−slip·n)`), its square summed `(x² + y²) + z²`, the limit
+/// `(float)((double(n_y²)·0.99 + 0.01)·double(0.5·friction))`; over the
+/// square (strictly) the slip is cancelled, else (a NaN limit too) it is
+/// scaled by `(float)(double(limit)·−0.01)`. The result is in metres.
+fn level_rub(slip: Vec3, n: Vec3, friction: f32) -> Vec3 {
+    let s = balance::cm(slip);
+    let t = s + n * -s.dot(n);
+    let t2 = (t.x * t.x + t.y * t.y) + t.z * t.z;
+    let mu = friction * 0.5;
+    let limit = ((f64::from(n.y * n.y) * 0.99 + 0.01) * f64::from(mu)) as f32;
+    let correction = if limit > t2 {
+        -t
+    } else {
+        t * ((f64::from(limit) * -0.01) as f32)
+    };
+    correction / CM
+}
+
 fn weights(part: &Part, local: Vec3) -> [f32; 4] {
     let w = part.rest_inverse * (local - part.rest[0]);
     [1.0 - w.x - w.y - w.z, w.x, w.y, w.z]
@@ -813,11 +833,19 @@ impl Part {
         crate::engine_math::barycentric_exact(local, &self.rest.map(|p| p.to_array()))
     }
 
-    /// How far the point with weights `w` moved this tick.
+    /// How far the point with weights `w` moved this tick: the original's
+    /// weighted point over the current particles less the one over where
+    /// the last tick left them, each summed term by term
+    /// (`((w₀p₀ + w₁p₁) + w₂p₂) + w₃p₃`), then subtracted.
     fn slip(&self, w: &[f32; 4]) -> Vec3 {
-        (0..4)
-            .map(|i| (self.positions[i] - self.start[i]) * w[i])
-            .sum()
+        let rows: [[f32; 3]; 8] = std::array::from_fn(|i| {
+            if i < 4 {
+                self.positions[i].to_array()
+            } else {
+                self.start[i - 4].to_array()
+            }
+        });
+        crate::engine_math::vec4_mul_4x3_difference(Vec4::from_array(*w), &rows)
     }
 
     /// The part's smoothed velocity (m a tick) at the point with weights
@@ -965,11 +993,12 @@ impl Part {
         }
     }
 
-    /// Friction only, from the contacts found this tick.
+    /// Friction only, from the contacts found this tick (the original's
+    /// level friction pass, in its cm and doubles: [`level_rub`]).
     fn rub_contacts(&mut self) {
         for k in 0..self.contacts.len() {
             let c = self.contacts[k];
-            let correction = rub(self.slip(&c.weights), c.normal, self.friction);
+            let correction = level_rub(self.slip(&c.weights), c.normal, self.friction);
             for (x, w) in self.positions.iter_mut().zip(c.weights) {
                 *x += correction * w;
             }

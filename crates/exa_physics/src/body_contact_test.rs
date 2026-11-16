@@ -337,6 +337,48 @@ fn a_landing_ball_stores_the_originals_planes() {
     assert!(seen > 0, "the ball never touched the floor");
 }
 
+/// The level friction pass takes the original's cm and doubles: a slip
+/// under the limit is cancelled, one over it scaled by a hundredth of the
+/// limit backwards, and a NaN friction takes the scaled branch.
+#[test]
+fn the_level_friction_takes_the_originals_doubles() {
+    let n = Vec3::new(0.3, 0.9, 0.2).normalize();
+    let friction = 0.8;
+    let across = |slip: Vec3| {
+        let s = slip * 100.0;
+        s + n * -s.dot(n)
+    };
+    let limit = ((f64::from(n.y * n.y) * 0.99 + 0.01) * f64::from(friction * 0.5)) as f32;
+    // 0.2 cm across: under the limit, cancelled.
+    let slow = Vec3::new(0.002, 0.0, -0.0005);
+    let t = across(slow);
+    assert!((t.x * t.x + t.y * t.y) + t.z * t.z < limit);
+    assert_eq!(level_rub(slow, n, friction), -t / 100.0);
+    // 3 cm across: over it, scaled.
+    let fast = Vec3::new(0.03, 0.0, 0.01);
+    let t = across(fast);
+    assert!((t.x * t.x + t.y * t.y) + t.z * t.z > limit);
+    let scale = (f64::from(limit) * -0.01) as f32;
+    assert_eq!(level_rub(fast, n, friction), t * scale / 100.0);
+    // A NaN friction: the unordered compare takes the scaled branch.
+    assert!(level_rub(slow, n, f32::NAN).is_nan());
+}
+
+/// A part's slip is the weighted point now less the weighted point where
+/// the last tick left it, each summed term by term, as the original's
+/// difference routine.
+#[test]
+fn a_parts_slip_is_the_originals_weighted_difference() {
+    let mut b = ball(Vec3::ZERO);
+    let p = &mut b.parts[0];
+    p.start = p.positions;
+    p.positions[0] += Vec3::new(0.013, -0.007, 0.0031);
+    p.positions[2] += Vec3::new(-0.0042, 0.0011, 0.0093);
+    let w = [0.31, 0.17, 0.29, 0.23];
+    let sum = |x: &[Vec3; 4]| ((x[0] * w[0] + x[1] * w[1]) + x[2] * w[2]) + x[3] * w[3];
+    assert_eq!(p.slip(&w), sum(&p.positions) - sum(&p.start));
+}
+
 /// Four contacts at most per part: a fifth replaces the least isolated.
 #[test]
 fn a_part_keeps_its_four_most_spread_contacts() {
