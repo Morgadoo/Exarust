@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 775 | 193,979 | B1 wire (or prove unreachable) |
-| partial | 1,500 | 963,396 | B4 complete the port |
+| uncalled | 772 | 193,157 | B1 wire (or prove unreachable) |
+| partial | 1,497 | 962,000 | B4 complete the port |
 | missing | 67 | 14,941 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,7 +14,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 155,030 | 24,729 | 2,065 |
+| physics | 153,634 | 23,907 | 2,065 |
 | ui | 99,805 | 53,282 | 1,673 |
 | render | 123,703 | 23,570 | 3,232 |
 | powers | 112,105 | 3,852 | 3,049 |
@@ -38,8 +38,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 26 / 32,570 | 5 / 2,048 | 2 / 28 | 34,646 |
 | SG_PlayerControls (unit routines) | ai | 44 / 23,983 | 6 / 993 | 1 / 47 | 25,023 |
-| TSimSector | physics | 33 / 23,628 | 1 / 224 | 0 / 0 | 23,852 |
 | XA_Arena (unit routines) | modes | 32 / 19,447 | 8 / 1,658 | 8 / 942 | 22,047 |
+| TSimSector | physics | 29 / 21,802 | 0 / 0 | 0 / 0 | 21,802 |
 | TMotilePart | characters | 37 / 17,314 | 6 / 1,449 | 2 / 1,370 | 20,133 |
 | TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
 | TVCCloth | physics | 15 / 15,321 | 6 / 1,514 | 1 / 1,638 | 18,473 |
@@ -78,8 +78,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPlayerBehaviour | ai | 9 / 7,954 | 2 / 79 | 0 / 0 | 8,033 |
 | TRBDDoor | world | 4 / 5,922 | 1 / 2,085 | 0 / 0 | 8,007 |
 | TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
-| RF_Dynamics (unit routines) | physics | 4 / 1,692 | 17 / 5,842 | 0 / 0 | 7,534 |
 | TCharacterView | ui | 11 / 5,987 | 6 / 1,433 | 1 / 48 | 7,468 |
+| RF_Dynamics (unit routines) | physics | 5 / 2,122 | 15 / 5,244 | 0 / 0 | 7,366 |
 | FLX_Character_Textures (unit routines) | characters | 14 / 6,969 | 1 / 187 | 0 / 0 | 7,156 |
 | SG_ItemGUI (unit routines) | items | 12 / 4,388 | 10 / 2,699 | 0 / 0 | 7,087 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
