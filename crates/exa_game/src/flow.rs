@@ -1480,8 +1480,12 @@ pub enum Step {
     /// The Mind sight's quit hook: the Sense Minds overlay goes off and
     /// drops its tracked minds ([`crate::mind::draw::reset_sense_overlay`]).
     ResetMindSight,
-    /// Write the player's own record back into the save, with the record's
-    /// flags word (the death screen's CONTINUE passes 0x100).
+    /// The player's own record is handed back for a rebuild: its identity
+    /// reset (the race byte cleared) and, while the content stream's hook is
+    /// installed, its request posted with the word 0x1000 and the world
+    /// scene; `flags` is the request's word before that (the death screen's
+    /// CONTINUE passes 0x100, which the post replaces). [Not applied:
+    /// Exarust's respawn keeps the surviving body.]
     PlayerData {
         flags: u32,
     },
@@ -1925,9 +1929,9 @@ impl Default for BootToMenu {
     }
 }
 
-/// Whether the game's interface is drawn over the world (the original's game
-/// view). The frame flow closes it on a death, an end-menu exit and a level
-/// change, and opens it again on a revival.
+/// Whether the in-game GUI is drawn over the world (the original's GUI frame
+/// hook on the game's viewport): each session start and continue turns it
+/// on once its level is in, and the session's leave turns it off.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameView(pub bool);
 

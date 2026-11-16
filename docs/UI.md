@@ -1032,16 +1032,21 @@ calling the rest of the game, so the order is testable.
   the engine's angle builder's rows (`(cz·cy, sz, −cz·sy)`, …). Practice
   starts at `arena`/`arenae` with `opponent01`/`opponent09`, role 0x10, the
   ladder's music (0.1 and 0.25; both drum-and-bass tracks at 0.15) and the
-  player in the ring's middle at its standing height plus 5 cm; the next
-  fight stands it at its measured stand height. A continue loads the save's
-  locale (or `exanima01`); the arena continue loads `arenahub` with the
-  hub's music.
+  player in the ring's middle, its pelvis at the fresh pose's pelvis target
+  plus 5 cm over the origin; the next fight puts it at the pose's stand
+  height over the origin (no floor probe for either). The practice start's
+  roles are cleared before role 0x10 is added. The practice scene filter the
+  original passes to its level loads is never read by them, so no node is
+  filtered. A continue loads the save's locale (or `exanima01`); the arena
+  continue loads `arenahub` with the hub's music. Every start and continue
+  turns the in-game GUI (the HUD) on once its level is in.
 - **Camera shots.** A point shot puts the camera at the point plus an
   offset: (700, 1180, 1100) cm for every shot of the group (practice start,
   next fight, story and arena continues), (300, 1180, 1300) for the arena
   unit's far shot; a fast shot forces 1300 on the view. The story start puts
   the camera 600, 600, 1300 cm off the player. The cursor warps to the client
-  centre plus (120, −200) (or (−200, 0) for the story) × height/1140.
+  centre plus (120, −200) (or (−200, 0) for the story) × height/1140, while
+  the window has the focus.
 - **Transitions.** Everything that changes the world runs behind the
   transition screen, as the screen's action when it reaches black: the quit
   to the title, the story respawn at `exanima05`'s portal (15 cm up, the
@@ -1107,15 +1112,19 @@ calling the rest of the game, so the order is testable.
   has the value-2 bit (practice) and CONTINUE otherwise, and the pause
   pages never grey CONTINUE out. The row origin is 0.38 (title), 0.45
   (start, class select) or 0.39 (the in-game and pause pages).
-- **Leaving.** The story's end-menu EXIT closes the game view and the
-  dialogue, clears the story bit of a stripped player and saves without the
-  death rule (any other story saves with it), then leaves to the title
-  behind the transition. Leaving a session stops the hook and the frame
-  task, closes the dialogue, the prelude and the save package and hides the
-  end menu. Back to the title shows the menu form's title logo again, plays
-  its theme and builds the title page. A level load's
-  finish closes the end menu and the prelude and returns the session to
-  playing.
+- **Leaving.** The story's end-menu EXIT sweeps the game screens and ends
+  every conversation, clears the story bit of a stripped player and saves
+  without the death rule (any other story saves with it), then leaves to the
+  title behind the transition. Leaving a session stops the hook and the
+  frame task, sweeps the game screens, ends every conversation, closes the
+  prelude and the save package, hides the end menu and turns the in-game
+  GUI off. The death, the knock-out and the level exit sweep the game
+  screens too (every screen and the shown power bar) and leave the in-game
+  GUI on. Back to the title shows the menu form's title logo again, plays
+  its theme and builds the title page. The level load behind the transition
+  first closes the end menu and the prelude and returns the session to
+  playing. Every load's GUI reset stops watching the first wake-up; the new
+  story sets it again once its level is in.
 - **Level exits.** A level the locale table names is left behind the
   transition; a player with neither dead bit loses the controls. Every exit
   saves (without the death rule); levels below 7 also keep a checkpoint when
