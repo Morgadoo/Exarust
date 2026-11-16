@@ -100,7 +100,7 @@ next frame), menus and pauses included.
   (`element_bytes`), the mesh's grown bounds (`bounds_from_parts`, middle
   taken as `min + (max − min)·½`), the near-light vertex tint
   (`tint_alpha`, range against the squared distance) and the 600-tick
-  fade-in (`fade_alpha`).
+  fade-in (`fade_alpha`, which the original computes and never reads).
   Meshes bind under an `Animator` body root or a `SkinnedRoot` one (a
   level's placed dead have no clips, but their skin still binds).
 - Part motion state (`parts`): the animation ids a fresh body's parts are
