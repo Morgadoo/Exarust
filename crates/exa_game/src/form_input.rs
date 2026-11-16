@@ -108,10 +108,14 @@ impl FormTask {
         Self { task, root }
     }
 
-    /// Adds a base form under the root (or under `parent`).
+    /// Adds a base form under the root (or under `parent`) and runs its
+    /// show's snap rebuilds ([`GuiTask::show_snaps`]): a child shown in a
+    /// form cuts that form's snap slots around it.
     pub fn add(&mut self, mut form: BaseForm, parent: Option<FormId>) -> FormId {
         form.parent = Some(parent.unwrap_or(self.root));
-        self.task.add(Box::new(form))
+        let id = self.task.add(Box::new(form));
+        self.task.show_snaps(id);
+        id
     }
 
     pub fn base(&self, id: FormId) -> Option<&BaseForm> {

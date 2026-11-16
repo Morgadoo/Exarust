@@ -108,6 +108,11 @@ pub struct BaseForm {
     /// The form's type tag (0 none), for the openers' tag search.
     pub tag: u32,
     pub events: Vec<BaseEvent>,
+    /// The magnetic snap slots ([`form::snap_slots`]), in the client's
+    /// coordinates: rebuilt when the form, a child or its parent is shown,
+    /// and by the rescale walk while it has any
+    /// ([`crate::gui_core::GuiTask::show_snaps`]).
+    pub snaps: Vec<[i32; 4]>,
 }
 
 impl BaseForm {
@@ -139,11 +144,20 @@ impl BaseForm {
             doomed: false,
             tag: 0,
             events: Vec::new(),
+            snaps: Vec::new(),
         }
     }
 
     fn width(&self) -> i32 {
         self.bounds.width()
+    }
+
+    /// The form's title spacing reserve: the client-area query writes the
+    /// skin's span when the style word has a 0xc0 bit (the line skin's is
+    /// one unit, as [`crate::line_skin::line_client`] measures), else 0.
+    /// The snap slots widen a child's client by it.
+    pub fn title_span(&self) -> i32 {
+        if self.style & 0xc0 != 0 { self.unit } else { 0 }
     }
 
     fn height(&self) -> i32 {
