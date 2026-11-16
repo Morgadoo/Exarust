@@ -101,18 +101,57 @@ fn the_shock_casts_makes_arcs_and_charges() {
         Some(crate::thaum::energy::SHOCK_MOTION)
     );
     assert_eq!(count::<LiveArcs>(&mut app), 1);
-    // The first tick installs the charge; the second adds its rate (1.0,
-    // not past one) and spends the charge's focus, of which the tick's
-    // settle takes its first 0.001 share from the pool.
+    // The first tick installs the charge; the second adds its rate (0.01,
+    // the 12 ms step over 1200) and spends the charge's focus (0.1 · 0.01
+    // · 1.2), of which the tick's settle takes its first 0.001 share from
+    // the pool.
     app.world_mut().run_schedule(FixedUpdate);
     app.world_mut().run_schedule(FixedUpdate);
     let body = cast_body(&app, caster);
-    assert!((body.spent - 0.12 * 0.999).abs() < 1e-6, "{}", body.spent);
+    let tick_cost = 0.0012;
     assert!(
-        (body.focus - (1.0 - 0.12 * 0.001)).abs() < 1e-6,
+        (body.spent - tick_cost * 0.999).abs() < 1e-7,
+        "{}",
+        body.spent
+    );
+    assert!(
+        (body.focus - (1.0 - tick_cost * 0.001)).abs() < 1e-7,
         "{}",
         body.focus
     );
+}
+
+fn bursts(app: &mut App) -> Vec<Vec3> {
+    let mut query = app.world_mut().query::<(&Name, &LiveArcs)>();
+    query
+        .iter(app.world())
+        .filter(|(name, _)| name.as_str() == "_ShockBurst")
+        .map(|(_, live)| live.arcs.points[1])
+        .collect()
+}
+
+/// Energy: the shock holds its charge for 100 charging ticks (about 1.2 s
+/// of 12 ms steps) and throws its burst on the 101st, its first tendril
+/// aimed ahead of the caster (no aim point: the hand's place plus the
+/// facing), not undirected.
+#[test]
+fn the_shock_throws_its_burst_on_the_101st_charging_tick() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHOCK]);
+    cast(&mut app, caster);
+    // The hook's tick, then 100 charging ticks: no burst yet.
+    for _ in 0..101 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    assert!(bursts(&mut app).is_empty());
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut().flush();
+    let thrown = bursts(&mut app);
+    assert_eq!(thrown.len(), 1, "the burst fires once, on the 101st");
+    let head = thrown[0];
+    assert!(head.is_finite() && head.length() > 1.0, "{head:?}");
+    // Ahead: the caster faces +Z (no locomotor).
+    assert!(head.z > 0.9 * head.length(), "{head:?}");
 }
 
 /// Shock weapons puts one arc on each armed blade, starting from a sphere

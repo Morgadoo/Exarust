@@ -108,10 +108,9 @@ const CM: f32 = 100.0;
 const RIGHT_HAND: usize = 17;
 /// The chest's bone.
 const CHEST: usize = 9;
-/// The body tick the focus and the clip lengths are read at.
+/// The body tick the focus and the Shock's charge are read at (the
+/// simulation's step milliseconds).
 pub(super) const TICK_MS: u32 = 12;
-/// The cast clip's length when no motion set says otherwise, in ms.
-const DEFAULT_CLIP_MS: u32 = 1200;
 /// The status bit of a body that controls another: its bar casts nothing.
 const CONTROLLING: u32 = 0x20_0000;
 
@@ -742,7 +741,6 @@ struct CastContext {
     caster: Vec3,
     heading: Vec3,
     cursor: Option<Vec3>,
-    clip_ms: Option<u32>,
     /// The body the AI casts at.
     target: Option<Entity>,
     /// The caster's own place (cm), at its feet: its transform's, else the
@@ -1153,7 +1151,6 @@ fn cast_bar_slot(
         Option<Res<exa_physics::StaticColliders>>,
     ),
     ticks: Option<Res<BodyTicks>>,
-    motions: Option<Res<Motions>>,
     (mut draws, mut roll, mut frame_draws, mut frame_roll): (
         Option<ResMut<EffectDraws>>,
         Option<ResMut<EffectRoll>>,
@@ -1172,7 +1169,7 @@ fn cast_bar_slot(
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     mut relations: super::live::MindRelations,
 ) -> Option<BarAnswer> {
-    let Ok((mut caster, condition, swing, locomotion, locomotor, animator, held, ragdoll)) =
+    let Ok((mut caster, condition, swing, locomotion, locomotor, _animator, held, ragdoll)) =
         casters.get_mut(entity)
     else {
         return None;
@@ -1361,7 +1358,6 @@ fn cast_bar_slot(
         ragdoll,
         yaw: locomotor.map_or(0.0, |l| l.yaw),
         cursor: aim.ground.map(|p| p * CM),
-        clip_ms: shot_clip_ms(motions.as_deref(), animator),
         target: None,
         // The creators place the domes on the body's standing point, its
         // transform's place (as the duellists' casts take it), not its
@@ -1425,14 +1421,12 @@ pub(crate) struct MindBar<'w, 's> {
 }
 
 /// Where a cast starts: the clock, the caster's body and heading (yaw,
-/// +Z at 0), the cursor's point (cm, the player's) and the cast clip's
-/// length.
+/// +Z at 0) and the cursor's point (cm, the player's).
 struct CastPlace<'a> {
     now: u32,
     ragdoll: Option<&'a Ragdoll>,
     yaw: f32,
     cursor: Option<Vec3>,
-    clip_ms: Option<u32>,
     target: Option<Entity>,
     /// The caster's transform's place (cm), when it has one.
     standing: Option<Vec3>,
@@ -1466,7 +1460,6 @@ fn begin_cast(
             caster: root,
             heading: Vec3::new(place.yaw.sin(), 0.0, place.yaw.cos()),
             cursor: place.cursor,
-            clip_ms: place.clip_ms,
             target: place.target,
             standing: place.standing.unwrap_or(root),
             throw_pick: place.throw_pick,
@@ -1634,7 +1627,6 @@ pub(crate) fn cast_for_duellists(
         Option<Res<exa_physics::StaticColliders>>,
     ),
     ticks: Option<Res<BodyTicks>>,
-    motions: Option<Res<Motions>>,
     target_bodies: Query<&Ragdoll>,
     places: Query<&GlobalTransform>,
     mut draws: ResMut<EffectDraws>,
@@ -1720,7 +1712,6 @@ pub(crate) fn cast_for_duellists(
             ragdoll,
             yaw: facing.x.atan2(facing.z),
             cursor,
-            clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
             target: Some(duellist.target),
             standing: Some(at.translation() * CM),
             throw_pick: None,
@@ -1840,18 +1831,6 @@ fn refresh_body(
     }
 }
 
-/// The cast clip's length in milliseconds: the action's last key (frames)
-/// at the body tick. This is Exarust's conversion; the original stores the
-/// clip's own millisecond length (a guess labelled here).
-fn shot_clip_ms(motions: Option<&Motions>, animator: Option<&Animator>) -> Option<u32> {
-    let motions = motions?;
-    let animator = animator?;
-    let name = motions.action_name(super::energy::SHOCK_MOTION)?;
-    let clip = motions.clip(animator, name)?;
-    let last = clip.keys.last()?.time;
-    Some((f64::from(last) / 83.0 * 1000.0).round() as u32)
-}
-
 /// The chest (cm) of the body `body` or, without one, the place `place`.
 fn chest_from(body: Option<&Ragdoll>, place: Option<&GlobalTransform>) -> Option<Vec3> {
     body.and_then(super::blast_live::chest_point)
@@ -1905,7 +1884,6 @@ fn create_active(
             caster_entity,
             caster,
             start,
-            context,
             ragdoll,
             weapons,
             draws,
@@ -2240,14 +2218,13 @@ fn create_energy(
     caster_entity: Entity,
     caster: &mut PowerCaster,
     start: EnergyStart,
-    context: &CastContext,
     ragdoll: Option<&Ragdoll>,
     weapons: &[WeaponArc],
     draws: &mut EffectDraws,
 ) -> Option<Entity> {
     match start {
         EnergyStart::Shock { cost } => {
-            let charge = shock_charge(context.clip_ms.unwrap_or(DEFAULT_CLIP_MS), cost);
+            let charge = shock_charge(TICK_MS, cost);
             let power = Shock::new(charge.length, charge.cost);
             let entity = ragdoll.map(|body| spawn_hand_arcs(commands, caster_entity, body, draws));
             push_active(
@@ -3131,6 +3108,11 @@ pub(crate) fn tick_casters(
         MessageWriter<super::barricade_sound::ForceSounded>,
         MessageWriter<super::vanish_body::VanishTurn>,
     ),
+    (cursor, duellists, aimed): (
+        Option<Res<crate::player::CursorGround>>,
+        Query<&Duellist>,
+        Query<&Ragdoll>,
+    ),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     // The controls off, a form has the mouse: the player's hooks read no
@@ -3358,16 +3340,37 @@ pub(crate) fn tick_casters(
                         result = step.result;
                         // The release makes the burst at the hand: a fresh
                         // emitter of the shock's own shape (strength 0.05, so
-                        // its tendrils shock what they reach), before the
-                        // hand's arcs leave. [inf: the original aims its first
-                        // tendril at the controller's aim point within 45° of
-                        // the heading (`effects::blast::blast_aim`); the tick
-                        // has no aim point here, so the burst starts undirected.]
+                        // its tendrils shock what they reach), aimed as the
+                        // original's burst creator aims it, before the hand's
+                        // arcs leave. Undirected (a zero direction) its first
+                        // tendril had no length and its points went NaN.
                         if step.fired
                             && let Some(body) = ragdoll
                         {
-                            let mut arcs =
-                                ArcEmitter::new(&crate::thaum::arcs::shock_burst(), &mut draws.0);
+                            // The burst's first tendril heads from the hand
+                            // toward the controller's aim point, kept within
+                            // 45° of the facing (the player's cursor point,
+                            // the duellist's target's chest).
+                            let aim_at = if player.is_some() {
+                                cursor.as_deref().and_then(|c| c.0).map(|p| p * CM)
+                            } else {
+                                duellists
+                                    .get(caster_entity)
+                                    .ok()
+                                    .and_then(|d| aimed.get(d.target).ok())
+                                    .and_then(super::blast_live::chest_point)
+                            };
+                            let facing = locomotor
+                                .map_or(Vec3::Z, |l| Vec3::new(l.yaw.sin(), 0.0, l.yaw.cos()));
+                            let mut burst = crate::thaum::arcs::shock_burst();
+                            if let Some(view) = blast_view(body, facing, aim_at) {
+                                burst.direction = exa_ai::combatant::look_direction(
+                                    view.target,
+                                    view.hand_node,
+                                    view.facing,
+                                );
+                            }
+                            let mut arcs = ArcEmitter::new(&burst, &mut draws.0);
                             arcs.anchor = bone_part(body, RIGHT_HAND)
                                 .and_then(|k| part_point(body, k, HAND_ARCS_OFFSET));
                             commands.spawn((
