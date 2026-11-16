@@ -340,6 +340,21 @@ pub struct PlayerControl {
     pub second_block: bool,
     /// The constructor's second flag: 1 [guess: the combat flag].
     pub combat: bool,
+    /// A window holds the controls: set while the spirit form runs (its
+    /// switch, [`Self::set_spirit_form`]). The inventory key then opens the
+    /// inventory only while collapsing, and the Ctrl interaction and the
+    /// claim of a pack drag over the world refuse. The shop's trade mode
+    /// sets the same byte in the original; Exarust reads the shop's own
+    /// flag beside this one.
+    pub window_holds: bool,
+    /// The drag's reach limit: set at creation, cleared by either block
+    /// pair's block and set again by its release. While it is clear a
+    /// dragged body is neither let go beyond 330 cm of the hip nor kept
+    /// within 200 cm of it.
+    pub drag_limit: bool,
+    /// The power bar's hold on a slot whose power answered "not now",
+    /// retried by the controls' frame ([`PowerHold`]).
+    pub power_hold: PowerHold,
 }
 
 impl Default for PlayerControl {
@@ -357,7 +372,22 @@ impl PlayerControl {
             blocked: false,
             second_block: false,
             combat: true,
+            window_holds: false,
+            drag_limit: true,
+            power_hold: PowerHold::default(),
         }
+    }
+
+    /// The spirit form's switch: on, a window holds the controls and the
+    /// hotkeys keep only the powers' permission; off, the byte clears and
+    /// every permission is back ([`permissions`]). The switch also keeps
+    /// the hand's left button off the world (on) or gives it back (off),
+    /// and on closes every game screen with the power bar and ends the
+    /// dialogue; those are the caller's ([`crate::controls_live`]).
+    /// Its callers: the spirit form's start (on) and the way home (off).
+    pub fn set_spirit_form(&mut self, on: bool) {
+        self.window_holds = on;
+        self.hotkey_mask = permissions(on);
     }
 
     /// The controls' switch: turns the controls off (`true`) or back on,
@@ -421,6 +451,7 @@ impl PlayerControl {
     pub fn set_blocked(&mut self, on: bool) -> bool {
         let changed = self.blocked != on;
         self.blocked = on;
+        self.drag_limit = !on;
         changed
     }
 
@@ -433,7 +464,24 @@ impl PlayerControl {
     pub fn set_second_block(&mut self, on: bool) -> bool {
         let changed = self.second_block != on;
         self.second_block = on;
+        self.drag_limit = !on;
         changed
+    }
+
+    /// Whether the drag keeps its reach limit ([`Self::drag_limit`]); no
+    /// singleton keeps it.
+    pub fn drag_limited(control: Option<&Self>) -> bool {
+        control.is_none_or(|c| c.drag_limit)
+    }
+
+    /// Whether a window holds the controls ([`Self::window_holds`]).
+    pub fn window_holds(control: Option<&Self>) -> bool {
+        control.is_some_and(|c| c.window_holds)
+    }
+
+    /// The hotkeys' permission mask; no singleton allows all five.
+    pub fn hotkey_mask(control: Option<&Self>) -> u32 {
+        control.map_or(PERMISSIONS_PLAY, |c| c.hotkey_mask)
     }
 
     /// The player's input is suspended: the controls off, blocked or
@@ -835,12 +883,13 @@ pub fn on_object(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectInteraction {
     Nothing,
-    /// Use kind 0, subtype 1: the object leaves the scene and its use
-    /// sound plays at once; its target's doors open after [`CONSUME_MS`].
+    /// Use kind 0, subtype 1: the object's keyframe tracks start and its
+    /// use sound plays at once; its target's doors open after
+    /// [`CONSUME_MS`] (the secret switch's brick).
     Consume {
         due_ms: u32,
     },
-    /// Use kind 0, another subtype: the object leaves the scene, its use
+    /// Use kind 0, another subtype: the object's tracks start, its use
     /// sound plays, the item card's request closes and the record's use
     /// runs at once ([`take_use`]).
     Open,
@@ -886,9 +935,11 @@ pub fn interact_object(target: ClickTarget, now_ms: u32) -> (ObjectInteraction, 
 }
 
 impl ObjectInteraction {
-    /// Whether the object leaves the scene: both kind 0 branches detach
-    /// and free its node before anything else.
-    pub fn takes_object(self) -> bool {
+    /// Whether the object's use runs: both kind 0 branches start the
+    /// keyframe tracks of the object's node and of every node under it,
+    /// then play its use sound. The object stays in the scene: the
+    /// original's use detaches and frees nothing.
+    pub fn uses_object(self) -> bool {
         matches!(self, Self::Consume { .. } | Self::Open)
     }
 }
@@ -1820,15 +1871,15 @@ pub fn frame_action(gates: ControlGates, player: bool, game_view_active: bool) -
     }
 }
 
-/// The permissions the key handler is given: all five in play, four while
-/// a spirit form or an open document holds the controls.
+/// The permissions the key handler is given: all five in play, only the
+/// powers' (4) while the spirit form holds the controls.
 pub const PERMISSIONS_PLAY: u32 = 0x1F;
 pub const PERMISSIONS_POWERS: u32 = 0x4;
 
-/// The key permissions for a frame: all five normally, four while a modal
-/// document (a dialogue or a spirit form) holds the controls.
-pub fn permissions(document_open: bool) -> u32 {
-    if document_open {
+/// The key permissions the spirit form's switch leaves: all five off, the
+/// powers' alone on.
+pub fn permissions(spirit_form: bool) -> u32 {
+    if spirit_form {
         PERMISSIONS_POWERS
     } else {
         PERMISSIONS_PLAY
@@ -2349,15 +2400,15 @@ mod tests {
         ));
     }
 
-    /// Both kind 0 branches take the object; subtype 7 calls the name
+    /// Both kind 0 branches use the object; subtype 7 calls the name
     /// hook, 5 opens the powers, others nothing; the use sound is the
     /// section's name at 0x10 up to its zero.
     #[test]
-    fn a_taken_object_runs_its_use() {
-        assert!(ObjectInteraction::Open.takes_object());
-        assert!(ObjectInteraction::Consume { due_ms: 1 }.takes_object());
-        assert!(!ObjectInteraction::Push.takes_object());
-        assert!(!ObjectInteraction::UseInHand.takes_object());
+    fn a_used_object_runs_its_use() {
+        assert!(ObjectInteraction::Open.uses_object());
+        assert!(ObjectInteraction::Consume { due_ms: 1 }.uses_object());
+        assert!(!ObjectInteraction::Push.uses_object());
+        assert!(!ObjectInteraction::UseInHand.uses_object());
         assert_eq!(take_use(7), TakeUse::NameHook);
         assert_eq!(take_use(5), TakeUse::Divination);
         assert_eq!(take_use(1), TakeUse::Nothing);

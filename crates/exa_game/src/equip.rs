@@ -349,6 +349,10 @@ pub fn forget_loose_hands(
     catalogue: Option<Res<ItemCatalogue>>,
     mut loose: MessageReader<exa_physics::grip::CameLoose>,
     mut bodies: Query<&mut Possessions>,
+    (players, mut end_drag): (
+        Query<(), With<crate::player::PlayerBody>>,
+        Option<ResMut<crate::controls_live::EndGuiDrag>>,
+    ),
 ) {
     let is_shield = |id: u32| {
         catalogue
@@ -357,6 +361,13 @@ pub fn forget_loose_hands(
             .is_some_and(|k| k.shield && k.weapon.is_none())
     };
     for came in loose.read() {
+        // Something coming loose from the player's hand first ends the
+        // GUI's held left button (a held drag ends as on a release).
+        if players.contains(came.holder)
+            && let Some(end) = end_drag.as_deref_mut()
+        {
+            end.0 = true;
+        }
         let Ok(mut possessions) = bodies.get_mut(came.holder) else {
             continue;
         };

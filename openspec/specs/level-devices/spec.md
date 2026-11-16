@@ -77,7 +77,7 @@ The system SHALL leave, for an unshared record, a copy of the record before the 
 - **THEN** the left-behind copy holds the four items and wears the two
 
 ### Requirement: Device power-down
-The system SHALL play `devicepwra01` at 0.1 at a reconstruction device and clear its latch when an object is let go within a squared 5 cm of its slot point.
+The system SHALL play `devicepwra01` at 0.1 at a reconstruction device and clear its latch when the drop scripts of a lifted item run within a squared 5 cm of its slot point: an item the press took off a lock there left it.
 
 #### Scenario: The crystal taken off
 - **WHEN** the crystal is lifted off a scanned device's slot

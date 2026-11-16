@@ -20,9 +20,10 @@
 //!   used device's narration follows from it.
 //! - The double click (in reach; with Ctrl in combat mode) runs the
 //!   object's own interaction ([`player_controls::double_click_object`]):
-//!   a usable kind 0 object leaves the scene with its use sound (a
-//!   consumable's doors open 2100 ms later through the deferred list; kind 5
-//!   also opens the divination reading), a
+//!   a usable kind 0 object starts its nodes' keyframe tracks and plays its
+//!   use sound, and stays in the scene (subtype 1's target doors open 2100
+//!   ms later through the deferred list: the secret switch's brick sinks
+//!   and the wall opens; kind 5 also opens the divination reading), a
 //!   usable kind 1 item lifts the use cursor and stays in the scene
 //!   (`crate::use_cursor`), and a container section opens the container's
 //!   popup.
@@ -36,7 +37,6 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use exa_items::catalogue::ItemCatalogue;
-use exa_physics::ColliderNodes;
 use exa_physics::sector::Bounds;
 use exa_world::db_objects::PlaceholderNode;
 use exa_world::{ObjectSections, PartBounds, PlacedItem};
@@ -84,7 +84,6 @@ pub struct WorldObjects<'w, 's> {
     placed: Query<'w, 's, PlacedParts>,
     parents: Query<'w, 's, &'static ChildOf>,
     nodes: Query<'w, 's, (&'static PartBounds, &'static GlobalTransform)>,
-    children: Query<'w, 's, &'static Children>,
 }
 
 /// How a click found its object.
@@ -184,19 +183,6 @@ impl WorldObjects<'_, '_> {
             None => self.on_point(at).map(Found::OnGeometry),
         }
     }
-
-    /// The entities at and under `node`, parents first (bounded).
-    fn subtree(&self, node: Entity) -> Vec<Entity> {
-        let mut found = vec![node];
-        let mut k = 0;
-        while k < found.len() && found.len() < 4096 {
-            if let Ok(kids) = self.children.get(found[k]) {
-                found.extend(kids.iter());
-            }
-            k += 1;
-        }
-        found
-    }
 }
 
 /// What the clicks write.
@@ -227,6 +213,8 @@ pub struct ClickOutputs<'w> {
     witness: MessageWriter<'w, crate::script_cast::WitnessGrant>,
     /// A teleporter's or reconstruction device's own use.
     device_uses: MessageWriter<'w, UseDevice>,
+    /// A kind 0 use starts the object's keyframe tracks.
+    tracks: Option<ResMut<'w, Messages<exa_anim::tracks::StartTracks>>>,
 }
 
 /// The dialogue side a narration goes through.
@@ -394,20 +382,21 @@ pub const SCRIPTED_USE_SOUND_FLAGS: u32 = 0x400;
 /// The single and double clicks on placed objects.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn run_object_clicks(
-    mut commands: Commands,
     mut clicks: MessageReader<ObjectClick>,
     mut objects: WorldObjects,
     catalogue: Option<Res<ItemCatalogue>>,
     time: Option<Res<Time<Virtual>>>,
-    (mut physics, mut collider_nodes, mut fixed): (
-        Option<ResMut<exa_physics::collision_share::FramePhysics>>,
-        Option<ResMut<ColliderNodes>>,
-        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
-    ),
     mut out: ClickOutputs,
     mut narrator: Narrator,
-    (players, reads): (Query<Entity, With<crate::player::PlayerBody>>, DeviceReads),
+    (players, reads, control): (
+        Query<Entity, With<crate::player::PlayerBody>>,
+        DeviceReads,
+        Option<Res<crate::player_controls::PlayerControl>>,
+    ),
 ) {
+    // With the controls off the double click is the hand's own hook, not
+    // the controls' Ctrl interaction.
+    let controls_off = crate::player_controls::PlayerControl::is_off(control.as_deref());
     let now = time.map_or(0, |t| t.elapsed().as_millis() as u64);
     let user = players.iter().next();
     for click in clicks.read() {
@@ -541,6 +530,44 @@ pub fn run_object_clicks(
         let Some(s) = sections.as_deref() else {
             continue;
         };
+        if controls_off {
+            // The hand's idle double click: a kind 0 use runs the object
+            // database's use at once, another usable kind lifts the use
+            // cursor, a container opens (the hand checked its bytes; with
+            // the controls off combat mode does not refuse it).
+            let idle = player_controls::idle_double_click(s, false, false);
+            info!("idle double click object {id:#x}: {idle:?}");
+            match idle {
+                player_controls::IdleDoubleClick::Nothing => {}
+                player_controls::IdleDoubleClick::UseNow => {
+                    match player_controls::take_use(s.usable.map_or(0, |u| u.kind)) {
+                        TakeUse::Nothing => {}
+                        TakeUse::Divination => {
+                            close_card(&mut out, now as u32);
+                            out.divination.write(OpenDivination { seed: 0 });
+                        }
+                        TakeUse::NameHook => {
+                            out.levels.write(ReadNamedLevel { id });
+                        }
+                    }
+                }
+                player_controls::IdleDoubleClick::UseOnCursor => {
+                    let kind = s.usable.as_ref().map_or(1, |u| u.kind);
+                    if let Some(cursor) = out.use_cursor.as_deref_mut() {
+                        cursor.lift(placed.tagged_id, placed.tagged_id, 0, 0, kind);
+                    }
+                }
+                player_controls::IdleDoubleClick::OpenContainer => {
+                    close_card(&mut out, now as u32);
+                    out.containers.write(ContainerRequest {
+                        object: entity,
+                        id,
+                        pointer: click.pointer,
+                    });
+                }
+            }
+            continue;
+        }
         let (use_of, opens) = player_controls::double_click_object(s, now as u32);
         info!("double click object {id:#x}: {use_of:?}, container {opens}");
         // A usable item taken in hand lifts the use cursor: the controls'
@@ -560,7 +587,11 @@ pub fn run_object_clicks(
             }
             continue;
         }
-        if use_of.takes_object() {
+        if use_of.uses_object() {
+            // The node's keyframe tracks and those under it start first.
+            if let Some(tracks) = out.tracks.as_deref_mut() {
+                tracks.write(exa_anim::tracks::StartTracks(entity));
+            }
             let usable = s.usable;
             if let Some(name) = usable.as_ref().and_then(player_controls::use_sound_name)
                 && let Some(sound) = player_controls::point_sound(&name, position)
@@ -599,20 +630,6 @@ pub fn run_object_clicks(
                 }
                 _ => {}
             }
-            // The node leaves the scene, its colliders with it.
-            let nodes = objects.subtree(entity);
-            if let (Some(physics), Some(collider_nodes)) =
-                (physics.as_deref_mut(), collider_nodes.as_deref_mut())
-            {
-                // The replica now, the step's world at the next step.
-                let handles = collider_nodes.take_under(&nodes);
-                exa_physics::collision_share::remove_colliders(
-                    physics,
-                    fixed.as_deref_mut(),
-                    handles,
-                );
-            }
-            commands.entity(entity).despawn();
             continue;
         }
         if opens {
@@ -796,10 +813,11 @@ mod tests {
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::script_cast::WitnessGrant>()
             .add_message::<UseDevice>()
+            .add_message::<exa_anim::tracks::StartTracks>()
             .init_resource::<PendingUses>()
             .init_resource::<DeviceClock>()
             .init_resource::<crate::player_controls::UseCursor>()
-            .init_resource::<ColliderNodes>()
+            .init_resource::<exa_physics::ColliderNodes>()
             .insert_resource(exa_physics::collision_share::FramePhysics::default())
             .add_systems(Update, run_object_clicks);
         app
@@ -937,9 +955,53 @@ mod tests {
         assert!(drain::<WorldCard>(&mut app).is_empty());
     }
 
-    /// The double click on an unmarked consumable takes it: its use sound
-    /// plays at the node at 0.25 and pitch 1, its target joins the deferred
-    /// list 2100 ms on, and the object leaves the scene.
+    /// With the controls off the double click is the hand's idle hook: a
+    /// class 0 object's database use runs at once (no tracks, no sound),
+    /// another usable class lifts the use cursor, and a container opens.
+    #[test]
+    fn the_idle_double_click_runs_while_the_controls_are_off() {
+        let mut app = app();
+        app.init_resource::<crate::player_controls::PlayerControl>();
+        assert!(
+            app.world()
+                .resource::<crate::player_controls::PlayerControl>()
+                .off
+        );
+        let deck = placed(
+            &mut app,
+            0x31,
+            Some(sections(Some((0, 5)), false, 0)),
+            Vec3::ZERO,
+        );
+        click(&mut app, Hit::SceneNode { node: deck }, Vec3::ZERO, true);
+        assert_eq!(
+            drain::<OpenDivination>(&mut app),
+            vec![OpenDivination { seed: 0 }]
+        );
+        assert!(drain::<exa_anim::tracks::StartTracks>(&mut app).is_empty());
+        assert!(drain::<exa_audio::PointSounded>(&mut app).is_empty());
+        let key = placed(
+            &mut app,
+            0x51,
+            Some(sections(Some((1, 2)), false, 0)),
+            Vec3::X,
+        );
+        click(&mut app, Hit::SceneNode { node: key }, Vec3::X, true);
+        assert!(
+            app.world()
+                .resource::<crate::player_controls::UseCursor>()
+                .up()
+        );
+        let chest = placed(&mut app, 0x61, Some(sections(None, true, 0)), Vec3::Z);
+        click(&mut app, Hit::SceneNode { node: chest }, Vec3::Z, true);
+        let requests = drain::<ContainerRequest>(&mut app);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].object, chest);
+    }
+
+    /// The double click on an unmarked subtype 1 object uses it: its use
+    /// sound plays at the node at 0.25 and pitch 1, its target joins the
+    /// deferred list 2100 ms on, and the object stays in the scene.
     #[test]
     fn a_consumable_is_taken_at_once() {
         let mut app = app();
@@ -965,11 +1027,16 @@ mod tests {
                 target: 0x8000_0042
             }]
         );
-        assert!(app.world().get_entity(jar).is_err());
+        assert!(app.world().get_entity(jar).is_ok());
+        // Its node's keyframe tracks start (the secret switch's brick).
+        assert_eq!(
+            drain::<exa_anim::tracks::StartTracks>(&mut app),
+            vec![exa_anim::tracks::StartTracks(jar)]
+        );
     }
 
-    /// A kind-5 take opens the divination reading with the zero argument
-    /// the use passes, and the object still leaves the scene.
+    /// A kind-5 use opens the divination reading with the zero argument
+    /// the use passes; the object stays.
     #[test]
     fn a_divination_item_opens_the_reading() {
         let mut app = app();
@@ -984,11 +1051,11 @@ mod tests {
             drain::<OpenDivination>(&mut app),
             vec![OpenDivination { seed: 0 }]
         );
-        assert!(app.world().get_entity(deck).is_err());
+        assert!(app.world().get_entity(deck).is_ok());
     }
 
-    /// A kind-7 take asks to load the level its header names, and the object
-    /// still leaves the scene.
+    /// A kind-7 use asks to load the level its header names; the object
+    /// stays.
     #[test]
     fn a_named_level_item_asks_to_load_it() {
         let mut app = app();
@@ -1003,7 +1070,7 @@ mod tests {
             drain::<ReadNamedLevel>(&mut app),
             vec![ReadNamedLevel { id: 0x41 }]
         );
-        assert!(app.world().get_entity(book).is_err());
+        assert!(app.world().get_entity(book).is_ok());
     }
 
     /// A usable kind 1 item taken in hand lifts the use cursor and stays in
