@@ -294,6 +294,17 @@ pub struct FleePlace<'a> {
     pub exits: &'a [crate::flee::RoomExit],
 }
 
+/// A follower joins the party or leaves it: the experience system's
+/// companion list, which the original's apply of the roles (a follower
+/// joins; one that stops following leaves) and the death hook change.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartyChange {
+    /// The body (the entity carrying the brain and its record).
+    pub body: Entity,
+    /// It joins (else it leaves).
+    pub joins: bool,
+}
+
 /// The AI's death hook, which the original's body death routine calls
 /// through the behaviour (method slot 25) just before the condition
 /// becomes dead: a follower (activity 4) stops following, its activity word
@@ -301,13 +312,17 @@ pub struct FleePlace<'a> {
 /// dead. The hook's other branch fades a golem body's glow material
 /// (record flag 0x1000, material `go`); Exarust draws no live skin
 /// material for it yet (`exa_game::item_effects::fade_material`).
-pub fn death_hook(mut brains: Query<(&Condition, &mut Npc), Changed<Condition>>) {
-    for (condition, mut npc) in &mut brains {
+pub fn death_hook(
+    mut brains: Query<(Entity, &Condition, &mut Npc), Changed<Condition>>,
+    mut party: MessageWriter<PartyChange>,
+) {
+    for (body, condition, mut npc) in &mut brains {
         if *condition != Condition::DEAD {
             continue;
         }
         if npc.death_hook() {
             info!("a follower died: it stops following and leaves the party");
+            party.write(PartyChange { body, joins: false });
         }
     }
 }
@@ -339,6 +354,21 @@ impl Npc {
     pub fn turn_model(&mut self, transform: &mut Transform, yaw: f32) {
         transform.rotation = Quat::from_rotation_y(yaw);
         self.stand_turn = Some((transform.rotation, yaw));
+    }
+
+    /// The idle activity's restart (the original's behaviour slot the
+    /// follower arrival calls): the search, when it has one, restarts from
+    /// the world origin, standing with no candidates. The searched objects
+    /// it forgets are the game's search state's (a new body starts with
+    /// none). Returns whether there was an activity to restart.
+    pub fn restart_idle_activity(&mut self) -> bool {
+        match self.search.as_mut() {
+            Some(search) => {
+                search.restart();
+                true
+            }
+            None => false,
+        }
     }
 
     /// The death hook's follower branch: a follower's activity word becomes
@@ -484,14 +514,15 @@ impl Npc {
 
     /// Applies the roles and installs the routine they choose.
     pub fn apply(&mut self, db: &RoleDatabase, roles: &Roles, now_ms: u32) -> &Applied {
-        self.apply_with(db, roles, now_ms, &[], false)
+        self.apply_with(db, roles, now_ms, &[], false, false)
     }
 
-    /// [`Npc::apply`] reading the codes of the body's powers (`effects`)
-    /// and whether it resists mind control, as the original's apply reads
-    /// the body's power list and technique bit: a Loyalty or Command Dead
-    /// marker on a body that does not resist makes it follow. Clears the
-    /// re-arm byte.
+    /// [`Npc::apply`] reading the codes of the body's powers (`effects`),
+    /// whether it resists mind control and the body's rule bit 4
+    /// (`marked`), as the original's apply reads the body's power list,
+    /// technique bit and rule flags: a Loyalty or Command Dead marker on a
+    /// body that does not resist makes it follow, and the rule bit starts
+    /// the phase word at −1. Clears the re-arm byte.
     pub fn apply_with(
         &mut self,
         db: &RoleDatabase,
@@ -499,6 +530,7 @@ impl Npc {
         now_ms: u32,
         effects: &[u32],
         resists: bool,
+        marked: bool,
     ) -> &Applied {
         self.roles_key = roles_key(roles);
         self.reapply = false;
@@ -507,7 +539,7 @@ impl Npc {
             idle: self.search.as_ref().map(|_| activity::SEARCH),
             effects,
             resists,
-            marked: false,
+            marked,
         };
         let applied = activity::apply_roles(&db.book, roles, before);
         if applied.drop_idle {
@@ -2786,16 +2818,19 @@ pub fn apply_new_roles(
     db: Option<Res<RoleDatabase>>,
     ticks: Option<Res<BodyTicks>>,
     mut npcs: Query<(
+        Entity,
         &Roles,
         &mut Npc,
         Option<&mut Mind>,
         Option<&Name>,
         Option<&crate::combatant::MindPowers>,
+        Option<&Fighter>,
     )>,
+    mut party: MessageWriter<PartyChange>,
 ) {
     let Some(db) = db else { return };
     let now = ticks.map_or(0, |t| t.millis() as u32);
-    for (roles, mut npc, mind, name, powers) in &mut npcs {
+    for (body, roles, mut npc, mind, name, powers, fighter) in &mut npcs {
         let rearmed = npc.reapply;
         if npc.roles_key == roles_key(roles) && !rearmed {
             continue;
@@ -2803,7 +2838,24 @@ pub fn apply_new_roles(
         let effects: Vec<u32> =
             powers.map_or_else(Vec::new, |p| p.effects.iter().map(|e| e.kind).collect());
         let resists = powers.is_some_and(|p| p.resists_control);
-        let applied = npc.apply_with(&db, roles, now, &effects, resists).clone();
+        // The body's fierce rule bit (a feral over a half, the creatures)
+        // starts the phase word at −1.
+        let marked = fighter.is_some_and(|f| {
+            f.stats
+                .rules
+                .has(exa_formats::character_stats::BodyRules::FIERCE)
+        });
+        let applied = npc
+            .apply_with(&db, roles, now, &effects, resists, marked)
+            .clone();
+        // A follower that stopped following leaves the party; a follower
+        // joins it (a member already listed is refused there).
+        if applied.leaves_party {
+            party.write(PartyChange { body, joins: false });
+        }
+        if applied.activity == activity::activities::FOLLOW {
+            party.write(PartyChange { body, joins: true });
+        }
         if rearmed {
             info!(
                 "{}: the AI re-arms: roles applied again over powers {effects:#x?}: activity {}",
@@ -2939,6 +2991,7 @@ mod tests {
 
     fn app() -> App {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(db())
             .add_systems(Update, (apply_new_roles, rate_the_player).chain());
         app.world_mut()
@@ -3066,6 +3119,7 @@ mod tests {
     #[test]
     fn the_target_pass_knocks_a_dormant_sleeper_out() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(db())
             .add_message::<StatueByte>()
             .add_systems(Update, (apply_new_roles, ai_tick).chain());
@@ -3396,6 +3450,7 @@ mod tests {
     #[test]
     fn a_rearmed_brain_applies_its_roles_over_its_powers() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(db());
         app.add_systems(Update, apply_new_roles);
         let marker = crate::combatant::MindPowers {
@@ -3436,11 +3491,87 @@ mod tests {
         assert!(!activity(&app).1);
     }
 
+    #[derive(Resource, Default)]
+    struct PartySeen(Vec<PartyChange>);
+
+    fn see_party(mut changes: MessageReader<PartyChange>, mut seen: ResMut<PartySeen>) {
+        seen.0.extend(changes.read().copied());
+    }
+
+    /// A brain whose roles make it follow joins the party, and leaves it
+    /// once they no longer do; its death hook leaves it too. A fierce body
+    /// starts its phase word at −1.
+    #[test]
+    fn a_follower_joins_and_leaves_the_party() {
+        let mut app = App::new();
+        app.add_message::<PartyChange>()
+            .init_resource::<PartySeen>()
+            .insert_resource(db())
+            .add_systems(Update, (apply_new_roles, death_hook, see_party).chain());
+        let marker = crate::combatant::MindPowers {
+            effects: vec![crate::combatant::Effect {
+                kind: 0x10_010A,
+                source: None,
+                target: None,
+                state: 1,
+            }],
+            resists_control: false,
+        };
+        let brain = app
+            .world_mut()
+            .spawn((held(&[9]), Npc::new([0.0; 4]), marker, Condition::NORMAL))
+            .id();
+        app.update();
+        let joined = PartyChange {
+            body: brain,
+            joins: true,
+        };
+        let left = PartyChange {
+            body: brain,
+            joins: false,
+        };
+        assert_eq!(app.world().resource::<PartySeen>().0, vec![joined]);
+        let npc = app.world().get::<Npc>(brain).unwrap();
+        assert_eq!(npc.applied.as_ref().unwrap().phase_word, 1);
+        // The marker resisted: it stops following and leaves.
+        app.world_mut()
+            .get_mut::<crate::combatant::MindPowers>(brain)
+            .unwrap()
+            .resists_control = true;
+        app.world_mut().get_mut::<Npc>(brain).unwrap().reapply = true;
+        app.update();
+        assert_eq!(app.world().resource::<PartySeen>().0, vec![joined, left]);
+        // Following again, then dying: the death hook leaves.
+        app.world_mut()
+            .get_mut::<crate::combatant::MindPowers>(brain)
+            .unwrap()
+            .resists_control = false;
+        app.world_mut().get_mut::<Npc>(brain).unwrap().reapply = true;
+        app.update();
+        app.world_mut().entity_mut(brain).insert(Condition::DEAD);
+        app.update();
+        assert_eq!(
+            app.world().resource::<PartySeen>().0,
+            vec![joined, left, joined, left]
+        );
+        // A fierce body that does not follow: the phase word starts at −1.
+        let mut fighter = Fighter::default();
+        fighter.stats.rules.0 |= exa_formats::character_stats::BodyRules::FIERCE;
+        let fierce = app
+            .world_mut()
+            .spawn((held(&[9]), Npc::new([0.0; 4]), fighter))
+            .id();
+        app.update();
+        let npc = app.world().get::<Npc>(fierce).unwrap();
+        assert_eq!(npc.applied.as_ref().unwrap().phase_word, -1);
+    }
+
     /// The AI tick runs the target pass once, keeps its report on the brain
     /// and stores the level it decided.
     #[test]
     fn the_ai_tick_runs_the_target_pass_and_stores_its_level() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
         let player = app
             .world_mut()
@@ -3500,6 +3631,7 @@ mod tests {
     #[test]
     fn the_target_pass_leave_restores_the_idle_state() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.init_resource::<Time>()
             .insert_resource(BodyTicks(1))
             .add_message::<exa_combat::AttackAskedHook>()
@@ -3573,6 +3705,7 @@ mod tests {
     #[test]
     fn a_hostile_role_engages_and_a_neutral_one_takes_the_fighter() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(db()).add_systems(
             Update,
             (apply_new_roles, rate_the_player, perceive_all, ai_tick).chain(),
@@ -3674,6 +3807,7 @@ mod tests {
     #[test]
     fn one_brain_a_tick_runs_the_target_pass() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(db())
             .init_resource::<crate::pass_turn::PassTurn>()
             .add_systems(
@@ -3761,6 +3895,7 @@ mod tests {
     fn ai_cost_of_47_brains() {
         let run = |turns: bool| {
             let mut app = App::new();
+            app.add_message::<PartyChange>();
             app.insert_resource(db()).add_systems(
                 Update,
                 (
@@ -3869,6 +4004,7 @@ mod tests {
     #[test]
     fn a_duellist_aimed_at_the_players_root_engages_its_fighter() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(db()).add_systems(
             Update,
             (apply_new_roles, rate_the_player, perceive_all, ai_tick).chain(),
@@ -3924,6 +4060,7 @@ mod tests {
     /// targeting the player.
     fn perception() -> (App, Entity, Entity) {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, perceive_all);
         let player = app
             .world_mut()
@@ -4001,6 +4138,7 @@ mod tests {
         }
 
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, (idle_walk, crate::route_walk::walk_routes).chain());
         app.insert_resource(LevelRooms::new(Arc::new(rooms)));
         app.insert_resource(nav);
@@ -4096,6 +4234,7 @@ mod tests {
     fn the_idle_walk_leaves_a_fighters_chase_driving() {
         use exa_physics::body::locomotion::{Locomotion, flags};
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, idle_walk);
         app.insert_resource(BodyTicks(1));
         let player = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
@@ -4171,6 +4310,7 @@ mod tests {
     #[test]
     fn an_entering_walker_faces_its_route_goal() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_message::<crate::presence::Entered>()
             .add_systems(Update, face_entering);
         let mut route = crate::route_walk::AiRoute::default();
@@ -4217,6 +4357,7 @@ mod tests {
         use exa_physics::body::locomotion::{Locomotion, flags};
         let run = |threat_room: i32| {
             let mut app = App::new();
+            app.add_message::<PartyChange>();
             app.add_systems(Update, flee_walk);
             let threat = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
             let root = app
@@ -4316,6 +4457,7 @@ mod tests {
         let rooms = Rooms::flood(&grid);
 
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, (flee_walk, crate::route_walk::walk_routes).chain());
         app.insert_resource(LevelRooms::new(Arc::new(rooms)));
         // The threat stands far away in no room, so the flight does not
@@ -4422,6 +4564,7 @@ mod tests {
         grid.edges[7] = CELL_OPEN | 7 | 7 << 4 | 7 << 8 | 7 << 12;
         let rooms = Rooms::flood(&grid);
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, flee_walk);
         app.insert_resource(LevelRooms::new(Arc::new(rooms)));
         let far = Vec3::new(90.0, 0.0, 90.0);
@@ -4527,6 +4670,7 @@ mod tests {
         }
 
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, (flee_walk, crate::route_walk::walk_routes).chain());
         app.insert_resource(LevelRooms::new(Arc::new(rooms)));
         app.insert_resource(nav);
@@ -4736,6 +4880,7 @@ mod tests {
     #[test]
     fn an_idle_brain_keeps_its_placed_facing() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
         let mut brain = Npc::new([0.0; 4]);
         brain.turn.sway_at_ms = u32::MAX;
@@ -4775,6 +4920,7 @@ mod tests {
     #[test]
     fn the_ai_tick_decays_the_group_alert() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
         let player = app
             .world_mut()
@@ -4821,6 +4967,7 @@ mod tests {
     #[test]
     fn the_ai_tick_gathers_the_nearby_characters_of_its_room() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
         app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
             width: 32,
@@ -4919,6 +5066,7 @@ mod tests {
         ));
 
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
         app.insert_resource(level);
         app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
@@ -4959,6 +5107,7 @@ mod tests {
     #[test]
     fn an_idle_brain_turns_its_model_to_its_look() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
         let player = app
             .world_mut()
@@ -5089,6 +5238,7 @@ mod tests {
     #[test]
     fn perception_takes_the_role_attitude_and_relations_trust() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(db()).add_systems(Update, perceive_all);
         let player = app
             .world_mut()
@@ -5131,6 +5281,7 @@ mod tests {
         // drift goes only into a relation that exists.
         let run = |known: bool| {
             let mut app = App::new();
+            app.add_message::<PartyChange>();
             app.insert_resource(db()).add_systems(Update, perceive_all);
             let player = app
                 .world_mut()
@@ -5232,6 +5383,7 @@ mod tests {
     #[test]
     fn the_ai_tick_lets_a_stale_cast_go() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(BodyTicks(50))
             .add_systems(Update, ai_tick);
         let player = app
@@ -5269,6 +5421,7 @@ mod tests {
     #[test]
     fn the_alert_look_turns_to_the_bodys_target() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.insert_resource(BodyTicks(10))
             .add_systems(Update, ai_tick);
         let foe = app
@@ -5334,6 +5487,7 @@ mod tests {
     #[test]
     fn a_removed_character_is_forgotten_by_every_brain() {
         let mut app = App::new();
+        app.add_message::<PartyChange>();
         app.add_systems(Update, forget_removed);
         let gone = app.world_mut().spawn(Npc::new([0.0; 4])).id();
         let mut npc = Npc::new([0.0; 4]);
