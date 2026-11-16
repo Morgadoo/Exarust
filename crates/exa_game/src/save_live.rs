@@ -408,10 +408,21 @@ fn rebuild_player(
         record: player.record,
         items,
     });
+    commands.insert_resource(RebuiltPlayer);
     for root in &roots {
         commands.entity(root).despawn();
     }
 }
+
+/// The next player spawn is the respawn's rebuild ([`rebuild_player`]):
+/// the original spawns the player from the stripped record alone, so the
+/// body holds what the record's hands hold (nothing after the strip) and
+/// stands at the respawn portal from its first frame. The spawn takes the
+/// marker (Exarust's carried torch is then not given, and the body starts
+/// at the portal's placement instead of the level's own start) and removes
+/// it.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RebuiltPlayer;
 
 /// What the last live save or load did, for the report and the tests.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -3168,6 +3179,35 @@ pub struct LoadedStory(pub Session);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F564: the respawn's rebuild hands the next spawn the record and
+    /// marks it as the rebuild, so the spawn gives no carried torch and
+    /// starts the body at the respawn placement; the old root goes.
+    #[test]
+    fn the_rebuild_marks_the_next_spawn() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<exa_assets::live_objects::LiveObjects>()
+            .add_message::<RebuildPlayer>()
+            .add_systems(Update, rebuild_player);
+        let mut record = CharacterRecord::reset();
+        record.name = "Ash".into();
+        let root = app.world_mut().spawn(crate::player::Player).id();
+        app.world_mut().spawn((
+            GlobalTransform::default(),
+            exa_character::record::CharacterData::of_record(record),
+            crate::player::PlayerBody::new(0.0),
+        ));
+        app.update();
+        assert!(app.world().get_resource::<RebuiltPlayer>().is_none());
+        app.world_mut().write_message(RebuildPlayer);
+        app.update();
+        assert!(app.world().get_resource::<RebuiltPlayer>().is_some());
+        let saved = app.world().resource::<SavedPlayer>();
+        assert_eq!(saved.record.name, "Ash");
+        assert!(saved.record.held_ids().next().is_none());
+        assert!(app.world().get_entity(root).is_err());
+    }
 
     /// The live roles replace a version 7 record's list; an older record
     /// keeps its own.

@@ -996,7 +996,14 @@ impl HubWindows {
     /// Opens the loadout form on a page (the roster or the hire list) at
     /// its first row.
     pub fn open_loadout(&mut self, page: u32, career: &ArenaCareer) {
-        let mut form = RecordForm::open(&LOADOUT_FORM, self.task.screen, self.unit_now());
+        // The constructor's hire mode rewrites its records before the
+        // layout ([`exa_ui::arena_forms::HIRE_LOADOUT_RECORDS`]).
+        let spec = if page == PAGE_HIRE {
+            &exa_ui::arena_forms::HIRE_LOADOUT_FORM
+        } else {
+            &LOADOUT_FORM
+        };
+        let mut form = RecordForm::open(spec, self.task.screen, self.unit_now());
         let mut arsenal = ArsenalForm::open(page);
         refresh_loadout(&mut form, &mut arsenal, career);
         self.forms.arsenal = Some(arsenal);
@@ -1629,18 +1636,32 @@ pub(crate) fn paint_form_with(
                 painted.layers.extend(front.layers);
             }
             0xac03 => {
+                // The coin control's draw: each count's text on the
+                // control's own baseline, its record's middle
+                // ([`exa_items::item_gui::coin_baseline`]); the
+                // denomination's icon takes the four units before the
+                // number (the coin icons are not drawn). A label's caption
+                // placement put the counts a row above their captions
+                // (F561).
                 let amount = form.amounts.get(i).copied().unwrap_or(0);
+                let baseline =
+                    exa_items::item_gui::coin_baseline(rect.top, rect.height(), font.ascent);
                 let parts =
-                    exa_items::item_gui::coin_layout(amount, rect.left as f32, unit as f32, |n| {
+                    exa_items::item_gui::coin_draw(amount, rect.left, baseline, unit, |n| {
                         font.text_width(n.to_string().as_bytes()) as f32
                     });
-                for (_, x, n) in parts {
-                    // The denomination's icon takes the four units before
-                    // the number; the coin icons are not drawn.
-                    let number = n.to_string();
-                    let w = font.text_width(number.as_bytes()) + unit;
-                    let at = GuiRect::new(x as i32 + 4 * unit, rect.top, w, rect.height());
-                    crate::hub_windows::paint_text(painted, at, &number, look);
+                if let Some(texture) = size {
+                    for part in &parts {
+                        painted.push(gui_paint::caption_layer(
+                            &font,
+                            texture,
+                            part.count.to_string().as_bytes(),
+                            (part.text_x as i32, baseline),
+                            // The label group's sixth ink, as the item
+                            // card's coin control draws.
+                            look.palette.text[5],
+                        ));
+                    }
                 }
             }
             0xac01 => {}

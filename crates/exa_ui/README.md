@@ -20,7 +20,8 @@ their layout and the story backgrounds' names and descriptions
 (`creation_forms`), the arena company windows' six control-record tables
 (Manage Company 18, Company Records 27, Company Status 12, the loadout form
 28, the dismiss and yes/no dialogs 3 each) and their forms' words
-(`arena_forms`, with the merchant's options form and its two lists), a
+(`arena_forms`, with the merchant's options form and its two lists, and
+the loadout form's hire-mode records `HIRE_LOADOUT_RECORDS`), a
 form built from one record array, laid out, rescaled,
 placed and answering the pointer through the control messages
 (`record_form`), the

@@ -1177,6 +1177,38 @@ pub fn clear_for_placement(commands: &mut Commands, entity: Entity) {
     });
 }
 
+/// The clinch clear a cast start makes when the body is parrying (the
+/// original's cast start runs the clear only then, before it starts the
+/// cast motion): the parry is off, keeps no clip and counters no motion,
+/// both hands and their parents lose the arm bit and every item the body
+/// holds has its parry link disabled. The stance the clear would start is
+/// not started: the cast motion starts over it at once.
+pub fn clear_for_cast(commands: &mut Commands, entity: Entity) {
+    commands.queue(move |world: &mut World| {
+        let Some(mut f) = world.get_mut::<Fighter>(entity) else {
+            return;
+        };
+        if !f.parry.active {
+            return;
+        }
+        f.parry.end();
+        sync_guard(&mut f);
+        let key = world.get_mut::<Ragdoll>(entity).and_then(|mut body| {
+            body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+            body.parts.first().map(|part| part.entity)
+        });
+        let Some(key) = key else { return };
+        let mut grips = world.query::<&mut exa_physics::grip::HeldGrip>();
+        for mut grip in grips.iter_mut(world) {
+            if grip.holder_key == key
+                && let Some(links) = grip.links.as_mut()
+            {
+                links.release_parry();
+            }
+        }
+    });
+}
+
 /// Whether either hand carries the parry's arm bit.
 fn holds_parry_arms(body: &Ragdoll) -> bool {
     body.parts.iter().any(|part| {

@@ -140,6 +140,15 @@ pub fn lay_floor_torch(
     }
 }
 
+/// Whether a new play-mode player is given Exarust's carried torch: in a
+/// level that keeps it ([`exa_world::start::keeps_torch`]), without a debug
+/// shield or `--no-torch`, and not for the respawn's rebuild, which the
+/// original spawns from the stripped record alone (its hands hold nothing;
+/// [`crate::save_live::RebuiltPlayer`]).
+pub fn spawn_carries_torch(level: &str, shield: bool, no_torch: bool, rebuilt: bool) -> bool {
+    exa_world::start::keeps_torch(level) && !shield && !no_torch && !rebuilt
+}
+
 /// A body carrying a lit torch: in the right hand, or in the left beside a
 /// weapon ([`TorchHand::of`]), unless a [`TorchHand`] on the body fixes it.
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -401,6 +410,17 @@ fn light_torches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F564: the respawn's rebuilt player holds no carried torch; a new
+    /// story player and a loaded one still do.
+    #[test]
+    fn the_rebuilt_player_gets_no_carried_torch() {
+        assert!(spawn_carries_torch("exanima05", false, false, false));
+        assert!(!spawn_carries_torch("exanima05", false, false, true));
+        assert!(!spawn_carries_torch("exanima05", true, false, false));
+        assert!(!spawn_carries_torch("exanima05", false, true, false));
+        assert!(!spawn_carries_torch("arena", false, false, false));
+    }
     use exa_character::{LEFT_HAND, RIGHT_HAND};
 
     /// The unknown background's torch: (8045, 4.7, 4075) cm in metres, its
