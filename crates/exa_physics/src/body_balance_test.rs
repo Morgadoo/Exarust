@@ -283,6 +283,42 @@ fn a_get_up_tick_ends_the_step_and_the_posture_wait() {
     assert_eq!(d.posture_wait, 0);
 }
 
+/// The body tick's radius base: a new body starts at 60 cm, which narrows
+/// 0.5 a standing tick; locomoting it is 30 at once; off its feet it is
+/// 65; with no ground under it (no support) it is not set to 65 but goes
+/// on narrowing.
+#[test]
+fn the_radius_base_follows_the_moving_byte_and_the_off_feet_bit() {
+    let mut body = biped();
+    let ground = floor();
+    assert_eq!(drive(&body).steps.radius_base, 60.0);
+    bearing(&mut body, Bearing::default());
+    body.measure_balance(ground.as_slice());
+    assert_eq!(drive(&body).steps.radius_base, 59.5);
+    body.measure_balance(NONE);
+    assert!(!drive(&body).balance().has_support());
+    assert_eq!(drive(&body).steps.radius_base, 59.0);
+    bearing(
+        &mut body,
+        Bearing {
+            moving: true,
+            ..Bearing::default()
+        },
+    );
+    body.measure_balance(ground.as_slice());
+    assert_eq!(drive(&body).steps.radius_base, 30.0);
+    bearing(
+        &mut body,
+        Bearing {
+            off_feet: true,
+            off_balance: true,
+            ..Bearing::default()
+        },
+    );
+    body.measure_balance(ground.as_slice());
+    assert_eq!(drive(&body).steps.radius_base, 65.0);
+}
+
 /// With no ground under its feet a standing body has no balance and no
 /// support, and counts the ticks it is airborne; a moving one keeps its
 /// balance but has no support either. No controller holds a standing body

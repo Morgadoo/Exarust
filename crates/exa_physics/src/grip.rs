@@ -28,6 +28,9 @@ use crate::body::{Part, Ragdoll};
 /// A link's pivot: a point on the item tied to its parent with the slack's
 /// range.
 pub const PIVOT: u32 = 0x1_0000;
+/// A plane link: a plain link's offset loses 0.8 of its part along the
+/// link's axis ([`GripLink::normal`]) before the law reads it.
+pub const PLANE: u32 = 0x800;
 /// A link that was enabled at least once (the relax pass reads it).
 pub const ENABLED: u32 = 0x100;
 /// A disabled link: the solver skips it.
@@ -154,6 +157,9 @@ pub struct GripLink {
     /// The world point a link with no parent part holds to, set when the
     /// link is built.
     pub anchor: Option<Vec3>,
+    /// A plane link's axis ([`PLANE`]): the shield's parry link takes the
+    /// holder's frame forward. Zero for every other link.
+    pub normal: Vec3,
 }
 
 impl GripLink {
@@ -263,12 +269,25 @@ impl GripLinks {
         }
     }
 
+    /// The shield's armed parry on this item: its parry link becomes a
+    /// plane link ([`PLANE`] alone, so it is enabled) to the parry point
+    /// `point` (m) along `normal` (the holder's frame forward), with
+    /// strength `strength`. An item without the link is left alone.
+    pub fn aim_parry_plane(&mut self, point: Vec3, strength: f32, normal: Vec3) {
+        if let Some(link) = self.world_soft.and_then(|i| self.links.get_mut(i)) {
+            link.flags = PLANE;
+            link.anchor = Some(point);
+            link.strength = strength;
+            link.normal = normal;
+        }
+    }
+
     /// The item's parry link holds (enabled as a world link to the parry
     /// point, as [`Self::aim_parry`] leaves it).
     pub fn parry_held(&self) -> bool {
         self.world_soft
             .and_then(|i| self.links.get(i))
-            .is_some_and(|link| link.flags == 0)
+            .is_some_and(|link| link.flags == 0 || link.flags == PLANE)
     }
 
     /// The item has a parry link.
@@ -526,6 +545,7 @@ fn make_link(
         flags,
         shares: shares(item_mobility, parent_mobility),
         anchor: None,
+        normal: Vec3::ZERO,
     })
 }
 
@@ -561,6 +581,7 @@ pub fn origin_pivot(
         flags: PIVOT | RUNTIME,
         shares: shares(item_mobility, parent_mobility),
         anchor: None,
+        normal: Vec3::ZERO,
     })
 }
 
@@ -761,6 +782,7 @@ pub fn world_links(
         flags: RUNTIME | DISABLED,
         shares: (1.0, 0.0),
         anchor: Some(anchor),
+        normal: Vec3::ZERO,
     };
     let mut links = Vec::with_capacity(2);
     // The soft weld is only built under the original's auto-parry flag;
@@ -812,6 +834,7 @@ pub fn torch_links(
             flags: PIVOT | RUNTIME,
             shares: shares(item_mobility, parent_mobility),
             anchor: None,
+            normal: Vec3::ZERO,
         });
     }
     let main = links.len() - 1;
@@ -830,6 +853,7 @@ pub fn torch_links(
         flags: RUNTIME | DISABLED,
         shares: (1.0, 0.0),
         anchor: Some(origin_at),
+        normal: Vec3::ZERO,
     });
     Some(GripLinks {
         links,
@@ -904,6 +928,7 @@ pub fn shield_links(
             flags: PIVOT | RUNTIME,
             shares: shares(item_mobility, parent_mobility),
             anchor: None,
+            normal: Vec3::ZERO,
         });
     }
     let on_item = item.weights_at(bindings.item_part, Vec3::ZERO)?;
@@ -921,6 +946,7 @@ pub fn shield_links(
         flags: RUNTIME | DISABLED,
         shares: (1.0, 0.0),
         anchor: Some(origin_at),
+        normal: Vec3::ZERO,
     });
     Some(GripLinks {
         links,
@@ -1279,6 +1305,7 @@ mod tests {
             flags,
             shares: (1.0, 0.0),
             anchor: None,
+            normal: Vec3::ZERO,
         }
     }
 

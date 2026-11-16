@@ -182,7 +182,8 @@ fn trigger(balance: f32, supported: bool, h_cm: f32) -> Trigger {
         supported,
         getting_up: false,
         locomoting: false,
-        down: false,
+        off_feet: false,
+        moving: false,
         h_cm,
         chest: Vec3::X * (h_cm / super::CM),
         fast: Vec3::ZERO,
@@ -226,9 +227,16 @@ fn the_target_leads_the_chest() {
         close(cm(falling).x, 1.5 * 30.0 / 4.5f32.sqrt()),
         "{falling}"
     );
-    assert_eq!(next_base(30.0, false), 30.0);
-    assert_eq!(next_base(30.0, true), 65.0);
-    assert!(close(next_base(65.0, false), 64.5));
+    assert_eq!(next_base(30.0, false, false), 30.0);
+    assert_eq!(next_base(30.0, true, false), 65.0);
+    assert_eq!(next_base(30.0, true, true), 65.0);
+    assert!(close(next_base(65.0, false, false), 64.5));
+    // Locomoting it is 30 at once; under 30 (a base the decay stepped past)
+    // it is lifted back; a NaN is kept.
+    assert_eq!(next_base(64.5, false, true), 30.0);
+    assert_eq!(next_base(30.3, false, false), 29.8);
+    assert_eq!(next_base(29.8, false, false), 30.0);
+    assert!(next_base(f32::NAN, false, false).is_nan());
 }
 
 /// The score's reference leads the fast velocity by 10 ticks.
@@ -480,7 +488,9 @@ fn support_offset(body: &Ragdoll) -> f32 {
 fn a_chest_past_the_trigger_takes_one_step() {
     let floor = floor_quad(0.0, 8.0);
     let (mut body, pose) = standing_at(Vec3::ZERO);
-    for _ in 0..40 {
+    // A new body's radius base is 60 cm and narrows 0.5 a standing tick.
+    assert_eq!(body.drive.as_ref().unwrap().steps.radius_base, 60.0);
+    for _ in 0..70 {
         stand(&mut body, &pose, &floor);
     }
     {
@@ -723,6 +733,35 @@ fn a_walking_body_jolts_past_its_chest_velocity() {
     };
     assert!(jolt_at(&mut down, jolt_vec, true, true).is_none());
     assert!(!down.jolt_latch);
+}
+
+/// A walk's stop seeds the jolt's decaying term after that tick's jolt:
+/// the stop tick's jolt reads the old term, the next one 0.85 × (−0.6 ×
+/// the stop tick's slow velocity), so a body that has just stopped has
+/// 0.51 of its slow velocity added back to its jolt.
+#[test]
+fn a_walks_stop_seeds_the_jolt_after_its_jolt() {
+    let mut steps = Steps::default();
+    let slow = Vec3::new(0.02, 0.001, 0.0);
+    let feet = Vec3::ZERO;
+    steps.jolt_seed = true;
+    // This tick: fast − slow, the term still 0 (3 cm a tick: a jolt).
+    let fast = Vec3::new(0.05, 0.0, 0.0);
+    assert!(jolt(fast, slow, &mut steps, true, false, false, false, 1.0, feet).is_some());
+    assert!(!steps.jolt_seed);
+    assert_eq!(steps.jolt_decay, slow * -0.6);
+    // Next tick a chest at its slow velocity jolts by the term alone:
+    // 0.85 × 1.2 = 1.02 cm a tick, under the walk's 2.5.
+    let fast = Vec3::new(0.02, 0.0, 0.0);
+    assert!(jolt(fast, slow, &mut steps, true, false, false, false, 1.0, feet).is_none());
+    assert_eq!(steps.jolt_decay, slow * -0.6 * 0.85);
+    // Off its feet the seed is taken too.
+    let mut down = Steps {
+        jolt_seed: true,
+        ..Steps::default()
+    };
+    assert!(jolt(fast, slow, &mut down, true, false, true, false, 1.0, feet).is_none());
+    assert_eq!(down.jolt_decay, slow * -0.6);
 }
 
 /// The score's reference term is 1 less a 30th of the distance to the feet's

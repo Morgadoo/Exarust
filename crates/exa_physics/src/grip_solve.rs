@@ -87,6 +87,9 @@ fn find_body(bodies: &[&mut Ragdoll], key: Entity) -> Option<usize> {
 /// softening, and a world weld (no pivot flag) the plain link law
 /// ([`crate::body::plain_law`]): `strength·d`, a `10·strength²` cm move at
 /// most past `10·strength` cm, or `strength` times the excess past a slack.
+/// The share of a plane link's offset along its axis that is removed.
+const PLANE_KEEP: f64 = 0.8;
+
 fn link_correction(
     item: &Ragdoll,
     holder: &Ragdoll,
@@ -108,7 +111,16 @@ fn link_correction(
             &mut link.length,
         )?
     } else {
-        match crate::body::plain_law(d * CM, link.slack * CM, link.strength) {
+        let mut d = d * CM;
+        // A plane link: 0.8 of the offset's part along the axis is taken
+        // off (the dot summed y + x, then z; scaled by 0.8 in double).
+        if link.flags & crate::grip::PLANE != 0 {
+            let u = link.normal;
+            let along = d.z * u.z + (d.y * u.y + d.x * u.x);
+            let k = (f64::from(along) * PLANE_KEEP) as f32;
+            d = Vec3::new(d.x - k * u.x, d.y - k * u.y, d.z - k * u.z);
+        }
+        match crate::body::plain_law(d, link.slack * CM, link.strength) {
             // Inside the slack the original zeroes the taut length.
             None => {
                 link.length = 0.0;

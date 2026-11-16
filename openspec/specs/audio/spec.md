@@ -392,3 +392,10 @@ A door leaf whose own collision set has no shipped variant SHALL ring its record
 #### Scenario: A stone leaf
 - **WHEN** a door leaf whose set `stncol` has no variant and whose slam set `doora_slm` has 2 registers
 - **THEN** it keeps its impact class and its impacts ring `doora_slm`
+
+### Requirement: Alternating step voices
+A physical body's footsteps (its walking plants and its footwork's step ends) SHALL each restart the other of the body's two step voices on a variant of the step set; the voices SHALL go back to the pool once the body is gone.
+
+#### Scenario: Three steps
+- **WHEN** a body takes three steps
+- **THEN** the third restarts the voice the first played on
