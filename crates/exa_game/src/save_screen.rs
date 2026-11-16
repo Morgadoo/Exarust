@@ -936,11 +936,17 @@ impl Plugin for SaveScreenPlugin {
             .init_resource::<GuiFrames>()
             .add_message::<MenuChoice>()
             .add_message::<crate::save_live::StorySlotLoad>()
+            // After the menu's and so after the game screens' draw, which
+            // clears the GUI queue each frame: unordered, the clear could
+            // run after this paint and the screen drew none of its
+            // records (F565). The creator's chain is ordered the same way.
             .add_systems(
                 Update,
                 (open_saves, saves_input, saves_paint)
                     .chain()
-                    .in_set(CreatorSystems),
+                    .in_set(CreatorSystems)
+                    .after(crate::menu_screen::MenuScreenSystems)
+                    .after(crate::gui_screens::draw_screens),
             );
     }
 }
@@ -1631,6 +1637,48 @@ mod tests {
         send(&mut app, KeyCode::Escape, Key::Escape);
         assert!(app.world().resource::<CreatorScreen>().saves.is_none());
         assert_eq!(app.world().resource::<Flow>().mode, crate::flow::Mode::Menu);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F565: the game screens' draw clears the GUI queue every frame; the
+    /// continue form's paint runs after it, so its records reach the
+    /// queue (unordered, the clear could come last and the screen showed
+    /// only its 3-D preview).
+    #[test]
+    fn the_saves_paint_survives_the_game_screens_clear() {
+        let dir = folder("paint");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .insert_resource(crate::save_live::SlotLists::new(&dir))
+            .init_resource::<FlowSteps>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .init_resource::<crate::item_panel_draw::PanelIcons>()
+            .init_resource::<crate::gui_screens::DebugGuiForm>()
+            .add_systems(Update, crate::gui_screens::draw_screens)
+            .add_plugins((SaveScreenPlugin, crate::commands::CommandPlugin));
+        assert!(exa_physics::schedule_order::runs_before(
+            &mut app,
+            Update,
+            "gui_screens::draw_screens",
+            "save_screen::saves_paint"
+        ));
+        app.world_mut().spawn((
+            Window {
+                resolution: bevy::window::WindowResolution::new(1024, 768),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        let saves = SaveScreen::new(STORY, (1024, 768), 4);
+        app.world_mut().resource_mut::<CreatorScreen>().saves = Some(saves);
+        for _ in 0..3 {
+            app.update();
+            let frames = app.world().resource::<GuiFrames>();
+            assert_eq!(frames.frames.len(), 1);
+            assert!(frames.primitives() > 0);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
