@@ -56,3 +56,10 @@ The system SHALL build the volume a directional light's casters can lie in from 
 #### Scenario: A cube lit from above
 - **WHEN** a cube of half side 10 cm is given the light direction (0, −1, 0)
 - **THEN** it gets four side planes, one per side face, the bottom face closes it, and the returned count is 3
+
+### Requirement: Box outside a volume
+The system SHALL measure how far an oriented box lies outside a set of planes as the largest non-negative clearance, from 0, over the planes its centre is not behind (a NaN plane value goes on): the plane value less the box's support along the normal taken into the box's frame; a NaN clearance SHALL never win. The terrain's hidden-block light rank SHALL use it.
+
+#### Scenario: Two faces
+- **WHEN** a box of half side 0.5 sits 2 units along +X from a unit box's centre
+- **THEN** it lies 0.5 outside

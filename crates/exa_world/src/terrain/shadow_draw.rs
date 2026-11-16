@@ -1,21 +1,26 @@
 //! The terrain's shadow draws: which 6 m blocks cast into the sun's map.
 //!
 //! The original's two terrain shadow draws (all of a tile's blocks, or one
-//! block for a light's cube face) skip a block whose node has the
-//! external-draw bit, and draw only a block whose visible word has its
-//! main-view bit: the bit the scene's visible pass sets on a node it drew
-//! this frame. A block the camera does not see casts no terrain shadow.
+//! block for a light's cube face) skip a block whose composite state is
+//! blank (no composite: see [`super::blank_draw`]), and draw only a block
+//! whose visible word has its main-view bit: the bit the scene's visible
+//! pass sets on a node it drew this frame. A block the camera does not see,
+//! or one past the composite reach, casts no terrain shadow.
 //!
 //! Bevy's sun pass instead casts every block inside a cascade's frustum.
 //! [`sun_casts_drawn_blocks`] runs after Bevy's light visibility check and
-//! takes out of the sun's cascade lists the blocks the live scene's visible
-//! pass left undrawn ([`crate::scene_live::LiveScene::drawn_by_main`]). A
-//! block the scene does not hold (no live scene, or not yet registered) is
-//! kept. `EXA_TERRAIN_SHADOW_ALL=1` turns the rule off, to compare.
+//! takes out of the sun's cascade lists the blank blocks
+//! ([`super::blank_draw::BlankTerrainBlocks`]) and the blocks the live
+//! scene's visible pass left undrawn
+//! ([`crate::scene_live::LiveScene::drawn_by_main`]). A block the scene does
+//! not hold (no live scene, or not yet registered) passes the second test.
+//! `EXA_TERRAIN_SHADOW_ALL=1` turns the main-view rule off, to compare, and
+//! `EXA_TERRAIN_DRAW_BLANK=1` the blank rule.
 //!
 //! The cube faces of point lights (`exa_render::cube_shadows`) take the
-//! same rule: [`cube_faces_skip_undrawn_blocks`] lists the blocks the visible
-//! pass left undrawn in [`CubeCasterGate`] before the faces are built, and a
+//! same rules: [`cube_faces_skip_undrawn_blocks`] lists the blank blocks and
+//! those the visible pass left undrawn in [`CubeCasterGate`] before the
+//! faces are built, and a
 //! face rendered this frame leaves them out. The faces stay cached as
 //! rendered, as the original's do: its one-block draw tests the bit when the
 //! face renders and nothing dirties a face when a block's bit changes, so a
@@ -28,6 +33,7 @@ use bevy::prelude::*;
 use exa_render::cube_shadows::CubeCasterGate;
 
 use super::TerrainBlock;
+use super::blank_draw::BlankTerrainBlocks;
 use crate::scene_live::LiveScene;
 
 /// Whether the sun draws only the blocks the main view drew (the original's
@@ -61,18 +67,26 @@ pub fn casts_into_sun(drawn_by_main: Option<bool>) -> bool {
     drawn_by_main != Some(false)
 }
 
-/// Takes the terrain blocks the main view did not draw out of every sun
-/// cascade's caster list.
+/// Whether a terrain block casts at all: not blank (the original tests the
+/// composite state first), then [`casts_into_sun`] on its main-view bit.
+pub fn block_casts(blank: bool, drawn_by_main: Option<bool>) -> bool {
+    !blank && casts_into_sun(drawn_by_main)
+}
+
+/// Takes the blank terrain blocks and those the main view did not draw out
+/// of every sun cascade's caster list.
 pub fn sun_casts_drawn_blocks(
     rule: Res<TerrainShadowRule>,
     live: Option<Res<LiveScene>>,
+    blank: Res<BlankTerrainBlocks>,
     blocks: Query<(), With<TerrainBlock>>,
     mut suns: Query<&mut CascadesVisibleEntities>,
     mut stats: ResMut<TerrainShadowStats>,
 ) {
-    let Some(live) = live.filter(|l| rule.drawn_only && l.scene.is_some()) else {
+    let live = live.filter(|l| rule.drawn_only && l.scene.is_some());
+    if live.is_none() && blank.blocks.is_empty() {
         return;
-    };
+    }
     let (mut kept, mut left_out) = (0, 0);
     for mut cascades in &mut suns {
         for lists in cascades.entities.values_mut() {
@@ -81,7 +95,8 @@ pub fn sun_casts_drawn_blocks(
                     if !blocks.contains(e) {
                         return true;
                     }
-                    let casts = casts_into_sun(live.drawn_by_main(e));
+                    let drawn = live.as_ref().and_then(|l| l.drawn_by_main(e));
+                    let casts = block_casts(blank.is_blank(e), drawn);
                     if casts {
                         kept += 1;
                     } else {
@@ -109,6 +124,7 @@ pub fn sun_casts_drawn_blocks(
 pub fn cube_faces_skip_undrawn_blocks(
     rule: Res<TerrainShadowRule>,
     live: Option<Res<LiveScene>>,
+    blank: Res<BlankTerrainBlocks>,
     blocks: Query<Entity, With<TerrainBlock>>,
     gate: Option<ResMut<CubeCasterGate>>,
     cube: Option<Res<exa_render::cube_shadows::CubeStats>>,
@@ -116,14 +132,14 @@ pub fn cube_faces_skip_undrawn_blocks(
 ) {
     let Some(mut gate) = gate else { return };
     gate.left_out.clear();
-    let Some(live) = live.filter(|l| rule.drawn_only && l.scene.is_some()) else {
+    let live = live.filter(|l| rule.drawn_only && l.scene.is_some());
+    if live.is_none() && blank.blocks.is_empty() {
         return;
-    };
-    gate.left_out.extend(
-        blocks
-            .iter()
-            .filter(|&e| !casts_into_sun(live.drawn_by_main(e))),
-    );
+    }
+    gate.left_out.extend(blocks.iter().filter(|&e| {
+        let drawn = live.as_ref().and_then(|l| l.drawn_by_main(e));
+        !block_casts(blank.is_blank(e), drawn)
+    }));
     // The faces' count is the previous frame's (they are built later).
     let gated = cube.map_or(0, |c| c.gated);
     *frames += 1;
@@ -144,5 +160,14 @@ mod tests {
         assert!(casts_into_sun(Some(true)));
         assert!(!casts_into_sun(Some(false)));
         assert!(casts_into_sun(None));
+    }
+
+    #[test]
+    fn a_blank_block_casts_nothing_whatever_the_view_says() {
+        assert!(block_casts(false, Some(true)));
+        assert!(block_casts(false, None));
+        assert!(!block_casts(true, Some(true)));
+        assert!(!block_casts(true, None));
+        assert!(!block_casts(false, Some(false)));
     }
 }
