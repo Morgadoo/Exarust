@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy::transform::TransformSystems;
 
 use super::finder::InstalledPathfinder;
@@ -357,7 +357,7 @@ fn finish_build(
     fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let Some(mut build) = build else { return };
-    let Some(grid) = block_on(poll_once(&mut build.0)) else {
+    let Some(grid) = exa_physics::job_wait::poll(&mut build.0) else {
         return;
     };
     commands.remove_resource::<NavBuild>();

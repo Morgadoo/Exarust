@@ -38,7 +38,7 @@ use bevy::pbr::{Material, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use exa_assets::texture::ColorSpace;
 use exa_assets::{ModelLoader, PackKind};
 use exa_formats::rfi::Rfi;
@@ -1074,7 +1074,7 @@ impl Surface {
     /// The packed map, once it is done.
     fn poll(&mut self) -> Option<Image> {
         match self {
-            Self::Packing(task) => block_on(poll_once(task)),
+            Self::Packing(task) => exa_physics::job_wait::poll(task),
             Self::Ready(image) => Some(std::mem::take(&mut **image)),
         }
     }
@@ -1460,7 +1460,7 @@ impl TerrainBuild {
             let built = match started {
                 Err(built) => *built,
                 Ok(mut task) => {
-                    let Some(built) = block_on(poll_once(&mut task)) else {
+                    let Some(built) = exa_physics::job_wait::poll(&mut task) else {
                         self.building = Some((self.next, task));
                         return false;
                     };

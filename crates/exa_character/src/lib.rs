@@ -54,7 +54,7 @@ use std::collections::HashMap;
 
 use bevy::image::CompressedImageFormatSupport;
 use bevy::prelude::*;
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use exa_anim::BodyPart;
 use exa_assets::model::{Paint, PaintedSet};
 use exa_assets::{Game, Model, ModelCache, ModelLoader, PackKind, model};
@@ -503,7 +503,7 @@ fn finish_skin_composites(
     let finished: Vec<(String, exa_assets::human_skin::SkinImages)> = pending
         .0
         .iter_mut()
-        .filter_map(|(key, job)| Some((key.clone(), block_on(poll_once(&mut job.task))?)))
+        .filter_map(|(key, job)| Some((key.clone(), exa_physics::job_wait::poll(&mut job.task)?)))
         .collect();
     if finished.is_empty() {
         return;
@@ -1139,7 +1139,7 @@ fn fitted_model(
         return Some(loader.finish_model(block_on(task)));
     }
     if let Some(task) = fitting.0.get_mut(&key) {
-        let built = block_on(poll_once(task))?;
+        let built = exa_physics::job_wait::poll(task)?;
         fitting.0.remove(&key);
         return Some(loader.finish_model(built));
     }
@@ -1543,7 +1543,7 @@ fn equip_outfits(
         if uploaded >= PAINT_UPLOAD_BUDGET {
             return true;
         }
-        match block_on(poll_once(task)) {
+        match exa_physics::job_wait::poll(task) {
             Some(painted) => {
                 uploaded += painted.bytes();
                 loader.painted_material(painted);

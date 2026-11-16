@@ -2115,6 +2115,10 @@ fn build_app(
         // The arena's draws reseed from a performance counter: a repeatable
         // run reads a fixed one.
         exa_game::arena_match::fix_counter(FIXED_COUNTER_READING);
+        // Background jobs are waited for when a frame polls them, and the
+        // load's frame budgets are lifted: the frame a result lands in and
+        // the loading screen's length repeat from run to run.
+        exa_physics::job_wait::wait_for_jobs();
     }
     let schedule_ambiguities = options.schedule_ambiguities;
     let mut app = App::new();

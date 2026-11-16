@@ -155,6 +155,15 @@ impl StreamWorker {
         !wake.running && !lock(&self.shared.stream).has_work()
     }
 
+    /// Waits until the thread's loop has stopped: it runs until a pass
+    /// finds nothing to do, so what was posted is built (a repeatable run's
+    /// pump, `exa_physics::job_wait`).
+    pub fn wait_idle(&self) {
+        while lock(&self.shared.wake).running {
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+    }
+
     /// Passes the thread has run.
     pub fn passes(&self) -> u64 {
         lock(&self.shared.wake).passes

@@ -762,10 +762,11 @@ fn continue_level(
         images: &mut images,
         bc_supported: model::bc_supported(support.as_deref()),
     };
-    let (root, info) = match pending
-        .load
-        .step(&mut commands, &mut loader, LOAD_STEP_BUDGET)
-    {
+    let (root, info) = match pending.load.step(
+        &mut commands,
+        &mut loader,
+        exa_physics::job_wait::budget(LOAD_STEP_BUDGET),
+    ) {
         exa_world::LoadProgress::Loading { stage, fraction } => {
             if let Some(status) = status.as_mut() {
                 status.stage = stage.to_string();
