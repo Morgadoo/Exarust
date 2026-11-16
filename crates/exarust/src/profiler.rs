@@ -343,7 +343,9 @@ impl Plugin for ProfilerPlugin {
         })
         .add_systems(
             Update,
-            (toggle_overlay, show_overlay, update_overlay).chain(),
+            (toggle_overlay, show_overlay, update_overlay)
+                .chain()
+                .in_set(exa_physics::FramePhase::Draw),
         )
         .add_systems(Last, (count, count_churn, log_report).chain());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {

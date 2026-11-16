@@ -16,9 +16,8 @@
 //! step runs (`FixedMainScheduleOrder`'s and the ones the simulation bridge
 //! moves with them) and for the frame's `PreUpdate`, `Update` and
 //! `PostUpdate`. A pair is allowed only by [`ALLOWED`], each entry with its
-//! reason, except in the frame schedules not ordered yet ([`FRAME_TODO`]),
-//! whose pairs are counted: a count that grows fails (a new unordered pair:
-//! order it), and so does one that shrinks (lower the count).
+//! reason. The frame's systems sit in the phases of
+//! `exa_physics::frame_phase` (OpenSpec `order-the-frame-schedules`).
 //!
 //! `EXA_AMBIGUITY_DUMP=1` prints each schedule's sorted order, its edges and
 //! its pairs (a debug aid).
@@ -30,9 +29,11 @@ use bevy::prelude::*;
 use super::{Shell, build_app, parse_command_line};
 
 /// One allowed unordered pair: the schedule (its `Debug` name), the two
-/// systems (ends of their full names, either way round) and the data they
-/// conflict on (a type name's end; `"*"` for any). Each says why the order
-/// cannot change what either computes.
+/// systems (ends of their full names, or a module path naming every system
+/// in it, either way round) and the data they conflict on (a type name's
+/// end; `"*"` for any). Each says why the order cannot change what either
+/// computes. Only pairs with Bevy's own systems that no public set or path
+/// names (so nothing can order them) are here.
 struct Allowed {
     schedule: &'static str,
     a: &'static str,
@@ -42,13 +43,70 @@ struct Allowed {
     why: &'static str,
 }
 
-const ALLOWED: &[Allowed] = &[];
-
-/// TODO: the frame schedules whose unordered pairs are not resolved yet,
-/// with the count each must keep until they are. Their systems run on the
-/// frame's thread pool, so the order of each pair changes from frame to
-/// frame; the fixed step's schedules and `PreUpdate` are fully ordered.
-const FRAME_TODO: &[(&str, usize)] = &[("Update", 5835), ("PostUpdate", 275)];
+const ALLOWED: &[Allowed] = &[
+    Allowed {
+        schedule: "Update",
+        a: "mind::runtime::run_mind_fade",
+        b: "bevy_core_pipeline::oit::check_msaa",
+        data: "*",
+        why: "the hand-back's transition is exclusive but touches only the mind's \
+              control, the transition screen and the bodies it swaps; Bevy's private \
+              order-independent-transparency check only reads the MSAA of cameras with \
+              its settings, which the game never adds",
+    },
+    Allowed {
+        schedule: "PostUpdate",
+        a: "thaum::live::draw_arcs",
+        b: "bevy_audio::audio_output",
+        data: "GlobalTransform",
+        why: "the arcs write the global transforms of their own voxel lights only; \
+              Bevy's private audio systems read those of audio emitters and listeners, \
+              which no voxel light is",
+    },
+    Allowed {
+        schedule: "PostUpdate",
+        a: "thaum::live::draw_arcs",
+        b: "bevy_light::gizmos",
+        data: "GlobalTransform",
+        why: "the arcs write the global transforms of their own voxel lights only (no \
+              Bevy light); Bevy's private light gizmos read Bevy lights' and draw only \
+              when the gizmos are asked for, which the game never does",
+    },
+    Allowed {
+        schedule: "PostUpdate",
+        a: "thaum::live::draw_arcs",
+        b: "bevy_gizmos::skinned_mesh_bounds",
+        data: "GlobalTransform",
+        why: "the arcs write the global transforms of their own voxel lights only; \
+              Bevy's private skinned-bounds gizmos read skinned meshes' and draw only \
+              when asked for, which the game never does",
+    },
+    Allowed {
+        schedule: "PostUpdate",
+        a: "blood::paint_wounds",
+        b: "bevy_gizmos::skinned_mesh_bounds",
+        data: "Mesh3d",
+        why: "Bevy's private skinned-bounds gizmos draw only when asked for (a gizmo \
+              marker or the draw-all setting), which the game never does",
+    },
+    Allowed {
+        schedule: "PostUpdate",
+        a: "lights::assign_light_ids",
+        b: "bevy_light::gizmos",
+        data: "PointLight",
+        why: "Bevy's private light gizmos draw only when asked for (a gizmo marker or \
+              the draw-all setting), which the game never does",
+    },
+    Allowed {
+        schedule: "PostUpdate",
+        a: "quality::sync_shadow_maps",
+        b: "bevy_light::directional_light::validate_shadow_map_size",
+        data: "DirectionalLightShadowMap",
+        why: "Bevy's private check only raises a sun map size that is not a power of \
+              two; the quality setting writes 512, 1024, 2048 or 4096 texels, so the \
+              check never changes it",
+    },
+];
 
 /// The schedules checked: the fixed step's (in its order) and the ones the
 /// simulation bridge moves with it, then the frame's.
@@ -82,7 +140,12 @@ struct Pair {
 
 impl Pair {
     fn allowed(&self) -> Option<&'static Allowed> {
-        let ends = |full: &str, end: &str| full == end || full.ends_with(&format!("::{end}"));
+        // The system's name, its end, or a module it is in.
+        let ends = |full: &str, end: &str| {
+            full == end
+                || full.ends_with(&format!("::{end}"))
+                || full.starts_with(&format!("{end}::"))
+        };
         ALLOWED.iter().find(|e| {
             e.schedule == self.schedule
                 && ((ends(&self.a, e.a) && ends(&self.b, e.b))
@@ -245,27 +308,6 @@ fn the_game_schedules_have_no_unordered_conflicts() {
     let mut used = vec![false; ALLOWED.len()];
     for label in checked_schedules(&app) {
         let pairs = pairs_of(&mut app, label);
-        let name = format!("{label:?}");
-        if let Some(&(_, todo)) = FRAME_TODO.iter().find(|(s, _)| *s == name) {
-            eprintln!(
-                "{name}: {} unordered conflicting pairs (TODO {todo})",
-                pairs.len()
-            );
-            if pairs.len() > todo {
-                failures.push(format!(
-                    "{name}: {} unordered conflicting pairs, more than the {todo} not ordered \
-                     yet: order the new pair (EXA_AMBIGUITY_DUMP=1 lists them)",
-                    pairs.len()
-                ));
-            } else if pairs.len() < todo {
-                failures.push(format!(
-                    "{name}: {} unordered conflicting pairs, fewer than the {todo} not ordered \
-                     yet: lower FRAME_TODO",
-                    pairs.len()
-                ));
-            }
-            continue;
-        }
         let mut allowed = 0;
         for pair in &pairs {
             match pair.allowed() {
