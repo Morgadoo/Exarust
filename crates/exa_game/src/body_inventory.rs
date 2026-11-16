@@ -284,6 +284,32 @@ pub fn reposition(
     true
 }
 
+/// A pack panel's save into its character's carried list, as a game save
+/// asks of an open inventory or loot window: the list takes the panel's
+/// order and places (the original writes the panel's entries over the
+/// list). Each entry finds its carried item by id and flags (else by id)
+/// among the ones not yet written; a carried item the panel does not show
+/// keeps its place before them. Returns the entries written.
+pub fn store_pack(possessions: &mut Possessions, pack: &Container) -> usize {
+    let mut written = Vec::new();
+    for child in pack.save_list() {
+        let carried = &possessions.carried;
+        let Some(at) = carried
+            .iter()
+            .position(|c| c.id == child.id && c.flags == child.flags)
+            .or_else(|| carried.iter().position(|c| c.id == child.id))
+        else {
+            continue;
+        };
+        let mut entry = possessions.carried.remove(at);
+        (entry.x, entry.y) = (child.x, child.y);
+        written.push(entry);
+    }
+    let count = written.len();
+    possessions.carried.extend(written);
+    count
+}
+
 /// Moves an item from one character's side to another character's pack, as
 /// a drop on the destination's pack panel does. Returns the flags the item
 /// left with, or `None` when the source does not hold it.

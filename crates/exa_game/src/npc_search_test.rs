@@ -623,3 +623,34 @@ fn a_follower_too_close_backs_off_to_four_metres() {
         exa_ai::idle::FOLLOWING
     );
 }
+
+/// The search reads the GUI's open-container registry: the inventory's and
+/// the loot windows' characters through their record ids with the corpse
+/// tag, and the popups' ids as they are; a closed window leaves it.
+#[test]
+fn the_search_reads_the_open_container_registry() {
+    let mut app = App::new();
+    app.init_resource::<crate::gui_screens::GameScreens>()
+        .init_resource::<OpenSearchScreens>()
+        .add_systems(Update, keep_open_search_screens);
+    {
+        let mut screens = app
+            .world_mut()
+            .resource_mut::<crate::gui_screens::GameScreens>();
+        screens.show_inventory(true, true, 4, true, 5);
+        screens.open_loot(7, 0, 4);
+        screens.containers.open(0x40);
+    }
+    app.update();
+    let open = app.world().resource::<OpenSearchScreens>().clone();
+    assert!(open.containers.is_open(5 | 0x2000_0000));
+    // Character 7's record id is 70; character 5 has none.
+    let ids = open.search_ids(|character| (character == 7).then_some(70));
+    assert_eq!(ids, vec![70 | search::CORPSE_TAG, 0x40]);
+    app.world_mut()
+        .resource_mut::<crate::gui_screens::GameScreens>()
+        .close_loot(7);
+    app.update();
+    let open = app.world().resource::<OpenSearchScreens>().clone();
+    assert!(!open.containers.is_open(7 | 0x2000_0000));
+}

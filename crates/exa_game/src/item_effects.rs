@@ -613,7 +613,8 @@ impl WornEffects {
 /// health bookkeeping and before the character ticks (the original runs the
 /// list from the body tick right after the focus tick [guess: Exarust's
 /// body tick has no such slot, so the run sits with the health tick]):
-/// a healing item heals the fighter's red health.
+/// a healing item heals the fighter's red health, and on the player a
+/// step of it holds the HUD's bars shown for 1000 ms.
 pub fn run_worn_effects(
     ticks: Option<bevy::prelude::Res<exa_physics::body::BodyTicks>>,
     mut bodies: bevy::prelude::Query<(
@@ -622,6 +623,7 @@ pub fn run_worn_effects(
         bevy::prelude::Has<crate::player::PlayerBody>,
         Option<&mut exa_physics::body::Ragdoll>,
     )>,
+    mut frame: Option<bevy::prelude::ResMut<exa_physics::sim_app::FrameCommands>>,
 ) {
     let now_ms = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     for (mut effects, mut fighter, is_player, mut body) in &mut bodies {
@@ -650,6 +652,13 @@ pub fn run_worn_effects(
         }
         if run.ran && red.to_bits() != fighter.health.red.to_bits() {
             fighter.health.red = red;
+        }
+        // A step of the player's healing charge shows the HUD's bars for
+        // a second, on the frame's world.
+        if run.flash
+            && let Some(frame) = frame.as_mut()
+        {
+            frame.send(|world| crate::hud::hold_bars(world, crate::hud::BARS_HOLD_MS));
         }
     }
 }
@@ -1014,5 +1023,37 @@ mod tests {
             .health
             .red;
         assert_eq!(red, (0.1f32 as f64 + 0.25f32 as f64 * 0.004) as f32);
+    }
+
+    /// A step of the player's healing charge holds the HUD's bars for a
+    /// second from the game clock, through the frame's commands; another
+    /// fighter's does not.
+    #[test]
+    fn the_players_healing_step_holds_the_bars_a_second() {
+        use bevy::prelude::*;
+        use exa_formats::objdb::Burden;
+        let run = |player: bool| {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(exa_physics::body::BodyTicks(10))
+                .init_resource::<exa_ui::hud::HudShowUntil>()
+                .add_systems(FixedUpdate, run_worn_effects);
+            exa_physics::sim_app::add_frame_commands(&mut app);
+            let mut fighter = exa_combat::Fighter::default();
+            fighter.health.max = 0.25;
+            fighter.health.red = 0.1;
+            let mask = specials(&[(Burden::HEALING, 7, 2, 0)]);
+            let mut body = app.world_mut().spawn((
+                fighter,
+                WornEffects::of_specials(&mask, HELD_EFFECTS_BIT).unwrap(),
+            ));
+            if player {
+                body.insert(crate::player::PlayerBody::new(0.0));
+            }
+            app.world_mut().run_schedule(bevy::app::FixedMain);
+            *app.world().resource::<exa_ui::hud::HudShowUntil>()
+        };
+        assert_eq!(run(true), exa_ui::hud::HudShowUntil(1000));
+        assert_eq!(run(false), exa_ui::hud::HudShowUntil(0));
     }
 }

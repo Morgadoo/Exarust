@@ -842,6 +842,11 @@ pub struct GameScreens {
     /// The body of [`Self::inventory_owner`] (the player's body for the
     /// player's own inventory), set when the window opens.
     pub inventory_body: Option<Entity>,
+    /// The open inventory's character view shows a body bound by a Loyalty
+    /// or possession marker (the original's fill sets the view's mind
+    /// window flag from [`crate::mind::casts::is_bound`]): a drag out of
+    /// its pack may then break the hold and close the window.
+    pub inventory_mind_window: bool,
     /// The inventory's item pack, drawn through the panel's icon path.
     pub pack: Container,
     /// The description card the panel asked for.
@@ -887,6 +892,7 @@ impl Default for GameScreens {
             player: 0,
             inventory_owner: 0,
             inventory_body: None,
+            inventory_mind_window: false,
             pack: Container::default(),
             card: CardWindow::default(),
             loot: Vec::new(),
@@ -972,10 +978,7 @@ impl GameScreens {
         let unit = unit.max(1);
         let mut count = 0;
         for screen in self.open.clone() {
-            if matches!(
-                screen.kind,
-                GameScreen::Container | GameScreen::TechniqueSelector
-            ) {
+            if screen.kind == GameScreen::TechniqueSelector {
                 continue;
             }
             let Some((old, bounds)) = self
@@ -1003,6 +1006,35 @@ impl GameScreens {
                 GameScreen::Journal => {
                     self.journal_unit = unit;
                     ScreenLayout::journal(unit).size
+                }
+                GameScreen::Container => {
+                    // The popup follows the walk's scale (`v / old · unit`)
+                    // for its icon area, its panel is laid out from the
+                    // record's cells at the new unit and its items move by
+                    // the panel's own rescale [guess: the popup's class has
+                    // no rescale of its own, so its plan is rebuilt].
+                    let Some(popup) = self.popups.iter_mut().find(|p| p.form == screen.form) else {
+                        continue;
+                    };
+                    popup.icon_height = scale(popup.icon_height);
+                    let Some(plan) = open_container(
+                        false,
+                        Some(popup.stored.size),
+                        unit,
+                        POPUP_PANEL_BORDER,
+                        popup.icon_height,
+                    ) else {
+                        continue;
+                    };
+                    popup.plan = plan;
+                    popup.panel.rescale(old, unit);
+                    popup.panel.unit = unit;
+                    popup.panel.icon_size = exa_items::icon_cache::icon_size(unit);
+                    popup.panel.client = (
+                        plan.inner.0 - 2 * POPUP_PANEL_BORDER,
+                        plan.inner.1 - 2 * POPUP_PANEL_BORDER,
+                    );
+                    popup_form_size(plan, unit, POPUP_BORDER)
                 }
                 _ => {
                     if let Some(window) = self.loot.iter_mut().find(|w| w.form == screen.form) {
@@ -1757,6 +1789,7 @@ impl GameScreens {
                 self.released_icons.extend(released);
                 self.pack = Container::form(unit);
                 self.inventory_body = None;
+                self.inventory_mind_window = false;
             }
             GameScreen::Loot => {
                 if let Some(window) = self
@@ -1848,8 +1881,8 @@ impl GameScreens {
     /// saves its panel into its record (queued in
     /// [`Self::saved_containers`]) and the journal stores its text. The
     /// inventory's and a loot window's loaded panels ask for their save
-    /// too; their items already live in the body's possessions in Exarust,
-    /// so there is nothing more to write. Returns the saves asked for.
+    /// too, which the save system writes into the bodies' carried lists
+    /// ([`body_inventory::store_pack`]). Returns the saves asked for.
     pub fn save_open_screens(&mut self) -> Vec<exa_ui::game_gui::SaveAction> {
         use exa_ui::game_gui::{SaveAction, save_action};
         let mut actions = Vec::new();
@@ -2036,12 +2069,15 @@ impl Plugin for GameScreensPlugin {
 /// The application's deactivation (the window procedure's focus loss): the
 /// window managers' focused forms deselect and the focus goes to their
 /// root, remembered for a later focus to no form
-/// ([`exa_ui::gui_core::GuiTask::deactivate`]). The in-game screens and the
-/// hub's windows hang from their own tasks in Exarust; each is told.
-pub fn deactivate_on_focus_loss(
+/// ([`exa_ui::gui_core::GuiTask::deactivate`]). The in-game screens, the
+/// hub's windows, the main menu and the power tree hang from their own
+/// tasks in Exarust; each is told, as the original's one GUI is.
+pub(crate) fn deactivate_on_focus_loss(
     mut focus: MessageReader<bevy::window::WindowFocused>,
     screens: Option<ResMut<GameScreens>>,
     hub: Option<ResMut<crate::hub_windows::HubWindows>>,
+    menu: Option<ResMut<crate::menu_screen::MenuRouter>>,
+    tree: Option<ResMut<crate::power_screen::PowerRouter>>,
 ) {
     if !focus.read().any(|event| !event.focused) {
         return;
@@ -2051,6 +2087,12 @@ pub fn deactivate_on_focus_loss(
     }
     if let Some(mut hub) = hub {
         hub.task.deactivate();
+    }
+    if let Some(mut menu) = menu {
+        menu.task.deactivate();
+    }
+    if let Some(mut tree) = tree {
+        tree.task.deactivate();
     }
 }
 
@@ -2414,6 +2456,7 @@ pub fn save_open_screens_for_saves<const AT_QUIT: bool>(
         Option<ResMut<exa_assets::live_objects::LiveObjects>>,
         Option<Res<crate::save_live::QuitAutosave>>,
     ),
+    mut bodies: Query<(Entity, &mut exa_items::possession::Possessions)>,
 ) {
     let new_slot = new_slots.read().count() > 0;
     let writes = steps.read().any(|step| {
@@ -2436,6 +2479,31 @@ pub fn save_open_screens_for_saves<const AT_QUIT: bool>(
     let actions = screens.save_open_screens();
     info!("save: the open screens save first: {actions:?}");
     store_containers(&mut screens, &mut objects, items.as_deref_mut(), &mut live);
+    // The inventory's and the loot windows' loaded packs save into their
+    // characters' carried lists.
+    use exa_ui::game_gui::SaveAction;
+    if actions.contains(&SaveAction::Inventory)
+        && let Some(body) = screens.inventory_body
+        && let Ok((_, mut possessions)) = bodies.get_mut(body)
+    {
+        let written = body_inventory::store_pack(&mut possessions, &screens.pack);
+        info!("save: the inventory's pack writes {written} entries into {body:?}'s list");
+    }
+    if actions.contains(&SaveAction::Loot) {
+        for window in screens.loot.iter().filter(|window| window.pack.loaded) {
+            let Some((_, mut possessions)) = bodies
+                .iter_mut()
+                .find(|(entity, _)| entity.index().index() as i32 == window.character)
+            else {
+                continue;
+            };
+            let written = body_inventory::store_pack(&mut possessions, &window.pack);
+            info!(
+                "save: the loot window's pack writes {written} entries into character {}'s list",
+                window.character
+            );
+        }
+    }
 }
 
 /// Gives the icon manager back the handles of the panels the screens
@@ -2474,14 +2542,12 @@ fn rescale_open_screens(
     };
     let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
     let stale = screens.open.iter().any(|screen| {
-        !matches!(
-            screen.kind,
-            GameScreen::Container | GameScreen::TechniqueSelector
-        ) && screens
-            .task
-            .form(screen.form)
-            .and_then(|f| f.base())
-            .is_some_and(|f| f.unit != unit.max(1))
+        screen.kind != GameScreen::TechniqueSelector
+            && screens
+                .task
+                .form(screen.form)
+                .and_then(|f| f.base())
+                .is_some_and(|f| f.unit != unit.max(1))
     });
     if stale {
         let count = screens.rescale_open(unit);
@@ -2549,6 +2615,7 @@ fn open_requested_screens(
     mut icons: Option<ResMut<PanelIcons>>,
     menu: Option<Res<MenuScreen>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    minds: Query<&crate::mind::casts::MindBody>,
     mut screens: ResMut<GameScreens>,
 ) {
     if menu.is_some_and(|menu| menu.open) {
@@ -2598,6 +2665,14 @@ fn open_requested_screens(
                 );
                 if action == ScreenAction::Opened {
                     screens.inventory_body = body;
+                    // The fill's mind window: a shown body bound by a
+                    // Loyalty or possession marker.
+                    screens.inventory_mind_window = body
+                        .and_then(|body| minds.get(body).ok())
+                        .is_some_and(crate::mind::casts::is_bound);
+                    if screens.inventory_mind_window {
+                        info!("GUI: the inventory shows a bound body: its mind window is set");
+                    }
                 }
                 if owner != screens.player {
                     info!("GUI: the inventory of character {owner}: {action:?}");
@@ -2996,6 +3071,38 @@ pub(crate) fn close_on_right_release(
     };
     if form.bounds().contains(pointer.x as i32, pointer.y as i32) {
         screens.close(screen.kind);
+    }
+}
+
+/// The dead powers' loot close: Raise Dead and Command Dead close the first
+/// loot window open on the body they raise, as the original's routine walks
+/// the GUI task's forms for the loot tag and the body.
+pub fn close_loot_on_body(world: &mut World, body: Entity) {
+    let Some(mut screens) = world.get_resource_mut::<GameScreens>() else {
+        return;
+    };
+    let character = body.index().index() as i32;
+    if screens.close_loot(character) {
+        info!("raise dead: the loot window on {body:?} closes");
+    }
+}
+
+/// The GUI callback a Loyalty or Command Dead mark posts as it ends on its
+/// body: the task's root takes the focus, and an inventory window open on
+/// the body (the original looks it up by its owner and its visible byte)
+/// closes.
+pub fn release_marked_body(world: &mut World, body: Entity) {
+    let Some(mut screens) = world.get_resource_mut::<GameScreens>() else {
+        return;
+    };
+    if let Some(root) = screens.task.root {
+        screens.task.activate(root);
+    }
+    if screens.inventory_body == Some(body)
+        && screens.is_open(GameScreen::Inventory)
+        && screens.close(GameScreen::Inventory)
+    {
+        info!("mind: the mark on {body:?} ends: its inventory closes");
     }
 }
 
@@ -3945,6 +4052,45 @@ mod tests {
         );
     }
 
+    /// The inventory's fill sets the view's mind window for a shown body a
+    /// Loyalty or possession marker binds, and not for a free one.
+    #[test]
+    fn the_inventory_of_a_bound_body_sets_its_mind_window() {
+        use crate::mind::casts::{LOYALTY_MARK, MindBody, MindClass, MindPower};
+        let run = |bound: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<GameScreens>()
+                .add_message::<ScreenRequest>()
+                .add_systems(Update, open_requested_screens);
+            let mut mind = MindBody::new(9);
+            if bound {
+                mind.powers.push(MindPower::new(
+                    LOYALTY_MARK,
+                    MindClass::LoyaltyMark(crate::thaum::power::mind::LoyaltyTarget::new(1)),
+                ));
+            }
+            let body = app
+                .world_mut()
+                .spawn((exa_items::possession::Possessions::default(), mind))
+                .id();
+            app.world_mut().write_message(ScreenRequest {
+                screen: GameScreen::Inventory,
+                player_ready: true,
+                player_alive: true,
+                target: Some(body.index().index() as i32),
+                flags: 0,
+                toggle: true,
+            });
+            app.update();
+            let screens = app.world().resource::<GameScreens>();
+            assert!(screens.is_open(GameScreen::Inventory));
+            screens.inventory_mind_window
+        };
+        assert!(run(true));
+        assert!(!run(false));
+    }
+
     #[test]
     fn closing_a_panel_queues_its_icon_handles() {
         let mut screens = GameScreens::default();
@@ -4026,6 +4172,64 @@ mod tests {
             vec![SaveAction::Journal, SaveAction::Inventory]
         );
         assert!(screens.saved_containers.is_empty());
+    }
+
+    /// A game save writes the open inventory's loaded pack into its body's
+    /// carried list, in the panel's order and at its places; a carried item
+    /// the panel does not show stays first.
+    #[test]
+    fn a_save_writes_the_open_packs_into_the_carried_lists() {
+        use exa_items::possession::{Carried, Possessions};
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<exa_assets::live_objects::LiveObjects>()
+            .add_message::<crate::save_live::SaveToNewSlot>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_systems(Update, save_open_screens_for_saves::<false>);
+        let carried = |id, x| Carried {
+            id,
+            flags: 0,
+            x,
+            y: 0,
+        };
+        let body = app
+            .world_mut()
+            .spawn(Possessions {
+                carried: vec![carried(10, 0), carried(11, 0), carried(12, 0)],
+                ..Default::default()
+            })
+            .id();
+        {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.open_inventory(true, true, 4);
+            screens.inventory_body = Some(body);
+            screens.pack.loaded = true;
+            for (id, x) in [(11, 64), (10, 128)] {
+                screens.pack.entries.push(crate::item_container::Entry {
+                    cell: crate::item_container::Cell::new(x, 0),
+                    id,
+                    ..Default::default()
+                });
+            }
+        }
+        app.world_mut()
+            .write_message(crate::save_live::SaveStep::Save {
+                drop_on_low_health: false,
+            });
+        app.update();
+        let list = &app.world().get::<Possessions>(body).unwrap().carried;
+        let pack = app.world().resource::<GameScreens>().pack.save_list();
+        assert_eq!(
+            list.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![12, 11, 10]
+        );
+        assert_eq!((list[1].x, list[1].y), (pack[0].x, pack[0].y));
+        assert_eq!((list[2].x, list[2].y), (pack[1].x, pack[1].y));
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Inventory)
+        );
     }
 
     #[test]
@@ -4501,6 +4705,45 @@ mod tests {
         assert!(screens.journal_box_focused());
     }
 
+    /// The main menu's and the power tree's tasks are told about the focus
+    /// loss too: their focused control deselects and the root keeps the
+    /// focus with no control.
+    #[test]
+    fn the_focus_loss_reaches_the_menu_and_the_tree_tasks() {
+        let mut app = App::new();
+        app.add_message::<bevy::window::WindowFocused>()
+            .add_systems(
+                Startup,
+                (
+                    crate::menu_screen::setup_router,
+                    crate::power_screen::setup_router,
+                ),
+            )
+            .add_systems(Update, deactivate_on_focus_loss);
+        app.update();
+        let window = app.world_mut().spawn_empty().id();
+        {
+            let world = app.world_mut();
+            let mut menu = world.resource_mut::<crate::menu_screen::MenuRouter>();
+            let root = menu.task.root;
+            menu.task.focus_set(root, 2);
+            assert_eq!(menu.task.active_control, 2);
+            let mut tree = world.resource_mut::<crate::power_screen::PowerRouter>();
+            let root = tree.task.root;
+            tree.task.focus_set(root, 1);
+        }
+        app.world_mut().write_message(bevy::window::WindowFocused {
+            window,
+            focused: false,
+        });
+        app.update();
+        let world = app.world();
+        let menu = &world.resource::<crate::menu_screen::MenuRouter>().task;
+        assert_eq!((menu.active, menu.active_control), (menu.root, -1));
+        let tree = &world.resource::<crate::power_screen::PowerRouter>().task;
+        assert_eq!((tree.active, tree.active_control), (tree.root, -1));
+    }
+
     /// The journal's key closes it through the base form's close: its text
     /// box closes with it, and the window manager forgets both (the focus,
     /// the pointer's target, the capture and the remembered focus no longer
@@ -4638,6 +4881,92 @@ mod tests {
         );
         // One text box: the old one closed with the walk.
         assert_eq!(screens.task.draw_order().len(), 4);
+    }
+
+    /// A container popup follows a unit change too: its panel is laid out
+    /// from the record's cells at the new unit, its items' places scale,
+    /// and its form takes the new size at its scaled place.
+    #[test]
+    fn a_unit_change_rescales_an_open_container_popup() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .add_systems(Update, (sync_screen_size, rescale_open_screens).chain());
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1280, 720),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.update();
+        let record = ContainerRecord {
+            size: (50, 30),
+            capacity: 400,
+            max_item: 60,
+            children: Vec::new(),
+        };
+        let form = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            let id = exa_formats::objdb::LOCAL | 4;
+            let action = screens.open_container_popup(
+                Entity::from_bits(42),
+                id,
+                &record,
+                (640, 400),
+                4,
+                3,
+                70,
+                |_, _| None,
+            );
+            assert_eq!(action, ScreenAction::Opened);
+            let popup = screens.popups.last_mut().unwrap();
+            popup.panel.entries.push(crate::item_container::Entry {
+                cell: crate::item_container::Cell::new(40, 10),
+                id: 9,
+                ..Default::default()
+            });
+            popup.form
+        };
+        let before = app
+            .world()
+            .resource::<GameScreens>()
+            .task
+            .form(form)
+            .and_then(|f| f.base())
+            .unwrap()
+            .bounds;
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(1920, 1080);
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        let popup = &screens.popups[0];
+        assert_eq!(popup.panel.unit, 6);
+        assert_eq!(
+            popup.panel.entries[0].cell,
+            crate::item_container::Cell::new(60, 15)
+        );
+        let plan = open_container(
+            false,
+            Some(record.size),
+            6,
+            POPUP_PANEL_BORDER,
+            popup.icon_height,
+        )
+        .unwrap();
+        assert_eq!(popup.plan, plan);
+        let size = popup_form_size(plan, 6, POPUP_BORDER);
+        let form = screens.task.form(form).and_then(|f| f.base()).unwrap();
+        assert_eq!(form.unit, 6);
+        assert_eq!(
+            form.bounds,
+            GuiRect::new(before.left / 4 * 6, before.top / 4 * 6, size.0, size.1)
+        );
     }
 
     #[test]

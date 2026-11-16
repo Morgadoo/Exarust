@@ -1478,8 +1478,14 @@ pub enum Step {
     /// Show or hide the game's view.
     GameGui(bool),
     /// The death fade's reset: a fade that paused the game gives the game
-    /// time back, and the fade ends ([`crate::fall::reset_death_fade`]).
+    /// time back, and the fade ends ([`crate::fall::reset_death_fade`]);
+    /// a running heartbeat then starts its fade-out, as the original's
+    /// reset ends.
     ResetDeathFade,
+    /// A running low-health heartbeat starts its 1 s fade-out
+    /// ([`exa_ui::Heartbeat::start_fade`]): the death and the knock-out
+    /// start it first.
+    FadeHeartbeat,
     /// Write a wake-up or get-up pose.
     Wake(WakePose),
     /// The motion the player is asked to play.
@@ -2832,6 +2838,7 @@ impl Flow {
         self.saved_phase = Phase::Ended;
         self.hook = Hook::None;
         let mut steps = vec![
+            Step::FadeHeartbeat,
             Step::EndGuiDrag,
             Step::GameGui(false),
             Step::Controls(false),
@@ -2874,6 +2881,7 @@ impl Flow {
         self.story.knockout_ms = now;
         // The knock-out blocks the controls after its tip.
         vec![
+            Step::FadeHeartbeat,
             Step::EndGuiDrag,
             Step::GameGui(false),
             Step::Controls(false),
@@ -4247,7 +4255,9 @@ fn apply_steps(
                 if let Some(fade) = story.fade.as_mut() {
                     crate::fall::reset_death_fade(fade, story.time.as_deref_mut());
                 }
+                fade_heartbeat(&mut story);
             }
+            Step::FadeHeartbeat => fade_heartbeat(&mut story),
             Step::ClosePrelude => {
                 hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
             }
@@ -4949,6 +4959,19 @@ struct StoryParts<'w> {
     /// record of the dead player's body ([`crate::left_behind`]).
     world: Option<ResMut<'w, crate::world_characters::WorldCharacters>>,
     left: Option<ResMut<'w, crate::left_behind::LeftBody>>,
+    /// The low-health heartbeat the death, the knock-out and the fade
+    /// reset fade out, on the real clock.
+    heartbeat: Option<ResMut<'w, exa_ui::Heartbeat>>,
+    real: Option<Res<'w, Time<Real>>>,
+}
+
+/// Starts a running heartbeat's fade-out on the real clock.
+fn fade_heartbeat(story: &mut StoryParts) {
+    if let (Some(beat), Some(real)) = (story.heartbeat.as_mut(), story.real.as_ref())
+        && beat.start_fade(real.elapsed_secs_f64())
+    {
+        info!("the heartbeat fades out");
+    }
 }
 
 /// The story start's writes the spawned player takes with the start
@@ -5668,6 +5691,47 @@ mod tests {
                 .contacts
                 .is_empty()
         );
+    }
+
+    /// The death and the knock-out start a running heartbeat's fade-out
+    /// first, and the death fade's reset starts it last; a heartbeat that
+    /// is not running is left alone.
+    #[test]
+    fn deaths_knock_outs_and_the_fade_reset_fade_the_heartbeat() {
+        let mut flow = Flow::default();
+        assert_eq!(flow.die(0.0)[0], Step::FadeHeartbeat);
+        assert_eq!(flow.knock_out(0)[0], Step::FadeHeartbeat);
+        let run = |step: Step, running: bool| {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .init_resource::<Flow>()
+                .init_resource::<FlowSteps>()
+                .init_resource::<GameView>()
+                .init_resource::<crate::player_controls::PlaySession>()
+                .init_resource::<exa_ui::DeathFade>()
+                .insert_resource(exa_ui::Heartbeat {
+                    started: running.then_some(0.0),
+                    fading: None,
+                })
+                .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+                .add_message::<exa_world::level_lifecycle::WorldReset>()
+                .add_message::<ForfeitMatch>()
+                .add_message::<SettingsEntry>()
+                .add_message::<AppExit>()
+                .add_message::<crate::save_live::SaveStep>()
+                .add_message::<crate::experience_live::DiscoveryTick>()
+                .add_message::<crate::arena_hub_live::ArenaLeave>()
+                .add_message::<crate::scene_bodies::SceneCommand>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .add_systems(Update, apply_steps);
+            app.world_mut().resource_mut::<FlowSteps>().steps.push(step);
+            app.update();
+            app.world().resource::<exa_ui::Heartbeat>().fading
+        };
+        assert!(run(Step::FadeHeartbeat, true).is_some());
+        assert!(run(Step::ResetDeathFade, true).is_some());
+        assert_eq!(run(Step::FadeHeartbeat, false), None);
+        assert_eq!(run(Step::ResetDeathFade, false), None);
     }
 
     /// A script asks for a motion. It does not start the clip: a busy or

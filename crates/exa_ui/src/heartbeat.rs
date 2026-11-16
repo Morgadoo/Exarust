@@ -13,10 +13,49 @@ use crate::LoadingStatus;
 use crate::blend::linear_opacity;
 use crate::hud::DrawHud;
 
-/// When the heartbeat started (real time, seconds), set by the game.
+/// When the heartbeat started (real time, seconds), set by the game, and
+/// when its 1 s fade-out started (menus, deaths, knock-outs and the death
+/// fade's reset start it on a running heartbeat).
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Heartbeat {
     pub started: Option<f64>,
+    pub fading: Option<f64>,
+}
+
+impl Heartbeat {
+    /// The original's fade start: a running heartbeat fades out from `now`
+    /// (real time, seconds); a heartbeat that is not running is left alone.
+    /// A start does not clear a fade already running, as in the original.
+    pub fn start_fade(&mut self, now: f64) -> bool {
+        let started = crate::game_gui::start_heartbeat_fade(self.started.is_some(), millis(now));
+        if started.is_some() {
+            self.fading = Some(now);
+        }
+        started.is_some()
+    }
+
+    /// The heartbeat sound's gain at `now` while it fades
+    /// ([`crate::game_gui::heartbeat_fade_gain`] on the millisecond
+    /// clocks): `Some(None)` once the fade has ended, which stops the
+    /// heartbeat; `None` while no fade runs.
+    pub fn fade_gain(&self, now: f64) -> Option<Option<f32>> {
+        let start = self.fading?;
+        Some(crate::game_gui::heartbeat_fade_gain(
+            millis(now),
+            millis(start),
+        ))
+    }
+
+    /// Stops the heartbeat and its fade.
+    pub fn stop(&mut self) {
+        self.started = None;
+        self.fading = None;
+    }
+}
+
+/// A real-time clock in seconds as the GUI's 32-bit millisecond clock.
+fn millis(seconds: f64) -> u32 {
+    (seconds.max(0.0) * 1000.0) as u64 as u32
 }
 
 /// How long the heartbeat lasts (ms).

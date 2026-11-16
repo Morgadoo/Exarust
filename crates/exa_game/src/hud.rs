@@ -2,10 +2,11 @@
 //! the original takes them; `exa_ui::hud` and `exa_ui::heartbeat` draw them.
 //! Rules: `docs/UI.md` (Health bars, Heartbeat).
 
-use bevy::audio::{PlaybackMode, Volume};
+use bevy::audio::{AudioSink, AudioSinkPlayback, PlaybackMode, Volume};
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::SoundBank;
+use exa_combat::block::ShieldHold;
 use exa_combat::{Fighter, Weakened};
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::inventory_window::carries_compass;
@@ -71,14 +72,26 @@ struct HeartbeatState {
 #[derive(Component)]
 struct HeartbeatSound;
 
+/// What the HUD reads off the player's body.
+type HudBody = (
+    &'static PlayerBody,
+    Option<&'static Fighter>,
+    Option<&'static PowerCaster>,
+    Option<&'static ShieldHold>,
+);
+
 /// The player's health, focus and combat mode for the HUD: the focus and
 /// the capacity it regenerates to are the caster's, full for a body that
-/// casts nothing. Exarust has no shields yet: the stamina gauge never
-/// shows.
+/// casts nothing. A shield in the player's off hand ([`ShieldHold`], the
+/// original's shield pointer on the character) shows the block-stamina
+/// gauge in combat mode, filled to its arm's stamina. The power bar's flag
+/// is the original's: set when the bar opens, cleared when its closing
+/// animation has run ([`power_bar_up`]).
 fn pick_hud(
     players: Query<&Children, With<Player>>,
-    bodies: Query<(&PlayerBody, Option<&Fighter>, Option<&PowerCaster>)>,
+    bodies: Query<HudBody>,
     view: Option<Res<crate::flow::GameView>>,
+    tree: Option<Res<crate::power_screen::PowerScreen>>,
     mut hud: ResMut<HudBars>,
 ) {
     if view.is_some_and(|view| !view.0) {
@@ -91,7 +104,7 @@ fn pick_hud(
         .iter()
         .find_map(|children| children.iter().find_map(|c| bodies.get(c).ok()));
     let next = match found {
-        Some((body, fighter, caster)) => {
+        Some((body, fighter, caster, shield)) => {
             let health = fighter
                 .map(|f| f.health)
                 .unwrap_or_else(|| exa_combat::Health::of_race(1.0));
@@ -106,7 +119,9 @@ fn pick_hud(
                 max: health.max,
                 focus,
                 focus_cap,
-                ..default()
+                shield: shield.is_some(),
+                stamina: shield.map_or(1.0, |hold| hold.guard.stamina),
+                power_bar: tree.as_deref().is_some_and(power_bar_up),
             }
         }
         None => HudBars::default(),
@@ -120,6 +135,31 @@ fn pick_hud(
         }
         *hud = next;
     }
+}
+
+/// How long a healing charge's step and a quick-bar cast hold the bars
+/// shown (ms).
+pub const BARS_HOLD_MS: i64 = 1000;
+
+/// The original's bars hold on the frame's world: the bars stay shown for
+/// `ms` of game time from now ([`exa_ui::hud::HudShowUntil::show_for`]).
+pub fn hold_bars(world: &mut World, ms: i64) {
+    let Some(now) = world
+        .get_resource::<Time<Virtual>>()
+        .map(|time| time.elapsed().as_millis() as i64)
+    else {
+        return;
+    };
+    if let Some(mut until) = world.get_resource_mut::<exa_ui::hud::HudShowUntil>() {
+        until.show_for(now, ms);
+    }
+}
+
+/// The original's power-bar flag: set by the bar's opening toggle and
+/// cleared by the bar draw once its 900 ms closing has run, so it stays up
+/// while the bar is open or still closing.
+pub fn power_bar_up(screen: &crate::power_screen::PowerScreen) -> bool {
+    screen.bar_open || screen.tree.bar_flags != 0
 }
 
 /// The compass's visibility and turn: the player's own pack carrying a
@@ -202,7 +242,8 @@ fn pick_status(
 }
 
 /// Starts the heartbeat on a blow whose low-health check falls on the
-/// player's body, plays its sound and ends both after 7 s.
+/// player's body, plays its sound and ends both after 7 s, or when its
+/// 1 s fade-out ([`Heartbeat::start_fade`]) has run.
 #[allow(clippy::too_many_arguments)]
 fn heartbeat(
     mut commands: Commands,
@@ -217,16 +258,34 @@ fn heartbeat(
     mut sources: ResMut<Assets<AudioSource>>,
     mut beat: ResMut<Heartbeat>,
     mut state: ResMut<HeartbeatState>,
+    mut sinks: Query<&mut AudioSink, With<HeartbeatSound>>,
 ) {
     let real_now = real_time.elapsed_secs_f64();
     if let Some(started) = beat.started
         && real_now - started > HEARTBEAT_FOR
     {
-        beat.started = None;
+        beat.stop();
         if let Some(sound) = state.sound.take() {
             commands.entity(sound).despawn();
         }
         debug!("heartbeat ends");
+    }
+    // The fade-out's arm of the original's border draw: the sound's gain
+    // falls from 0.3 over 1 s, then the heartbeat stops.
+    match beat.fade_gain(real_now) {
+        Some(Some(gain)) => {
+            if let Some(mut sink) = state.sound.and_then(|sound| sinks.get_mut(sound).ok()) {
+                sink.set_volume(Volume::Linear(gain));
+            }
+        }
+        Some(None) => {
+            beat.stop();
+            if let Some(sound) = state.sound.take() {
+                commands.entity(sound).despawn();
+            }
+            debug!("heartbeat faded out");
+        }
+        None => {}
     }
     let now = game_time.elapsed_secs_f64();
     let player_weakened = weakened.read().any(|w| player_bodies.contains(w.fighter));
@@ -306,6 +365,93 @@ mod tests {
         assert!(weaken(&mut app, player));
         let (mut arena, player, _) = beating(false);
         assert!(!weaken(&mut arena, player));
+    }
+
+    /// A started fade-out lowers nothing at once and stops the heartbeat
+    /// (border and sound) once its second has run, before the 7 s end.
+    #[test]
+    fn the_heartbeat_fades_out_over_a_second_and_stops() {
+        let (mut app, player, _) = beating(true);
+        assert!(weaken(&mut app, player));
+        let started = app.world().resource::<Heartbeat>().started.unwrap();
+        assert!(
+            app.world_mut()
+                .resource_mut::<Heartbeat>()
+                .start_fade(started)
+        );
+        let gain = app.world().resource::<Heartbeat>().fade_gain(started + 0.5);
+        assert!((gain.unwrap().unwrap() - 0.15).abs() < 1e-6);
+        // A second and a half on the fade has ended (the real clock's first
+        // update only sets its start).
+        for ms in [0, 1500] {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .update_with_duration(std::time::Duration::from_millis(ms));
+        }
+        assert!(app.world().resource::<Time<Real>>().elapsed_secs_f64() >= 1.5);
+        app.update();
+        let beat = *app.world().resource::<Heartbeat>();
+        assert_eq!((beat.started, beat.fading), (None, None));
+        // A heartbeat that is not running takes no fade.
+        assert!(!app.world_mut().resource_mut::<Heartbeat>().start_fade(5.0));
+    }
+
+    /// The player's off-hand shield feeds the block-stamina gauge (its
+    /// arm's stamina), and the power bar's flag stays up while the bar is
+    /// open or still closing.
+    #[test]
+    fn the_hud_takes_the_shield_and_the_power_bar() {
+        let run = |shield: Option<f32>, bar: Option<(bool, u8)>| {
+            let mut app = App::new();
+            app.init_resource::<HudBars>().add_systems(Update, pick_hud);
+            let mut body = app
+                .world_mut()
+                .spawn((PlayerBody::new(0.0), Fighter::default()));
+            if let Some(stamina) = shield {
+                let item = Entity::PLACEHOLDER;
+                body.insert(ShieldHold {
+                    item,
+                    guard: exa_combat::damage::ShieldGuard {
+                        stamina,
+                        ..default()
+                    },
+                });
+            }
+            let body = body.id();
+            app.world_mut().spawn(Player).add_child(body);
+            if let Some((open, flags)) = bar {
+                let mut screen = crate::power_screen::PowerScreen::default();
+                screen.bar_open = open;
+                screen.tree.bar_flags = flags;
+                app.insert_resource(screen);
+            }
+            app.update();
+            *app.world().resource::<HudBars>()
+        };
+        let bare = run(None, None);
+        assert!(bare.active && !bare.shield && !bare.power_bar);
+        let guarded = run(Some(0.4), None);
+        assert!(guarded.shield);
+        assert_eq!(guarded.stamina, 0.4);
+        assert!(run(None, Some((true, 0))).power_bar);
+        // Put away, still closing: up; closed to the end: down.
+        assert!(run(None, Some((false, 1))).power_bar);
+        assert!(!run(None, Some((false, 0))).power_bar);
+    }
+
+    /// The bars hold: a second of game time from now.
+    #[test]
+    fn a_hold_shows_the_bars_for_a_second_of_game_time() {
+        let mut world = World::new();
+        world.init_resource::<exa_ui::hud::HudShowUntil>();
+        let mut time = Time::<Virtual>::default();
+        time.advance_by(std::time::Duration::from_millis(2500));
+        world.insert_resource(time);
+        hold_bars(&mut world, BARS_HOLD_MS);
+        assert_eq!(
+            *world.resource::<exa_ui::hud::HudShowUntil>(),
+            exa_ui::hud::HudShowUntil(3500)
+        );
     }
 
     /// The compass's fade follows the open power tree's window fade and is

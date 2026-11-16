@@ -38,6 +38,9 @@ pub struct HudBars {
     pub shield: bool,
     /// Block stamina (0–1).
     pub stamina: f32,
+    /// The power bar is up (open, or its closing animation still running):
+    /// the original's bar flag, which holds the bars shown.
+    pub power_bar: bool,
 }
 
 impl Default for HudBars {
@@ -52,6 +55,7 @@ impl Default for HudBars {
             focus_cap: 1.0,
             shield: false,
             stamina: 1.0,
+            power_bar: false,
         }
     }
 }
@@ -700,7 +704,7 @@ fn draw(
     loading: Option<Res<LoadingStatus>>,
     texture: Option<Res<Texture>>,
     mut state: ResMut<HudState>,
-    show_until: Res<HudShowUntil>,
+    mut show_until: ResMut<HudShowUntil>,
     mut images: ResMut<Assets<Image>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut nodes: Query<(&mut Node, &mut ImageNode, &mut Visibility), With<HudNode>>,
@@ -715,15 +719,21 @@ fn draw(
             *visibility = Visibility::Hidden;
         }
     };
+    let now = time.elapsed().as_millis() as i64;
     if !hud.active || loading.is_some() {
-        // Without a player the original draws nothing and keeps no state.
+        // Without a player the original draws nothing and keeps no state;
+        // its HUD reset (a story's start or continue, an arena's) also
+        // clears the bars' hold clock.
+        let reset = crate::game_gui::reset_hud_fades(now as u32, None);
         state.bars = Fade::default();
         state.gauge = Fade::default();
-        state.last = None;
+        state.last = reset.last;
+        if show_until.0 != i64::from(reset.hold) {
+            show_until.0 = i64::from(reset.hold);
+        }
         hide(&mut visibility);
         return;
     }
-    let now = time.elapsed().as_millis() as i64;
     // Shown in combat mode, while a click on the player's own body holds
     // them, or in a frame where the yellow health changed or the focus
     // dropped. The values compared against are taken only in a frame that
@@ -735,8 +745,7 @@ fn draw(
         health: hud.yellow,
         last_focus: state.last.map_or(hud.focus, |last| last.1),
         focus: hud.focus,
-        // Exarust has no power bar yet.
-        power_bar: false,
+        power_bar: hud.power_bar,
         combat: hud.combat,
         now: now as u32,
         hold_until: show_until.until() as u32,
@@ -1100,5 +1109,36 @@ mod tests {
         for (m, want) in mean.iter().zip([111.5, 112.7, 117.4]) {
             assert!((m - want).abs() < 2.0, "{mean:?}");
         }
+    }
+
+    /// The HUD's reset, run while there is no player (a story's start or
+    /// continue loads with none): the fades and the last values go and the
+    /// bars' hold clock is cleared, so a hold set before does not carry
+    /// into the next session.
+    #[test]
+    fn the_hud_reset_clears_the_bars_hold() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GuiScale>()
+            .insert_resource(Texture(FrameTexture::flat()))
+            .init_resource::<HudBars>()
+            .init_resource::<HudState>()
+            .insert_resource(HudShowUntil(9000))
+            .init_resource::<Assets<Image>>()
+            .add_systems(Update, draw);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.world_mut().spawn((
+            HudNode,
+            Node::default(),
+            ImageNode::default(),
+            Visibility::Hidden,
+        ));
+        app.update();
+        assert_eq!(*app.world().resource::<HudShowUntil>(), HudShowUntil(0));
+        // With a player the hold is the game's to set and stays.
+        app.world_mut().resource_mut::<HudBars>().active = true;
+        app.world_mut().resource_mut::<HudShowUntil>().0 = 9000;
+        app.update();
+        assert_eq!(*app.world().resource::<HudShowUntil>(), HudShowUntil(9000));
     }
 }
