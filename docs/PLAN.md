@@ -1515,6 +1515,8 @@ the step reach follows the assembly's order; golem and skeleton part sounds and 
 
 a scanned player's story death runs the original's record strip: the dead body keeps a dressed copy of its record in the world store and the player goes on stripped; the respawn and the stripped exit clear the owned mark, so the save writes the corpse into the level section (F543 closed). Every story level change reads the save's own section of the destination first, so revisited levels keep their saved state. The session's arrival words follow the original's globals, and story levels take the level-enter hook's fog variant. Scenes owed while the GPU is on hold.
 
+the in-game GUI unit's remaining links: the heartbeat fades out over a second from deaths, knock-outs and the fade reset; the HUD takes the player's shield, the power bar's flag and the bars' holds from quick-bar casts and healing; Raise Dead and Command Dead close the corpse's loot window and a mark's end closes the released body's inventory; the AI search reads the GUI's open-container registry; the focus loss reaches the menu and power tree tasks; container popups follow unit changes; a bound body's inventory sets its mind window, where a drag can break the hold; a game save writes the open packs into the carried lists (F31, F32, F34-F38). Grid scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
