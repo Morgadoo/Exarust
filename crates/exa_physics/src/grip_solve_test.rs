@@ -981,3 +981,112 @@ fn the_step_parks_wakes_and_unparks_a_held_item_with_its_holder() {
     step(&mut app);
     assert!(!body(&app, item).parked(), "unparked with its holder");
 }
+
+/// The attach and the drops write the item's own (top) body, as the
+/// original's: a two-part weapon's child keeps its built friction while held
+/// and after the drop, which clears the strike flags over the whole tree; a
+/// dropped shield keeps its mark bit (its drop clears no strike flag) and a
+/// dropped torch loses its strike flags on its own body.
+#[test]
+fn the_attach_and_the_drops_write_the_items_own_body() {
+    use crate::grip::{GripRelease, GripSpec, HeldGrip, HeldKind};
+    use crate::part::PartState;
+    let item = Entity::from_raw_u32(30).unwrap();
+    let child = Entity::from_raw_u32(31).unwrap();
+    let holder_part = Entity::from_raw_u32(32).unwrap();
+    let part = |entity, parent| RigidPart {
+        entity,
+        parent,
+        world: Affine3A::IDENTITY,
+        rest: [
+            Vec3::new(-0.1, 0.0, -0.1),
+            Vec3::new(0.1, 0.0, -0.1),
+            Vec3::new(0.0, 0.0, 0.1),
+            Vec3::new(0.0, 0.2, 0.0),
+        ],
+        point_masses: [4.0; 4],
+        mobility: 1.0,
+        parent_world: Affine3A::IDENTITY,
+        spheres: vec![(Vec3::ZERO, 0.1)],
+        origin: Vec3::ZERO,
+        links: Vec::new(),
+        mesh: None,
+        triangles: None,
+    };
+    let grip = |kind| HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0x10,
+        soft_weld: false,
+        kind,
+        holder_key: holder_part,
+        hands: [None, None],
+        arms: [None, None],
+        links: Some(links(pivot(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            (1.0, 0.0),
+        ))),
+        released: false,
+        head_extra: 0.0,
+    };
+    let mut app = App::new();
+    app.add_message::<crate::grip::CameLoose>().add_systems(
+        Update,
+        (
+            crate::grip_solve::mark_held,
+            crate::grip_solve::release_freed_grips,
+        )
+            .chain(),
+    );
+    app.world_mut().spawn(rigid(holder_part, Vec3::ZERO, 1.0));
+    let weapon = app
+        .world_mut()
+        .spawn((
+            Ragdoll::rigid(&[part(item, None), part(child, Some(0))]),
+            grip(HeldKind::Weapon),
+        ))
+        .id();
+    let built = app.world().get::<Ragdoll>(weapon).unwrap().parts[1].friction;
+    app.update();
+    let body = app.world().get::<Ragdoll>(weapon).unwrap();
+    assert_eq!(body.parts[0].friction, 0.5);
+    assert_eq!(body.parts[1].friction, built);
+    assert!(body.parts[1].state.has(PartState::STRIKING));
+    app.world_mut().entity_mut(weapon).insert(GripRelease);
+    app.update();
+    let body = app.world().get::<Ragdoll>(weapon).unwrap();
+    assert_eq!(body.parts[0].friction, 0.75);
+    assert_eq!(body.parts[1].friction, built);
+    for p in &body.parts {
+        assert!(!p.state.has(PartState::STRIKING | PartState::STRIKE_MARK));
+    }
+    for (kind, kept) in [(HeldKind::Shield, true), (HeldKind::Torch, false)] {
+        let held = app
+            .world_mut()
+            .spawn((
+                rigid(Entity::from_raw_u32(40).unwrap(), Vec3::ZERO, 1.0),
+                grip(kind),
+            ))
+            .id();
+        app.update();
+        app.world_mut().entity_mut(held).insert(GripRelease);
+        app.update();
+        let body = app.world().get::<Ragdoll>(held).unwrap();
+        assert_eq!(
+            body.parts[0].state.has(PartState::STRIKE_MARK),
+            kept,
+            "{kind:?}"
+        );
+        assert_eq!(body.parts[0].friction, 0.75, "{kind:?}");
+    }
+}

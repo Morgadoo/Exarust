@@ -393,9 +393,12 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
                     .state
                     .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK);
             }
-            // A held weapon's and shield's friction is the character
-            // constructor's 0.5; the torch's own attach leaves it 0.
-            part.friction = if grip.kind == HeldKind::Torch {
+        }
+        // A held weapon's and shield's top part takes the character
+        // constructor's friction 0.5 (the attach writes the item's own
+        // body, not its children); the torch's own attach leaves it 0.
+        if let Some(top) = body.parts.get_mut(HeldGrip::ITEM_PART) {
+            top.friction = if grip.kind == HeldKind::Torch {
                 0.0
             } else {
                 0.5
@@ -525,19 +528,25 @@ pub fn release_freed_grips(
         grip.links = None;
         body.held_by = None;
         body.reset_groups();
-        for part in &mut body.parts {
-            // The drop clears the strike flags the attach set (`0x30001`),
-            // not every bit the body carries.
-            part.state = part.state.without(
-                crate::part::PartState::STRIKING
-                    | crate::part::PartState::STRIKE_CHAIN
-                    | crate::part::PartState::STRIKE_MARK,
-            );
-            part.friction = 0.75;
+        // The drop clears the strike flags the attach set (`0x30001`), not
+        // every bit the body carries: a weapon's drop over its whole tree,
+        // the torch's on its own body, the shield's not at all.
+        let strike = crate::part::PartState::STRIKING
+            | crate::part::PartState::STRIKE_CHAIN
+            | crate::part::PartState::STRIKE_MARK;
+        let cleared = match grip.kind {
+            HeldKind::Weapon => body.parts.len(),
+            HeldKind::Torch => 1,
+            HeldKind::Shield => 0,
+        };
+        for part in body.parts.iter_mut().take(cleared) {
+            part.state = part.state.without(strike);
         }
-        // The drop puts the top part's contact mobility back at its base,
-        // which the arm setter scaled while it was held.
-        if let Some(top) = body.parts.iter_mut().find(|p| p.parent.is_none()) {
+        // Every drop gives the item's own body the dropped friction 0.75
+        // and its contact mobility back at the base the arm setter scaled
+        // while it was held; its children keep theirs.
+        if let Some(top) = body.parts.get_mut(HeldGrip::ITEM_PART) {
+            top.friction = 0.75;
             top.pairing.mobility = held_contact_base(top, mass);
         }
         let nodes = body.parts.len() as i32;

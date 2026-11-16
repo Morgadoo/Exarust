@@ -1276,8 +1276,12 @@ and gives an armed weapon's enabled second-hand link its new span as slack
 and held length (logged at info, "held re-place: …"). A freed item
 (`grip_solve::release_freed_grips`) becomes the root of its own tree, its
 link-iteration count 2 plus its parts less one, as the original's unlink
-writes it, and its top part's contact mobility goes back to the base the
-arm setter scaled while it was held (`grip_solve::held_contact_base`); a weapon whose holder is still in the world sends
+writes it, and its own (top) body takes the dropped friction 0.75 and its
+contact mobility back at the base the arm setter scaled while it was held
+(`grip_solve::held_contact_base`), its children keeping theirs; the strike
+flags go over a weapon's whole tree, on a torch's own body, and not at all
+for a shield, as the three drop routines write them (the attach too gives
+only the item's own body its friction 0.5); a weapon whose holder is still in the world sends
 `grip::CameLoose`, the holder's came-loose hook (shields and torches send
 none).
 
