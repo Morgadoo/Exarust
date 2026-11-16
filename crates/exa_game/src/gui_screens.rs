@@ -2033,12 +2033,15 @@ impl Plugin for GameScreensPlugin {
 /// The application's deactivation (the window procedure's focus loss): the
 /// window managers' focused forms deselect and the focus goes to their
 /// root, remembered for a later focus to no form
-/// ([`exa_ui::gui_core::GuiTask::deactivate`]). The in-game screens and the
-/// hub's windows hang from their own tasks in Exarust; each is told.
-pub fn deactivate_on_focus_loss(
+/// ([`exa_ui::gui_core::GuiTask::deactivate`]). The in-game screens, the
+/// hub's windows, the main menu and the power tree hang from their own
+/// tasks in Exarust; each is told, as the original's one GUI is.
+pub(crate) fn deactivate_on_focus_loss(
     mut focus: MessageReader<bevy::window::WindowFocused>,
     screens: Option<ResMut<GameScreens>>,
     hub: Option<ResMut<crate::hub_windows::HubWindows>>,
+    menu: Option<ResMut<crate::menu_screen::MenuRouter>>,
+    tree: Option<ResMut<crate::power_screen::PowerRouter>>,
 ) {
     if !focus.read().any(|event| !event.focused) {
         return;
@@ -2048,6 +2051,12 @@ pub fn deactivate_on_focus_loss(
     }
     if let Some(mut hub) = hub {
         hub.task.deactivate();
+    }
+    if let Some(mut menu) = menu {
+        menu.task.deactivate();
+    }
+    if let Some(mut tree) = tree {
+        tree.task.deactivate();
     }
 }
 
@@ -4528,6 +4537,45 @@ mod tests {
         assert_eq!(screens.task.remembered, Some((text_box, NO_CONTROL)));
         screens.task.focus_form(None, 0);
         assert!(screens.journal_box_focused());
+    }
+
+    /// The main menu's and the power tree's tasks are told about the focus
+    /// loss too: their focused control deselects and the root keeps the
+    /// focus with no control.
+    #[test]
+    fn the_focus_loss_reaches_the_menu_and_the_tree_tasks() {
+        let mut app = App::new();
+        app.add_message::<bevy::window::WindowFocused>()
+            .add_systems(
+                Startup,
+                (
+                    crate::menu_screen::setup_router,
+                    crate::power_screen::setup_router,
+                ),
+            )
+            .add_systems(Update, deactivate_on_focus_loss);
+        app.update();
+        let window = app.world_mut().spawn_empty().id();
+        {
+            let world = app.world_mut();
+            let mut menu = world.resource_mut::<crate::menu_screen::MenuRouter>();
+            let root = menu.task.root;
+            menu.task.focus_set(root, 2);
+            assert_eq!(menu.task.active_control, 2);
+            let mut tree = world.resource_mut::<crate::power_screen::PowerRouter>();
+            let root = tree.task.root;
+            tree.task.focus_set(root, 1);
+        }
+        app.world_mut().write_message(bevy::window::WindowFocused {
+            window,
+            focused: false,
+        });
+        app.update();
+        let world = app.world();
+        let menu = &world.resource::<crate::menu_screen::MenuRouter>().task;
+        assert_eq!((menu.active, menu.active_control), (menu.root, -1));
+        let tree = &world.resource::<crate::power_screen::PowerRouter>().task;
+        assert_eq!((tree.active, tree.active_control), (tree.root, -1));
     }
 
     /// The journal's key closes it through the base form's close: its text

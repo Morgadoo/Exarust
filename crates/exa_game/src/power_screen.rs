@@ -386,8 +386,8 @@ pub fn sweep_forms(world: &mut World, mask: u8) {
 /// The tree's form in the GUI core's task, so the pointer takes the
 /// window manager's route.
 #[derive(Resource)]
-struct PowerRouter {
-    task: GuiTask,
+pub(crate) struct PowerRouter {
+    pub(crate) task: GuiTask,
     form: FormId,
     state: Arc<Mutex<PowerFormState>>,
 }
@@ -427,7 +427,7 @@ impl FormHost for PowerForm {
     }
 }
 
-fn setup_router(mut commands: Commands) {
+pub(crate) fn setup_router(mut commands: Commands) {
     let state = Arc::new(Mutex::new(PowerFormState::default()));
     let mut task = GuiTask::new((800, 600));
     let form = task.add(Box::new(PowerForm {
