@@ -943,6 +943,15 @@ impl GuiTask {
         self.form(form).map_or(0, FormHost::selected_control)
     }
 
+    /// The window's size as the level switch takes it: the screen, and the
+    /// pointer's drag distance from its height ([`drag_limit`]: a
+    /// five-hundred-and-fortieth, at least 2), set on every call before
+    /// the switch compares the levels.
+    pub fn resize(&mut self, screen: (i32, i32)) {
+        self.screen = screen;
+        self.pointer.limit = drag_limit(screen.1);
+    }
+
     /// Sets the cursor shape; the system is told only of a change.
     pub fn set_cursor(&mut self, shape: i32) -> bool {
         if shape == self.cursor {

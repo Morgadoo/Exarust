@@ -359,11 +359,19 @@ impl RecordForm {
         self.geometry.form.contains(x, y)
     }
 
-    /// Sets a record's text.
+    /// Sets a record's text and tells it, as the GUI's text setter does
+    /// ([`crate::gui_core::set_control_text`]: the text, then the record's
+    /// procedure with message 0x400, which no 0.9.5 record class answers).
     pub fn set_text(&mut self, i: usize, text: &str) {
-        if let Some(c) = self.geometry.controls.get_mut(i) {
-            c.text = text.as_bytes().to_vec();
-        }
+        let unit = self.unit();
+        let mut events = Vec::new();
+        crate::gui_core::set_control_text(
+            &mut self.geometry.controls,
+            i,
+            text.as_bytes(),
+            unit,
+            &mut events,
+        );
     }
 
     /// Sets or clears state bits of a record.

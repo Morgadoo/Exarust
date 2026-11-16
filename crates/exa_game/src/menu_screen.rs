@@ -677,7 +677,9 @@ fn input(
     let x = (cursor.x * scale) as i32;
     let y = (cursor.y * scale) as i32;
     let menu_font = MenuFont::at_scale(menu_font_scale(row_scale));
-    router.task.screen = (width, height);
+    if router.task.screen != (width, height) {
+        router.task.resize((width, height));
+    }
     if let Ok(mut geometry) = router.geometry.lock() {
         geometry.bounds = GuiRect::new(0, 0, width, height);
         geometry.rows = rows

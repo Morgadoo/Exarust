@@ -1484,6 +1484,10 @@ impl GameScreens {
                     unit,
                     layout.place,
                 );
+                // The open keeps the window on the screen (the GUI's
+                // clamp: x within the root's width, y at least a unit).
+                let (x, y) =
+                    exa_ui::gui_core::clamp_form(x, y, width, unit.max(1), self.task.screen.0);
                 // The pack is built for the unit: its icons are forty units
                 // and its saved places sixteenths of one (the open binds
                 // the carried list after this).
@@ -1556,6 +1560,13 @@ impl GameScreens {
                         self.root_client(),
                     )
                 });
+                let (x, y) = exa_ui::gui_core::clamp_form(
+                    x,
+                    y,
+                    width,
+                    self.journal_unit,
+                    self.task.screen.0,
+                );
                 self.journal.ensure_entry();
                 self.journal.select(0);
                 self.journal_text = self.journal.entries[0].text.clone();
@@ -2641,7 +2652,7 @@ fn sync_screen_size(
             window.physical_height() as i32,
         );
         if size != screens.task.screen {
-            screens.task.screen = size;
+            screens.task.resize(size);
         }
     }
 }
@@ -4130,6 +4141,21 @@ mod tests {
         assert_eq!((bounds.left, bounds.width()), (800, 484));
     }
 
+    /// The openers keep a new window on the screen (the GUI's clamp): a
+    /// remembered journal place past the right edge comes back flush with
+    /// it, one above the top comes down to a unit.
+    #[test]
+    fn a_new_journal_is_clamped_to_the_screen() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1280, 720);
+        screens.journal.place = Some((1200, -30));
+        screens.open_journal_at(true, true, 4);
+        let form = screens.find(GameScreen::Journal).unwrap().form;
+        let bounds = screens.task.form(form).unwrap().bounds();
+        assert_eq!((bounds.left, bounds.top), (1280 - 244, 4));
+        assert_eq!(bounds.width(), 244);
+    }
+
     #[test]
     fn the_journal_records_lay_out_where_the_constructor_places_them() {
         let bounds = GuiRect::new(4, 36, 244, 518);
@@ -5185,6 +5211,37 @@ mod tests {
         );
         // One text box: the old one closed with the walk.
         assert_eq!(screens.task.draw_order().len(), 4);
+    }
+
+    /// The window's size reaches the task as the level switch takes it:
+    /// the pointer's drag distance follows the height (a
+    /// five-hundred-and-fortieth, at least 2).
+    #[test]
+    fn the_drag_distance_follows_the_window_height() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .add_systems(Update, sync_screen_size);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(3840, 2160),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.update();
+        let task = &app.world().resource::<GameScreens>().task;
+        assert_eq!((task.screen, task.pointer.limit), ((3840, 2160), 4));
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(1280, 720);
+        app.update();
+        let task = &app.world().resource::<GameScreens>().task;
+        assert_eq!((task.screen, task.pointer.limit), ((1280, 720), 2));
     }
 
     /// A container popup follows a unit change too: its panel is laid out
