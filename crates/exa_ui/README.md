@@ -642,7 +642,12 @@ rules and places, the journal's entries (each with the id word only a save reads
 bar control's messages, blocks and draw places, the status marker with its
 glow radius, share, tint and hide clock, skill-ready alert, level curtain
 and its hold-count reset, compass, heartbeat sound fade, menu cursor and
-HUD draw order, and the save and close scopes. The loot window is "Body",
+HUD draw order, the pointer slot its skins show (`set_skin_cursor`: −2
+hidden in play, 0 at the menu; folded into `cursor::pointer_visibility`),
+the inventory's page-button rule (`page_button_swaps`: the button turned
+on asks for the weapon-set swap, wired by `exa_game::gui_screens`), the
+game-screen test the idle turn asks (`has_game_screen`, live through
+`GameScreens::has_game_screen`), and the save and close scopes. The loot window is "Body",
 244 × 440 at x 400 with an unset y, refused for a flag word whose second
 byte is 3 and matched to its body. The inventory's preview writes its model
 values 0.15 and 0.05, the scene and draw words, the appearance copy and the
@@ -653,9 +658,11 @@ bars and their frames are `hud`'s; their show test (`bars_shown`: a
 changed or NaN health, a dropped focus, the power bar, combat mode or the
 unsigned hold clock) and the gauge's (`gauge_shown`: a shield in combat
 mode) are here and the HUD draw calls them every frame, with the power
-bar off because Exarust has none. The inventory fill's page states and
-plan, the journal's list state and the deferred fill's answer (retry until
-the generator has the node) are tested rules with no live caller yet. The
+bar off because Exarust has none. The journal's list state is live: the
+selection keeps its row and titles and the list's drop-down list opens on
+them; a pick runs `Journal::list_changed`. The inventory fill's page
+states and plan and the deferred fill's answer (retry until the generator
+has the node) are tested rules with no live caller yet. The
 power slot, the counter and bar controls' message handlers and the
 technique selector's open plan are unreachable in 0.9.5 (their classes are
 registered, but the only records naming them form one table no form uses;
@@ -674,8 +681,9 @@ window draws its frame and its pack and equipment panels. They draw with
 `line_skin::shown_palette` at their fade and the line skin's button frame
 (`skin::draw_frame` in `line_control_inks`). The item panel's
 icons use `SkinMode::HltCol`, the item GUI's own program (below). The
-character view, preview bars, the loot panels' body items and the journal
-entry list's drop list are not wired.
+character view, preview bars and the loot panels' body items are not
+wired here; the journal's entry list opens its drop-down list
+(`option_forms::open_drop_list`, drawn over the windows).
 
 ## The item panel's icon program
 

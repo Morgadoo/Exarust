@@ -135,7 +135,7 @@ fn the_inventory_place_and_page() {
     assert_eq!(inventory_tab(0x0100_0000), 3);
     assert_eq!(crystal_item(&[(5, 1), (500, 7), (431, 2)]), (500, 7));
     assert_eq!(crystal_item(&[(5, 1)]), (0, 0));
-    assert!(rescales_view(0x40) && !rescales_view(0x80));
+    assert!(page_button_swaps(0x40) && page_button_swaps(0x60) && !page_button_swaps(0x80));
 }
 
 #[test]
@@ -376,8 +376,10 @@ fn the_compass_heartbeat_and_cursor() {
 fn the_skins_compass_install_and_resets() {
     assert_eq!((GUITEX_FILE, GUITEX_STEM), ("guitex.rfi", "guitex"));
     let mut skins = GameSkins::default();
-    set_skin_unit(&mut skins, 5);
-    assert_eq!(skins.unit, 5);
+    set_skin_cursor(&mut skins, SKIN_CURSOR_HIDDEN);
+    assert_eq!(skins.cursor, -2);
+    set_skin_cursor(&mut skins, SKIN_CURSOR_DEFAULT);
+    assert_eq!(skins.cursor, 0);
     assert!(compass_install(true).is_none());
     let install = compass_install(false).unwrap();
     assert_eq!(
