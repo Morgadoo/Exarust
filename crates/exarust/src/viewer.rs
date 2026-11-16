@@ -479,6 +479,14 @@ struct PendingLevel {
     started: std::time::Instant,
 }
 
+/// The session state a level change reads and keeps: the world character
+/// store, the session's arrival words and the flow (its mode).
+type ChangeSession<'w> = (
+    Option<ResMut<'w, exa_game::world_characters::WorldCharacters>>,
+    Option<ResMut<'w, exa_game::level_change::SessionArrival>>,
+    Option<Res<'w, exa_game::flow::Flow>>,
+);
+
 /// Starts the level a [`exa_world::level_lifecycle::LevelChangeReady`] names,
 /// after the lifecycle has torn the old level down. A request with no level
 /// only tears down (a session leave). A load already in flight is dropped and
@@ -502,10 +510,7 @@ fn apply_level_change(
         Option<Res<exa_game::level_change::PortalArrival>>,
     ),
     travelling: Option<Res<exa_game::follower_travel::TravellingFollowers>>,
-    (mut world, mut session_arrival): (
-        Option<ResMut<exa_game::world_characters::WorldCharacters>>,
-        Option<ResMut<exa_game::level_change::SessionArrival>>,
-    ),
+    (mut world, mut session_arrival, flow): ChangeSession,
     last: Option<Res<LastLevel>>,
 ) {
     let Some(ready) = ready else {
@@ -513,7 +518,13 @@ fn apply_level_change(
     };
     let level = ready.level.clone();
     let spawn = ready.spawn;
-    let door = ready.door;
+    // A transition is the story's: the practice's next fight reloads its
+    // arena without a world reset too, but through the combatant load,
+    // which names no previous level.
+    let door = ready.door
+        && flow
+            .as_deref()
+            .is_none_or(|flow| flow.mode == exa_game::flow::Mode::Story);
     commands.remove_resource::<exa_world::level_lifecycle::LevelChangeReady>();
     // A level that was still building is abandoned with its state.
     commands.remove_resource::<PendingLevel>();
