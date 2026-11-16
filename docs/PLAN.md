@@ -1627,6 +1627,8 @@ the first lane from the triage's port queue (combat and fight AI): the chase lea
 
 F560's cause found with a new headless trace tool: the armour pass's head height was unordered in the fixed step, so the fires round's two systems moved it and changed armed characters from the first tick (now first in the step, as round 290 also ordered it); F566 fixed: the hand's pick names sliding leaves by their door record, so a portcullis takes the sliding hold; F563 closed as the original's: the placed portcullises read open in their arches and shut in their wall slots, from the assembly and the level data. F568 opened: the hand can drag a locked portcullis aside.
 
+the motile body and balance lane from the triage's port queue: the golem-suit leg halving now has the original's writers (the init, the suit registration, the worn tick); a balance step's end stamps the stand-still clock; the servo's and the step approach's per-tick factors; the off-balance arms only from the posture block's test; the dormant lying capture; the get-up turned from the body's heading with a NaN progress keeping the clip; the femur posture in the engine's quaternion product order (it had been reversed); held items sleep and wake with their holder; the AI's soft stop on a jolt. Round 285's Height Query questions settled from the assembly (a probe starting on the floor misses in the original too; every level runs the sphere mode); about ten stale readings corrected. Living bodies move differently from the first standing tick; the lane's binary repeats itself.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
