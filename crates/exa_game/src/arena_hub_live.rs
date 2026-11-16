@@ -161,6 +161,7 @@ impl Plugin for ArenaHubPlugin {
             .add_message::<OpenHubShop>()
             .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_message::<crate::item_card::WorldCard>()
+            .add_message::<crate::commands::MenuToggleKey>()
             .init_resource::<ShopBuyScript>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<HubWindows>()
@@ -2684,37 +2685,44 @@ fn shop_item_cards(
     });
 }
 
-/// Escape and the windows' own close end the open hub window. A right
-/// release after an item's card request is the item panel's, not the
-/// window's.
+/// The hub's keys and the windows' own close. A message box on top takes
+/// the frame's keys through its key slot (each key with the window
+/// procedure's word: Enter and Space close it, Escape with −1, a typed
+/// character is passed over), and nothing else closes under it. The hub's
+/// other forms keep the base form's key slot: a key no record takes climbs
+/// to the root task ([`crate::option_forms::hub_form_typing`]), whose
+/// Escape is the menu toggle; in the loadout's phase the toggle closes the
+/// loadout form ([`HubWindows::close_loadout`]) and nothing else. A right
+/// release closes the top form; one after an item's card request is the
+/// item panel's, not the window's.
 fn close_hub_windows(
-    keys: Res<ButtonInput<KeyCode>>,
+    gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
+    mut toggles: MessageReader<crate::commands::MenuToggleKey>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut windows: ResMut<HubWindows>,
     mut hub: ResMut<ArenaHub>,
 ) {
-    // A message box on top takes the keys (Enter and Space close it,
-    // Escape closes it with -1) and nothing else closes under it.
+    let toggled = toggles.read().count() > 0;
     if windows.forms.message_on_top() {
-        let code = if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
-            Some(exa_ui::modal_screens::KEY_ENTER)
-        } else if keys.just_pressed(KeyCode::Space) {
-            Some(exa_ui::modal_screens::KEY_SPACE)
-        } else if keys.just_pressed(KeyCode::Escape) {
-            Some(exa_ui::modal_screens::KEY_ESCAPE)
-        } else {
-            None
-        };
-        if let Some(code) = code {
-            windows.forms.message_key(code);
+        for key in gui_keys.iter().flat_map(|frame| frame.keys.iter()) {
+            if windows.forms.message_key_word(key.key, key.flags) {
+                info!(
+                    "hub: the message box's key slot closes it on {:#x} (word {:#x})",
+                    key.key, key.flags
+                );
+                break;
+            }
         }
         return;
+    }
+    if toggled && windows.close_loadout() {
+        info!("hub: the menu toggle closes the loadout form");
     }
     let right = buttons.just_released(MouseButton::Right);
     if right && std::mem::take(&mut windows.card_press) {
         return;
     }
-    if windows.is_open() && (keys.just_pressed(KeyCode::Escape) || right) && windows.close_top() {
+    if windows.is_open() && right && windows.close_top() {
         hub.busy = false;
     }
 }
@@ -3956,9 +3964,19 @@ mod tests {
         }
     }
 
+    /// The hub's keys go through the window procedure's key list: on the
+    /// company window (a base form, no record takes the key) Escape climbs
+    /// to the root task's menu toggle, which in the loadout's phase closes
+    /// the loadout form and keeps the company window under it; without a
+    /// loadout form nothing closes (the toggle's opening arm is F1's). A
+    /// message box on top takes the keys through its own slot: a typed
+    /// character is passed over, Enter closes it, and nothing climbs.
     #[test]
-    fn escape_closes_the_window_and_clears_the_busy_flag() {
+    fn escape_climbs_to_the_root_and_closes_the_loadout_form() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
         let mut app = hub_app();
+        app.add_plugins(crate::commands::CommandPlugin);
         app.init_resource::<ButtonInput<KeyCode>>();
         let mut flow = Flow::default();
         flow.mode = crate::flow::Mode::Arena;
@@ -3966,20 +3984,59 @@ mod tests {
         app.insert_resource(flow);
         spawn_hub_level(&mut app);
         app.update();
+        let send = |app: &mut App, code: KeyCode, key: Key| {
+            for pressed in [true, false] {
+                app.world_mut().write_message(KeyboardInput {
+                    key_code: code,
+                    logical_key: key.clone(),
+                    state: if pressed {
+                        ButtonState::Pressed
+                    } else {
+                        ButtonState::Released
+                    },
+                    text: None,
+                    repeat: false,
+                    window: Entity::PLACEHOLDER,
+                });
+            }
+            // The root's slot runs in PostUpdate, the hub reads its toggle
+            // in the next frame's update.
+            app.update();
+            app.update();
+        };
+        let career = crate::hub_windows::ArenaCareer::default();
         app.world_mut().resource_mut::<ArenaHub>().busy = true;
-        app.world_mut()
-            .resource_mut::<HubWindows>()
-            .open_manage(&crate::hub_windows::ArenaCareer::default());
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.update();
+        app.world_mut().resource_mut::<HubWindows>().open_manage(&career);
+        send(&mut app, KeyCode::Escape, Key::Escape);
         assert!(
             app.world()
                 .resource::<HubWindows>()
-                .is_kind(HubWindowKind::None)
+                .is_kind(HubWindowKind::Manage)
         );
-        assert!(!app.world().resource::<ArenaHub>().busy);
+        assert!(app.world().resource::<ArenaHub>().busy);
+        app.world_mut()
+            .resource_mut::<HubWindows>()
+            .open_loadout(crate::manage::PAGE_ROSTER, &career);
+        send(&mut app, KeyCode::Escape, Key::Escape);
+        let windows = app.world().resource::<HubWindows>();
+        assert!(windows.forms.get(crate::hub_forms::FormWindow::Loadout).is_none());
+        assert!(windows.is_kind(HubWindowKind::Manage));
+        // A message box takes the keys: a typed character does nothing,
+        // Enter closes it and the toggle never fires.
+        let screen = app.world().resource::<HubWindows>().task.screen;
+        app.world_mut()
+            .resource_mut::<HubWindows>()
+            .open_loadout(crate::manage::PAGE_ROSTER, &career);
+        app.world_mut()
+            .resource_mut::<HubWindows>()
+            .forms
+            .open_message("Hire", "No room.", 0x41, screen, 4);
+        send(&mut app, KeyCode::KeyA, Key::Character("a".into()));
+        assert!(app.world().resource::<HubWindows>().forms.message_on_top());
+        send(&mut app, KeyCode::Escape, Key::Escape);
+        let windows = app.world().resource::<HubWindows>();
+        assert!(!windows.forms.message_on_top());
+        assert!(windows.forms.get(crate::hub_forms::FormWindow::Loadout).is_some());
     }
 
     #[test]

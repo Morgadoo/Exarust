@@ -448,13 +448,21 @@ impl HubForms {
     /// Enter and Space close it, Escape closes it with −1. Returns whether
     /// the box closed.
     pub fn message_key(&mut self, code: u32) -> bool {
+        self.message_key_word(code, 0)
+    }
+
+    /// A key with the window procedure's word on the top message box, its
+    /// key slot ([`exa_ui::modal_screens::MessageBox::key`]): a typed
+    /// character (word 2) is passed over, a key-down or its repeat on
+    /// Enter, Space or Escape closes the box. Returns whether it closed.
+    pub fn message_key_word(&mut self, code: u32, word: u32) -> bool {
         if !self.message_on_top() {
             return false;
         }
         let Some(open) = self.message.as_mut() else {
             return false;
         };
-        if !open.state.key(code, 0) {
+        if !open.state.key(code, word as u16) {
             return false;
         }
         self.remove(FormWindow::Message);
@@ -1014,6 +1022,18 @@ impl HubWindows {
             fill_manage(form, &refresh);
         }
         self.manage = Some(refresh);
+    }
+
+    /// The root task's menu toggle in the loadout's phase (the arena unit's
+    /// close 0x20 arm): the loadout form closes through its close slot, the
+    /// company window under it stays. Returns whether a loadout form was
+    /// open.
+    pub fn close_loadout(&mut self) -> bool {
+        if self.forms.get(FormWindow::Loadout).is_none() {
+            return false;
+        }
+        self.forms.remove(FormWindow::Loadout);
+        true
     }
 
     /// Closes the top stacked form, or the hub window when none is

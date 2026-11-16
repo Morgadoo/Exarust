@@ -519,7 +519,10 @@ fn manual_input(
     mut flow: Option<ResMut<crate::flow::Flow>>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
     mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
-    gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
+    (gui_keys, mut climbed): (
+        Option<Res<crate::gui_keys::GuiKeyFrame>>,
+        Option<ResMut<crate::gui_keys::TaskKeys>>,
+    ),
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     let typed: Vec<_> = typed.read().cloned().collect();
@@ -546,12 +549,11 @@ fn manual_input(
             }
         }
     };
-    // The pad's exit hook is the menu toggle, which F1 is here.
-    if keys.just_pressed(KeyCode::Escape)
-        || keys.just_pressed(KeyCode::F1)
-        || mouse.just_released(MouseButton::Right)
-        || pad_exit
-    {
+    // The pad's exit hook is the menu toggle, which F1 (Exarust's menu
+    // key) is here. Escape is the root task's: it climbs the manual's base
+    // forms ([`crate::menu_screen::menu_toggle_key`] closes the manual with
+    // the menu in a session).
+    if keys.just_pressed(KeyCode::F1) || mouse.just_released(MouseButton::Right) || pad_exit {
         close(&mut screen, &mut steps);
         return;
     }
@@ -626,6 +628,15 @@ fn manual_input(
                 "manual: key {:#x} (word {:#x}): {route:?}",
                 key.key, key.flags
             );
+            // A key with no manual form focused is the root's own (the
+            // game view's handler is not run while the manual is up).
+            if matches!(
+                route,
+                exa_ui::gui_core::KeyRoute::Task | exa_ui::gui_core::KeyRoute::Root
+            ) && let Some(climbed) = climbed.as_deref_mut()
+            {
+                climbed.forward(*key);
+            }
         }
     }
     let Some(list) = screen.list.as_mut() else {
@@ -650,7 +661,24 @@ fn manual_input(
             reply = Some(list.press(LIST_CLICK, x, &mut events));
         }
     }
-    if list_focused {
+    if list_focused && let Some(gui_keys) = gui_keys.as_deref() {
+        // The item view's key slot with the frame's keys: a key it does not
+        // take goes to its parent, the manual's base form, and up to the
+        // task unless its word has a low bit.
+        for key in &gui_keys.keys {
+            let is_typed = key.flags & exa_ui::gui_keys::TYPED != 0;
+            match list.key(key.key, is_typed, now) {
+                Some(answer) => events.extend(answer),
+                None => {
+                    if key.flags & 3 == 0
+                        && let Some(climbed) = climbed.as_deref_mut()
+                    {
+                        climbed.forward(*key);
+                    }
+                }
+            }
+        }
+    } else if list_focused {
         for event in typed.iter().filter(|e| e.state.is_pressed()) {
             let key =
                 list_key(event.key_code)
@@ -1108,12 +1136,18 @@ mod tests {
     /// An app with the manual's plugin, a 1600 × 900 window (GUI unit 5),
     /// a scripted pointer and the synthetic manual open.
     fn manual_app() -> (App, Entity) {
+        manual_app_with(|_| {})
+    }
+
+    /// [`manual_app`] with more set up before its first update.
+    fn manual_app_with(extra: impl FnOnce(&mut App)) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<exa_ui::ScriptedPointer>()
             .add_plugins(HelpLivePlugin);
+        extra(&mut app);
         let window = app
             .world_mut()
             .spawn((
@@ -1258,6 +1292,46 @@ mod tests {
             "the page has the keys"
         );
         assert_eq!(screen.picked_topic(), Some(1));
+    }
+
+    /// Escape is not the manual's own key: it climbs the manual's base
+    /// forms to the root task, whose menu toggle in a session closes the
+    /// open menu and the manual with it; in the menu's phase it only steps
+    /// the menu back, so the manual stays.
+    #[test]
+    fn escape_climbs_to_the_root_and_closes_the_manual_with_the_menu() {
+        use bevy::input::keyboard::Key;
+        for (phase, closes) in [
+            (crate::flow::Phase::Playing, true),
+            (crate::flow::Phase::Menu, false),
+        ] {
+            let (mut app, window) = manual_app_with(|app| {
+                let mut flow = crate::flow::Flow::default();
+                flow.phase = phase;
+                app.insert_resource(flow)
+                    .init_resource::<exa_ui::gui_draw::GuiFrames>()
+                    .init_resource::<FlowSteps>()
+                    .add_plugins((
+                        crate::menu_screen::MenuScreenPlugin,
+                        crate::commands::CommandPlugin,
+                    ));
+            });
+            app.world_mut()
+                .resource_mut::<crate::menu_screen::MenuScreen>()
+                .open();
+            key(&mut app, window, KeyCode::Escape, Key::Escape);
+            app.update();
+            let manual_open = app.world().resource::<ManualScreen>().is_open();
+            let menu_open = app
+                .world()
+                .resource::<crate::menu_screen::MenuScreen>()
+                .open;
+            assert_eq!((manual_open, menu_open), (!closes, !closes), "{phase:?}");
+            if closes {
+                let steps = &app.world().resource::<FlowSteps>().steps;
+                assert!(steps.contains(&Step::MenuHelp(false)));
+            }
+        }
     }
 
     /// The pad's words reach the manual's key slot (the two-pane help

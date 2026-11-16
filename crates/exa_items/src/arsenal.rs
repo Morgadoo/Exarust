@@ -128,7 +128,8 @@ pub enum Key {
     None,
 }
 
-/// What a key does; releases (`flags` bit 2) do nothing.
+/// What a key does with the window procedure's word: a typed character
+/// (word bit 2) does nothing; a key-down or its repeat acts.
 pub fn key(code: u32, flags: u32, inventory_key: u32) -> Key {
     if flags & 2 != 0 {
         Key::None

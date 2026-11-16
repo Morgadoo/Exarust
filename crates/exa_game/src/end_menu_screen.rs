@@ -201,6 +201,10 @@ pub struct EndMenuScreen {
     /// the arena's continue ([`crate::arena_live::ArenaContinue`]) and
     /// clears it.
     pub arena_continue: bool,
+    /// The ten-byte name buffer of the key slot the end menu shares with
+    /// the main menu (typed characters, lowered; `barechoons` toggles the
+    /// menu music).
+    pub name: [u8; 10],
 }
 
 impl EndMenuScreen {
@@ -316,6 +320,7 @@ pub struct EndMenuScreenPlugin;
 
 impl Plugin for EndMenuScreenPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<EndMenuScreen>()
             .add_message::<ScriptedEnd>()
             .add_message::<crate::arena_live::ArenaContinue>()
@@ -344,6 +349,10 @@ fn update(
     mut roll: Option<ResMut<crate::menu_screen::MenuSoundRoll>>,
     mut sounds: MessageWriter<crate::menu_screen::MenuSound>,
     mut continues: MessageWriter<crate::arena_live::ArenaContinue>,
+    (gui_keys, mut climbed): (
+        Option<Res<crate::gui_keys::GuiKeyFrame>>,
+        Option<ResMut<crate::gui_keys::TaskKeys>>,
+    ),
 ) {
     let pad_confirm = pad.read().count() > 0;
     // The pad's Select: a menu that is not showing does nothing; one that
@@ -388,13 +397,46 @@ fn update(
     if !screen.open {
         return;
     }
-    if keys.just_pressed(KeyCode::ArrowDown) {
+    // The key slot the end-session menu shares with the main menu, for
+    // each key as the window procedure sends it: a typed character enters
+    // the name buffer (`barechoons` toggles the menu music); a key-down
+    // goes to the base form's key slot, where no record takes it, and up
+    // to the root task unless its word has a low bit.
+    let mut downs: Vec<u32> = Vec::new();
+    for key in gui_keys.iter().flat_map(|frame| frame.keys.iter().copied()) {
+        if key.flags & exa_ui::gui_keys::TYPED != 0 {
+            let typed = exa_ui::menu::type_menu_name(screen.name, key.key as u8, key.flags);
+            screen.name = typed.buffer;
+            if typed.matched {
+                crate::menu_screen::toggle_music(flow.as_deref_mut(), Some(&mut *steps));
+            }
+            continue;
+        }
+        if key.flags & 3 == 0
+            && let Some(climbed) = climbed.as_deref_mut()
+        {
+            climbed.forward(key);
+        }
+        if key.flags & exa_ui::gui_keys::REPEAT == 0 {
+            downs.push(key.key);
+        }
+    }
+    // Scripted runs without the key list read the button state.
+    if gui_keys.is_none() {
+        downs.extend(
+            keys.get_just_pressed()
+                .filter_map(|&k| crate::bindings::virtual_key(k)),
+        );
+    }
+    // Exarust's keyboard stand-ins for the pad's menu words, as the main
+    // menu's.
+    if downs.contains(&0x28) {
         screen.move_selection(1);
     }
-    if keys.just_pressed(KeyCode::ArrowUp) {
+    if downs.contains(&0x26) {
         screen.move_selection(-1);
     }
-    if keys.just_pressed(KeyCode::Enter)
+    if downs.contains(&0x0d)
         && let Some(flow) = flow.as_mut()
     {
         let out = screen.confirm(flow);
@@ -560,6 +602,73 @@ mod tests {
             GuiTexture::from_top_down(448, 896, &blank).unwrap(),
         );
         textures
+    }
+
+    /// The end menu shares the main menu's key slot: typed characters go
+    /// into its name buffer (`barechoons` toggles the menu music), and each
+    /// key-down without a low word bit climbs to the root task.
+    #[test]
+    fn the_end_menu_types_the_music_code_and_its_keys_climb_to_the_root() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GuiFrames>()
+            .init_resource::<FlowSteps>()
+            .insert_resource({
+                let mut flow = Flow::default();
+                flow.mode = Mode::Practice;
+                flow
+            })
+            .add_plugins(EndMenuScreenPlugin);
+        app.update();
+        app.world_mut()
+            .resource_mut::<EndMenuScreen>()
+            .show(end_menu(MENU_WON, Mode::Practice));
+        let code_of = |c: char| match c {
+            'b' => KeyCode::KeyB,
+            'a' => KeyCode::KeyA,
+            'r' => KeyCode::KeyR,
+            'e' => KeyCode::KeyE,
+            'c' => KeyCode::KeyC,
+            'h' => KeyCode::KeyH,
+            'o' => KeyCode::KeyO,
+            _ => KeyCode::KeyN,
+        };
+        let mut climbed = Vec::new();
+        for c in "barechoons".chars() {
+            let code = if c == 's' { KeyCode::KeyS } else { code_of(c) };
+            for pressed in [true, false] {
+                app.world_mut().write_message(KeyboardInput {
+                    key_code: code,
+                    logical_key: Key::Character(c.to_string().into()),
+                    state: if pressed {
+                        ButtonState::Pressed
+                    } else {
+                        ButtonState::Released
+                    },
+                    text: None,
+                    repeat: false,
+                    window: Entity::PLACEHOLDER,
+                });
+            }
+            app.update();
+            let keys = std::mem::take(
+                &mut app
+                    .world_mut()
+                    .resource_mut::<crate::gui_keys::TaskKeys>()
+                    .keys,
+            );
+            climbed.extend(keys);
+        }
+        assert_eq!(&app.world().resource::<EndMenuScreen>().name, b"barechoons");
+        assert!(app.world().resource::<Flow>().alternative_music);
+        // Each key-down climbed once with its plain word; no typed byte did.
+        assert_eq!(climbed.len(), 10);
+        assert!(climbed.iter().all(|k| k.flags & 3 == 0));
+        assert_eq!(climbed[0].key, 0x42);
     }
 
     /// The pad's Select on a showing end menu plays the menus' click with a

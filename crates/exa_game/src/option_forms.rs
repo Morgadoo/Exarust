@@ -1830,6 +1830,9 @@ fn frame_keys(
 /// typed character; Ctrl with C, X or V asks the system clipboard. The
 /// colour picker's clicked spinner keeps its own typing
 /// ([`HubWindows::type_key`]). A message box on top takes the keys instead.
+/// A key-down no record took (not a repeat or a typed character) climbs
+/// the base forms' key slots to the root task ([`crate::gui_keys::TaskKeys`])
+/// while a hub window is open (else the game view's key slot sends it).
 #[allow(clippy::too_many_arguments)]
 pub fn hub_form_typing(
     mut typed: MessageReader<KeyboardInput>,
@@ -1839,6 +1842,7 @@ pub fn hub_form_typing(
     textures: Option<Res<exa_ui::gui_draw::GuiTextures>>,
     clipboard: Option<ResMut<crate::os_clipboard::SystemClipboard>>,
     gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
+    mut climbed: Option<ResMut<crate::gui_keys::TaskKeys>>,
 ) {
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
     if let Some(textures) = textures.as_deref() {
@@ -1850,6 +1854,17 @@ pub fn hub_form_typing(
     }
     let frame = frame_keys(gui_keys.as_deref(), &events, &keys);
     let mut clipboard = clipboard;
+    let open = windows.is_open();
+    // The base form's key slot passes a key nobody took to the parent,
+    // unless its word has a low bit, up to the task.
+    let mut climb = |key: GuiKey| {
+        if open
+            && key.flags & 3 == 0
+            && let Some(climbed) = climbed.as_deref_mut()
+        {
+            climbed.forward(key);
+        }
+    };
     for key in frame {
         let typed = key.flags & exa_ui::gui_keys::TYPED != 0;
         // Tab is the form's key: the fields never hear it.
@@ -1881,6 +1896,7 @@ pub fn hub_form_typing(
                     })
             };
             let Some(press) = press else {
+                climb(key);
                 continue;
             };
             let pasted =
@@ -1896,6 +1912,7 @@ pub fn hub_form_typing(
             continue;
         }
         if windows.forms.options.focus.is_none() {
+            climb(key);
             continue;
         }
         if typed {
@@ -1906,7 +1923,7 @@ pub fn hub_form_typing(
             match key.key {
                 0x08 => windows.type_key(TypedKey::Backspace),
                 0x0d => windows.type_key(TypedKey::Enter),
-                _ => {}
+                _ => climb(key),
             }
         }
     }
