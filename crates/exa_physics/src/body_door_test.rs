@@ -364,3 +364,104 @@ fn registered_leaves_pair_and_sleep_shut() {
         assert!(app.world().get::<PendingDoor>(e).is_none());
     }
 }
+
+/// The original's hinged step measures the leaf, calls the body's
+/// integration, then pushes the stop point toward the drive angle (its
+/// push routine after the inherited step). So the drive a tick asks for is
+/// queued, not made, and lands right after the next integration: the
+/// leaf's particles are exactly the integrated ones plus the push, not the
+/// integration of pushed particles (which would carry the push twice).
+#[test]
+fn the_drive_is_pushed_after_the_next_integration() {
+    let saved = door::stored_word(door::MODE_OPEN, 10, false);
+    let (mut body, mut glue) = door_at(Vec3::ZERO, 0.3, door::MOTORISED, saved);
+    body.wake();
+    body.tick(NONE);
+    let before = body.parts[0].positions;
+    let out = glue.tick(&mut body, 12, None);
+    assert!(out.drive.is_some(), "an open command drives");
+    // Queued: the tick moves nothing yet.
+    assert_eq!(body.parts[0].positions, before);
+    let [(part, w, delta)] = body.after_integration[..] else {
+        panic!("one queued push: {:?}", body.after_integration);
+    };
+    assert_eq!(part, 0);
+    assert_eq!(w, body.world[glue.stop].on_part);
+    assert!(delta.length() > 0.0 && delta.is_finite(), "{delta}");
+    // The expected order, done by hand on a copy: integrate, then push.
+    let mut by_hand = body.clone();
+    by_hand.after_integration.clear();
+    by_hand.step();
+    by_hand.parts[0].push(&w, delta);
+    // The wrong order: the push before the integration.
+    let mut early = body.clone();
+    early.after_integration.clear();
+    early.parts[0].push(&w, delta);
+    early.step();
+    body.step();
+    assert!(body.after_integration.is_empty());
+    assert_eq!(body.parts[0].positions, by_hand.parts[0].positions);
+    assert_ne!(body.parts[0].positions, early.parts[0].positions);
+}
+
+/// A body asleep at its next tick never steps, so the push it was asked
+/// for is dropped with the sleeping tick rather than kept for its wake.
+#[test]
+fn a_sleeping_leaf_drops_a_queued_drive() {
+    let (mut body, _) = door_at(Vec3::ZERO, 0.0, 0, 0);
+    body.push_after_integration(0, [0.25; 4], Vec3::X);
+    body.sleep = crate::body::Sleep::Asleep;
+    body.tick(NONE);
+    assert!(body.after_integration.is_empty());
+}
+
+/// In the running game (the body and prop plugins), a woken registered
+/// leaf whose saved word holds a motorised open drives every awake tick:
+/// each drive its step queues after the solver is consumed by the next
+/// tick's integration (never more than one waits, though a frame runs
+/// several ticks), and the leaf that falls asleep keeps none.
+#[test]
+fn a_registered_motor_leaf_opens_through_its_queued_drives() {
+    use crate::Physics;
+    use crate::body::BodyPlugin;
+    use crate::prop::{PendingProp, PropPlugin};
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, BodyPlugin, PropPlugin))
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            1.0 / 30.0,
+        )))
+        .insert_resource(Physics::default());
+    let node = app
+        .world_mut()
+        .spawn((Transform::default(), GlobalTransform::default()))
+        .id();
+    let mut part = leaf(Vec3::ZERO, 0.0);
+    part.entity = node;
+    let saved = door::stored_word(door::MODE_OPEN, 200, false);
+    app.world_mut().entity_mut(node).insert((
+        PendingProp(vec![part]),
+        PendingDoor {
+            saved,
+            ..pending(door::MOTORISED, 0)
+        },
+    ));
+    // Registered asleep; a signal would wake it.
+    app.update();
+    app.world_mut().get_mut::<Ragdoll>(node).unwrap().wake();
+    let mut queued = 0;
+    for _ in 0..120 {
+        app.update();
+        let body = app.world().get::<Ragdoll>(node).unwrap();
+        // At most the one drive of the last door step waits.
+        assert!(body.after_integration.len() <= 1);
+        queued += body.after_integration.len();
+    }
+    assert!(queued > 0, "the step queued drives");
+    // Once asleep, the leaf holds no drive: its sleeping tick dropped it.
+    let body = app.world().get::<Ragdoll>(node).unwrap();
+    assert!(body.asleep());
+    assert!(body.after_integration.is_empty());
+}

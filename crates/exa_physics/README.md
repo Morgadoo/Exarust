@@ -1668,7 +1668,9 @@ and, each awake tick after the solver, the door's step: the handle's
 motion smoothed by half as the creak energy, the stop's measured length as
 the knock travel, the stop's heading in the door frame as the angle, and
 the drive angle moving the stop point onto the stop's radius by its
-weights. The hand's door link (slack 1 cm, strength 0.003, the first three
+weights. The drive's push is measured after the solver and made right
+after the leaf's next integration (`Ragdoll::push_after_integration`), as
+the original's step measures, integrates, then pushes. The hand's door link (slack 1 cm, strength 0.003, the first three
 passes) is `DoorBody::take_hold`, `pull_to` and `let_go`. The door's
 sounds go out through `mechanism_sound`; the last-pusher stamp is not
 reproduced. Its navigation

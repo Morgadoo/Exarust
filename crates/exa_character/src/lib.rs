@@ -733,6 +733,7 @@ pub fn held_item_sounds(model: &model::Model) -> exa_physics::prop::BodySounds {
             })
             .collect(),
         scrapes: Vec::new(),
+        fallback: None,
     }
 }
 
@@ -847,6 +848,7 @@ pub fn item_bodies(
                     exa_formats::weapon_stats::impact_sound(sound).to_owned(),
                 )],
                 scrapes: Vec::new(),
+                fallback: None,
             },
         ),
         None => (Vec::new(), exa_physics::prop::BodySounds::default()),

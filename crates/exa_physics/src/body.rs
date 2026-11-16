@@ -453,8 +453,9 @@ pub struct Part {
     pub last_impact: f32,
     /// Whether the part takes the level's impact call (the original's class
     /// bit 0x40000, set at add-to-world on every part but a foot and its
-    /// children; a rigid body has it when its material has a collision
-    /// sound, which Exarust takes as always).
+    /// children; a rigid body has it only when its collision sound list has
+    /// an entry, which the audio side checks when the body registers,
+    /// `exa_audio`'s impact class).
     pub reacts: bool,
     /// This tick's accepted level hits of the part: their count, summed
     /// world points and pushes, and the fastest smoothed velocity with its
@@ -1956,6 +1957,10 @@ pub struct Ragdoll {
     scrapes: Vec<ScrapeSource>,
     /// What this tick's scrape sources reported, for the audio side.
     scrape_events: Vec<ScrapeEvent>,
+    /// Pushes (part, point weights, delta) a mechanism's step asked for, to
+    /// be applied right after the body's next integration, before its link
+    /// passes ([`Ragdoll::push_after_integration`]).
+    after_integration: Vec<(usize, [f32; 4], Vec3)>,
 }
 
 impl Ragdoll {
@@ -2046,6 +2051,7 @@ impl Ragdoll {
             kept_muscles: self.kept_muscles,
             scrapes: self.scrapes.clone(),
             scrape_events: self.scrape_events.clone(),
+            after_integration: self.after_integration.clone(),
         }
     }
 
@@ -3136,6 +3142,7 @@ impl Ragdoll {
             kept_muscles: None,
             scrapes: Vec::new(),
             scrape_events: Vec::new(),
+            after_integration: Vec::new(),
         }
     }
 
@@ -5192,6 +5199,7 @@ impl Ragdoll {
                 p.positions = p.previous;
             }
             self.take_ticks(1);
+            self.push_integrated();
             return;
         }
         self.tick_countdown();
@@ -5222,6 +5230,29 @@ impl Ragdoll {
             // of the tree, after their inertia, carry and pose drive.
             for p in &mut self.parts {
                 keep_rigid(p);
+            }
+        }
+        self.push_integrated();
+    }
+
+    /// Asks for `delta` to be spread over part `part`'s particles by the
+    /// point weights `w` right after the body's next integration, before
+    /// its link passes: where the original's hinged door step pushes its
+    /// stop point toward the drive angle. Its door logic measures the leaf
+    /// before it calls the body's integration and pushes after it, so the
+    /// push is this tick's displacement only and becomes velocity from the
+    /// next tick; a push made before the integration would be carried by it
+    /// at once. A body that sleeps through its next tick drops the push.
+    pub fn push_after_integration(&mut self, part: usize, w: [f32; 4], delta: Vec3) {
+        self.after_integration.push((part, w, delta));
+    }
+
+    /// Applies the pushes [`Ragdoll::push_after_integration`] queued, in
+    /// order, and forgets them.
+    fn push_integrated(&mut self) {
+        for (part, w, delta) in std::mem::take(&mut self.after_integration) {
+            if let Some(p) = self.parts.get_mut(part) {
+                p.push(&w, delta);
             }
         }
     }
@@ -5397,6 +5428,7 @@ impl Ragdoll {
     /// Exarust leaves one).
     fn sleep_tick(&mut self) {
         self.level_impacts.clear();
+        self.after_integration.clear();
         if self.sleep == Sleep::Asleep {
             // The original's sleeping branch rolls its particle sets once
             // more before deep sleep, so the third set is where the body lies.

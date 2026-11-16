@@ -473,6 +473,15 @@ pub fn register_bodies(
         if !scrapes.is_empty() {
             commands.entity(root).insert(PendingScrapes(scrapes));
         }
+        // A door's leaf whose material has no collision sound takes its
+        // slam set (the original's door init, before the impact class).
+        let rules = rules_of(placement, &tree, &shape);
+        if let (Placement::Door(door), Some(Rules::Hinged | Rules::Sliding)) = (placement, rules) {
+            sounds.fallback = Some(exa_physics::mechanism_sound::door_set(
+                door.record.slam_sound,
+                exa_physics::mechanism_sound::SLAM,
+            ));
+        }
         // The names the audio side resolves: each part's collision sound
         // and each scrape source's sound.
         commands.entity(root).insert(sounds);
@@ -488,7 +497,7 @@ pub fn register_bodies(
             continue;
         };
         let handle_height = model.nodes[top].bounds.0.y;
-        match (placement, rules_of(placement, &tree, &shape)) {
+        match (placement, rules) {
             (Placement::Door(door), Some(Rules::Hinged)) => {
                 commands.entity(root).insert(PendingDoor {
                     record: door.record,
@@ -977,6 +986,16 @@ mod tests {
         let mut doors = app.world_mut().query_filtered::<Entity, With<DoorBody>>();
         let leaves: Vec<Entity> = doors.iter(app.world()).collect();
         assert_eq!(leaves.len(), 109);
+        // Each leaf's root part falls back on its record's slam set.
+        for &e in &leaves {
+            let glue = app.world().get::<DoorBody>(e).unwrap();
+            let sounds = app.world().get::<exa_physics::prop::BodySounds>(e).unwrap();
+            let slam = exa_physics::mechanism_sound::door_set(
+                glue.door.record.slam_sound,
+                exa_physics::mechanism_sound::SLAM,
+            );
+            assert_eq!(sounds.fallback.as_deref(), Some(slam.as_str()));
+        }
         let mut others = app
             .world_mut()
             .query_filtered::<Entity, (With<Ragdoll>, Without<DoorBody>)>();

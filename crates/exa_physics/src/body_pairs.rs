@@ -544,13 +544,19 @@ pub(super) fn push_apart(a: &mut Part, b: &mut Part, wa: [f32; 4], wb: [f32; 4],
 }
 
 /// Moves a part's particles by `push` times their weights in `w`, and
-/// restores its edges once its strain passes 0.1 cm.
+/// restores its edges once its strain passes 0.1 cm. The push's length
+/// sums x² + z² first, then y², as the original's length routine does.
 fn shove(p: &mut Part, w: &[f32; 4], push: Vec3) {
     p.push(w, push);
-    p.strain += push.length();
+    p.strain += push_length(push);
     if p.strain > PUSH_STRAIN {
         keep_rigid(p);
     }
+}
+
+/// The length of `v` with the original's sum order: (x² + z²) + y².
+pub(super) fn push_length(v: Vec3) -> f32 {
+    ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
 }
 
 /// Sphere `e` of radius `r` (the sphere side's, in the other part's space)
