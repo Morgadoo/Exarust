@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 672 | 162,328 | B1 wire (or prove unreachable) |
-| partial | 1,429 | 899,625 | B4 complete the port |
+| uncalled | 671 | 162,261 | B1 wire (or prove unreachable) |
+| partial | 1,424 | 895,890 | B4 complete the port |
 | missing | 55 | 11,367 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -17,7 +17,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | physics | 143,795 | 18,075 | 276 |
 | render | 122,921 | 22,453 | 3,232 |
 | ui | 86,242 | 43,018 | 1,311 |
-| powers | 109,096 | 3,157 | 2,321 |
+| powers | 105,361 | 3,090 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
 | ai | 96,159 | 2,415 | 28 |
 | modes | 65,694 | 10,554 | 363 |
@@ -52,8 +52,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | TStaticTerrain | world | 12 / 10,617 | 3 / 522 | 0 / 0 | 11,139 |
 | TForceTorrentEffect | powers | 5 / 10,453 | 0 / 0 | 0 / 0 | 10,453 |
-| TTendrilEmitter | powers | 6 / 9,672 | 1 / 67 | 0 / 0 | 9,739 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
+| TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
 | Character equipment & inventory routines (TCharacterView by address) | items | 15 / 8,494 | 5 / 641 | 0 / 0 | 9,135 |
 | TTetraRBD | physics | 18 / 8,305 | 2 / 661 | 0 / 0 | 8,966 |
 | RF_GUI_Main (unit routines) | ui | 7 / 5,075 | 19 / 2,486 | 3 / 1,167 | 8,728 |
@@ -63,7 +63,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RFE_Export_RFC2 (unit routines) | data | 13 / 8,152 | 2 / 240 | 0 / 0 | 8,392 |
 | FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
 | RF_Morphing (unit routines) | characters | 6 / 7,170 | 2 / 836 | 1 / 154 | 8,160 |
-| TTendrilEffect | powers | 2 / 8,075 | 0 / 0 | 0 / 0 | 8,075 |
 | TPlayerBehaviour | ai | 9 / 7,954 | 2 / 79 | 0 / 0 | 8,033 |
 | TRBDDoor | world | 4 / 5,922 | 1 / 2,085 | 0 / 0 | 8,007 |
 | TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
@@ -105,6 +104,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_ItemGUI (unit routines) | items | 8 / 3,063 | 9 / 1,886 | 0 / 0 | 4,949 |
 | Item description phrases | items | 5 / 4,855 | 0 / 0 | 0 / 0 | 4,855 |
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
+| TTendrilEffect | powers | 1 / 4,804 | 0 / 0 | 0 / 0 | 4,804 |
 | RF_Main (unit routines) | runtime | 14 / 4,263 | 4 / 405 | 0 / 0 | 4,668 |
 | TGSLines | ui | 3 / 3,841 | 5 / 815 | 0 / 0 | 4,656 |
 | FLX_ItemFactory (unit routines) | items | 4 / 4,535 | 0 / 0 | 0 / 0 | 4,535 |
