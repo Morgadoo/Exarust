@@ -2003,7 +2003,11 @@ character body's possession routines; addresses are in the research notes.
   game's) only restamps the clock, and a dialogue or the power bar keeps the
   player busy (`idle_orbit::Frame`). Exarust's in-game menu is such a
   window; no Exarust screen blocks the controls yet, and there is no
-  dialogue or power bar.
+  dialogue or power bar. An idle player with an in-game screen open (any
+  form of the 0xce100000 tag family: the inventory, a loot window, the
+  journal, a container popup) does not turn the camera: once the ten
+  seconds are past, the clock is noted again instead, and the cursor read
+  is left as it was.
 
 ## Start outfit
 

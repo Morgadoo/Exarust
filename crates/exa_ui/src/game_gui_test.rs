@@ -376,8 +376,10 @@ fn the_compass_heartbeat_and_cursor() {
 fn the_skins_compass_install_and_resets() {
     assert_eq!((GUITEX_FILE, GUITEX_STEM), ("guitex.rfi", "guitex"));
     let mut skins = GameSkins::default();
-    set_skin_unit(&mut skins, 5);
-    assert_eq!(skins.unit, 5);
+    set_skin_cursor(&mut skins, SKIN_CURSOR_HIDDEN);
+    assert_eq!(skins.cursor, -2);
+    set_skin_cursor(&mut skins, SKIN_CURSOR_DEFAULT);
+    assert_eq!(skins.cursor, 0);
     assert!(compass_install(true).is_none());
     let install = compass_install(false).unwrap();
     assert_eq!(

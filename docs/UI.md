@@ -1787,6 +1787,17 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
 `exa_ui::game_gui` holds what the original's `SG_GameGUI` does without
 drawing:
 
+- **Pointer slot.** The unit keeps the pointer slot its skins and new
+  character views show: the controls' start sets −2 (a negative slot
+  hides the system pointer; the game draws its world cursor) and the
+  game's end 0 (the menu cursor); the setter writes it on the guitex and
+  menu-cursor skins that exist, and each inventory's character view takes
+  it when it is made. Exarust folds this into the cursor draw: in play the
+  world cursor shows and the system pointer stays hidden over the game
+  screens too (`game_gui::set_skin_cursor` keeps the rule).
+- **Idle turn.** The controls' idle turn asks whether any form of the
+  0xce100000 family is open on the active task; while one is, ten idle
+  seconds only restamp the clock (`GameScreens::has_game_screen`).
 - **Tags.** The inventory is 0xce1c2010, a container popup 0xce1c2013,
   the journal 0xce1c2030 and the loot window 0xce1c2040; the mask
   0xce1c0000 selects that family and 0xce100000 every in-game screen.
@@ -1828,7 +1839,13 @@ drawing:
   its own]); the player's own goes to its remembered
   place, another character's to the screen's right less its width and four
   units. The record flag 0x1000000 lights the fourth tab record instead of
-  the third; the scene is told the first of the character's items 431,
+  the third. The two tab records, Primary and Secondary, are page buttons
+  of one radio group with one record callback: the button a press turns
+  on (its state has the 0x60 bits) asks the character the window shows to
+  swap its weapon sets, as the swap key does (a busy body, state bits
+  0x10202, or an item drag in flight refuses it; the window being open,
+  the sets swap at once); the button it turns off reports too and does
+  nothing. The scene is told the first of the character's items 431,
   500, 451, 452 or 499. Its preview bars are the HUD's layout with the
   record's two health words over 65535; their draw callback is registered
   only when the switch changes, and only character creation and the arena
@@ -1849,7 +1866,13 @@ drawing:
   text box, appends "New Entry" and selects it; deleting with fewer than
   two entries resets the first, otherwise removes the selection; the list
   renames the selected entry while editing and otherwise stores the text
-  and selects the picked row.
+  and selects the picked row. The selection writes the list record's
+  caption (the entry's title), its 1-based row, the entry count and every
+  title; a release over the list (a combo box) opens its drop-down list of
+  those titles under it with the row chosen (the list takes the journal's
+  line skin as the hub's combo lists do), and a row picked there stores
+  the text box's text into the selected entry and selects the picked one.
+  A title edit (the list's edit state, F89) is not reached.
 - **Sweeps and saves.** Entering combat mode (Tab, or a script's
   combat-mode call that turns it on) closes every in-game screen (tag
   mask 0xce100000) back to front, then the power tree; the shown power

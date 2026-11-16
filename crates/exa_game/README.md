@@ -2309,7 +2309,13 @@ and a confirmed hub trade the player (`equip::Redress`,
 hand's model from the record's out set). The view's image renders at the settings' supersampling
 (`doll_view::doll_scale`: 2 x 2 with super sampling on, 1 off). The open
 inventory lights the page button of the shown body's set and, after a swap, loads its pack again
-(`gui_screens::inventory_follows_the_set`). `figure_pick` takes items off the figure: the pick
+(`gui_screens::inventory_follows_the_set`). A press on the page button of the other set asks
+the shown body for the swap (`gui_screens::swap_from_page_button`, refused
+while the body is busy or an item drag is in flight), and the journal's
+entry list opens its drop-down list of titles over the windows; a picked row
+stores the text and shows that entry (`GameScreens::journal_pick`). With a
+game screen open, ten idle seconds restamp the idle turn's clock instead of
+turning the camera (`idle_orbit`). `figure_pick` takes items off the figure: the pick
 of the item under the pointer (the CPU-skinned merged runs' faces, whose
 garments name the worn item, then the other drawn meshes, a held item's
 answering its hand and slot), a left-press drag off the figure

@@ -8,9 +8,9 @@
 //! The inventory and journal are painted through the GUI draw path
 //! ([`crate::gui_paint`]): their frames, the item pack's panel and the
 //! control records the constructors append (labels and buttons, placed by
-//! the control layout pass). The character view, the item icons, the
-//! journal's entry list and the controls' callbacks are not wired. The
-//! forms are base forms ([`exa_ui::base_form::BaseForm`]) on a rooted task
+//! the control layout pass). The journal's New, Erase and entry list (its
+//! drop-down list of titles) and the inventory's page buttons (the set
+//! swap) run their record callbacks. The forms are base forms ([`exa_ui::base_form::BaseForm`]) on a rooted task
 //! the pointer drives ([`crate::form_input`]): a title press drags a window,
 //! a release over its close mark closes it, a pressed window draws on top,
 //! the frame marks and the records take their hover inks and a record that
