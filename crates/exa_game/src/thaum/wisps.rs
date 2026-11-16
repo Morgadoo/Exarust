@@ -570,7 +570,9 @@ impl Wisps {
                 out.fade.push([a[1], v_along]);
                 out.colours.push(colour);
                 out.colours.push(colour);
-                v_along += length(smooth[j + 1] - p) * width;
+                // The engine's fast distance (RSQRTSS), as the original's
+                // strip builder takes it.
+                v_along += exa_physics::engine_math::distance_approx(smooth[j + 1], p) * width;
                 if j > 0 {
                     let q = base + 2 * (j as u32 - 1);
                     out.indices

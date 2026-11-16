@@ -92,6 +92,14 @@ pub struct LightSource {
     pub colour: [f32; 3],
 }
 
+/// The colour's three channels linearised by the original's sRGB routine
+/// (the engine's fast logarithm and exponential,
+/// [`crate::presets::srgb_to_linear`]), as the light's derive and its node
+/// colour take them; the renderer's `powf` curve differs in the last bits.
+fn linearised(c: [f32; 3]) -> [f32; 3] {
+    c.map(crate::presets::srgb_to_linear)
+}
+
 impl LightSource {
     /// A light node from its record's flags and intensity, with the
     /// constructor's defaults.
@@ -240,8 +248,8 @@ impl LightSource {
     /// intensity passes through.
     pub fn direct_colour(&self, linear: bool) -> [f32; 3] {
         if linear {
-            let c = exa_render::material::linear_rgb(self.colour) * self.intensity;
-            [c.x, c.y, c.z]
+            let c = linearised(self.colour);
+            c.map(|c| c * self.intensity)
         } else {
             let scale = self.intensity.sqrt() * 0.75;
             self.colour.map(|c| c * scale)
@@ -253,13 +261,13 @@ impl LightSource {
     /// `√(intensity · multiplier) · 0.6` (the 0.6 in double) in the legacy
     /// one. Activation and the clone copy compute it the same way.
     pub fn node_colour(&self, linear: bool) -> [f32; 3] {
-        let c = exa_render::material::linear_rgb(self.colour);
+        let c = linearised(self.colour);
         let scale = if linear {
             self.intensity.sqrt() * self.multiplier * 3.0
         } else {
             (f64::from((self.intensity * self.multiplier).sqrt()) * 0.6) as f32
         };
-        [c.x * scale, c.y * scale, c.z * scale]
+        c.map(|c| c * scale)
     }
 
     /// The derive step: the direct colour, then the second colour (black
@@ -631,6 +639,20 @@ pub(crate) fn apply_light_state(
 mod tests {
     use super::*;
 
+    /// The oracle's case: the linear workflow's direct colour is the
+    /// colour linearised by the original's sRGB routine (fast logarithm
+    /// and exponential) times the intensity, bit for bit.
+    #[test]
+    fn the_linear_light_colour_takes_the_originals_srgb_routine() {
+        let mut light = LightSource::new(0, f32::from_bits(0x4024_6d67));
+        light.colour = [0x3e6e_adb1, 0x3e60_0823, 0x3e94_5e41].map(f32::from_bits);
+        let colour = light.direct_colour(true);
+        assert_eq!(
+            colour.map(f32::to_bits),
+            [0x3de9_6c1b, 0x3dce_923e, 0x3e33_a3a5]
+        );
+    }
+
     #[test]
     fn activation_takes_the_base_intensity_and_the_offset() {
         let mut s = LightSource::new(0, 3.0);
@@ -889,8 +911,9 @@ mod tests {
         s.colour = [1.0, 0.5, 0.25];
         // Legacy: √4 · 0.75 = 1.5 on every channel.
         assert_eq!(s.direct_colour(false), [1.5, 0.75, 0.375]);
-        // Linear: linearise each channel first, then times 4.
-        let c = exa_render::material::linear_rgb([1.0, 0.5, 0.25]);
+        // Linear: linearise each channel first (the original's sRGB
+        // routine), then times 4.
+        let c = Vec3::from_array(linearised([1.0, 0.5, 0.25]));
         assert_eq!(s.direct_colour(true), [c.x * 4.0, c.y * 4.0, c.z * 4.0]);
         // The node colour: the linearised colour times √(4·0.5) · 0.6 with
         // the 0.6 in double (legacy), or √4 · 0.5 · 3 (linear).

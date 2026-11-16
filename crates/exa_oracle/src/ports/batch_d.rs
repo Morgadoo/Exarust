@@ -72,6 +72,32 @@ fn blast_place(b: &Case) -> Vec<u8> {
     out
 }
 
+/// A barricade's place score (its avoidance slot): the wall's centre, axis
+/// and half width, the fighter's chest, step length, reach word, scale and
+/// feral level, its caution and lunge reach, the place asked (F569).
+fn barricade_place(b: &Case) -> Vec<u8> {
+    let wall = exa_ai::combat::WallStep {
+        centre: Vec3::new(b.f32("wall.cx"), b.f32("wall.cy"), b.f32("wall.cz")),
+        along: Vec3::new(b.f32("node.ax"), b.f32("node.ay"), b.f32("node.az")),
+        half_width: b.f32("wall.half"),
+    };
+    let body = exa_ai::combat::Body {
+        chest: b.vec3("body"),
+        scale: b.f32("body.scale"),
+        reach_cm: b.f32("body.reach"),
+        step_cm: b.f32("body.step"),
+        feral: b.f32("crec.feral"),
+        ..exa_ai::combat::Body::default()
+    };
+    place_score(&exa_ai::combat::barricade_place(
+        wall,
+        b.vec3("at"),
+        &body,
+        b.f32("ai.caution"),
+        b.f32("ai.keep"),
+    ))
+}
+
 /// The named field's bytes as a little-endian `i32`.
 fn i32_of(b: &Case, name: &str) -> i32 {
     i32::from_le_bytes(b.field(name).try_into().expect("4 bytes"))
@@ -258,6 +284,10 @@ fn made_condition_roll(b: &Case) -> Vec<u8> {
 }
 
 pub(super) const PORTS: &[Port] = &[
+    Port {
+        name: "barricade_place",
+        run: barricade_place,
+    },
     Port {
         name: "made_condition_roll",
         run: made_condition_roll,
