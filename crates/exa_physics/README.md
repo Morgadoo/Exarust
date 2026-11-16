@@ -1260,9 +1260,11 @@ leaves it out, each tick only rolls its particle sets and takes one off its
 countdown, and a wake does not unpark it; the AI manager's frame
 (`exa_game::park`) and the golem wake unpark it (`Ragdoll::unpark`). The original's mark and
 unmark walk the character's node tree, where its held items hang: before the solver each linked
-held item takes its holder's mark (`grip_solve::share_holder_park`), and the grip's mark
-(`grip_solve::mark_held`) wakes a held item to the full count every tick, as the tree wake
-leaves it. A body a level placed from its saved
+held item takes its holder's mark (`grip_solve::share_holder_park`) and shares its holder's
+sleep (`grip_solve::share_holder_sleep`, `Ragdoll::follow_holder`): the two take the larger of
+their countdowns, an item whose holder sleeps falls asleep, and a touched item wakes its
+holder, as the original's body tree shares its root's countdown (a living holder keeps it at
+the full count, a dormant one counts it down). A body a level placed from its saved
 pose is built limp and registered at rest
 (`body::Ragdoll::register_placed`, the `body::PlacedCorpse` request): every
 velocity zero and the countdown at 0, so it runs one tick and that tick's

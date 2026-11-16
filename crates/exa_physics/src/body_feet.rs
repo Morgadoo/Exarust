@@ -132,6 +132,12 @@ const RATE_TOUCHING: f64 = 0.2;
 const RATE_LIFTED_WALKING: f64 = 0.1;
 const RATE_LIFTED: f64 = 0.4;
 const SERVO_CLOSING: f64 = 0.05;
+/// The class set-up's per-tick factors from the 83 Hz rate (each narrowed
+/// to single): the servo scales the motion it measures by rate × 0.0125
+/// (1.0375, the motion over an 80 Hz tick), and the approach speed by
+/// 80/rate (0.963855).
+const SERVO_MOTION: f32 = (83.0 * 0.0125) as f32;
+const APPROACH_MOTION: f32 = (80.0f64 / 83.0) as f32;
 /// The PD grip: spring 0.1·p + 0.004·g(1 − p), damping p + 0.03·g(1 − p)
 /// of the horizontal displacement; p is kept up to 1 cm over the anchor,
 /// gone at 9 cm, and an anchor below is not pulled to.
@@ -168,14 +174,15 @@ pub(super) fn toe(sole: f32, scale: f32) -> Vec3 {
 }
 
 /// The velocity servo, in cm: a point `moved` this tick with gap `d` to its
-/// target already closes q = (moved·d)/|d|² of it; under 0.05 it is pushed
+/// target already closes q = (moved·d × 1.0375)/|d|² of it (the motion
+/// scaled to an 80 Hz tick, [`SERVO_MOTION`]); under 0.05 it is pushed
 /// by d·(rate − q)·gain, so it closes `rate` of its gap a tick.
 pub(super) fn servo(d: Vec3, moved: Vec3, gain: f32, rate: f32) -> Option<Vec3> {
     let len2 = d.length_squared();
     if len2.is_nan() || len2 < EPSILON2 {
         return None;
     }
-    let q = moved.dot(d) / len2;
+    let q = moved.dot(d) * SERVO_MOTION / len2;
     (f64::from(q) < SERVO_CLOSING).then(|| d * ((rate - q) * gain))
 }
 
@@ -278,7 +285,7 @@ pub(super) fn drive_contact(shin: &mut Part, leg: &mut Leg, fd: &FootDrive) -> b
         if leg.state.stepping() {
             let reach = REACH * fd.scale;
             if reach * reach <= len2 {
-                let closing = cm(leg.at - leg.before).dot(d) / len2.sqrt();
+                let closing = cm(leg.at - leg.before).dot(d) / len2.sqrt() * APPROACH_MOTION;
                 leg.approach = (f64::from(closing) * APPROACH_TAKE
                     + f64::from(leg.approach) * APPROACH_KEEP)
                     as f32;

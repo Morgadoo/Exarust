@@ -857,7 +857,8 @@ pub enum FemurPosture {
 }
 
 /// The turn the original multiplies into leg `leg`'s thigh over the clip's
-/// (after the clip's turn, `clip * turn`): about the axis (0, 0, 1) lerped
+/// (applied after the clip's turn: `turn * clip` in glam's order, the
+/// engine's product of the clip turn and this): about the axis (0, 0, 1) lerped
 /// 0.4 toward (−1, 0, 0) (`a + (b − a)·0.4`) and normalised by the
 /// approximate reciprocal square root, the angle by `posture`, its sign
 /// alternating by leg; the quaternion is the engine's (its fast sine and

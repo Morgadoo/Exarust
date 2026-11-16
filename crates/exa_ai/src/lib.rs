@@ -180,7 +180,14 @@ impl Plugin for AiPlugin {
                     // While the staging freeze holds the states, the idle
                     // stand's soft stop of a following body runs where the
                     // combat state would.
-                    (freeze::soft_stop_frozen_routes, duellist, apply_feet_steps)
+                    // The jolt's soft stop joins it, before the combat
+                    // states.
+                    (
+                        freeze::soft_stop_frozen_routes,
+                        route_walk::soft_stop_jolted_routes,
+                        duellist,
+                        apply_feet_steps,
+                    )
                         .chain()
                         .in_set(DuelSystems),
                     brain_clock_mark(3),

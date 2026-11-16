@@ -170,6 +170,8 @@ pub fn refresh_worn_specials(
                 new.list.impacts = old.list.impacts;
                 new.list.ticks = old.list.ticks;
                 new.next_run_ms = old.next_run_ms;
+                // The registration reads the kept charge.
+                new.pending_power = new.golem_power();
                 if *old != new {
                     *old = new;
                 }

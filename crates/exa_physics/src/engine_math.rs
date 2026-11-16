@@ -638,7 +638,8 @@ pub fn barycentric_exact(point: Vec3, tet: &[[f32; 3]; 4]) -> [f32; 4] {
 
 /// The quaternion product as the original computes it: the vector part is
 /// `(q2 × q1) + q2·q1.w + q1·q2.w` in that addition order, and the scalar
-/// part `q1.w·q2.w − q1·q2` with the dot summed `z + (y + x)`.
+/// part `q1.w·q2.w − q1·q2` with the dot summed `z + (y + x)`. It is the
+/// Hamilton product `q2 ⊗ q1` (glam's `q2 * q1`): `q1`'s turn, then `q2`'s.
 pub fn quaternion_product(q1: Quat, q2: Quat) -> Quat {
     let cross = q2.xyz().cross(q1.xyz());
     let mut xyz = cross + q2.xyz() * q1.w;
@@ -1325,6 +1326,12 @@ mod tests {
         let a = Quat::from_xyzw(1.0, 4096.0, 4096.0, 0.0);
         let b = Quat::from_xyzw(1.0, 4096.0, -4096.0, 0.0);
         assert_eq!(quaternion_product(a, b).w, 0.0);
+        // It is the Hamilton product with its operands swapped: the first
+        // turn, then the second (glam's `q2 * q1`).
+        let q1 = Quat::from_axis_angle(Vec3::new(0.2, 0.9, -0.3).normalize(), 0.8);
+        let q2 = Quat::from_axis_angle(Vec3::new(-0.6, 0.0, 0.8), 0.4);
+        assert!(quaternion_product(q1, q2).abs_diff_eq(q2 * q1, 1e-6));
+        assert!(!quaternion_product(q1, q2).abs_diff_eq(q1 * q2, 1e-3));
         // The original's product of the identity with a turn keeps it.
         let half = quaternion_from_axis_angle(Vec3::Y, 1.0);
         let product = quaternion_product(Quat::IDENTITY, half);
