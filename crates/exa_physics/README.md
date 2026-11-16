@@ -1897,10 +1897,21 @@ stand-in collider; `mesh_tree::sphere_contacts` is its sphere query (each front
 face the sphere reaches hands its closest point to a callback that may move the
 sphere); `mesh_tree::two_sided_contacts` is its two-sided sphere query in
 centimetres, the slot the force blast's part contact and the particles'
-body pass ask. `mesh_query` holds the mesh's per-leaf effect tests the kd-tree
-installer sets beside the pair stage's: the two-sided sphere test (a
-force blast's, wave's and torrent's part and level contacts), the front
-sphere test and the swept test (the bolt's sampled walk). `mesh_tree` puts a body node's CPU triangles behind the tree as the
+body pass ask. `mesh_query` holds the mesh's per-triangle query tests,
+in centimetres over the face record (`volume::Face::exact`, its closest
+point the record's own region test, `Face::nearest_exact`, exact
+reciprocals while DEC-7 is open), which every mesh query in the simulation
+runs: the two-sided sphere test (the overlap query's mesh test,
+`contact::sphere_touches`; a force blast's, wave's and torrent's part and
+level contacts), the front sphere test (`contact::sphere_hit`: the level
+detection, the pair stage and the placement query, with the kd-tree leaf's
+push floor 1e-6 or the brute-force callback's 1e-10, `contact::push_floor`,
+a level piece's form recorded from its node mesh's triangle count,
+`StaticColliders::has_tree`), the swept test (`contact::swept_hit` on a
+`SweptRecord`; the bolt's sampled walk) and the swept nearest test (the
+Height Query's, `contact::drop_onto`, which meets no face the sphere
+starts within its radius of). Each keeps the instructions' unordered (NaN)
+branches. `mesh_tree` puts a body node's CPU triangles behind the tree as the
 original does: a node mesh of more than 10 and fewer than 100 000 triangles
 gets one (`takes_tree`, the scene loader's queue rule), a shape builder's
 fitted mesh (a limb's or a weapon's) one at any count (`shape_tree`). Trees
