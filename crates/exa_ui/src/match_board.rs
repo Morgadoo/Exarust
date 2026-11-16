@@ -2664,7 +2664,29 @@ impl Board {
             let column = table.column_at(point.0);
             return BoardHit::Table { slot, row, column };
         }
+        if let Some(item) = self.item_at(point) {
+            return BoardHit::Item(item);
+        }
         BoardHit::Outside
+    }
+
+    /// The item an item slot under `point` shows: the tournament tab's prize
+    /// slot while it holds the event's reward, or one of the season tab's
+    /// four reward slots while it holds an item.
+    pub fn item_at(&self, point: (i32, i32)) -> Option<u32> {
+        let layout = self.layout();
+        match self.tab {
+            BoardTab::Tournament => self
+                .tournament_reward
+                .filter(|_| layout.prize_slot.contains(point.0, point.1)),
+            BoardTab::Season => layout
+                .reward_slots
+                .iter()
+                .position(|rect| rect.contains(point.0, point.1))
+                .and_then(|index| self.season_items[index]),
+            _ => None,
+        }
+        .filter(|&item| item != 0)
     }
 
     /// Turns a click at a point into the matching board input.
@@ -2677,6 +2699,7 @@ impl Board {
             BoardHit::Forfeit => BoardAction::Forfeit,
             BoardHit::Choose => BoardAction::ChooseLineup,
             BoardHit::Table { slot, .. } => self.press_table(slot, point),
+            BoardHit::Item(item) => BoardAction::ShowItem(item),
             BoardHit::Outside => BoardAction::None,
         }
     }
@@ -3399,6 +3422,9 @@ pub enum BoardHit {
     Forfeit,
     /// The weapon restriction pane's Choose button.
     Choose,
+    /// An item slot (the tournament prize or a season reward) holding this
+    /// item.
+    Item(u32),
     /// Nothing the board handles.
     Outside,
 }
@@ -3449,6 +3475,9 @@ pub enum BoardAction {
     /// The weapon restriction pane's Choose: the selected tournament event's
     /// lineup opens on its first entrant ([`Board::winner_selection`]).
     ChooseLineup,
+    /// An item slot's callback: the item's card opens at once (its flags
+    /// 0), as for any item icon.
+    ShowItem(u32),
     /// The form closes.
     Close,
 }

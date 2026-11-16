@@ -316,6 +316,30 @@ pub fn bracket_layout(
     teams: i32,
     spawn: [f32; 3],
 ) -> Vec<BracketTeam> {
+    let groups = bracket_groups(slots, per_team, teams);
+    let radius = bracket_radius(per_team, teams);
+    let sides = groups.len();
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(index, (team, members))| {
+            let (spread, start) = side_spread(index, sides, members.len());
+            let members = members
+                .into_iter()
+                .enumerate()
+                .map(|(order, slot)| {
+                    let a = order as f32 * spread + start;
+                    (slot, bracket_place(spawn, a, radius))
+                })
+                .collect();
+            BracketTeam { team, members }
+        })
+        .collect()
+}
+
+/// The teams a bracket forms ([`bracket_layout`]): each team's id and the
+/// slots of its members inside its run.
+fn bracket_groups(slots: &[i32], per_team: i32, teams: i32) -> Vec<(i32, Vec<usize>)> {
     let mut groups: Vec<(i32, Vec<usize>)> = Vec::new();
     let mut cursor = 0usize;
     if per_team > 0 {
@@ -337,24 +361,38 @@ pub fn bracket_layout(
             }
         }
     }
-    let radius = (i64::from(teams) * i64::from(per_team) * 50 + 100).min(350) as f32;
-    let sides = groups.len();
     groups
-        .into_iter()
-        .enumerate()
-        .map(|(index, (team, members))| {
-            let (spread, start) = side_spread(index, sides, members.len());
-            let members = members
-                .into_iter()
-                .enumerate()
-                .map(|(order, slot)| {
-                    let a = order as f32 * spread + start;
-                    (slot, bracket_place(spawn, a, radius))
-                })
-                .collect();
-            BracketTeam { team, members }
-        })
-        .collect()
+}
+
+/// The ring's radius: `teams × per_team × 50 + 100`, at most 350.
+fn bracket_radius(per_team: i32, teams: i32) -> f32 {
+    (i64::from(teams) * i64::from(per_team) * 50 + 100).min(350) as f32
+}
+
+/// The places of `count` bodies a later bracket round keeps on team
+/// `team`'s side: body `k` at the side's `k`-th place, the spread taken
+/// from the side's member count in the bracket, not from `count` (the
+/// original stands its kept list this way). `None` when the bracket forms
+/// no such team.
+#[must_use]
+pub fn kept_side_places(
+    slots: &[i32],
+    per_team: i32,
+    teams: i32,
+    spawn: [f32; 3],
+    team: i32,
+    count: usize,
+) -> Option<Vec<Place>> {
+    let groups = bracket_groups(slots, per_team, teams);
+    let radius = bracket_radius(per_team, teams);
+    let sides = groups.len();
+    let (index, (_, members)) = groups.iter().enumerate().find(|(_, (id, _))| *id == team)?;
+    let (spread, start) = side_spread(index, sides, members.len());
+    Some(
+        (0..count)
+            .map(|order| bracket_place(spawn, order as f32 * spread + start, radius))
+            .collect(),
+    )
 }
 
 /// A tournament opponent: a generic fighter of level 5 for a team id under

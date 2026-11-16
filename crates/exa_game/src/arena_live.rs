@@ -342,14 +342,15 @@ impl Plugin for ArenaLivePlugin {
                     arena_pause,
                     open_end_screen,
                     update_end_screen,
-                    // The staging the flow's transition callback fired this
-                    // frame is taken in the same frame.
-                    continue_round.after(crate::flow::FlowSystems::ApplySteps),
+                    continue_round,
                     forfeit_match::<false>,
                     draw_end_screen,
                 )
                     .chain()
-                    .after(crate::gui_screens::draw_screens),
+                    .after(crate::gui_screens::draw_screens)
+                    // A staging's callback fires in the flow's steps; the
+                    // Continue's staging runs in the same frame after them.
+                    .after(crate::flow::FlowSystems::ApplySteps),
             )
             // The quit's forfeit (the arena pause page's QUIT) settles the
             // match before the quit's saves are written.
@@ -735,6 +736,7 @@ pub(crate) fn stand_first_round(
     clock: Option<Res<crate::effects::EffectClock>>,
     mut commands: MessageWriter<SceneCommand>,
     ((mut fixed, mut freeze), flow): (FreezeQueue<'_>, Option<Res<crate::flow::Flow>>),
+    env: Option<Res<exa_world::environment::SceneEnvRuntime>>,
 ) {
     let Some(mut scene) = scene else {
         return;
@@ -757,6 +759,14 @@ pub(crate) fn stand_first_round(
         return;
     }
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
+    // The match start's map load, with the outdoor wind over 0.1, wakes the
+    // level's cloths before anyone stands.
+    if let Some(wind) = env.as_ref().map(|env| env.env.wind)
+        && wakes_cloths(wind)
+    {
+        wake_cloths(fixed.as_deref_mut(), MATCH_WIND_WAKE);
+        info!("arena match: wind {wind:.3} wakes the level's cloths to {MATCH_WIND_WAKE}");
+    }
     if let Some(mut arena) = arena {
         // A physician on the company's books saves a fall that would have
         // killed (the fall rule's widened line).
@@ -788,6 +798,39 @@ pub(crate) fn stand_first_round(
         exa_ai::freeze::stage_held(fixed.as_deref_mut(), freeze.as_deref_mut());
     } else {
         exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
+    }
+}
+
+/// The wake the match start gives the level's cloths in the wind: the
+/// sweep's argument word, 32 (the cloth's wake slot raises its countdown
+/// to it).
+pub const MATCH_WIND_WAKE: i32 = 0x20;
+
+/// Whether the match start's wind wakes the cloths: the environment's wind
+/// widened to double over 0.1 (a not-a-number does not).
+#[must_use]
+pub fn wakes_cloths(wind: f32) -> bool {
+    f64::from(wind) > 0.1
+}
+
+/// The match start's sweep over the simulation's first sector: each
+/// object's wake slot with `count`, posted to the next fixed step (cloths
+/// are simulation data). A cloth raises its countdown to `count`; the base
+/// slot of the other objects (clearing two state bits) has no Exarust
+/// state, and every cloth is taken as the first sector's [guess: an arena
+/// is one sector].
+pub fn wake_cloths(fixed: Option<&mut exa_physics::sim_app::FixedCommands>, count: i32) {
+    let wake = move |world: &mut World| {
+        let mut query = world.query::<&mut exa_world::cloth::ClothInstance>();
+        let mut woken = 0;
+        for mut instance in query.iter_mut(world) {
+            instance.cloth.wake_to(count);
+            woken += 1;
+        }
+        debug!("arena match: {woken} cloths woken to {count}");
+    };
+    if let Some(fixed) = fixed {
+        fixed.post(wake);
     }
 }
 
@@ -829,13 +872,34 @@ fn continue_round(
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
     // The transition screen is black: the next round held at the Continue is
     // staged now, under the screen, whose close ends the staging freeze.
+    let finish = if arena.state == MatchState::Won {
+        Finish::Won
+    } else {
+        Finish::Lost
+    };
     let (round, bracket, held) = match staging.as_mut().and_then(|s| s.take_round()) {
         Some(EndAction::NextRound { round, bracket }) => (
             round,
             bracket,
             flow.as_ref().is_some_and(|flow| flow.transition_running()),
         ),
-        Some(_) => return,
+        Some(EndAction::ReturnToHub { tournament }) => {
+            // The return's callback at black: the match is settled and the
+            // hub's level asked for (the bracket ended at the Continue).
+            info!("arena return: settled at the transition screen's black");
+            settle_and_exit(
+                arena,
+                scene,
+                career.as_deref_mut(),
+                finish,
+                tournament,
+                &fighters,
+                &mut commands,
+                &mut exits,
+            );
+            return;
+        }
+        Some(EndAction::MainMenu) => return,
         None => {
             if staging.as_ref().is_some_and(|s| s.round_pending()) {
                 return;
@@ -860,21 +924,50 @@ fn continue_round(
             let action = arena.end_action(scene.tournament);
             match action {
                 EndAction::MainMenu => {
-                    for (entity, ..) in &fighters {
-                        commands.write(SceneCommand::Despawn(entity));
+                    // The dead manager's leave to the title runs behind the
+                    // transition screen with the music fade on; the world's
+                    // teardown there takes the bodies.
+                    if crate::arena_fade::open_staging(
+                        flow.as_deref_mut(),
+                        queued.as_deref_mut(),
+                        crate::flow::Action::QuitToMenu,
+                        true,
+                    ) {
+                        if let Some(screen) = screen.as_mut() {
+                            screen.close();
+                        }
+                        info!("arena match: the manager is dead; the title waits for the screen");
+                    } else {
+                        for (entity, ..) in &fighters {
+                            commands.write(SceneCommand::Despawn(entity));
+                        }
+                        exits.write(ArenaExit::MainMenu);
                     }
-                    exits.write(ArenaExit::MainMenu);
                     arena.screen = None;
                     return;
                 }
                 EndAction::ReturnToHub { tournament } => {
-                    let finish = if arena.state == MatchState::Won {
-                        Finish::Won
-                    } else {
-                        Finish::Lost
-                    };
                     let sides = scene_sides(&drawn);
                     let mode = arena.state.word() as i32;
+                    // The Continue ends the bracket, then opens the
+                    // transition screen over the return (the music fade on);
+                    // the match is settled at its black.
+                    if let Some(staging) = staging.as_mut()
+                        && crate::arena_fade::open_staging(
+                            flow.as_deref_mut(),
+                            queued.as_deref_mut(),
+                            crate::flow::Action::ArenaReturn,
+                            true,
+                        )
+                    {
+                        end_bracket(scene, career.as_deref_mut(), &sides, mode);
+                        if let Some(screen) = screen.as_mut() {
+                            screen.close();
+                        }
+                        staging.hold_round(action);
+                        info!("arena match: the return to the hub waits for the transition screen");
+                        return;
+                    }
                     finish_and_exit(
                         arena,
                         scene,
@@ -912,6 +1005,12 @@ fn continue_round(
             }
         }
     };
+    // Both stagings first write the company bodies' health words back into
+    // their records, as the return does.
+    if let Some(career) = career.as_deref_mut() {
+        let written = write_back_bodies(career, &fighters);
+        debug!("arena match: round {round} wrote {written} health words back");
+    }
     if bracket {
         // A tournament's next round raises the bracket's fight: the
         // won group keeps team one, the other groups draw their
@@ -920,7 +1019,6 @@ fn continue_round(
         let mode = arena.state.word() as i32;
         if stand_bracket_round(
             scene,
-            career.as_deref(),
             &fighters,
             &mut kits,
             level.as_deref_mut(),
@@ -971,6 +1069,30 @@ fn continue_round(
     arena.screen = None;
     arena.started_ms = None;
     arena.resolved.clear();
+}
+
+/// The company bodies' health words go back into their records
+/// ([`crate::arena_session::write_back_health`]): the original's write-back
+/// runs at the start of the next round, the bracket round and the return.
+fn write_back_bodies(
+    career: &mut crate::hub_windows::ArenaCareer,
+    fighters: &Query<MatchBody<'_>>,
+) -> usize {
+    let returned: Vec<ReturnFighter> = fighters
+        .iter()
+        .filter(|(_, _, _, body, player)| body.company || *player)
+        .map(|(_, fighter, _, body, player)| ReturnFighter {
+            company: true,
+            id: if player { 0 } else { body.id },
+            health: fighter.health.red,
+            max: fighter.health.max,
+            word: Some(crate::arena_match::health_word(
+                fighter.health.red,
+                fighter.health.max,
+            )),
+        })
+        .collect();
+    write_back_health(career, &returned)
 }
 
 /// The next round's bodies: the winner stays and the reserve or a fresh
@@ -1074,7 +1196,6 @@ fn stand_next_round(
 #[allow(clippy::too_many_arguments)]
 fn stand_bracket_round(
     scene: &mut ArenaScene,
-    career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
     kits: &mut Query<KitBody<'_>>,
     mut level: Option<&mut exa_assets::live_objects::LiveObjects>,
@@ -1119,42 +1240,80 @@ fn stand_bracket_round(
     for report in &raised.reports {
         warn!("arena match: {}: {}", report.title, report.message);
     }
-    // Every body but the player's is rebuilt; the player is placed on its
-    // bracket spot instead.
-    for (entity, _, _, _, player) in fighters {
-        if !player {
+    // The kept list: the company's bodies (the player's included) that are
+    // not dead, in their entry order; a dead one leaves the list. Every
+    // other body goes (the original's between-round reload drops every body
+    // it does not take back).
+    let entry_of = |body: &SceneFighter| {
+        scene
+            .entrants
+            .iter()
+            .position(|&slot| slot == body.id as usize)
+            .unwrap_or(body.id as usize)
+    };
+    let player_entry = scene.player_entry.unwrap_or(0);
+    let mut kept: Vec<(usize, Entity, bool)> = Vec::new();
+    for (entity, _, condition, body, player) in fighters {
+        let company = player || body.company;
+        if company && *condition != Condition::DEAD {
+            let entry = if player { player_entry } else { entry_of(body) };
+            kept.push((entry, entity, player));
+        } else if player {
+            warn!("arena match: the player is dead at a bracket round; its body is left lying");
+        } else {
             commands.write(SceneCommand::Despawn(entity));
         }
     }
+    // The player's body carries no scene marker when it is the debug
+    // player; it stays at its entry.
+    if !kept.iter().any(|&(.., player)| player) {
+        let players: Vec<Entity> = kits
+            .iter()
+            .filter(|(.., player_body)| *player_body)
+            .map(|(entity, ..)| entity)
+            .collect();
+        for entity in players {
+            if fighters.iter().all(|(body, ..)| body != entity) {
+                kept.push((player_entry, entity, true));
+            }
+        }
+    }
+    kept.sort_by_key(|&(entry, ..)| entry);
+    let now = now_ms.wrapping_add(crate::arena_session::NEXT_ROUND_YIELD_MS);
+    let kept_places = crate::match_layout::kept_side_places(
+        &survivors,
+        bracket.team_size,
+        bracket.sides,
+        scene.spawn_at,
+        fight.player_team,
+        kept.len(),
+    );
+    let mut kept_stood = false;
+    let mut teams_seen: Vec<i32> = Vec::new();
     for fighter in raised.fighters {
-        let place = fighter.place;
         match fighter.body {
-            RaisedBody::Player => {
-                if let Some((entity, ..)) = fighters.iter().find(|(_, _, _, _, player)| *player) {
-                    // A later round re-dresses the player who stays.
+            // The company's side: the kept bodies are re-dressed and stood on
+            // the side's places in list order, once, where the side comes in
+            // the team walk. The original takes them back after the reload
+            // (the kit equip, the level attach, the kept body's reset, whose
+            // non-player clocks step the roll).
+            RaisedBody::Player | RaisedBody::Company { .. } => {
+                if kept_stood {
+                    continue;
+                }
+                kept_stood = true;
+                let Some(places) = kept_places.as_ref() else {
+                    continue;
+                };
+                for (&(_, entity, player), place) in kept.iter().zip(places) {
                     redress(kits, level.as_deref_mut(), entity);
-                    // The kept player is reset as a kept body is (no AI
-                    // clocks, so the roll does not step) and stands at its
-                    // bracket place.
-                    let reset = crate::match_layout::reset_kept(
-                        true,
-                        now_ms.wrapping_add(crate::arena_session::NEXT_ROUND_YIELD_MS),
-                        &mut scene.roll,
-                    );
+                    let reset = crate::match_layout::reset_kept(player, now, &mut scene.roll);
                     commands.write(SceneCommand::Reset {
                         body: entity,
                         reset,
-                        place,
+                        place: *place,
                     });
                 }
-            }
-            RaisedBody::Company {
-                role, act_at_ms, ..
-            } => {
-                let (member, id) = scene.entrant(career, fighter.index);
-                let copy = scene.match_copy(career, fighter.index);
-                let body = company_plan(member, copy, &place, role, id, 0, act_at_ms);
-                commands.write(SceneCommand::Spawn(Box::new(body)));
             }
             RaisedBody::Opponent {
                 plan,
@@ -1162,6 +1321,10 @@ fn stand_bracket_round(
                 act_at_ms,
                 ..
             } => {
+                if !teams_seen.contains(&fighter.team) {
+                    teams_seen.push(fighter.team);
+                }
+                let place = fighter.place;
                 let mut body = match plan {
                     crate::match_layout::OpponentPlan::Generic(plan) => {
                         opponent_plan(plan, &place, role, 0, act_at_ms)
@@ -1180,12 +1343,19 @@ fn stand_bracket_round(
             }
         }
     }
+    info!(
+        "arena match: the bracket round keeps {} company bodies against {} sides",
+        kept.len(),
+        teams_seen.len()
+    );
     true
 }
 
 /// Settle `finish`, take the round's bodies away and ask for the hub's
-/// level; the settled career stays in its resource. Both the end screen's Continue and the pause page's
-/// forfeit leave this way.
+/// level; the settled career stays in its resource. The pause page's
+/// forfeit leaves this way, and the end screen's Continue without the flow
+/// (with it, [`end_bracket`] runs at the Continue and [`settle_and_exit`] at
+/// the transition screen's black).
 #[allow(clippy::too_many_arguments)]
 fn finish_and_exit(
     arena: &mut ArenaMatch,
@@ -1197,10 +1367,23 @@ fn finish_and_exit(
     commands: &mut MessageWriter<SceneCommand>,
     exits: &mut MessageWriter<ArenaExit>,
 ) {
-    // A tournament's end (or forfeit) first draws the scene's winner, clears
-    // every bracket and names the first open event's winner, before the
-    // return to the hub settles.
-    if let (Some(bracket), Some(career)) = (scene.bracket.as_mut(), career.as_deref_mut()) {
+    end_bracket(scene, career.as_deref_mut(), sides, mode);
+    settle_and_exit(
+        arena, scene, career, finish, tournament, fighters, commands, exits,
+    );
+}
+
+/// A tournament's end (or forfeit) first draws the scene's winner, clears
+/// every bracket and names the first open event's winner, before the return
+/// to the hub settles. The end menu's Continue does this before it opens the
+/// transition screen over the return.
+fn end_bracket(
+    scene: &mut ArenaScene,
+    career: Option<&mut crate::hub_windows::ArenaCareer>,
+    sides: &[crate::career::SideFighter],
+    mode: i32,
+) {
+    if let (Some(bracket), Some(career)) = (scene.bracket.as_mut(), career) {
         let mut roll = scene.roll;
         let winner =
             crate::career::draw_unwatched(sides, crate::arena_match::PLAYER_TEAM, mode, &mut roll);
@@ -1211,6 +1394,22 @@ fn finish_and_exit(
             career.entries.map(|row| row.team_id)
         );
     }
+}
+
+/// The return to the hub proper (the transition screen's callback when the
+/// flow runs): settle `finish`, take the round's bodies away and ask for the
+/// hub's level.
+#[allow(clippy::too_many_arguments)]
+fn settle_and_exit(
+    arena: &mut ArenaMatch,
+    scene: &mut ArenaScene,
+    mut career: Option<&mut crate::hub_windows::ArenaCareer>,
+    finish: Finish,
+    tournament: bool,
+    fighters: &Query<MatchBody<'_>>,
+    commands: &mut MessageWriter<SceneCommand>,
+    exits: &mut MessageWriter<ArenaExit>,
+) {
     settle_match(arena, scene, &mut career, finish, tournament, fighters);
     for (entity, ..) in fighters {
         commands.write(SceneCommand::Despawn(entity));
@@ -1501,12 +1700,9 @@ mod tests {
             .init_resource::<ArenaEndScreen>()
             .add_systems(
                 Update,
-                (
-                    open_end_screen,
-                    update_end_screen,
-                    continue_round.after(crate::flow::FlowSystems::ApplySteps),
-                )
-                    .chain(),
+                (open_end_screen, update_end_screen, continue_round)
+                    .chain()
+                    .after(crate::flow::FlowSystems::ApplySteps),
             );
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>();
@@ -1576,6 +1772,56 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    /// The match start in the wind wakes every cloth of the level to 32 at
+    /// the next fixed step; a calmer wind, or a not-a-number, wakes none.
+    /// The single 0.1 widened to double is just over the double 0.1, so it
+    /// wakes them.
+    #[test]
+    fn a_windy_match_start_wakes_the_levels_cloths() {
+        assert!(wakes_cloths(0.1) && !wakes_cloths(0.099_999) && !wakes_cloths(f32::NAN));
+        let run = |wind: f32| {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_message::<SceneCommand>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .init_resource::<exa_ai::freeze::StagingFreeze>()
+                .add_systems(Update, stand_first_round);
+            app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
+            app.insert_resource(scene());
+            let mut env = exa_world::scene_env::SceneEnvironment::new(5);
+            env.wind = wind;
+            app.insert_resource(exa_world::environment::SceneEnvRuntime::new(env, 1));
+            app.world_mut().spawn(exa_world::LevelRoot {
+                name: "arena1.rfc".into(),
+            });
+            app.world_mut()
+                .spawn((crate::player::Player, Transform::default()));
+            let mut cloth = exa_physics::cloth::Cloth::from_mesh(
+                &[Vec3::ZERO, Vec3::X, Vec3::Y],
+                &[[0, 1, 2]],
+                &[0],
+            );
+            cloth.sleep = 3;
+            let cloth = app
+                .world_mut()
+                .spawn(exa_world::cloth::ClothInstance::new(
+                    cloth,
+                    Handle::default(),
+                    vec![0, 1, 2],
+                ))
+                .id();
+            app.update();
+            exa_physics::sim_app::run_fixed_commands(app.world_mut());
+            app.world()
+                .get::<exa_world::cloth::ClothInstance>(cloth)
+                .unwrap()
+                .cloth
+                .sleep
+        };
+        assert_eq!(run(0.5), MATCH_WIND_WAKE);
+        assert_eq!(run(0.05), 3);
     }
 
     #[test]
@@ -2019,6 +2265,165 @@ mod tests {
         assert!(!app.world().resource::<ArenaEndScreen>().open);
     }
 
+    /// The arena app with the flow, its transition screen and the arena's
+    /// stagings, on a 16 ms frame, playing an arena session.
+    fn flow_arena_app() -> App {
+        use exa_physics::sim_app::{FixedCommands, SimPause};
+        let mut app = arena_app();
+        app.init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .add_plugins((
+                crate::menu_screen::MenuScreenPlugin,
+                crate::flow::FlowPlugin,
+                crate::arena_fade::ArenaFadePlugin,
+            ))
+            .init_resource::<FixedCommands>()
+            .init_resource::<SimPause>()
+            .init_resource::<exa_ai::freeze::StagingFreeze>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(16),
+            ));
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::menu_screen::MenuScreen>()
+            .close();
+        let mut flow = app.world_mut().resource_mut::<crate::flow::Flow>();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = crate::flow::Phase::Playing;
+        flow.menu_open = false;
+        app
+    }
+
+    fn drain_exits(app: &mut App) -> Vec<ArenaExit> {
+        app.world_mut()
+            .resource_mut::<Messages<ArenaExit>>()
+            .drain()
+            .collect()
+    }
+
+    /// The Continue after the match's last round opens the transition screen
+    /// over the return (the music fade on): the game runs on while it fades
+    /// out and nothing is settled; at black the callback raises the pause,
+    /// settles the match into the career and asks for the hub's level, and
+    /// the screen then holds black over that change before it fades back in.
+    #[test]
+    fn the_return_to_the_hub_is_settled_behind_the_transition_screen() {
+        use exa_physics::sim_app::SimPause;
+        let mut app = flow_arena_app();
+        let mut arena = ArenaMatch::begin(1);
+        arena.state = MatchState::Won;
+        arena.screen = Some(Screen::End);
+        app.insert_resource(arena);
+        app.insert_resource(scene());
+        app.insert_resource(crate::hub_windows::ArenaCareer::default());
+        app.world_mut().spawn(body(1, true, Condition::NORMAL));
+        app.update();
+        assert!(app.world().resource::<ArenaEndScreen>().open);
+        let copper = app
+            .world()
+            .resource::<crate::hub_windows::ArenaCareer>()
+            .company
+            .copper;
+        press_continue(&mut app);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::Enter);
+        assert!(
+            app.world()
+                .resource::<crate::flow::Flow>()
+                .transition_running()
+        );
+        assert!(
+            app.world()
+                .resource::<crate::arena_fade::ArenaStaging>()
+                .round_pending()
+        );
+        let mut frames = 1;
+        loop {
+            app.update();
+            frames += 1;
+            assert!(!app.world().resource::<ArenaEndScreen>().open);
+            let exits = drain_exits(&mut app);
+            if !exits.is_empty() {
+                assert_eq!(exits, vec![ArenaExit::Hub]);
+                break;
+            }
+            // The callback's frame settles too: before it nothing is paused.
+            assert_eq!(app.world().resource::<SimPause>().raised(), 0);
+            assert_eq!(
+                app.world()
+                    .resource::<crate::hub_windows::ArenaCareer>()
+                    .company
+                    .copper,
+                copper,
+                "settled before black"
+            );
+            assert!(frames < 100, "the return never ran");
+        }
+        assert!((37..=40).contains(&frames), "{frames} frames to black");
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(career.company.won, 1);
+        assert_eq!(career.matches_today, 1);
+        assert!(career.company.copper > copper);
+        assert_eq!(app.world().resource::<SimPause>().raised(), 1);
+        assert!(app.world().resource::<ArenaMatch>().screen.is_none());
+        // Black over the change's wait, then the two frames and the fade in.
+        let mut held = 0;
+        while app.world().resource::<SimPause>().raised() > 0 {
+            app.update();
+            held += 1;
+            assert!(held < 100);
+        }
+        assert!(held > crate::flow::LOAD_WAIT_FRAMES, "{held}");
+        while app
+            .world()
+            .resource::<crate::flow::Flow>()
+            .transition_running()
+        {
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<crate::flow::Flow>().phase,
+            crate::flow::Phase::Playing
+        );
+        assert!(drain_exits(&mut app).is_empty(), "the return runs once");
+    }
+
+    /// A dead manager's Continue leaves to the title behind the transition
+    /// screen (the music fade on): no exit message and no settle, and the
+    /// title's mode once the screen is black.
+    #[test]
+    fn a_dead_managers_continue_leaves_to_the_title_behind_the_screen() {
+        let mut app = flow_arena_app();
+        let mut arena = ArenaMatch::begin(1);
+        arena.state = MatchState::Lost;
+        arena.screen = Some(Screen::End);
+        arena.manager_screen = Some(3);
+        app.insert_resource(arena);
+        app.insert_resource(scene());
+        app.update();
+        press_continue(&mut app);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<crate::flow::Flow>()
+                .transition_running()
+        );
+        assert!(app.world().resource::<ArenaMatch>().screen.is_none());
+        let mut frames = 1;
+        while app.world().resource::<crate::flow::Flow>().mode != crate::flow::Mode::Menu {
+            app.update();
+            frames += 1;
+            assert!(frames < 100, "the leave never ran");
+        }
+        assert!((37..=40).contains(&frames), "{frames} frames to black");
+        assert!(drain_exits(&mut app).is_empty());
+        assert_eq!(
+            app.world().resource::<crate::flow::Flow>().phase,
+            crate::flow::Phase::Menu
+        );
+    }
+
     #[test]
     fn a_living_company_fighter_stays_for_the_next_round() {
         let mut app = arena_app();
@@ -2449,6 +2854,121 @@ mod tests {
         // Two teams fight, so the opponent is hostile (the original's role
         // flag is a free-for-all only from three teams up).
         assert!(spawned.iter().all(|plan| plan.roles == vec![HOSTILE]));
+    }
+
+    /// A later bracket round of a team event keeps the company's living
+    /// bodies: their health words go back into their records, a dead
+    /// company body leaves with the opponents, and the player and the living
+    /// fighter are re-dressed and reset on their side's first two places in
+    /// entry order (the dead one's place is not kept open), while the
+    /// opposing side is generated.
+    #[test]
+    fn a_team_bracket_round_keeps_the_companys_living_bodies() {
+        let mut app = arena_app();
+        let spawn = [900.0, 0.0, 100.0];
+        let mut arena = ArenaMatch::begin_match(7, spawn, 3, 2, true, Some(0));
+        arena.state = MatchState::NextFight;
+        arena.screen = Some(Screen::NextRound);
+        app.insert_resource(arena);
+        let mut scene = ArenaScene::new(7, spawn, 3, 2, true, Some(0), Vec::new(), 0, None)
+            .with_entrants(vec![0, 1, 2]);
+        scene.roll = 42;
+        let slot = |id| crate::career::BracketSlot { id, strength: 1.0 };
+        let slots: Vec<_> = [1, 3, 4, 5]
+            .into_iter()
+            .flat_map(|team| [slot(team), slot(team), slot(team)])
+            .collect();
+        scene.bracket = Some(BracketState {
+            slots,
+            team_size: 3,
+            sides: 2,
+            rounds: 2,
+        });
+        app.insert_resource(scene);
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.roster.push(hired("Ash"));
+        career.company.roster.push(hired("Birch"));
+        app.insert_resource(career);
+        let company = |app: &mut App, id: u32, condition: Condition, red: f32| {
+            let mut fighter = Fighter::default();
+            fighter.health.red = red;
+            app.world_mut()
+                .spawn((
+                    fighter,
+                    condition,
+                    SceneFighter {
+                        team: 1,
+                        company: true,
+                        id,
+                        damage: 100.0,
+                        condition_health: 100.0,
+                        act_at_ms: 0,
+                        behaviour: None,
+                    },
+                ))
+                .id()
+        };
+        // Spawned out of entry order: the kept list follows the entries.
+        let fallen = company(&mut app, 2, Condition::DEAD, 0.0);
+        let ash = company(&mut app, 1, Condition::NORMAL, 0.125);
+        let player = app
+            .world_mut()
+            .spawn((
+                body(1, true, Condition::NORMAL),
+                crate::player::PlayerBody::new(0.0),
+            ))
+            .id();
+        let opponents: Vec<Entity> = (0..3)
+            .map(|_| app.world_mut().spawn(body(3, false, Condition::DEAD)).id())
+            .collect();
+        press_continue(&mut app);
+        app.update();
+        let messages: Vec<SceneCommand> = app
+            .world_mut()
+            .resource_mut::<Messages<SceneCommand>>()
+            .drain()
+            .collect();
+        let mut spawned = Vec::new();
+        let mut killed = Vec::new();
+        let mut reset = Vec::new();
+        for message in messages {
+            match message {
+                SceneCommand::Spawn(plan) => spawned.push(*plan),
+                SceneCommand::Despawn(entity) => killed.push(entity),
+                SceneCommand::Reset { body, place, .. } => reset.push((body, place)),
+            }
+        }
+        killed.sort();
+        let mut expected = opponents.clone();
+        expected.push(fallen);
+        expected.sort();
+        assert_eq!(killed, expected);
+        assert_eq!(
+            reset.iter().map(|(body, _)| *body).collect::<Vec<_>>(),
+            vec![player, ash]
+        );
+        // The side's places are its three members' arc; the two kept bodies
+        // take the first two.
+        let bracket = app
+            .world()
+            .resource::<ArenaScene>()
+            .bracket
+            .clone()
+            .unwrap();
+        let survivors: Vec<i32> = bracket.slots.iter().map(|slot| slot.id).collect();
+        let places = crate::match_layout::kept_side_places(&survivors, 3, 2, spawn, 1, 3).unwrap();
+        assert_eq!(reset[0].1, places[0]);
+        assert_eq!(reset[1].1, places[1]);
+        // No company body is generated again; one opposing side of three.
+        assert_eq!(spawned.len(), 3);
+        assert!(spawned.iter().all(|plan| plan.team != 1));
+        // The living fighter's health word went back into his record.
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(
+            career.company.roster[0].health,
+            crate::arena_match::health_word(0.125, Fighter::default().health.max)
+        );
+        assert_eq!(career.company.roster[1].health, 0);
     }
 
     #[test]

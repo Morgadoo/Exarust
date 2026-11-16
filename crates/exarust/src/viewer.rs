@@ -3693,8 +3693,8 @@ fn launch_arena_match(
 
 /// The live match's exit: the settled match returns to the hub's level in
 /// process, with the career resource and the return placement the settle
-/// wrote. A dead manager's main menu is left to the end menu; the match only
-/// logs it.
+/// wrote. A dead manager's leave to the title runs behind the flow's
+/// transition screen; without the flow the match only logs it.
 fn arena_exit(
     mut commands: Commands,
     mut exits: MessageReader<exa_game::arena_live::ArenaExit>,
@@ -3722,7 +3722,7 @@ fn arena_exit(
             ));
         }
         exa_game::arena_live::ArenaExit::MainMenu => {
-            info!("arena match: the manager is dead; the main menu is not drawn yet");
+            info!("arena match: the manager is dead (no flow: the title is not shown)");
         }
     }
 }

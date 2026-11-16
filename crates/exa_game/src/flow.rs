@@ -1614,6 +1614,10 @@ pub enum Action {
     /// The hub's Begin or the rematch: the match starts at black (its level
     /// loads behind the screen).
     ArenaMatchStart,
+    /// The arena end menu's Continue after the match's last round: the
+    /// match is settled at black, the hub's level loads behind the screen
+    /// and the session plays again there.
+    ArenaReturn,
 }
 
 /// Which arena staging a transition's callback runs.
@@ -1623,6 +1627,9 @@ pub enum ArenaStage {
     Round,
     /// The match start: the held launch goes out.
     MatchStart,
+    /// The return to the hub: the held match is settled and the hub's level
+    /// asked for.
+    Return,
 }
 
 impl Action {
@@ -1632,7 +1639,10 @@ impl Action {
     pub const fn stages(self) -> bool {
         matches!(
             self,
-            Action::NextPracticeFight | Action::ArenaRound | Action::ArenaMatchStart
+            Action::NextPracticeFight
+                | Action::ArenaRound
+                | Action::ArenaMatchStart
+                | Action::ArenaReturn
         )
     }
 }
@@ -2635,7 +2645,7 @@ impl Flow {
                     step,
                     Step::LoadLevel { .. }
                         | Step::TeardownWorld
-                        | Step::ArenaStage(ArenaStage::MatchStart)
+                        | Step::ArenaStage(ArenaStage::MatchStart | ArenaStage::Return)
                 )
             });
             if changes_level && let Some(running) = self.transition.as_mut() {
@@ -2668,6 +2678,12 @@ impl Flow {
             Action::ArenaMatchStart => {
                 self.phase = self.saved_phase;
                 vec![Step::ArenaStage(ArenaStage::MatchStart)]
+            }
+            // The return's routine clears the phase word, enters the hub and
+            // ends with the playing phase.
+            Action::ArenaReturn => {
+                self.phase = Phase::Playing;
+                vec![Step::ArenaStage(ArenaStage::Return)]
             }
             Action::Locale { locale, spawn } => {
                 // The end menu and the prelude close, the pending level
@@ -8257,6 +8273,38 @@ mod tests {
         assert!(black.stop_music);
         assert_eq!(flow.phase, Phase::Playing);
         // Loading: the screen stays at black and its frames wait.
+        let mut loading = screen_input(5000);
+        loading.loading = true;
+        for _ in 0..5 {
+            let frame = flow.transition_tick(loading, 0);
+            assert_eq!(frame.alpha, 255);
+            assert!(!frame.lower_pause);
+        }
+        let lowers: Vec<bool> = [5010, 5020, 5030]
+            .into_iter()
+            .map(|clock| flow.transition_tick(screen_input(clock), 0).lower_pause)
+            .collect();
+        assert_eq!(lowers, [false, false, true]);
+    }
+
+    /// The return to the hub stages (its callback raises the pause, as the
+    /// original's return routine does while the counter is zero), stops the
+    /// music at black, ends with the playing phase and holds the screen
+    /// black over the hub's load.
+    #[test]
+    fn the_return_to_the_hub_holds_the_screen_over_its_load() {
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        flow.transition(Action::ArenaReturn, true);
+        assert!(Action::ArenaReturn.stages());
+        flow.transition_tick(screen_input(1000), 0);
+        let black = flow.transition_tick(screen_input(1601), 0);
+        assert_eq!(black.steps, vec![Step::ArenaStage(ArenaStage::Return)]);
+        assert!(black.raise_pause && black.stop_music);
+        assert_eq!(flow.phase, Phase::Playing);
         let mut loading = screen_input(5000);
         loading.loading = true;
         for _ in 0..5 {
