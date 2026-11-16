@@ -2564,7 +2564,7 @@ fn log_encumbrance(who: &str, stats: &CharacterStats) {
 /// puts the body living at the placement. Without it a loaded save's
 /// player stayed at the level's start in the simulation while the frame
 /// drew it at the saved place, and fell to its death there.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn apply_player_placement(
     mut commands: Commands,
     mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
