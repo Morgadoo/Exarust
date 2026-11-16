@@ -1314,7 +1314,11 @@ player's hands, worn and carried items, then the socket and inventory
 sources once a second; the item panels file the AR crystal's sources too:
 a drop into a container (kind 2, whose record's crystal stacks then
 drain), into a pack (kind 3), a socket row committed with it (kind 4),
-`GameScreens::drain_sources`). A held
+`GameScreens::drain_sources`); while the player's own inventory is open
+the inventory source drains its pack panel instead of the record
+(`GameScreens::player_pack_mut`, `crystal_drain::drain_open_pack`: each
+crystal entry's icon is resolved again for its new charge and the carried
+entry it came from takes the same flags). A held
 item's ability runs once a game second for every character
 (`item_ability`); when the hands change, the focus-item check
 (`item_ability::check_focus_items`) sets the body's slot bit from an
@@ -2260,8 +2264,15 @@ lowers their trust by the item's cost, a cancelled release gives it back, a
 drop raises it by the apparel's wear room or the weapon's value less what
 it displaces (`doll_view::wear_room_over`, `displaced_by`); a marker past
 its limit ends and the window closes, the writes going through the fixed
-step's commands. The open inventory lights the page button of the shown
-body's set and, after a swap, loads its pack again
+step's commands. The view shows the bound body's first worn crystal (A, AL, B, C
+or AR) over the figure's lower-left corner (`doll_view::show_on_view`,
+`InventoryDoll::shown`): the figure's pick answers it first when the
+pointer is on its icon, a release of its drag takes it off the worn list,
+and a core crystal the body's race takes (`figure_accepts_shown`, only
+while nothing is shown) dropped on the figure leaves its source and is
+shown. The view's image renders at the settings' supersampling
+(`doll_view::doll_scale`: 2 x 2 with super sampling on, 1 off). The open
+inventory lights the page button of the shown body's set and, after a swap, loads its pack again
 (`gui_screens::inventory_follows_the_set`). `figure_pick` takes items off the figure: the pick
 of the item under the pointer (the CPU-skinned merged runs' faces, whose
 garments name the worn item, then the other drawn meshes, a held item's

@@ -538,7 +538,9 @@ mod tests {
         app.world_mut()
             .resource_mut::<GameScreens>()
             .close(exa_ui::game_gui::GameScreen::Inventory);
-        app.world_mut().resource_mut::<Time<Virtual>>().advance_by(Duration::from_secs(1));
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .advance_by(Duration::from_secs(1));
         app.update();
         let now = carried(&mut app);
         assert_eq!((now[0].flags, now[1].flags), (0x08_0000, 0x06_0000));
