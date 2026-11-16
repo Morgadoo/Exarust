@@ -1517,7 +1517,7 @@ A tree press SHALL clear the drag state and SHALL enter only the pan (middle but
 - **THEN** the drag state stays idle, and only a middle press starts the pan
 
 ### Requirement: Shown tree takes the keys
-While the power tree is shown in play, every pressed key SHALL go to the tree's key rule: the right and left arrow keys SHALL step the bar's chosen slot, and any other key SHALL close the tree through its open-or-close routine, except while the opening fade's stamp less 950 ms is still ahead of the clock and while the closing fade runs.
+While the power tree is shown in play, every key the window procedure sends (a key-down, a repeat, a typed character, with its word) SHALL go to the tree's key rule: the bound next-power and previous-power keys, not as a typed character, SHALL step the bar's chosen slot, and any other key SHALL close the tree through its open-or-close routine, except while the opening fade's stamp less 950 ms is still ahead of the clock and while the closing fade runs.
 
 #### Scenario: Any key closes the tree
 - **WHEN** the tree has been shown for a second and W is pressed
@@ -1526,6 +1526,10 @@ While the power tree is shown in play, every pressed key SHALL go to the tree's 
 #### Scenario: The opening guard
 - **WHEN** a key is pressed 40 ms after the tree was shown
 - **THEN** the tree stays open
+
+#### Scenario: A rebound power key
+- **WHEN** next-power is bound to E and E goes down on the shown tree
+- **THEN** the bar steps and the tree stays open
 
 ### Requirement: Kept power tree canvas
 The running power screen SHALL keep its canvas between redraws and redraw only the pixels inside the boxes of the batches that differ from the last draw, and the kept canvas SHALL hold the same bytes as rasterising the whole draw. The canvas SHALL be handed to the image node with straight alpha and SHALL draw over the HUD's layers.

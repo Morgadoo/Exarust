@@ -84,7 +84,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F73 | render-10 | render | The bloom blur in post.wesl uses a fixed 16-weight table. bloom_weights/bloom_kernel (linear-path scale level*0.016+1) are test-only, so the weights do not follow the constructor's tap count | B4 |
 | F74 | render-10 | render | Screen fade and desaturation fade, have no live caller (FadeControl is test-only), so the game-main fades and the bubble-effect desaturation never animate | B4 |
 | F75 | render-10 | render | (clears the bloom target to a flat colour before the item-view capture) has no counterpart | B4 |
-| F76 | ui-04 | ui | Skill screen: in the original, any key on the revealed ring closes it (slot 37,. In Exarust no key reaches the screen, so only the right button closes it. | B4 |
+| F76 | ui-04 | ui | Skill screen: in the original, any key on the revealed ring closes it (slot 37,. In Exarust no key reaches the screen, so only the right button closes it. Fixed by guikeys: the screen's key slot hears every key the window procedure sends (a key-down, a repeat, a typed character) and closes the ring on any of them past the reveal's first 100 ms. | fixed (guikeys) |
 | F77 | ui-04 | ui | Skill screen: the open routine's toggle (an open screen closes) is skipped by open_skills, and SkillScreen::begin_hide is never reached on the live ring (page 0). | B4 |
 | F78 | ui-04 | ui | SkillScreen.experience is never set non-zero live, so spend_skill_experience never runs. | B4 |
 | F79 | ui-04 | ui | BaseForm::wheel drops the horizontal answer and skips the pointer refresh that the original calls after a wheel scroll. | B4 |
@@ -132,7 +132,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F120 | ui-09 | ui | : the read-only text field navigation (navigate_key) is never driven because every live text field is editable (style bits 0xd) | B4 |
 
 | F121 | ui-10 | ui | destination.rs: JourneySave (the adapter journey's save) is written but nothing outside tests reads it; TravelStep::stop_controls is computed and ignored (retail stops the player's controls via /. | B4 |
-| F122 | ui-10 | ui | Destination screen leave: retail slot 37 closes on any key (it does not read the key code); Exarust's portal_pointer passes only Escape. | B4 |
+| F122 | ui-10 | ui | Destination screen leave: retail slot 37 closes on any key (it does not read the key code); Exarust's portal_pointer passes only Escape. Fixed by guikeys: any key the window procedure sends (a key-down, a repeat, a typed character) is the leave key. | fixed (guikeys) |
 | F123 | ui-10 | ui | DestinationScreen::close does not pop the controller action layer when form word has bit 0x20). | B4 |
 | F124 | ui-10 | ui | open_screen passes the markers as an empty Vec, so every row's marker word is 0. The destination mark goes through journey.device unconditionally, while retail requires marker bit 31 and an existing record. | B4 |
 | F125 | ui-10 | ui | Manual topic-list pick: also gives the text box focus, -1). Exarust's list click calls Manual::select directly, and list_picked is test-only. | B4 |
@@ -145,7 +145,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F132 | ui-11 | ui | TDropDownList: the live combo popup (option_forms popup_input) handles the pointer only. DropDownList::command (keys and pad: 0x100 choose, 0x200 close, step up/down) has no caller, and a list cut at 16 rows gets no scrollbar hit or drag (hit and drag slots and are bypassed through row_at) | B4 |
 | F133 | ui-11 | ui | Transition screen: retail's hit slot returns -1, so the form takes every pointer hit while it is up. The live Bevy overlay node captures nothing (transition_hit is test-only) | B4 |
 | F134 | ui-11 | ui | Transition 'TO BE CONTINUED' hold: begin_continued, continued_text_origin and menu::draw_transition_fade have no live caller | B4 |
-| F135 | ui-11 | ui | The live KeyDef hotkey dispatch (commands::queue_binding_lines) fires every binding whose modifiers are held. Retail's TGUITask key slot runs only the best modifier score (earliest wins a tie) and forwards unmatched keys to the parent layer | B4 |
+| F135 | ui-11 | ui | The live KeyDef hotkey dispatch (commands::queue_binding_lines) fires every binding whose modifiers are held. Retail's TGUITask key slot runs only the best modifier score (earliest wins a tie) and forwards unmatched keys to the parent layer. Fixed by guikeys: the bindings are the root task's shortcuts; its key slot runs only the best one for a key that climbed to it (from the game view after the player's hotkeys, the game screens, the main menu, the settings form) and none for a repeat, a typed character or Shift. | fixed (guikeys) |
 | F136 | ui-11 | ui | The warm-up screen's per-frame step only counts the 29 rows (warm_row). Retail steps the GPU program warm-up there. No DEC entry covers this | B4 |
 | F137 | ui-11 | ui | The guiskin atlas is loaded once at Startup at its file size. Retail resamples it to 40x20 units and reloads it on every GUI scale change | B4 |
 | F138 | ui-11 | ui | Modal screens (key capture, warm-up): settings_form marks the full-window black backdrop and the palette text shade as guesses | B4 |

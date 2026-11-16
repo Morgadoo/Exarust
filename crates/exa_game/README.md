@@ -1013,7 +1013,7 @@ under half). A teleporter use reads whether the destination screen is
 already open and opens nothing more then. The use's decision is shared
 (`DeviceReads`): the single click on either device reads its answer at
 once and sends its `UseDevice` for the player's body (`object_click`);
-the open destination screen takes the window's pointer, press and Escape
+the open destination screen takes the window's pointer, press and any key
 and holds the pointer (`destination`, `PointerOverGui`), so a chosen row
 starts the journey bubble, whose `teleportf01` voice, `teleportc01` close
 and shrinking volume play (`effects::bubble_sound`); its light keeps the
@@ -2057,9 +2057,16 @@ a name and a handler (`cshd` from the shader programs, `msm` from the mesh
 subdivider), a line splits at its first space into the command and its
 argument, the command is matched with ASCII case ignored, and the first
 registered match runs. The settings file's bound `KeyDef` hotkeys
-(`settings_ini::Hotkey`) become `KeyCommands` and run their lines from
-`CommandQueue`; running one line per frame is a guess (the code that
-advances a binding's list was not traced). `exarust` registers `cshd`
+(`settings_ini::Hotkey`) become `KeyCommands`, the root task's shortcuts
+(`commands::root_task`, with the game boot's Escape menu toggle after
+them), and run their lines from `CommandQueue`; running one line per frame
+is a guess (the code that advances a binding's list was not traced). They
+fire from the root task's key slot (`commands::root_task_keys`, in
+`PostUpdate`) for the keys that climbed to it (`gui_keys::TaskKeys`): only
+the best shortcut for a key (the most required modifiers held, the earlier
+on a tie), never for a repeat, a typed character or Shift alone. The game
+view hands its keys on after the player's hotkeys (`commands::view_keys`,
+while no screen or form holds the keys). `exarust` registers `cshd`
 (reload the 12 embedded render shaders) and `msm`, whose handler only logs
 (the model view's `--msm` does the subdivision).
 
@@ -2069,8 +2076,13 @@ advances a binding's list was not traced). `exarust` registers `cshd`
 key-down with the window procedure's modifier word (Shift 0x20 on a first
 key-down, 1 on a repeat, one bit lower after a key-up) and then its typed
 character with the word 2. The game screens (`gui_screens::screens_keys`),
-the manual (`help_live`) and the hub's Tab (`option_forms::hub_form_typing`)
-hand those keys to their focused form's key slot; while a game screen has
+the manual (`help_live`), the hub's Tab and text fields
+(`option_forms::hub_form_typing`), the main menu (`menu_screen`: typed
+characters into the name buffer, `barechoons` toggling the menu music),
+the settings form, the power tree (its bound next and previous power
+keys), the skill screen and the destination screen (any key) hand those
+keys to their focused form's key slot, and a key a form passes up goes to
+the root task (`gui_keys::TaskKeys`); while a game screen has
 the window manager's focus (the pointer over it) the player's hotkeys
 (`hotkeys`) hear no key-down, as the original's game view, whose key
 handler they are, never gets a key a window passed up to the task. The
@@ -2122,7 +2134,8 @@ showing ten times the player's encumbrance with the dot sheet's whole and
 half dots in the label group's seventh shade. The view draws no preview
 bars (only character creation and the arena switch them on). The
 journal keeps its session entries and stores its text on close. Escape
-closes the focused screen (Exarust's). Entering combat mode (Tab in
+closes the focused screen (Exarust's) and does not climb to the root
+task's menu toggle. Entering combat mode (Tab in
 `hotkeys`, a flow's `CombatMode(true)`) closes every in-game screen and the
 power tree (`gui_screens::sweep_screens` with `ScreenSweep::Every`); Control
 Mind's handover and hand-back close the container and journal family and
