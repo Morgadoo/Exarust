@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r287, 11-16) | target |
+| measure | start (r186, 11-10) | now (r288, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,095 | all |
+| Tests passing | 8,489 | 9,099 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 288 | The scenes owed by rounds 273 to 280 ran on the worker's GPU with new debug hooks (a play-mode fire, weapon seeds, mechanism list and pokes, a device scan); determinism holds per binary; a twelve-scene golden suite now runs after each round (determinism, screenshots against references, log checks); F560 to F566 opened (far characters changed by the fires round, the hire page layout, the golem view's head, the portcullis reading, the respawn's dark torch, the save screen's missing records, the portcullis pick) (evidence2) |
 | 2026-11-16 | 287 | The terrain lane, held since round 242, is released after a free-camera check on the worker's GPU: blank blocks are left out of every draw as the original's only path (unseen by shipped cameras), and their plants leave the camera draws but stay shadow casters; two older faults fixed on the way: the interface camera had taken part in world visibility, and plants grew over blocks never built. No lane is held |
 | 2026-11-16 | 286 | The body morph follows the original's order (each target added to the base in turn, the mesh's own refit, the transfer walking the mesh incidence last face first, the first root's morph set); the slider-driven re-morph path is proven dead in 0.9.5 (four rows unreachable) and F41 closes; no visible change on the worker's GPU across five physiques and a golem (morph2) |
 | 2026-11-16 | 285 | The simulation's mesh queries run the original's per-triangle tests (the face record's closest point, the front push with its two floors, the swept push, the Height Query's swept nearest, the two-sided test) instead of a library projection; the overlap query now asks the two-sided test as the original does (a defect fixed); the segment slot proven unreachable; each binary repeats itself exactly on the worker's GPU, FPS holds (tmesh). Traces change from the first tick |
