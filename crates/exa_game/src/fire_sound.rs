@@ -26,8 +26,12 @@ pub struct FireSoundPlugin;
 
 impl Plugin for FireSoundPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FireVoices>()
-            .add_systems(Update, fire_loops);
+        app.init_resource::<FireVoices>().add_systems(
+            Update,
+            fire_loops
+                .in_set(exa_physics::FramePhase::Audio)
+                .before(exa_audio::hits::layer_sounds),
+        );
     }
 }
 

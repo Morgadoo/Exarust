@@ -330,7 +330,8 @@ impl Plugin for EndMenuScreenPlugin {
                 Update,
                 (update, draw)
                     .chain()
-                    .after(crate::gui_screens::draw_screens),
+                    .after(crate::gui_screens::draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -488,7 +489,7 @@ fn update(
 }
 
 /// Draws the menu into the GUI path's frame queue.
-fn draw(
+pub(crate) fn draw(
     screen: Res<EndMenuScreen>,
     textures: Option<Res<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,

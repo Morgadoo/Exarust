@@ -326,7 +326,7 @@ impl FormHost for MenuForm {
 
 /// The GUI core task the menu routes through.
 #[derive(Resource)]
-pub(crate) struct MenuRouter {
+pub struct MenuRouter {
     pub(crate) task: GuiTask,
     geometry: Arc<Mutex<FormGeometry>>,
     form: FormId,
@@ -346,14 +346,17 @@ impl Plugin for MenuScreenPlugin {
             .add_systems(Startup, setup_router)
             .add_systems(
                 PostUpdate,
-                menu_toggle_key.after(crate::commands::RootKeySet),
+                menu_toggle_key
+                    .after(crate::commands::RootKeySet)
+                    .in_set(exa_physics::FramePostPhase::Prepare),
             )
             .add_systems(
                 Update,
                 (toggle, input, draw, play_menu_sounds)
                     .chain()
                     .in_set(MenuScreenSystems)
-                    .after(crate::gui_screens::draw_screens),
+                    .after(crate::gui_screens::draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -525,7 +528,7 @@ pub fn menu_toggle_key(
 /// Reads the pointer and keys while the menu is open. The Settings form,
 /// a form above the menu, takes them while it is open.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn input(
+pub fn input(
     mut menu: ResMut<MenuScreen>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,

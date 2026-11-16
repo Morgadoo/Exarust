@@ -117,7 +117,16 @@ impl Plugin for DestinationPlugin {
             .add_message::<JourneyStarted>()
             .add_systems(
                 Update,
-                (open_screen, portal_pointer, screen_input, paint_screen).chain(),
+                (
+                    open_screen.after(crate::panel_live::track_pointer),
+                    portal_pointer,
+                    screen_input,
+                    paint_screen
+                        .after(crate::commands::view_keys)
+                        .after(crate::loadout_screen::paint_form),
+                )
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 FixedUpdate,
@@ -321,7 +330,7 @@ fn screen_input(
 /// once the close tail is over, and submits the screen through the draw
 /// path: the backdrop and every row's symbol, the symbol atlas sampled by
 /// the symbol shader's own body ([`selection::symbol_image`]).
-fn paint_screen(
+pub(crate) fn paint_screen(
     clock: Res<EffectClock>,
     mut state: ResMut<PortalScreenState>,
     textures: Option<Res<GuiTextures>>,

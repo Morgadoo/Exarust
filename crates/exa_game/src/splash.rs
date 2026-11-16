@@ -485,14 +485,14 @@ pub struct SplashAtStart(pub bool);
 const Z: i32 = 950;
 
 #[derive(Component)]
-struct SplashBackdrop;
+pub(crate) struct SplashBackdrop;
 
 #[derive(Component)]
-struct SplashLogo;
+pub(crate) struct SplashLogo;
 
 /// The two logos' images, loaded when the splash starts.
 #[derive(Resource)]
-struct SplashImages([Handle<Image>; 2]);
+pub(crate) struct SplashImages([Handle<Image>; 2]);
 
 /// The splash's plugin: with [`SplashAtStart`] set it starts the screen at
 /// start-up, ticks it on the real clock, draws its backdrop and logos, and
@@ -504,7 +504,12 @@ impl Plugin for SplashPlugin {
         app.init_resource::<SplashScreen>()
             .init_resource::<SplashAtStart>()
             .add_systems(Startup, start)
-            .add_systems(Update, tick_splash);
+            .add_systems(
+                Update,
+                tick_splash
+                    .in_set(exa_physics::FramePhase::Gui)
+                    .after(crate::save_screen::saves_input),
+            );
     }
 }
 
@@ -573,7 +578,7 @@ type BackdropParts<'a> = (Entity, &'a mut BackgroundColor);
 type LogoParts<'a> = (&'a mut Node, &'a mut ImageNode, &'a mut Visibility);
 
 #[allow(clippy::too_many_arguments)]
-fn tick_splash(
+pub(crate) fn tick_splash(
     mut commands: Commands,
     mut screen: ResMut<SplashScreen>,
     images: Option<Res<SplashImages>>,

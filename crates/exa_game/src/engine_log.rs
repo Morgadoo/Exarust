@@ -162,10 +162,15 @@ pub struct EngineLogPlugin;
 impl Plugin for EngineLogPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(First, tick_engine_log)
-            .add_systems(Update, report_invalid_materials)
+            .add_systems(
+                Update,
+                report_invalid_materials.in_set(exa_physics::FramePhase::Capture),
+            )
             .add_systems(
                 PostUpdate,
-                draw_overlay.before(exa_ui::gui_draw::render_frames),
+                draw_overlay
+                    .before(exa_ui::gui_draw::render_frames)
+                    .in_set(exa_physics::FramePostPhase::Prepare),
             );
         // The probe is captured by its system, not kept as a resource, so a
         // probed run spawns the same entities as any other.

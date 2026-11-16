@@ -51,7 +51,12 @@ impl Plugin for WorldClockPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WorldClock>()
             .add_message::<RestoreWorldClock>()
-            .add_systems(Update, apply_restore);
+            .add_systems(
+                Update,
+                apply_restore
+                    .in_set(exa_physics::FramePhase::Session)
+                    .after(crate::flow::follow_player),
+            );
     }
 }
 
@@ -61,7 +66,7 @@ fn game_millis(ticks: Option<&BodyTicks>) -> u32 {
     ticks.map_or(0, |ticks| ticks.millis() as u32)
 }
 
-fn apply_restore(
+pub(crate) fn apply_restore(
     mut messages: MessageReader<RestoreWorldClock>,
     mut clock: ResMut<WorldClock>,
     ticks: Option<Res<BodyTicks>>,

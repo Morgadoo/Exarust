@@ -147,7 +147,7 @@ fn child_nodes(node: Entity, nodes: &NodeQuery) -> Vec<Entity> {
         .unwrap_or_default()
 }
 
-fn schedule_pulses(
+pub(crate) fn schedule_pulses(
     mut requests: MessageReader<PulseGlow>,
     mut pulses: ResMut<GlowPulses>,
     time: Option<Res<Time<Virtual>>>,
@@ -313,7 +313,14 @@ impl Plugin for GlowPulsePlugin {
             .add_message::<PulseGlow>()
             .add_systems(
                 Update,
-                (cancel_on_level, schedule_pulses, tick_pulses).chain(),
+                (
+                    cancel_on_level.in_set(exa_physics::FramePhase::Session),
+                    schedule_pulses.in_set(exa_physics::FramePhase::Session),
+                    tick_pulses
+                        .in_set(exa_physics::FramePhase::World)
+                        .before(exa_character::apply_skin_looks),
+                )
+                    .chain(),
             );
     }
 }

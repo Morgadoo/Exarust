@@ -55,7 +55,14 @@ impl Plugin for FallPlugin {
                 .in_set(exa_physics::body::AfterSolver::Observe)
                 .after(crate::trace::trace_bodies),
         )
-        .add_systems(Update, drive_death_fade);
+        .add_systems(
+            Update,
+            drive_death_fade
+                .in_set(exa_physics::FramePhase::Session)
+                .after(crate::script_cast::announce_witnessed)
+                .after(crate::effects::portal::use_portals)
+                .after(crate::glow_pulse::schedule_pulses),
+        );
     }
 }
 
@@ -93,7 +100,7 @@ pub(crate) fn game_clock_ms(ticks: u64, overstep: f64) -> f64 {
 /// While the death fade runs, the world bus follows it down, and the game
 /// pauses once the fade has passed its three seconds (the original's first
 /// state turning into its second, once).
-fn drive_death_fade(
+pub(crate) fn drive_death_fade(
     mut fade: ResMut<DeathFade>,
     ticks: Option<Res<BodyTicks>>,
     fixed: Option<Res<Time<Fixed>>>,

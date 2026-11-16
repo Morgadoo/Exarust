@@ -91,7 +91,7 @@ pub struct ExitVolumes(pub Vec<ExitVolume>);
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DebugExit(pub Option<u32>);
 
-fn debug_exit(
+pub fn debug_exit(
     script: Res<DebugExit>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     exits: Res<ExitVolumes>,
@@ -164,7 +164,17 @@ impl Plugin for ZoneScriptsPlugin {
             .init_resource::<ExitVolumes>()
             .init_resource::<DebugExit>()
             .add_message::<ExitZoneCrossed>()
-            .add_systems(Update, (check_zones, check_stay_zones, debug_exit));
+            .add_systems(
+                Update,
+                (
+                    check_zones.after(check_stay_zones).after(debug_exit),
+                    check_stay_zones
+                        .after(crate::fall::drive_death_fade)
+                        .after(crate::spectate::spectate_clicks),
+                    debug_exit.after(crate::scene_bodies::reset_kept_bodies),
+                )
+                    .in_set(exa_physics::FramePhase::Session),
+            );
     }
 }
 

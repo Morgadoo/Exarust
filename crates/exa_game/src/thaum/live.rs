@@ -134,47 +134,89 @@ impl Plugin for ThaumEffectsPlugin {
                     super::effect_light::debug_force_casts.run_if(
                         |debug: Option<Res<ThaumDebug>>| debug.is_some_and(|d| d.cast_every > 0),
                     ),
-                ),
+                )
+                    .in_set(exa_physics::FramePhase::Input),
             )
             .add_systems(
                 PostUpdate,
                 (
-                    (drop_orphan_arc_voxels, draw_arcs).chain(),
-                    (draw_barricades, super::barricade_sound::sound_barricades).chain(),
+                    (
+                        drop_orphan_arc_voxels,
+                        draw_arcs
+                            .before(exa_world::room_view::track_rooms)
+                            .before(exa_world::nav::view::finish_build)
+                            .after(crate::thaum::barricade_sound::sound_barricades)
+                            .after(crate::thaum::effect_draw::draw_shell_auras)
+                            .after(crate::effects::scan_draw::draw_scans)
+                            .after(exa_render::gi_tag::tag_cells)
+                            .after(exa_render::local_reflection::log_surfaces)
+                            .after(exa_render::cube_shadows::add_cube_shadows)
+                            .after(exa_physics::build_static_colliders)
+                            .after(exa_physics::prop::register_props)
+                            .after(exa_render::gi_shape::track_shapes),
+                    )
+                        .chain(),
+                    (
+                        draw_barricades,
+                        super::barricade_sound::sound_barricades
+                            .after(crate::thaum::dome_sound::sound_domes),
+                    )
+                        .chain(),
                     draw_wisps,
                     (
                         super::effect_draw::tick_force_noise
                             .run_if(super::effect_draw::force_effects_alive),
                         (
                             super::blast_live::draw_blasts,
-                            super::blast_sound::sound_blasts,
-                            super::torrent_sound::sound_torrents,
+                            super::blast_sound::sound_blasts
+                                .after(crate::thaum::torrent_sound::sound_torrents),
+                            super::torrent_sound::sound_torrents
+                                .after(crate::thaum::torrent_live::draw_torrents)
+                                .after(crate::effects::bubble_sound::sound_bubbles),
                             super::torrent_live::draw_torrents,
-                            super::effect_draw::draw_shell_auras,
-                            super::effect_draw::draw_rigid_auras,
+                            super::effect_draw::draw_shell_auras
+                                .after(crate::effects::bubble_draw::draw_bubbles),
+                            super::effect_draw::draw_rigid_auras
+                                .after(exa_character::blood::paint_wounds),
                             super::effect_draw::drop_shell_copies,
-                            crate::effects::scan_draw::draw_scans,
+                            crate::effects::scan_draw::draw_scans
+                                .after(crate::effects::bubble_draw::draw_bubbles),
                             crate::effects::scan_draw::drop_scan_copies,
-                            crate::effects::bubble_draw::draw_bubbles,
+                            crate::effects::bubble_draw::draw_bubbles
+                                .after(crate::effects::dome_draw::draw_domes)
+                                .after(crate::thaum::vanish_live::draw_vanishes),
                             crate::effects::bubble_draw::drop_bubble_draws,
-                            crate::effects::bubble_sound::sound_bubbles,
+                            crate::effects::bubble_sound::sound_bubbles
+                                .after(crate::thaum::veil_live::sound_veils),
                             (
                                 crate::effects::dome_draw::draw_domes,
-                                super::dome_sound::sound_domes,
+                                super::dome_sound::sound_domes
+                                    .after(crate::thaum::shell_hum::sound_shell_hums),
                             )
                                 .chain(),
                             super::shell_hum::sound_shell_hums
+                                .after(crate::thaum::blast_sound::sound_blasts)
                                 .after(super::effect_draw::draw_rigid_auras),
                             crate::effects::dome_draw::drop_dome_draws,
                             (
-                                super::vanish_live::draw_vanishes,
-                                super::vanish_live::fade_vanish_bodies,
+                                super::vanish_live::draw_vanishes
+                                    .after(exa_character::blood::paint_wounds),
+                                super::vanish_live::fade_vanish_bodies
+                                    .before(exa_character::spray::draw_sprays)
+                                    .before(
+                                        bevy::pbr::check_entities_needing_specialization::<
+                                            exa_render::material::ExaMaterial,
+                                        >,
+                                    )
+                                    .after(crate::thaum::vanish_live::drop_vanish_copies),
                             )
                                 .chain(),
-                            super::vanish_live::drop_vanish_copies,
+                            super::vanish_live::drop_vanish_copies
+                                .after(crate::effects::scan_draw::draw_scans)
+                                .after(exa_render::local_reflection::log_surfaces),
                         ),
                         (
-                            super::effect_light::blast_lights,
+                            super::effect_light::blast_lights.after(draw_arcs),
                             super::effect_light::torrent_lights,
                             super::effect_light::bubble_lights,
                             super::effect_light::barrier_lights,
@@ -187,7 +229,8 @@ impl Plugin for ThaumEffectsPlugin {
                     )
                         .chain(),
                 )
-                    .after(TransformSystems::Propagate),
+                    .after(TransformSystems::Propagate)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             );
     }
 }
@@ -813,7 +856,7 @@ fn apply_arc_hum(voice: &mut exa_audio::Voice, gain: f32, pitch: Option<f32>, at
 
 /// The voxel light an arc emitter owns.
 #[derive(Component, Debug, Clone, Copy)]
-struct HeldVoxel(Entity);
+pub(crate) struct HeldVoxel(Entity);
 
 /// An arc emitter's voxel light names its emitter instead of being its
 /// child: the light is the frame's, placed in world space each frame, and
@@ -1397,7 +1440,7 @@ pub(crate) fn tick_wisps(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_debug_effects(
+pub(crate) fn spawn_debug_effects(
     mut commands: Commands,
     debug: Res<ThaumDebug>,
     players: Query<(Entity, &Ragdoll, &Locomotor), With<PlayerBody>>,
@@ -1625,7 +1668,7 @@ fn drop_orphan_arc_voxels(
 /// The nodes an electricity node can hang under: a weapon's body and a held
 /// item, as the frame draws them.
 #[derive(bevy::ecs::system::SystemParam)]
-struct ArcParents<'w, 's> {
+pub(crate) struct ArcParents<'w, 's> {
     bodies: Query<'w, 's, &'static Ragdoll>,
     items: Query<'w, 's, &'static GlobalTransform, (Without<Camera3d>, Without<VoxelLight>)>,
 }
@@ -1700,7 +1743,7 @@ fn arc_node_place(
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn draw_arcs(
+pub(crate) fn draw_arcs(
     mut commands: Commands,
     mut arcs: Query<(
         Entity,

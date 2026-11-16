@@ -289,7 +289,7 @@ pub(crate) fn take_kinesis_picks(
 
 /// The cursor's ray and the movement keys, each frame.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn read_kinesis_input(
+pub(crate) fn read_kinesis_input(
     scripted: Option<Res<ScriptedPointer>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,

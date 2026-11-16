@@ -428,15 +428,23 @@ impl Plugin for HelpLivePlugin {
             .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_systems(
                 Update,
-                (open_manual, manual_input, paint_manual)
+                (
+                    open_manual.after(crate::hw_config::drive_benchmark),
+                    manual_input.after(crate::hw_config::start_benchmark_scene),
+                    paint_manual,
+                )
                     .chain()
-                    .after(MenuScreenSystems),
+                    .after(MenuScreenSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 paint_tip_banner
+                    .after(crate::div_card_screen::open_reading)
+                    .after(crate::prelude::sync_tips_setting)
                     .after(crate::gui_screens::draw_screens)
-                    .before(MenuScreenSystems),
+                    .before(MenuScreenSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -792,7 +800,7 @@ fn list_font(unit: i32, textures: &GuiTextures) -> (exa_ui::gui_font::GuiFont, O
 
 /// Paints the manual over the menu: the "MANUAL" frame, the topic list with
 /// the shown topic banded, and the page's text with its markup.
-fn paint_manual(
+pub(crate) fn paint_manual(
     mut screen: ResMut<ManualScreen>,
     bindings: Option<Res<crate::bindings::Bindings>>,
     textures: Option<Res<GuiTextures>>,

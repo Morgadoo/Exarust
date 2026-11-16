@@ -933,7 +933,7 @@ fn world_cards(
 /// The figure's card requests ([`FigureCard`]): built and shown at once at
 /// the pointer, as a panel's card.
 #[allow(clippy::too_many_arguments)]
-fn figure_cards(
+pub(crate) fn figure_cards(
     mut requests: MessageReader<FigureCard>,
     catalogue: Option<Res<ItemCatalogue>>,
     phrases: Option<Res<PhraseBook>>,
@@ -984,7 +984,7 @@ fn figure_cards(
 /// Builds a card when its delay is due, and finishes a closed card once its
 /// fade is over.
 #[allow(clippy::too_many_arguments)]
-fn tick_card(
+pub(crate) fn tick_card(
     catalogue: Option<Res<ItemCatalogue>>,
     phrases: Option<Res<PhraseBook>>,
     mut screens: ResMut<GameScreens>,
@@ -2203,26 +2203,30 @@ impl Plugin for ItemCardPlugin {
             .add_systems(
                 Update,
                 (
-                    sync_card_context,
-                    refresh_cards,
+                    sync_card_context.after(crate::splash::tick_splash),
+                    refresh_cards.after(crate::panel_live::release),
                     crate::parchment::parchment_press,
                     card_press,
                     request_card,
                     scripted_card,
                     world_cards,
                     figure_cards,
-                    tick_card,
-                    crate::parchment::open_parchment,
+                    tick_card.after(crate::gui_screens::journal_typing),
+                    crate::parchment::open_parchment
+                        .after(crate::dialogue_live::panel_input)
+                        .after(crate::prelude::draw_tips),
                 )
                     .chain()
                     .after(crate::use_cursor::UseCursorSystems)
-                    .before(crate::gui_screens::close_on_right_release),
+                    .before(crate::gui_screens::close_on_right_release)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
         app.add_systems(
             Update,
             (draw_card, crate::parchment::draw_parchment)
                 .chain()
-                .after(crate::gui_screens::draw_screens),
+                .after(crate::gui_screens::draw_screens)
+                .in_set(exa_physics::FramePhase::Hub),
         );
     }
 }

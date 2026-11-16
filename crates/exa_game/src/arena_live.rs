@@ -337,12 +337,12 @@ impl Plugin for ArenaLivePlugin {
             .add_systems(
                 Update,
                 (
-                    mark_arena_session,
-                    stand_first_round,
+                    mark_arena_session.after(crate::save_live::run_save_steps::<false>),
+                    stand_first_round.after(crate::save_live::load_arena_slot),
                     arena_pause,
-                    open_end_screen,
+                    open_end_screen.after(crate::arena_fade::start_held_match),
                     update_end_screen,
-                    continue_round,
+                    continue_round.before(exa_world::level_lifecycle::apply_requests).after(crate::equip::apply_pending_hands),
                     forfeit_match::<false>,
                     draw_end_screen,
                 )
@@ -350,7 +350,7 @@ impl Plugin for ArenaLivePlugin {
                     .after(crate::gui_screens::draw_screens)
                     // A staging's callback fires in the flow's steps; the
                     // Continue's staging runs in the same frame after them.
-                    .after(crate::flow::FlowSystems::ApplySteps),
+                    .after(crate::flow::FlowSystems::ApplySteps).in_set(exa_physics::FramePhase::Session),
             )
             // The quit's forfeit (the arena pause page's QUIT) settles the
             // match before the quit's saves are written.
@@ -850,7 +850,7 @@ type StagingFlow<'w> = (
 
 /// The end screen's Continue, the next round and the return.
 #[allow(clippy::too_many_arguments)]
-fn continue_round(
+pub(crate) fn continue_round(
     mut arena: Option<ResMut<ArenaMatch>>,
     mut scene: Option<ResMut<ArenaScene>>,
     mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
@@ -1428,7 +1428,7 @@ fn settle_and_exit(
 /// false) and the quit's (`AT_QUIT` true, in `Last`, after the quit's
 /// gate and before its saves); only the one for the app's state acts.
 #[allow(clippy::too_many_arguments)]
-fn forfeit_match<const AT_QUIT: bool>(
+pub(crate) fn forfeit_match<const AT_QUIT: bool>(
     mut forfeits: Option<MessageReader<crate::flow::ForfeitMatch>>,
     mut arena: Option<ResMut<ArenaMatch>>,
     mut scene: Option<ResMut<ArenaScene>>,

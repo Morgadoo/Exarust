@@ -113,7 +113,7 @@ pub fn spectate_follow(hit: Option<Hit>) -> Option<Entity> {
 }
 
 /// Starts the session for `--spectate` once the load is over.
-fn start_on_load(
+pub fn start_on_load(
     mut commands: Commands,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut session: ResMut<SpectateSession>,
@@ -141,7 +141,7 @@ fn start_on_load(
 /// The session's double click: the pick under the cursor sets or clears
 /// the camera's follow object.
 #[allow(clippy::too_many_arguments)]
-fn spectate_clicks(
+pub fn spectate_clicks(
     buttons: Res<ButtonInput<MouseButton>>,
     time: Res<Time<Real>>,
     scripted: Res<ScriptedPointer>,
@@ -283,12 +283,20 @@ impl Plugin for SpectatePlugin {
                 // The mode it enters is taken by the camera in the same
                 // frame, as the play session's start and end are.
                 start_on_load
+                    .after(spectate_clicks)
                     .run_if(resource_exists::<SpectateOnLoad>)
                     .before(crate::player::take_mode_records),
-                spectate_clicks.run_if(|s: Res<SpectateSession>| s.active),
-                end_arena_session.run_if(|s: Res<SpectateSession>| s.active),
+                spectate_clicks
+                    .after(end_arena_session)
+                    .after(crate::thaum::power::teach_on_death)
+                    .after(crate::effects::portal::use_portals)
+                    .run_if(|s: Res<SpectateSession>| s.active),
+                end_arena_session
+                    .after(force_the_room_walk)
+                    .run_if(|s: Res<SpectateSession>| s.active),
                 force_the_room_walk.run_if(resource_exists::<exa_world::room_view::ForcedRoom>),
-            ),
+            )
+                .in_set(exa_physics::FramePhase::Session),
         );
     }
 }

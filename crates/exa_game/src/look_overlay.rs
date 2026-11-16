@@ -21,7 +21,9 @@ impl Plugin for LookOverlayPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            draw_line_walks.run_if(|o: Option<Res<NavOverlay>>| o.is_some_and(|o| o.on)),
+            draw_line_walks
+                .run_if(|o: Option<Res<NavOverlay>>| o.is_some_and(|o| o.on))
+                .in_set(exa_physics::FramePhase::Draw),
         );
     }
 }

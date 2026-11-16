@@ -1385,10 +1385,16 @@ impl Plugin for CreatorScreenPlugin {
             .add_message::<KeyboardInput>()
             .add_systems(
                 Update,
-                (open_from_menu, open_screens, input, paint)
+                (
+                    open_from_menu,
+                    open_screens,
+                    input,
+                    paint.after(crate::hw_config::cleanup_benchmark),
+                )
                     .chain()
                     .in_set(CreatorSystems)
-                    .after(MenuScreenSystems),
+                    .after(MenuScreenSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -1624,7 +1630,7 @@ fn hair_styles(game: Option<&exa_assets::Game>) -> Vec<String> {
 /// Opens the picker or the creator, hiding the menu: the session phase
 /// becomes the class select's or the creator's.
 #[allow(clippy::too_many_arguments)]
-fn open_screens(
+pub(crate) fn open_screens(
     mut pickers: MessageReader<OpenClassSelect>,
     mut creators: MessageReader<OpenCreator>,
     mut screen: ResMut<CreatorScreen>,
@@ -1748,7 +1754,7 @@ fn open_screens(
 
 /// The pointer and keys while a screen is open.
 #[allow(clippy::too_many_arguments)]
-fn input(
+pub(crate) fn input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut typed: MessageReader<KeyboardInput>,
@@ -2579,7 +2585,7 @@ pub fn paint_class_select(
     painted
 }
 
-fn paint(
+pub(crate) fn paint(
     screen: Res<CreatorScreen>,
     textures: Option<Res<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,

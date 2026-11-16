@@ -412,7 +412,7 @@ fn apply(
 }
 
 /// Raises the scripted codes at their frames after the load.
-fn scripted_game_events(
+pub fn scripted_game_events(
     script: Option<Res<GameEventScript>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     levels: Query<(), With<exa_world::LevelRoot>>,
@@ -446,7 +446,9 @@ impl Plugin for GameEventLivePlugin {
             .add_message::<exa_audio::PointSounded>()
             .add_systems(
                 Update,
-                scripted_game_events.before(crate::flow::FlowSystems::Transition),
+                scripted_game_events
+                    .before(crate::flow::FlowSystems::Transition)
+                    .in_set(exa_physics::FramePhase::Session),
             );
     }
 }

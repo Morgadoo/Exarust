@@ -563,13 +563,14 @@ impl Plugin for HardwareConfigPlugin {
                     rebind_keys,
                     drive_warm_screen,
                     drive_benchmark,
-                    apply_options,
+                    apply_options.after(crate::doll_view::sync_doll),
                     apply_window,
                     start_benchmark_scene,
                     show_benchmark_quads,
-                    cleanup_benchmark,
+                    cleanup_benchmark.after(crate::help_live::paint_manual),
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -662,7 +663,7 @@ pub fn texture_settings(base: TextureSettings, live: &Options) -> TextureSetting
 /// Pushes changed live options into the renderer, the texture loader, the
 /// audio and the window.
 #[allow(clippy::too_many_arguments)]
-fn apply_options(
+pub(crate) fn apply_options(
     config: Option<Res<HardwareConfig>>,
     mut models: Option<ResMut<ModelCache>>,
     mut materials: Option<ResMut<Assets<exa_render::material::ExaMaterial>>>,
@@ -855,7 +856,7 @@ fn apply_window(
 
 /// The off-screen scene the benchmark draws.
 #[derive(Resource)]
-struct BenchmarkScene {
+pub(crate) struct BenchmarkScene {
     camera: Entity,
     quads: Vec<Entity>,
     target: Handle<Image>,
@@ -890,7 +891,7 @@ fn benchmark_sampler() -> ImageSampler {
 /// original's always-pass depth function shades each (staggered depths
 /// would let the depth test reject all but the nearest). The measured
 /// protocol and score are exact; the GPU and its driver differ anyway.
-fn start_benchmark_scene(
+pub(crate) fn start_benchmark_scene(
     mut commands: Commands,
     config: Option<Res<HardwareConfig>>,
     scene: Option<Res<BenchmarkScene>>,
@@ -1030,7 +1031,7 @@ fn show_benchmark_quads(
 
 /// Counts the benchmark's frames on the real clock, and when the third run
 /// ends takes the auto-detected quality and tears the scene down.
-fn drive_benchmark(
+pub(crate) fn drive_benchmark(
     time: Res<Time<Real>>,
     config: Option<ResMut<HardwareConfig>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -1060,7 +1061,7 @@ fn drive_benchmark(
 
 /// Tears the benchmark's scene down once no benchmark is running, restoring
 /// the window's present mode.
-fn cleanup_benchmark(
+pub(crate) fn cleanup_benchmark(
     mut commands: Commands,
     config: Option<Res<HardwareConfig>>,
     scene: Option<Res<BenchmarkScene>>,

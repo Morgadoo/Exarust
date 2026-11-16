@@ -87,12 +87,25 @@ impl Plugin for SettingsFormPlugin {
             .add_message::<BindingsApplied>()
             .add_systems(
                 Update,
-                (open_settings, form_input, refresh_rows, close_with_menu)
+                (
+                    open_settings
+                        .after(draw)
+                        .after(crate::creator_screen::input),
+                    form_input.after(crate::arsenal_view::arsenal_input),
+                    refresh_rows,
+                    close_with_menu,
+                )
                     .chain()
                     .after(MenuScreenSystems)
-                    .before(crate::hw_config::rebind_keys),
+                    .before(crate::hw_config::rebind_keys)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
-            .add_systems(Update, draw.after(MenuScreenSystems));
+            .add_systems(
+                Update,
+                draw.after(crate::creator_screen::open_screens)
+                    .after(MenuScreenSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
+            );
     }
 }
 

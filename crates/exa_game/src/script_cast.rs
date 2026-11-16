@@ -72,13 +72,13 @@ impl Plugin for ScriptCastPlugin {
             .add_systems(
                 Update,
                 (
-                    mirror_player,
-                    grant_witness_roles,
-                    mirror_cast,
-                    mirror_items,
-                    sync_contacts,
-                    announce_witnessed,
-                    report_script_problems,
+                    mirror_player.in_set(exa_physics::FramePhase::Session),
+                    grant_witness_roles.in_set(exa_physics::FramePhase::Session).after(crate::game_event_live::scripted_game_events),
+                    mirror_cast.in_set(exa_physics::FramePhase::Session).after(crate::scene_bodies::reset_kept_bodies),
+                    mirror_items.in_set(exa_physics::FramePhase::Session),
+                    sync_contacts.in_set(exa_physics::FramePhase::Session),
+                    announce_witnessed.in_set(exa_physics::FramePhase::Session),
+                    report_script_problems.in_set(exa_physics::FramePhase::Capture),
                 )
                     .chain(),
             );
@@ -181,7 +181,7 @@ fn grant_witness_roles(
 /// greeting and the dialogue entries test), zero for a body without one (a
 /// player or a body the AI does not run). A role list a script changed goes
 /// the other way first.
-fn mirror_cast(
+pub(crate) fn mirror_cast(
     conversations: Option<ResMut<Conversations>>,
     mut characters: Query<LiveCharacter<'_>>,
 ) {
@@ -250,7 +250,7 @@ pub fn has_item_list(
 /// character's open pack panels into its list; Exarust's panels write the
 /// list on every move, so it is current. The cast is written only when the
 /// list changed.
-fn mirror_items(
+pub(crate) fn mirror_items(
     conversations: Option<ResMut<Conversations>>,
     characters: Query<(&CharacterId, &exa_items::possession::Possessions)>,
     live: Option<Res<exa_assets::live_objects::LiveObjects>>,
@@ -488,7 +488,7 @@ fn report_script_problems(mut effects: MessageReader<exa_script::ScriptEffect>) 
 /// the topic. With no level grid the sight test answers yes. A character
 /// with no place, or no id, is not seen.
 #[allow(clippy::too_many_arguments)]
-fn announce_witnessed(
+pub(crate) fn announce_witnessed(
     mut falls: MessageReader<exa_combat::impact::BadFall>,
     mut wounds: MessageReader<exa_combat::DamageTaken>,
     mut awakened: MessageReader<exa_combat::condition::Awakened>,

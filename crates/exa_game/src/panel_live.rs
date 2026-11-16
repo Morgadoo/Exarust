@@ -1183,13 +1183,22 @@ impl Plugin for PanelLivePlugin {
             .add_message::<crate::use_cursor::GuiDragEnded>()
             .add_message::<crate::doll_view::DollDrop>()
             .add_message::<crate::figure_pick::FigureRelease>()
-            .add_systems(Update, track_pointer.before(crate::hand::HandSystems))
             .add_systems(
                 Update,
-                (press, release)
+                track_pointer
+                    .after(crate::power_screen::hotkeys)
+                    .after(crate::save_screen::saves_input)
+                    .after(crate::gui_screens::deactivate_on_focus_loss)
+                    .before(crate::hand::HandSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
+            )
+            .add_systems(
+                Update,
+                (press.after(crate::item_card::sync_card_context), release)
                     .chain()
                     .in_set(PanelInput)
-                    .after(track_pointer),
+                    .after(track_pointer)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }

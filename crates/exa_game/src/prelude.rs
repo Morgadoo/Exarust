@@ -192,12 +192,17 @@ pub struct TipsScreenPlugin;
 
 impl bevy::prelude::Plugin for TipsScreenPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.init_resource::<TipBannerText>()
-            .add_systems(bevy::prelude::Update, draw_tips);
+        use bevy::prelude::IntoScheduleConfigs;
+        app.init_resource::<TipBannerText>().add_systems(
+            bevy::prelude::Update,
+            draw_tips
+                .in_set(exa_physics::FramePhase::Gui)
+                .after(crate::save_screen::open_saves),
+        );
     }
 }
 
-fn draw_tips(
+pub(crate) fn draw_tips(
     banner: bevy::prelude::Res<TipBannerText>,
     textures: Option<bevy::prelude::Res<exa_ui::gui_draw::GuiTextures>>,
     windows: bevy::prelude::Query<
