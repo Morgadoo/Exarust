@@ -65,6 +65,7 @@ pub mod throw_live;
 pub mod torrent_live;
 pub mod tree;
 pub mod user_stamp;
+pub mod vanish_body;
 pub mod vanish_live;
 pub mod veil;
 pub mod veil_live;

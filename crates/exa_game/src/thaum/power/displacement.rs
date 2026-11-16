@@ -211,6 +211,28 @@ pub struct VanishStep {
     /// The cast hook and the cast id are cleared (the Long Door as the body
     /// reappears, Vanish when it is done and the hook is still its own).
     pub clear_hook: bool,
+    /// What the tick does with the tendril image on the body.
+    pub image: ImageStep,
+}
+
+/// What a vanish tick does with the tendril image (the after-image) on
+/// the body. The vanish start puts one on a player's body; the fade-out's
+/// end freezes it and fades it out; the come-back (and an AI door's found
+/// place) puts a new one up, queued for the next frame in the original;
+/// the fade-in's end fades that one out, or, over a shell lent by a
+/// running Constant Displacement, hands it to the constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageStep {
+    #[default]
+    Keep,
+    /// Freeze the image's strands and fade it out (the fade-out's end).
+    End,
+    /// Fade the image out (the fade-in's end over the vanish's own shell).
+    Fade,
+    /// Hand the image to the Constant Displacement that lent the shell.
+    Lend,
+    /// Put a new image on the body.
+    New,
 }
 
 /// What ends the vanish effect's hold.
@@ -247,6 +269,7 @@ impl VanishStep {
             drop_shell: false,
             shell_state: 0,
             clear_hook: false,
+            image: ImageStep::Keep,
         }
     }
 }
@@ -290,6 +313,7 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32, hold: HoldEnd) -
                 base.deadline = now.wrapping_add(FADE_IN_MS);
                 VanishStep {
                     drop_shell: true,
+                    image: ImageStep::End,
                     ..VanishStep::quiet(0.0)
                 }
             }
@@ -315,6 +339,7 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32, hold: HoldEnd) -
             VanishStep {
                 moved: true,
                 shell_state: 1,
+                image: ImageStep::New,
                 ..VanishStep::quiet(base.shown)
             }
         }
@@ -333,6 +358,11 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32, hold: HoldEnd) -
                     drop_shell: !base.shared,
                     shell_state: if base.shared { 0 } else { 2 },
                     clear_hook: hold == HoldEnd::Deadline,
+                    image: if base.shared {
+                        ImageStep::Lend
+                    } else {
+                        ImageStep::Fade
+                    },
                     ..VanishStep::quiet(base.shown)
                 }
             }
@@ -357,7 +387,8 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32, hold: HoldEnd) -
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VanishNode {
     pub light: bool,
-    pub image: bool,
+    /// The tendril image on the body (its entity's bits), while one is up.
+    pub image: Option<u64>,
     pub light_at: [f32; 3],
 }
 
@@ -382,7 +413,7 @@ impl Vanish {
             hooked: false,
             node: VanishNode {
                 light: true,
-                image: true,
+                image: None,
                 light_at: [0.0; 3],
             },
         }
@@ -402,9 +433,9 @@ impl Vanish {
     /// The class's destroy: the light and the after-image go. Returns what
     /// it had.
     pub fn destroy(&mut self) -> (bool, bool) {
-        let had = (self.node.light, self.node.image);
+        let had = (self.node.light, self.node.image.is_some());
         self.node.light = false;
-        self.node.image = false;
+        self.node.image = None;
         had
     }
 
@@ -463,18 +494,14 @@ impl Vanish {
         self.base.released = true;
     }
 
-    /// One control tick. Event 2 lets the power go. The fade-out's end and
-    /// the show both take the after-image down, as the original's phases 2
-    /// and 4 do.
+    /// One control tick. Event 2 lets the power go. The step says what
+    /// becomes of the tendril image ([`ImageStep`]); the live side keeps
+    /// the image itself in [`VanishNode::image`].
     pub fn control(&mut self, event: i32, now: u32) -> VanishStep {
         if event == 2 {
             self.base.released = true;
         }
-        let step = step_vanish(&mut self.base, now, self.drain, HoldEnd::Release);
-        if step.drop_shell || step.show {
-            self.node.image = false;
-        }
-        step
+        step_vanish(&mut self.base, now, self.drain, HoldEnd::Release)
     }
 }
 
@@ -550,8 +577,8 @@ pub fn long_door_pitch(roll: f64) -> f32 {
 pub struct LongDoorNode {
     /// The light exists (made with the cast).
     pub light: bool,
-    /// The tendril image is still up.
-    pub image: bool,
+    /// The tendril image on the body (its entity's bits), while one is up.
+    pub image: Option<u64>,
     /// The light's place: the body's place (cm).
     pub light_at: [f32; 3],
 }
@@ -581,7 +608,7 @@ impl LongDoor {
             nav: NavAnswer::Waiting,
             node: LongDoorNode {
                 light: true,
-                image: true,
+                image: None,
                 light_at: [0.0; 3],
             },
         }
@@ -612,9 +639,9 @@ impl LongDoor {
     /// hook and its id leave with them (the caller clears the cast). Returns
     /// what it had.
     pub fn destroy(&mut self) -> (bool, bool) {
-        let had = (self.node.light, self.node.image);
+        let had = (self.node.light, self.node.image.is_some());
         self.node.light = false;
-        self.node.image = false;
+        self.node.image = None;
         had
     }
 
@@ -637,19 +664,21 @@ impl LongDoor {
                     self.base.phase = HIDDEN;
                     self.base.deadline = now.wrapping_add(CHARGE_MS);
                     self.base.step = 1;
+                    // The found place puts the image up, unless a running
+                    // Constant Displacement lent its shell (and image).
                     return VanishStep {
                         shell_state: 1,
+                        image: if self.base.shared {
+                            ImageStep::Keep
+                        } else {
+                            ImageStep::New
+                        },
                         ..VanishStep::quiet(1.0)
                     };
                 }
             }
         }
-        let step = step_vanish(&mut self.base, now, self.drain, HoldEnd::Deadline);
-        // The fade-out's end takes the tendril image down.
-        if step.drop_shell {
-            self.node.image = false;
-        }
-        step
+        step_vanish(&mut self.base, now, self.drain, HoldEnd::Deadline)
     }
 }
 
@@ -1151,40 +1180,63 @@ mod tests {
     #[test]
     fn the_long_door_carries_its_light_and_after_image() {
         let mut door = LongDoor::new(0, None, true, 0.002);
-        assert!(door.node.light && door.node.image);
+        assert!(door.node.light && door.node.image.is_none());
         door.follow(Vec3::new(12.0, 34.0, 56.0));
         assert_eq!(door.node.light_at, [12.0, 34.0, 56.0]);
-        // The fade-out's end drops the after-image.
-        door.control(411, NavAnswer::Found);
+        // The AI's found place puts the image up.
+        assert_eq!(door.control(411, NavAnswer::Found).image, ImageStep::New);
+        door.node.image = Some(7);
         door.control(412, NavAnswer::Found);
+        // The fade-out's end ends the image.
         let fade = door.control(1000, NavAnswer::Found);
         assert!(!fade.drop_shell, "not the fade-out's end yet");
-        assert!(door.node.image);
+        assert_eq!(fade.image, ImageStep::Keep);
         let end = door.control(1300, NavAnswer::Found);
         assert!(end.drop_shell);
-        assert!(!door.node.image);
+        assert_eq!(end.image, ImageStep::End);
         assert!(door.node.light);
         // Destroying frees both.
-        assert_eq!(door.destroy(), (true, false));
-        assert!(!door.node.light && !door.node.image);
+        assert_eq!(door.destroy(), (true, true));
+        assert!(!door.node.light && door.node.image.is_none());
+        // A door over a lent shell leaves the constant's image alone.
+        let mut shared = LongDoor::new(0, None, true, 0.0);
+        shared.base.shared = true;
+        assert_eq!(shared.control(5, NavAnswer::Found).image, ImageStep::Keep);
     }
 
     #[test]
     fn the_vanish_carries_its_light_and_after_image() {
         let mut vanish = Vanish::new(0, false, false, 0.002);
-        assert!(vanish.node.light && vanish.node.image);
+        assert!(vanish.node.light && vanish.node.image.is_none());
         vanish.follow(Vec3::new(3.0, 4.0, 5.0));
         assert_eq!(vanish.node.light_at, [3.0, 4.0, 5.0]);
         assert_eq!(Vanish::sound(0.5), ((0.5f64 * 0.2 + 0.9) as f32, 0.4));
-        // The fade-out's end takes the after-image down.
-        vanish.control(0, 0);
-        vanish.control(0, 400);
-        assert!(vanish.node.image, "the fade-out has not ended");
-        vanish.control(0, 700);
-        assert!(!vanish.node.image);
+        // The fade-out's end ends the image, the come-back puts a new one
+        // up and the fade-in's end fades it out.
+        assert_eq!(vanish.control(0, 0).image, ImageStep::Keep);
+        let hide = vanish.control(0, 400);
+        assert!(hide.hide);
+        assert_eq!(hide.image, ImageStep::Keep, "the fade-out has not ended");
+        assert_eq!(vanish.control(0, 700).image, ImageStep::End);
+        assert_eq!(vanish.control(0, 800).image, ImageStep::Keep);
+        vanish.release();
+        let back = vanish.control(0, 812);
+        assert!(back.moved);
+        assert_eq!(back.image, ImageStep::New);
+        let shown = vanish.control(0, 1212);
+        assert!(shown.show);
+        assert_eq!(shown.image, ImageStep::Fade);
         assert!(vanish.node.light);
         assert_eq!(vanish.destroy(), (true, false));
-        assert!(!vanish.node.light && !vanish.node.image);
+        assert!(!vanish.node.light && vanish.node.image.is_none());
+        // Over a lent shell the fade-in's end hands the image on.
+        let mut lent = Vanish::new(0, true, false, 0.0);
+        for now in [0, 400, 700] {
+            lent.control(0, now);
+        }
+        lent.release();
+        lent.control(0, 712);
+        assert_eq!(lent.control(0, 1112).image, ImageStep::Lend);
     }
 
     #[test]

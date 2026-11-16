@@ -4167,6 +4167,13 @@ impl Ragdoll {
         self.kinematic
     }
 
+    /// Sets or clears the kinematic bit alone (the original's state bit
+    /// 0x100): the displacement powers' enable of a returning body clears
+    /// it with the disabled bit.
+    pub fn set_kinematic(&mut self, kinematic: bool) {
+        self.kinematic = kinematic;
+    }
+
     /// Disables or enables the body (the original's state bit 0x800). The
     /// original sets it, with the asleep bit and the state-4 bit, on an
     /// item taken onto the cursor (`state |= 0x805`), where the item hangs
