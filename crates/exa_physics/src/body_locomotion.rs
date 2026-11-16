@@ -443,13 +443,18 @@ impl Locomotor {
 
     /// The placement's reset of the locomotion, as the original's
     /// placement at a matrix does before it samples the first clip: the
-    /// twist back to the identity, the move vector's reach 0, then the
-    /// facing every placement writes ([`Locomotor::face`]). Returns the
-    /// flattened, normalised heading.
+    /// twist back to the identity, the move vector's reach 0, no turn
+    /// under way, the request neither moving nor in free walk with its
+    /// flag word clear, then the facing every placement writes
+    /// ([`Locomotor::face`]). Returns the flattened, normalised heading.
     pub fn placed(&mut self, req: &mut Locomotion, forward: Vec3) -> Vec3 {
         self.twist = Quat::IDENTITY;
         self.twist_before = Quat::IDENTITY;
         self.reach = 0.0;
+        self.turning = false;
+        req.moving = false;
+        req.free_walk = false;
+        req.flags = 0;
         self.face(req, forward)
     }
 

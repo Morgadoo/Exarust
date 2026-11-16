@@ -1939,8 +1939,8 @@ pub enum GameMode {
 /// The entry and leave routines a mode record names. The original stores
 /// two function pointers in each record: Character names the controls'
 /// start and end of play, Spectate its own pair (its enter routine
-/// switches the input to spectating; Exarust has no spectate session to
-/// run them).
+/// switches the input to spectating, [`crate::spectate`]). The camera
+/// switch runs the leave routine of the mode it leaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameModeHook {
     StartOfPlay,
@@ -1968,6 +1968,16 @@ pub struct GameModeEntry {
 }
 
 impl GameMode {
+    /// The camera record the mode's start hands the camera switch: the
+    /// Character record (with the Deck's distances `on_deck`) or the
+    /// Spectate record with its scan bit ([`crate::nav_camera`]).
+    pub fn camera_record(self, on_deck: bool) -> crate::nav_camera::PresetFields {
+        match self {
+            GameMode::Character => crate::nav_camera::character_camera_record(on_deck),
+            GameMode::Spectate => crate::nav_camera::spectate_camera_record(),
+        }
+    }
+
     /// The name the original stores in the mode table.
     pub fn name(self) -> &'static str {
         match self {
@@ -2011,17 +2021,42 @@ pub fn register_game_modes(registered: u32) -> [GameModeEntry; 2] {
 }
 
 /// The game's mode table as the controls unit registers its two modes into
-/// it. The original appends to the live table at unit init; Exarust keeps
-/// the table as a resource so the two modes and their ids exist from
-/// start-up.
+/// it, with the scene's mode word. The original appends to the live table
+/// at unit init; Exarust keeps the table as a resource so the two modes and
+/// their ids exist from start-up.
+///
+/// The mode word is the scene's: each mode's start enters its mode through
+/// the camera switch ([`Self::switch`]), which first runs the leave routine
+/// of the mode the word holds (a word of [`FIRST_MODE_ID`] or more), and a
+/// level's unload switches to no mode (word 0). The camera takes the
+/// entered mode's record ([`crate::player::ChaseCamera::take_record`]), the
+/// room walk is forced while the mode is not Character, and the controls'
+/// end of play is skipped when the switch to Spectate ran it.
 #[derive(bevy::prelude::Resource, Debug, Clone, PartialEq, Eq)]
 pub struct GameModes {
     pub entries: Vec<GameModeEntry>,
+    /// The scene's mode word: a mode's id, or 0 for none.
+    pub active: u32,
+    /// How many switches have run, for the cameras to see a switch to the
+    /// mode they already hold.
+    pub switches: u32,
+}
+
+/// The first mode word the camera switch runs a leave routine for: the
+/// mode table's first entry's id (the place plus three).
+pub const FIRST_MODE_ID: u32 = 3;
+
+/// What a mode switch did: the mode it left and that mode's leave routine
+/// (when the word held one), and the mode it entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeSwitch {
+    pub left: Option<(GameMode, GameModeHook)>,
+    pub entered: Option<GameMode>,
 }
 
 impl Default for GameModes {
     /// The table as the controls unit leaves it: its two modes registered
-    /// after no earlier entries.
+    /// after no earlier entries, and no mode entered.
     fn default() -> Self {
         Self::with_registered(0)
     }
@@ -2033,6 +2068,8 @@ impl GameModes {
     pub fn with_registered(registered: u32) -> Self {
         Self {
             entries: register_game_modes(registered).to_vec(),
+            active: 0,
+            switches: 0,
         }
     }
 
@@ -2052,6 +2089,53 @@ impl GameModes {
     pub fn id(&self, mode: GameMode) -> Option<u32> {
         self.get(mode).map(|entry| entry.id)
     }
+
+    /// The mode the scene's word holds, when it is one of the controls'.
+    pub fn current(&self) -> Option<GameMode> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == self.active)
+            .map(|entry| entry.mode)
+    }
+
+    /// Whether the scene is in `mode`.
+    pub fn is(&self, mode: GameMode) -> bool {
+        self.current() == Some(mode)
+    }
+
+    /// The camera switch's mode half: a word of [`FIRST_MODE_ID`] or more
+    /// has its record's leave routine run (the record at the word less
+    /// three), then the word takes the entered mode's id (0 for none). A
+    /// mode the table does not hold enters as none.
+    pub fn switch(&mut self, to: Option<GameMode>) -> ModeSwitch {
+        let left = if self.active >= FIRST_MODE_ID {
+            self.entries
+                .get((self.active - FIRST_MODE_ID) as usize)
+                .map(|entry| (entry.mode, entry.leave))
+        } else {
+            None
+        };
+        let id = to.and_then(|mode| self.id(mode));
+        self.active = id.unwrap_or(0);
+        self.switches = self.switches.wrapping_add(1);
+        ModeSwitch {
+            left,
+            entered: id.and(to),
+        }
+    }
+}
+
+/// Runs the camera switch's mode half and logs it, with what asked.
+pub fn enter_mode(modes: &mut GameModes, to: Option<GameMode>, by: &str) -> ModeSwitch {
+    let switch = modes.switch(to);
+    let left = switch.left.map_or("none".to_string(), |(mode, hook)| {
+        format!("{} ({hook:?})", mode.name())
+    });
+    bevy::log::info!(
+        "game mode: {} (left {left}; {by})",
+        switch.entered.map_or("none", GameMode::name)
+    );
+    switch
 }
 
 #[cfg(test)]
@@ -3041,6 +3125,44 @@ mod tests {
         assert_eq!(table.id(GameMode::Spectate), Some(6));
         assert_eq!(table.entries[2].index, 2);
         assert_eq!(table.entries[3].index, 3);
+    }
+
+    /// The switch enters a mode by its id, runs the leave routine of the
+    /// mode it leaves (none from word 0) and enters none for no mode; the
+    /// word's place in the table is the word less three.
+    #[test]
+    fn the_mode_switch_leaves_the_mode_it_held() {
+        let mut modes = GameModes::default();
+        assert_eq!((modes.active, modes.current()), (0, None));
+        let first = modes.switch(Some(GameMode::Character));
+        assert_eq!(first.left, None);
+        assert_eq!(first.entered, Some(GameMode::Character));
+        assert_eq!(modes.active, 3);
+        assert!(modes.is(GameMode::Character));
+        let to_spectate = modes.switch(Some(GameMode::Spectate));
+        assert_eq!(
+            to_spectate.left,
+            Some((GameMode::Character, GameModeHook::EndOfPlay))
+        );
+        assert_eq!(modes.active, 4);
+        let back = modes.switch(Some(GameMode::Character));
+        assert_eq!(
+            back.left,
+            Some((GameMode::Spectate, GameModeHook::EndOfSpectate))
+        );
+        let unload = modes.switch(None);
+        assert_eq!(
+            unload.left,
+            Some((GameMode::Character, GameModeHook::EndOfPlay))
+        );
+        assert_eq!((modes.active, modes.current()), (0, None));
+        assert_eq!(modes.switch(None).left, None);
+        assert_eq!(modes.switches, 5);
+        // The records the starts hand the switch.
+        assert_eq!(GameMode::Character.camera_record(false).flags, 0x0020_0300);
+        assert_eq!(GameMode::Character.camera_record(true).distance, 800.0);
+        assert_eq!(GameMode::Spectate.camera_record(true).flags, 0x0062_0b01);
+        assert_eq!(GameMode::Spectate.camera_record(true).distance, 1300.0);
     }
 
     /// The right press: a usable kind zero opens the container, another

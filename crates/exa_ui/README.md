@@ -722,7 +722,9 @@ three paths, and the markup tags. `viewport` keeps the 3D viewport
 control's supersampling levels, jitter table and samples (both shares
 divided in double precision), camera scale, stereo eye, overlays, frame-rate counter
 (its text in the engine's number formatting),
-pixel/space conversions, cursor actions, view delegates and the draw
+pixel/space conversions (`view_to_screen`, live as the game's
+`player::window_point`, its edge branch taking the far side on a NaN as the
+unordered compares do), cursor actions, view delegates and the draw
 slot's whole-or-progressive plan; the running world is `exa_render`'s.
 
 ## Layers, pickers, swatches and help

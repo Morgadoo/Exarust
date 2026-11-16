@@ -1208,16 +1208,15 @@ impl Default for PresetFields {
     }
 }
 
-/// The game camera's preset record: the one the player controls hand the
-/// camera switch when the level's view is made (read from the shipped
-/// record). The stepped camera with the wheel's stops (`0x200`,
-/// `0x200000`), the free press drag (`1`), view 250 (the yaw spring's
-/// 250/59² stiffness), the default retention (its 59th root is the spring's
-/// 0.616 retention), size 6000, rate 0.01, the first distance 1300 between
-/// 800 and 2000 (the zoom's start and stops) and the looked-at height
-/// between 0 and 200 cm. The controls' other record differs only in its
-/// handler bits ([`GAME_CAMERA_FLAGS_ALT`]).
-pub const GAME_CAMERA_PRESET: PresetFields = PresetFields {
+/// The Spectate mode's camera record, as shipped: the stepped camera with
+/// the wheel's stops (`0x200`, `0x200000`), the free camera's pan keys
+/// (`0x800`, flattened by `0x20000`), the free press drag (`1`), view 250
+/// (the yaw spring's 250/59² stiffness), the default retention (its 59th
+/// root is the spring's 0.616 retention), size 6000, rate 0.01, the first
+/// distance 1300 between 800 and 2000 (the zoom's start and stops) and the
+/// looked-at height between 0 and 200 cm. The Spectate start hands it to
+/// the camera switch with [`SPECTATE_SCAN`] or'd in for the call.
+pub const SPECTATE_CAMERA_RECORD: PresetFields = PresetFields {
     flags: 0x0022_0b01,
     view: 250.0,
     retention: 0.0,
@@ -1234,10 +1233,44 @@ pub const GAME_CAMERA_PRESET: PresetFields = PresetFields {
     extra: 0.0,
 };
 
-/// The flags of the player controls' second game camera record, whose
-/// numbers are [`GAME_CAMERA_PRESET`]'s: the stepped camera and the wheel,
-/// without the free press drag.
-pub const GAME_CAMERA_FLAGS_ALT: u32 = 0x0020_0300;
+/// The bit the Spectate start ors into its record's flags for the camera
+/// switch (and clears again after it): the controller keeps it, so the
+/// preset runs its target scan and each tick holds the free point in the
+/// scanned box.
+pub const SPECTATE_SCAN: u32 = 0x40_0000;
+
+/// The Character mode's camera record, as shipped: the Spectate record's
+/// numbers with only the stepped camera and the wheel (`0x200300`): no pan
+/// keys and no free press drag, as the player's body carries the camera.
+pub const CHARACTER_CAMERA_RECORD: PresetFields = PresetFields {
+    flags: 0x0020_0300,
+    ..SPECTATE_CAMERA_RECORD
+};
+
+/// The Character record's first and smallest distance on a Steam Deck: the
+/// Character start writes them into the record when the Steam client says
+/// the game runs on a Deck (the record keeps them for later starts).
+pub const DECK_DISTANCES: (f32, f32) = (800.0, 600.0);
+
+/// The record the Character start hands the camera switch: the shipped
+/// one, with [`DECK_DISTANCES`] when `on_deck` (the settings' Deck flag,
+/// which Exarust does not detect).
+pub fn character_camera_record(on_deck: bool) -> PresetFields {
+    let mut record = CHARACTER_CAMERA_RECORD;
+    if on_deck {
+        (record.distance, record.min_distance) = DECK_DISTANCES;
+    }
+    record
+}
+
+/// The record the Spectate start hands the camera switch: the shipped one
+/// with [`SPECTATE_SCAN`] in its flags.
+pub fn spectate_camera_record() -> PresetFields {
+    PresetFields {
+        flags: SPECTATE_CAMERA_RECORD.flags | SPECTATE_SCAN,
+        ..SPECTATE_CAMERA_RECORD
+    }
+}
 
 /// What a preset puts on the camera controller, with the defaults filled
 /// in and the divisions done.
@@ -1929,7 +1962,7 @@ mod tests {
 
     #[test]
     fn the_game_camera_preset_gives_the_chase_cameras_numbers() {
-        let preset = apply_preset(GAME_CAMERA_PRESET);
+        let preset = apply_preset(SPECTATE_CAMERA_RECORD);
         // The yaw spring: 250/59² stiffness and the default retention's
         // 59th root, both single precision.
         assert_eq!(preset.view.to_bits(), (250.0f32 / 3481.0f32).to_bits());
@@ -1946,15 +1979,20 @@ mod tests {
         let handlers = preset.handlers;
         assert!(handlers.wheel && handlers.free_press && handlers.free_move);
         assert!(!handlers.editor_press);
-        // The second record installs no press drag; its numbers are the same.
-        let alt = apply_preset(PresetFields {
-            flags: GAME_CAMERA_FLAGS_ALT,
-            ..GAME_CAMERA_PRESET
-        });
+        // The Character record installs no press drag; its numbers are the
+        // same.
+        let alt = apply_preset(CHARACTER_CAMERA_RECORD);
         assert!(alt.handlers.wheel && !alt.handlers.free_press);
         assert_eq!((alt.view, alt.retention), (preset.view, preset.retention));
+        assert_eq!(character_camera_record(false), CHARACTER_CAMERA_RECORD);
+        // On a Deck the Character start zooms in to 800 over a 600 stop.
+        let deck = apply_preset(character_camera_record(true));
+        assert_eq!((deck.distance, deck.min_distance), (800.0, 600.0));
+        assert_eq!(deck.max_distance, 2000.0);
+        // The Spectate start's call carries the scan bit.
+        assert_eq!(spectate_camera_record().flags, 0x0062_0b01);
         // The controller the camera builds keeps that preset.
-        let controller = NavController::new(GAME_CAMERA_PRESET, 0, false);
+        let controller = NavController::new(SPECTATE_CAMERA_RECORD, 0, false);
         assert_eq!(controller.preset, preset);
         assert_eq!(controller.frame, FrameDriver::default());
     }
@@ -2815,7 +2853,7 @@ mod tests {
     /// the largest distance.
     #[test]
     fn the_free_pull_grows_with_the_zoom() {
-        let preset = apply_preset(GAME_CAMERA_PRESET);
+        let preset = apply_preset(SPECTATE_CAMERA_RECORD);
         let pull = free_pull(1300.0, preset.max_distance, preset.extent);
         assert_eq!(pull, (1300.0f32 / 2000.0 + 0.25) * (6000.0f32 / 3481.0));
         assert!(free_pull(2000.0, 2000.0, preset.extent) > pull);
@@ -2827,7 +2865,7 @@ mod tests {
     /// height stays within the limits.
     #[test]
     fn the_free_focus_pans_coasts_and_stops() {
-        let preset = apply_preset(GAME_CAMERA_PRESET);
+        let preset = apply_preset(SPECTATE_CAMERA_RECORD);
         let limits = HeightLimits {
             min: preset.min_height,
             max: preset.max_height,

@@ -7,7 +7,8 @@
 //! pool when that is over 0.01, its contacts and target are forgotten, and
 //! a roaming one (activity 1) that is not a statue is moved along freshly
 //! planned wander and home-side plans (twice, each plan kept only when its
-//! path spans over 150 cm), placed there, and asked the scene's "is the
+//! path spans over 150 cm), put living there (the placement at a matrix,
+//! `crate::limp::LivingPlacement`), and asked the scene's "is the
 //! space free" query (`exa_physics::sector_lists::space_taken`): a body
 //! that meets another is moved to the navigation grid's nearest walkable
 //! point and placed again. It then leaves combat, stops following, and its
@@ -35,7 +36,10 @@
 //! nearest walkable point is asked from the root's point (the original
 //! asks from the standing point at the pelvis's height); a body with no
 //! footprint recorded is not stamped (the next fixed tick's footprint pass
-//! stamps it); the reset of the AI's walk-ahead flags is not reproduced.
+//! stamps it); the placement's turn is the model's yaw (the original's
+//! character frame), and of the reset's words after the placement only the
+//! ones the placement writes itself (moving, free walk, the flag word) are
+//! reproduced.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -148,7 +152,7 @@ pub fn revive_brains(
     mut commands: Commands,
     mut brains: Brains,
     mut roots: Roots,
-    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    bodies: Query<(Entity, &mut Ragdoll)>,
     level: Option<Res<LevelRooms>>,
     mut nav: Option<ResMut<exa_world::nav::NavGrid>>,
     mut prints: Option<ResMut<exa_world::nav::NavFootprints>>,
@@ -298,21 +302,23 @@ pub fn revive_brains(
             if let Some(mut root) = parent.and_then(|p| roots.get_mut(p.parent()).ok()) {
                 root.translation += shift;
             }
-            if let Ok((_, mut body)) = bodies.get_mut(entity) {
-                let worlds: Vec<Affine3A> = body
-                    .parts
-                    .iter()
-                    .map(|p| Affine3A::from_translation(shift) * p.transform())
-                    .collect();
-                body.place_at(&worlds);
-            }
         }
-        // The placement (and the second one after the space-free query)
-        // puts the body's held items back in its hands where it stands.
-        if bodies.contains(entity) {
+        // The body is put living at its standing position moved with the
+        // plans, the pelvis keeping its height over the ground, on its own
+        // character frame's turn ([`crate::limp::LivingPlacement`]); the
+        // placement puts its held items back in its hands where it stands.
+        if let Ok((_, body)) = bodies.get(entity)
+            && let Some(pelvis) = body.parts.iter().find(|p| p.parent.is_none())
+        {
+            let at = Vec3::from(pelvis.transform().translation) + shift;
+            let yaw = exa_physics::body::locomotion::heading_of(gt.rotation() * Vec3::Z);
             commands
                 .entity(entity)
-                .insert(exa_physics::grip::ReplaceHeld);
+                .insert(crate::limp::LivingPlacement::at(
+                    at,
+                    yaw,
+                    crate::limp::FrameHeight::Given,
+                ));
         }
         // The footprint is stamped again where the body now stands, so the
         // brains reset after it plan around it.
@@ -409,15 +415,21 @@ pub(crate) mod tests {
         app.update();
         // The reset runs at the start of the next fixed step.
         exa_physics::sim_app::run_fixed_commands(app.world_mut());
-        // Only the roaming body is placed, and its held items with it.
-        let replaced = |e: Entity| {
-            app.world()
-                .get::<exa_physics::grip::ReplaceHeld>(e)
-                .is_some()
-        };
-        assert!(replaced(awake));
-        assert!(!replaced(falling));
-        assert!(!replaced(still));
+        // Only the roaming body is placed living where it stands (no room to
+        // plan in: its pelvis's own place, its own turn), and its held items
+        // with it.
+        let placed = |e: Entity| app.world().get::<crate::limp::LivingPlacement>(e).copied();
+        assert_eq!(
+            placed(awake),
+            Some(crate::limp::LivingPlacement::at(
+                Vec3::ZERO,
+                0.0,
+                crate::limp::FrameHeight::Given
+            ))
+        );
+        assert!(placed(awake).unwrap().replace_held);
+        assert!(placed(falling).is_none());
+        assert!(placed(still).is_none());
         assert!(
             app.world()
                 .resource::<crate::flow::FlowSteps>()
