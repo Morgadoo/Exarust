@@ -449,3 +449,10 @@ The planner, its corner line walk and the nearest-walkable flood SHALL read a ce
 #### Scenario: The flood past the west edge
 - **WHEN** a costly point stands in the first column and the previous row's last cell is cheap
 - **THEN** the nearest walkable point is that cell's centre placed one cell west of the grid
+
+### Requirement: Sliding leaves as movers
+A sliding door's leaf SHALL stay a mover of the navigation grid when it registers as a body; a refresh over the rectangles of where a shut leaf was and where it now stands SHALL free the cells it left and raise the floored cells under it.
+
+#### Scenario: Portcullises shut
+- **WHEN** `exanima01`'s unlatched fast portcullises are shut by signal and their two rectangles each are refreshed
+- **THEN** cells they left are lowered and doorway cells under them are raised

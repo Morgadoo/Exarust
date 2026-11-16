@@ -141,7 +141,7 @@
 //!                                     under it (the original refreshes only where a lifted item is let go)
 //!          --static-doors             debug: hinged doors stay static level geometry, as before they became bodies
 //!          --static-mechanisms        debug: levers and push surfaces stay static level geometry, as before they became bodies
-//!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
+//!          --static-sliding-doors     debug: sliding doors (portcullises) stay static level geometry, as before they became bodies
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --versus                   debug: set the versus lobby's flag (never set in Exanima 0.9.5), so the
 //!                                     arena page shows VERSUS; its creator's READY finds no lobby form
@@ -517,9 +517,9 @@ pub struct Options {
     /// Keep levers and push surfaces static level geometry (Exarust's
     /// debug option).
     pub static_mechanisms: bool,
-    /// Make sliding doors bodies with their rules (Exarust's debug option:
-    /// their lift is not reproduced).
-    pub sliding_doors: bool,
+    /// Keep sliding doors static level geometry instead of bodies
+    /// (Exarust's debug option).
+    pub static_sliding_doors: bool,
     /// Open one empty form through the GUI draw path.
     pub debug_gui_form: bool,
     /// Debug: set the versus lobby's flag, which Exanima 0.9.5 never sets,
@@ -1237,7 +1237,7 @@ fn main() -> AppExit {
             "--static-doors" => options.static_doors = true,
             "--toggle-door" => options.toggle_door = args.next().and_then(|v| v.parse().ok()),
             "--static-mechanisms" => options.static_mechanisms = true,
-            "--sliding-doors" => options.sliding_doors = true,
+            "--static-sliding-doors" => options.static_sliding_doors = true,
             "--debug-gui-form" => options.debug_gui_form = true,
             "--versus" => options.versus = true,
             "--open-settings" => {

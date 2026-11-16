@@ -3664,8 +3664,8 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   the doors as the level's objects are placed (`room_view::PlacedDoor`,
   `BoundDoor`) and each frame gives every bound link, both directions, the
   state of its hinged or sliding leaf (`rooms::link_open`,
-  `RoomTracker::set_door`); a static leaf (a sliding door without
-  `--sliding-doors`) leaves its link open. `exanima01` binds 96 of its 140
+  `RoomTracker::set_door`); a static leaf (a door kept static with
+  `--static-doors` or `--static-sliding-doors`) leaves its link open. `exanima01` binds 96 of its 140
   door objects; the rest stand where no link of their cell lies behind
   them. `--toggle-door FRAME` gives the nearest bound door its own toggle,
   for checks. The room manager's active-room

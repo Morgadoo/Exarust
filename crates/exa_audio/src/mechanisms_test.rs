@@ -123,3 +123,46 @@ fn the_tick_loop_starts_fades_and_frees() {
     drive_tick_loop(&mut env, &mut bank, &mut held, None, at, TickCue::Start);
     assert_eq!(held, None);
 }
+
+/// The door's destructor releases its creak voice: a leaf whose creak
+/// voice plays and that then leaves the world (despawned with its level)
+/// has the voice freed by the mechanisms' sounds system (skipped without
+/// the game, whose sets the voice plays).
+#[test]
+fn a_departed_leaf_frees_its_creak_voice() {
+    use exa_assets::{GameData, locate_install};
+    let Some(dir) = locate_install(None) else {
+        return;
+    };
+    let Ok(game) = GameData::open(&dir) else {
+        return;
+    };
+    let mut app = App::new();
+    app.add_message::<MechanismSounded>()
+        .insert_resource(Game(std::sync::Arc::new(game)))
+        .insert_resource(SoundBank::default())
+        .insert_resource(AudioEnvironment::new())
+        .init_resource::<Assets<AudioSource>>()
+        .add_systems(Update, mechanism_sounds);
+    let held = |app: &App| {
+        let env = app.world().resource::<AudioEnvironment>();
+        (0..crate::environment::VOICE_CAPACITY as u32)
+            .filter(|&id| {
+                env.voice(id)
+                    .is_some_and(|v| v.flags & voice_flags::ALLOCATED != 0)
+            })
+            .count()
+    };
+    let leaf = app.world_mut().spawn_empty().id();
+    app.world_mut().write_message(MechanismSounded::Voice {
+        source: leaf,
+        set: "doora_hng".to_owned(),
+        position: Vec3::ZERO,
+        levels: Some((0.075, 0.722)),
+    });
+    app.update();
+    assert_eq!(held(&app), 1);
+    app.world_mut().despawn(leaf);
+    app.update();
+    assert_eq!(held(&app), 0);
+}

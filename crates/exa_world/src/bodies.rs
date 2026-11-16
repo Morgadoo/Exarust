@@ -12,10 +12,10 @@
 //! its set-up when it is added to the world: a hinged door's leaf its door
 //! rules ([`exa_physics::body::PendingDoor`]), a lever's arm its lever rules
 //! ([`exa_physics::body::PendingLever`]), a push surface its plate rules
-//! ([`exa_physics::body::PendingPlate`]), and, when the loader is asked for
-//! them ([`MechanismBodies::sliding`]), a sliding door's leaf its sliding
-//! rules ([`exa_physics::body::PendingSlide`]). Otherwise a mechanism's body
-//! stays static level geometry. Their rules are in `exa_physics`'s `door`,
+//! ([`exa_physics::body::PendingPlate`]), and a sliding door's leaf its
+//! sliding rules ([`exa_physics::body::PendingSlide`]), each kind unless the
+//! loader is asked to keep it static ([`MechanismBodies`]). Any other
+//! mechanism tree stays static level geometry. Their rules are in `exa_physics`'s `door`,
 //! `lever`, `plate` and `mechanism` modules.
 //! Evidence: `docs/formats/RFC.md` (Rigid body, Props).
 
@@ -138,7 +138,8 @@ pub enum Placement {
     /// A mechanism whose bodies stay static (its kind is not asked for).
     Mechanism,
     /// A door: its hinged leaves register hung, with their door rules, and
-    /// its sliding leaves too when asked for; any other tree stays static.
+    /// its sliding leaves with their sliding rules (unless kept static); any
+    /// other tree stays static.
     Door(DoorPlacement),
     /// A lever: its hung arm registers with its lever rules.
     Lever(OperativePlacement),
@@ -166,10 +167,11 @@ pub struct OperativePlacement {
     pub id: u32,
 }
 
-/// Which mechanisms' bodies a level load registers with their rules.
-/// Hinged doors, levers and push surfaces by default; sliding doors only
-/// when asked (`--sliding-doors`: their lift is not reproduced, see
-/// `exa_physics::body::slide_body`).
+/// Which mechanisms' bodies a level load registers with their rules: all
+/// by default, as the original builds a door body for every door record
+/// (hinged and sliding leaves) and its operative body for every lever and
+/// push surface. Each kind can be kept static level geometry (the game's
+/// debug options).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MechanismBodies {
     pub doors: bool,
@@ -184,7 +186,7 @@ impl Default for MechanismBodies {
             doors: true,
             levers: true,
             plates: true,
-            sliding: false,
+            sliding: true,
         }
     }
 }
@@ -891,8 +893,10 @@ mod tests {
     /// from the world (wall chains, lamps, and the 109 hinged door leaves,
     /// 123 bodies with their knockers), 89 are levers, plates and sliding
     /// doors left static, 492 belong to props placed static. By default the
-    /// 40 levers and 12 push surfaces register too (37 left static), and
-    /// with sliding doors asked for, the 37 sliding leaves as well. `arenao1`: 68 of its props are placed static (the
+    /// 40 levers, 12 push surfaces and 37 sliding leaves (its portcullises)
+    /// register too, as the original builds a body for every door and
+    /// operative record; kept static, the sliding leaves stay level
+    /// geometry. `arenao1`: 68 of its props are placed static (the
     /// barrels, the cart), 3 lanterns hang, its own model's tavern table is a
     /// node marked static; 20 bodies register (its tableware, clothes, a
     /// basket and the lanterns).
@@ -914,25 +918,26 @@ mod tests {
         let doors_only = MechanismBodies {
             levers: false,
             plates: false,
+            sliding: false,
             ..MechanismBodies::default()
         };
         assert_eq!(
             level_counts(&game, "exanima01", doors_only),
             counts(4822, 6146, 231, 109, 89, 492)
         );
-        let live = level_counts(&game, "exanima01", MechanismBodies::default());
-        let all = level_counts(
+        let static_sliding = level_counts(
             &game,
             "exanima01",
             MechanismBodies {
-                sliding: true,
+                sliding: false,
                 ..MechanismBodies::default()
             },
         );
-        // The 40 levers and 12 push surfaces register with their rules; the
-        // 37 sliding leaves (portcullises, secret doors) only when asked.
+        let all = level_counts(&game, "exanima01", MechanismBodies::default());
+        // The 40 levers, 12 push surfaces and 37 sliding leaves (the
+        // portcullises) register with their rules unless kept static.
         assert_eq!(
-            live,
+            static_sliding,
             BodyCounts {
                 levers: 40,
                 plates: 12,
@@ -1329,6 +1334,241 @@ mod tests {
             "{sent:?}"
         );
         eprintln!("lever signals: {sent:?}");
+    }
+
+    /// The installed `exanima01`'s sliding doors (its 37 portcullises,
+    /// skipped without the game) as bodies by default: each leaf registers
+    /// with its sliding rules and stays a mover of the navigation grid
+    /// (its mesh node keeps [`crate::nav::MovingMesh`]); placed slid into
+    /// its wall at the open end of its level rail (fraction 0), it reads
+    /// open and its room link stays open. Woken and left alone it creeps
+    /// under 2 cm along its rail and falls asleep. A toggle signalled to
+    /// the placed object of each unlatched fast leaf (the router's door
+    /// order, a close and lock) slides it shut along its rail, 170 cm into
+    /// its frame, where it reads shut; the grid's refresh over the
+    /// rectangles of both frames, with the leaves where they now stand,
+    /// frees the cells they left and raises the floored doorway cells they
+    /// now stand over (the doorway the path finder routes through).
+    #[test]
+    fn shipped_portcullises_slide_shut_and_raise_their_doorway() {
+        use crate::mechanisms::MechanismRecords;
+        use crate::nav::{Layer, MoverPoints, Movers, MovingMesh, queue_moved, rect_around};
+        use bevy::ecs::world::CommandQueue;
+        use bevy::time::TimeUpdateStrategy;
+        use exa_physics::body::{Ragdoll, SlideBody};
+        use exa_physics::mechanism::MechanismSignal;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::transform::TransformPlugin,
+            exa_physics::PhysicsPlugin,
+            crate::mechanisms::MechanismPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+        ));
+        let mut cache = exa_assets::ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut queue = CommandQueue::default();
+        {
+            let mut loader = exa_assets::ModelLoader {
+                game: &game,
+                cache: &mut cache,
+                meshes: &mut meshes,
+                materials: &mut materials,
+                images: &mut images,
+                bc_supported: false,
+            };
+            let mut commands = Commands::new(&mut queue, app.world());
+            crate::spawn_level(&mut commands, &mut loader, "exanima01").expect("exanima01");
+        }
+        queue.apply(app.world_mut());
+        app.world_mut().insert_resource(meshes);
+        for _ in 0..4 {
+            app.update();
+        }
+        let mut q = app.world_mut().query_filtered::<Entity, With<SlideBody>>();
+        let leaves: Vec<Entity> = q.iter(app.world()).collect();
+        assert_eq!(leaves.len(), 37);
+        for &e in &leaves {
+            let entity = app.world().entity(e);
+            assert!(
+                entity.contains::<MovingMesh>() && entity.contains::<crate::gi_volume::GiPoints>()
+            );
+            let body = entity.get::<Ragdoll>().unwrap();
+            let glue = entity.get::<SlideBody>().unwrap();
+            assert!(glue.fraction(body) < 0.01 && !glue.door.closed);
+            let rail = body.world[glue.travel_link()].axis;
+            assert!(
+                rail.y.abs() < 1e-3 && (rail.length() - 1.7).abs() < 1e-3,
+                "{rail}"
+            );
+        }
+        let mut q = app
+            .world_mut()
+            .query_filtered::<Entity, (With<Ragdoll>, Without<SlideBody>)>();
+        let others: Vec<Entity> = q.iter(app.world()).collect();
+        for e in others {
+            app.world_mut().entity_mut(e).remove::<Ragdoll>();
+        }
+        let at = |app: &App, e: Entity| -> Vec3 {
+            app.world().get::<Ragdoll>(e).unwrap().parts[0]
+                .transform()
+                .translation
+                .into()
+        };
+        let before: Vec<Vec3> = leaves.iter().map(|&e| at(&app, e)).collect();
+        for &e in &leaves {
+            app.world_mut().get_mut::<Ragdoll>(e).unwrap().wake();
+        }
+        for _ in 0..166 {
+            app.update();
+        }
+        for (i, &e) in leaves.iter().enumerate() {
+            let moved = at(&app, e).distance(before[i]);
+            assert!(moved < 0.02, "leaf {i} crept {moved} m");
+            assert!(
+                app.world().get::<Ragdoll>(e).unwrap().asleep(),
+                "leaf {i} awake"
+            );
+        }
+        // The unlatched fast leaves under placed objects with records:
+        // toggle each by signal, which closes it (a latched leaf's toggle
+        // opens it, a shove toward fraction 0.6 only; a slow one's close
+        // only sounds its lock).
+        let mut toggled: Vec<(Entity, u32)> = Vec::new();
+        for &e in &leaves {
+            let door = app.world().get::<SlideBody>(e).unwrap().door;
+            if door.latched || !door.fast {
+                continue;
+            }
+            let mut up = app.world().get::<ChildOf>(e).map(ChildOf::parent);
+            while let Some(node) = up {
+                if let Some(r) = app.world().get::<MechanismRecords>(node) {
+                    if !toggled.iter().any(|(_, id)| *id == r.id) {
+                        toggled.push((e, r.id));
+                    }
+                    break;
+                }
+                up = app.world().get::<ChildOf>(node).map(ChildOf::parent);
+            }
+        }
+        assert!(!toggled.is_empty());
+        let open_frames: Vec<_> = toggled
+            .iter()
+            .map(|&(e, _)| app.world().get::<GlobalTransform>(e).unwrap().affine())
+            .collect();
+        let starts: Vec<Vec3> = toggled.iter().map(|&(e, _)| at(&app, e)).collect();
+        for &(_, id) in &toggled {
+            app.world_mut().write_message(MechanismSignal {
+                target: id,
+                source: 0,
+                value: -1,
+            });
+        }
+        for _ in 0..400 {
+            app.update();
+        }
+        for (k, &(e, _)) in toggled.iter().enumerate() {
+            let body = app.world().get::<Ragdoll>(e).unwrap();
+            let glue = app.world().get::<SlideBody>(e).unwrap();
+            let travelled = at(&app, e).distance(starts[k]);
+            assert!(
+                glue.door.closed && glue.fraction(body) >= 0.99,
+                "leaf {k}: fraction {} after {travelled} m",
+                glue.fraction(body)
+            );
+            assert!((travelled - 1.7).abs() < 0.05, "leaf {k}: {travelled} m");
+            assert_eq!(glue.door.both_passable, !glue.door.locked);
+        }
+        // The grid as built has each leaf at its placed frame; a refresh
+        // over the rectangles of both frames, with the leaves where they
+        // stand now, puts the cells a leaf left back toward their built
+        // floors and raises the floored cells it now stands over.
+        let level = crate::nav::headless::level_source(&game, "exanima01").expect("nav source");
+        let mut grid = level.build();
+        let boxed = |points: &[Vec3], frame: bevy::math::Affine3A| {
+            let (lo, hi) = points.iter().map(|&p| frame.transform_point3(p)).fold(
+                (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+                |(lo, hi), p| (lo.min(p), hi.max(p)),
+            );
+            ((lo + hi) * 0.5, (hi - lo) * 0.5)
+        };
+        let points: Vec<_> = toggled
+            .iter()
+            .map(|&(e, _)| {
+                app.world()
+                    .get::<crate::gi_volume::GiPoints>(e)
+                    .unwrap()
+                    .0
+                    .clone()
+            })
+            .collect();
+        let shut_frames: Vec<_> = toggled
+            .iter()
+            .map(|&(e, _)| app.world().get::<GlobalTransform>(e).unwrap().affine())
+            .collect();
+        let mut rects = Vec::new();
+        let mut movers = Movers::default();
+        for k in 0..toggled.len() {
+            let (c, h) = boxed(&points[k], open_frames[k]);
+            let open = rect_around(&grid, c, h);
+            let (c, h) = boxed(&points[k], shut_frames[k]);
+            let shut = rect_around(&grid, c, h);
+            queue_moved(&mut movers, open);
+            queue_moved(&mut movers, shut);
+            rects.push((open, shut));
+        }
+        let floors = |grid: &crate::nav::NavGrid, r: &crate::nav::CellRect| -> Vec<u8> {
+            (r.z0..=r.z1)
+                .flat_map(|z| (r.x0..=r.x1).map(move |x| (x as usize, z as usize)))
+                .map(|(x, z)| grid.cell(x, z, Layer::Lower).floor)
+                .collect()
+        };
+        let before: Vec<_> = rects
+            .iter()
+            .map(|(o, s)| (floors(&grid, o), floors(&grid, s)))
+            .collect();
+        let samples: Vec<MoverPoints> = (0..toggled.len())
+            .map(|k| MoverPoints {
+                at: shut_frames[k],
+                points: points[k].as_slice(),
+                centre: boxed(&points[k], shut_frames[k]).0,
+            })
+            .collect();
+        assert!(crate::nav::refresh_movers(&mut grid, &mut movers, &samples));
+        let (mut lowered, mut raised) = (0, 0);
+        for (k, (o, s)) in rects.iter().enumerate() {
+            let (open_after, shut_after) = (floors(&grid, o), floors(&grid, s));
+            lowered += before[k]
+                .0
+                .iter()
+                .zip(&open_after)
+                .filter(|(b, a)| a < b)
+                .count();
+            raised += before[k]
+                .1
+                .iter()
+                .zip(&shut_after)
+                .filter(|(b, a)| a > b && **b != 0 && **b != crate::nav::SKY)
+                .count();
+        }
+        assert!(
+            lowered > 0 && raised > 0,
+            "lowered {lowered}, raised {raised}"
+        );
+        eprintln!(
+            "{} portcullises shut: {lowered} cells freed, {raised} doorway cells raised",
+            toggled.len()
+        );
     }
 
     /// A child's slider link keeps its stored slack as plain slack: a 7 cm
