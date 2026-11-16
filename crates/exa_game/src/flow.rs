@@ -4505,9 +4505,16 @@ pub(crate) fn apply_steps(
                     menu.open_at(page);
                 }
             }
+            // The menu's close before a show (the class select, the
+            // creator, the saves' screen, a session's start) also clears
+            // the viewport's version-line flag, so the version line does
+            // not stay over the show.
             Step::HideMenu => {
                 if let Some(menu) = menu.as_mut() {
                     menu.close();
+                }
+                if let Some(overlays) = out.overlays.as_mut() {
+                    overlays.title = false;
                 }
             }
             Step::EndMenu(end_menu) => {

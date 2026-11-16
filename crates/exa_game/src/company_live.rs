@@ -357,6 +357,28 @@ mod tests {
         assert_eq!(editor.record().design, 9);
     }
 
+    /// The menu's hide before a show clears the version-line flag, which
+    /// the title had set; the return to the title sets it again.
+    #[test]
+    fn the_menus_hide_takes_the_version_line_down() {
+        let mut app = app();
+        app.insert_resource(crate::view_overlay::ViewOverlays {
+            fps: false,
+            title: true,
+        });
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(crate::flow::Step::HideMenu);
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<crate::view_overlay::ViewOverlays>()
+                .title
+        );
+        assert!(!app.world().resource::<MenuScreen>().open);
+    }
+
     fn app_with_named(text: &str) -> App {
         let mut app = app();
         new_career(&mut app);

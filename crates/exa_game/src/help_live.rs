@@ -1078,7 +1078,7 @@ fn paint_tip_banner(
     let drawn = banner.draw(size.0, unit, font.text_width(text.as_bytes()));
     let mut frame = GuiFrame::new();
     frame.push(GuiLayer::new(
-        GameTips::box_batch(&drawn, [0, 0, 0]),
+        GameTips::box_batch(&drawn, unit),
         LayerTexture::None,
     ));
     frame.push(gui_paint::caption_layer(
