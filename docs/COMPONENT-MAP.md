@@ -460,9 +460,9 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TJournal | Script, dialogue & story | 0 | 78% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TScriptActor | Script, dialogue & story | 0 | 80% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TScriptClass | Script, dialogue & story | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
-| XA_Arena | Game modes, arena & session | 71 | 96% | 74% | 72% | 2% | 0% | 23% | 3% |
+| XA_Arena | Game modes, arena & session | 71 | 96% | 73% | 71% | 2% | 0% | 24% | 3% |
 | XA_SaveGames | Game modes, arena & session | 27 | 96% | 55% | 52% | 3% | 0% | 42% | 3% |
-| SG_GameMain | Game modes, arena & session | 20 | 87% | 65% | 59% | 2% | 4% | 33% | 2% |
+| SG_GameMain | Game modes, arena & session | 20 | 87% | 70% | 64% | 2% | 4% | 28% | 2% |
 | TMatchBoard | Game modes, arena & session | 17 | 90% | 63% | 62% | 1% | 0% | 37% | 0% |
 | SG_Character_Create | Game modes, arena & session | 17 | 86% | 34% | 31% | 3% | 0% | 40% | 26% |
 | TLoadoutForm | Game modes, arena & session | 7 | 85% | 12% | 12% | 0% | 0% | 87% | 1% |
