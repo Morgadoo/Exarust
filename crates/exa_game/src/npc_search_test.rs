@@ -1380,3 +1380,50 @@ fn the_level_sizes_come_from_the_flagged_model_lookup() {
     assert_eq!(model_size(db, exa_formats::objdb::WORLD | 1), None);
     assert_eq!(model_size(db, local | 1), Some(7));
 }
+
+/// The removal hook: a searching brain that leaves the scene lets the
+/// object it held go (the reservation count falls by one); one still there
+/// keeps it.
+#[test]
+fn a_removed_searcher_lets_its_object_go() {
+    let mut app = App::new();
+    app.init_resource::<SearchWorld>()
+        .add_systems(Update, release_removed_searches);
+    let object = |id| exa_ai::search::SceneObject {
+        id,
+        kind: 0,
+        searchable: true,
+        fixed: false,
+        at: Vec3::ZERO,
+        half: Vec3::splat(30.0),
+        reserved: 1,
+        corpse: None,
+    };
+    {
+        let mut world = app.world_mut().resource_mut::<SearchWorld>();
+        world.scene.objects.push(object(7));
+        world.scene.objects.push(object(8));
+    }
+    let brain = |app: &mut App, target| {
+        let mut npc = Npc::new([0.0; 4]);
+        let mut search = Search::new();
+        search.target = Some(target);
+        npc.search = Some(search);
+        app.world_mut().spawn(npc).id()
+    };
+    let leaving = brain(&mut app, 0);
+    brain(&mut app, 1);
+    app.update();
+    app.world_mut().despawn(leaving);
+    app.update();
+    let world = app.world().resource::<SearchWorld>();
+    assert_eq!(world.scene.objects[0].reserved, 0);
+    assert_eq!(world.scene.objects[1].reserved, 1);
+    assert!(!world.held.contains_key(&leaving));
+    // A later tick does not let it go twice.
+    app.update();
+    assert_eq!(
+        app.world().resource::<SearchWorld>().scene.objects[0].reserved,
+        0
+    );
+}

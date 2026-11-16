@@ -4,10 +4,19 @@
 //!
 //! Each behaviour tick, as the original's does before it polls the input:
 //!
-//! - **Contacts.** The player's contact list is rebuilt over every other
-//!   character within 12 m ([`player_behaviour::contacts`]) and kept as
+//! - **Nearby gather.** On a level with a grid the player's nearby list is
+//!   gathered from the room lists as a brain's is
+//!   ([`exa_ai::rooms::RoomLists::gather`]: its room, then the room behind
+//!   each exit, through the nearby insert's sight test, sixteen at most).
+//! - **Contacts.** The player's contact list is rebuilt over the nearby
+//!   characters within 12 m ([`player_behaviour::contacts`]) and kept as
 //!   the player's contacts the NPC perception reads
-//!   ([`exa_ai::combatant::PlayerContacts`]).
+//!   ([`exa_ai::combatant::PlayerContacts`]). A level without a grid
+//!   gathers nobody, so the list stays empty there.
+//! - **Room move.** Unless staggered or suspended (the tick stops after
+//!   its contacts then), the player moves to its room's list
+//!   ([`exa_ai::rooms::RoomLists::move_to`]), after the gather: the gather
+//!   reads the room of the tick before.
 //! - **Late-swing check.** While the player attacks and its swing is past
 //!   0.6 of its clock, once a swing, the strongest engaged enemy in front
 //!   among the contacts ([`player_behaviour::strongest_engaged`]: within
@@ -97,11 +106,16 @@ pub(crate) fn tick_player_practice(
         Option<&mut CharacterData>,
         Option<&mut exa_ai::combatant::PlayerContacts>,
         Option<&exa_combat::condition::StateFlags>,
+        Option<&mut exa_ai::rooms::RoomPlace>,
     )>,
     (mut story, mut frame, control): (
         Option<ResMut<crate::experience_live::StoryExperience>>,
         ResMut<exa_physics::sim_app::FrameCommands>,
         Option<Res<crate::player_controls::PlayerControl>>,
+    ),
+    (mut lists, level): (
+        Option<ResMut<exa_ai::rooms::RoomLists>>,
+        Option<Res<exa_world::room_view::LevelRooms>>,
     ),
     others: Query<
         (
@@ -129,19 +143,45 @@ pub(crate) fn tick_player_practice(
         mut record,
         shared,
         flags,
+        mut place,
     ) in &mut players
     {
         let condition = condition.copied().unwrap_or_default();
         let at = gt.translation() * CM;
         let facing = forward(body.yaw);
         let cursor = forward(pb.aim);
+        // The nearby gather, from the room the last room move left.
+        if let (Some(place), Some(lists), Some(level)) =
+            (place.as_deref_mut(), lists.as_deref(), level.as_deref())
+            && 0 <= place.room
+        {
+            let exits: Vec<i32> =
+                exa_ai::rooms::room_exits(&level.rooms, &level.tracker, place.room as u16)
+                    .iter()
+                    .map(|exit| exit.room)
+                    .collect();
+            let weigh = |e: Entity| {
+                others.get(e).ok().map(|(_, o, ..)| {
+                    let there = o.translation() * CM;
+                    (
+                        (there - at).length_squared(),
+                        exa_ai::rooms::in_sight(Some(level), at, there),
+                    )
+                })
+            };
+            lists.gather(me, place.room, exits, weigh, &mut place.nearby);
+        }
+        let nearby: &[u64] = place.as_deref().map_or(&[], |p| p.nearby.as_slice());
         kept.contacts = player_behaviour::contacts(
             at,
             facing,
             cursor,
-            others
-                .iter()
-                .map(|(e, o, ..)| (e.to_bits(), o.translation() * CM)),
+            nearby.iter().filter_map(|&id| {
+                others
+                    .get(Entity::from_bits(id))
+                    .ok()
+                    .map(|(e, o, ..)| (e.to_bits(), o.translation() * CM))
+            }),
         );
         // The same list is the player's contacts as the NPC perception's
         // threat estimate reads them.
@@ -163,6 +203,17 @@ pub(crate) fn tick_player_practice(
         // suspended: no practice.
         if crate::player::behaviour_halted(control.as_deref(), flags) {
             continue;
+        }
+        // The room move, on a level with a grid.
+        if let (Some(place), Some(lists), Some(level)) =
+            (place.as_deref_mut(), lists.as_deref_mut(), level.as_deref())
+        {
+            let exa_ai::rooms::RoomPlace {
+                room,
+                previous,
+                nearby,
+            } = place;
+            lists.move_to(&level.rooms, me, at, room, previous, nearby);
         }
         if let Some(mut swing) = swing {
             let clock = anim
@@ -319,6 +370,93 @@ mod tests {
             app.world().get::<PlayerPractice>(player).unwrap().paid,
             i64::from(paid)
         );
+    }
+
+    /// On a level with a grid the player's behaviour gathers its nearby
+    /// list from the room lists and builds its contacts over that list only
+    /// (a character standing near but in no list is not a contact); its
+    /// room move comes after the gather, so the first tick gathers nobody.
+    #[test]
+    fn the_players_contacts_read_its_rooms_nearby_list() {
+        use exa_formats::level::LevelGrid;
+        use exa_physics::body::locomotion::{Locomotion, Locomotor};
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&grid);
+        let mut app = App::new();
+        app.add_systems(Update, tick_player_practice)
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
+            .init_resource::<exa_ai::rooms::RoomLists>();
+        let fighter = |app: &mut App, at: Vec3| {
+            app.world_mut()
+                .spawn((GlobalTransform::from_translation(at), Fighter::default()))
+                .id()
+        };
+        // Both stand in room 0 within 12 m of the player; only the first
+        // is linked into the room's list.
+        let listed = fighter(&mut app, Vec3::new(-9.0, 0.0, 3.0));
+        let unlisted = fighter(&mut app, Vec3::new(-3.0, 0.0, 3.0));
+        {
+            let mut lists = app.world_mut().resource_mut::<exa_ai::rooms::RoomLists>();
+            let (mut room, mut previous, mut nearby) = (-1, -1, Vec::new());
+            lists.move_to(
+                &rooms,
+                listed,
+                Vec3::new(-900.0, 0.0, 300.0),
+                &mut room,
+                &mut previous,
+                &mut nearby,
+            );
+            assert_eq!(room, 0);
+        }
+        app.insert_resource(LevelRooms::new(std::sync::Arc::new(rooms)));
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerBody::new(0.0),
+                GlobalTransform::from_translation(Vec3::new(-5.0, 0.0, 3.0)),
+                Locomotion::default(),
+                Locomotor::default(),
+            ))
+            .id();
+        app.update();
+        let w = app.world();
+        assert_eq!(w.get::<exa_ai::rooms::RoomPlace>(player).unwrap().room, 0);
+        assert!(w.get::<PlayerPractice>(player).unwrap().contacts.is_empty());
+        assert_eq!(
+            w.resource::<exa_ai::rooms::RoomLists>().occupants(0),
+            &[player, listed]
+        );
+        app.update();
+        let w = app.world();
+        let place = w.get::<exa_ai::rooms::RoomPlace>(player).unwrap();
+        assert_eq!(place.nearby, vec![listed.to_bits()]);
+        let bodies: Vec<u64> = w
+            .get::<PlayerPractice>(player)
+            .unwrap()
+            .contacts
+            .iter()
+            .map(|c| c.body)
+            .collect();
+        assert_eq!(bodies, vec![listed.to_bits()]);
+        assert!(!bodies.contains(&unlisted.to_bits()));
     }
 
     /// A struck character's rating raises the player's lesson only when it

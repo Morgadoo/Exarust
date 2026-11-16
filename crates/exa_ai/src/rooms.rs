@@ -1,14 +1,24 @@
-//! The room occupant lists: the coarse 600 cm cell grid every AI is linked
-//! into so the brain can find the characters in its room without walking
-//! the whole level.
+//! The room occupant lists: every character is linked into the list of the
+//! level room it stands in, so a brain (and the player's behaviour) can find
+//! the characters of its room and of the rooms behind its exits without
+//! walking the whole level.
 //!
-//! A character's cell is the floor of its body position over 600 cm on
-//! each horizontal axis (`0.0016666667`, the floor helper of the engine);
-//! the flat index is `width·(z + height/2) + (x + width/2)`, the cell grid
-//! being centred. A negative index, or one past the last cell, is off the
+//! A character's room is read from the level grid's cell-to-room table at
+//! the floor of its body position over 600 cm on each horizontal axis
+//! (`0.0016666667`, the floor helper of the engine), the flat index being
+//! `width·(z + height/2) + (x + width/2)` with the grid centred
+//! ([`grid_cell`]). A negative index, or one past the last cell, is off the
 //! grid: the bookkeeping does nothing and the character stays linked where
-//! it was. Moving to another cell remembers the old one and puts the
-//! character at the head of the new cell's list.
+//! it was. A cell in no room unlinks the character ([`RoomLists::unlink`]:
+//! its nearby list is emptied and its room becomes −1). Moving to another
+//! room puts the character at the head of the new room's list and remembers
+//! the room it left ([`RoomLists::move_to`]).
+//!
+//! The nearby gather ([`RoomLists::gather`]) walks the list of the
+//! character's room (skipping itself), then the list of the room behind each
+//! exit in the room's exit order (an exit leading to the same room as the
+//! exit before it is skipped, and the character is not skipped there),
+//! each through the nearby insert ([`crate::contacts::nearby`]).
 //!
 //! The level side of the same bookkeeping is [`level_room`],
 //! [`room_exits`] and [`room_reference`]: the level grid's cell-to-room
@@ -18,15 +28,13 @@
 //! walk may pass, so [`room_exits`] reports it shut from the room tracker.
 //!
 //! The original links each character into a doubly linked list per room
-//! and walks the room's own list and the lists of the rooms behind its
-//! exits when it gathers the nearby characters; Exarust keeps a vector per
-//! 600 cm cell, so the gather covers the character's own cell
-//! ([`RoomCells::occupants`]) and the nearby list is the room's cells
-//! through [`RoomCells::nearby`].
+//! (the newest at its head); Exarust keeps a vector per room in the same
+//! order.
 //!
-//! Evidence: the original's room bookkeeping (the cell index, the unlink and
-//! link, the previous-cell write), its nearby gather, and its room and exit
-//! queries (the grid environment's cell centre and the cell-to-room table).
+//! Evidence: the original's room bookkeeping (the cell index, the
+//! cell-to-room read, the unlink and link, the previous-room write), its
+//! nearby gather and insert, and its room and exit queries (the grid
+//! environment's cell centre and the cell-to-room table).
 
 use bevy::prelude::*;
 use exa_world::room_view::LevelRooms;
@@ -39,8 +47,6 @@ use crate::idle::Exit;
 pub const CELL_CM: f32 = 600.0;
 /// The 1/600 factor the original keeps as a float.
 pub const INVERSE_CELL: f32 = f32::from_bits(0x3ada_740e);
-/// The cell a character off the grid holds.
-pub const OFF_GRID: i32 = -1;
 
 /// A cell grid's dimensions in cells.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,113 +67,191 @@ impl Default for RoomGridSize {
     }
 }
 
-/// The characters in each cell of the room grid.
-#[derive(Resource, Debug, Clone, PartialEq)]
-pub struct RoomCells {
-    pub size: RoomGridSize,
-    pub cells: Vec<Vec<Entity>>,
+/// The characters of each level room, the newest first.
+#[derive(Resource, Debug, Clone, Default, PartialEq)]
+pub struct RoomLists {
+    lists: Vec<Vec<Entity>>,
+    /// The room of each character no behaviour links (Exarust's brainless
+    /// duellists; the original has no such body): the AI tick links them
+    /// so the brains still gather them.
+    pub loose: std::collections::HashMap<Entity, i32>,
 }
 
-impl Default for RoomCells {
-    fn default() -> Self {
-        Self::new(RoomGridSize::default())
-    }
+/// What a room move did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomMove {
+    /// The position is off the grid: nothing changed.
+    OffGrid,
+    /// The cell is in no room: the character was unlinked.
+    Unlinked,
+    /// The character stays in its room.
+    Stayed,
+    /// The character moved to another room.
+    Moved,
 }
 
-/// A character's cell in the room grid and the cell it came from.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RoomCell {
-    /// The flat cell index, or [`OFF_GRID`].
-    pub cell: i32,
-    /// The cell before the last move, or [`OFF_GRID`].
+/// A character's room in the room lists and the nearby characters its
+/// gather keeps, for a character without a brain's own fields (the
+/// player's behaviour).
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct RoomPlace {
+    /// The level room, −1 for none.
+    pub room: i32,
+    /// The room before the last move, −1 for none.
     pub previous: i32,
+    /// The nearby characters (their ids), by distance.
+    pub nearby: Vec<u64>,
 }
 
-impl Default for RoomCell {
+impl Default for RoomPlace {
     fn default() -> Self {
         Self {
-            cell: OFF_GRID,
-            previous: OFF_GRID,
+            room: -1,
+            previous: -1,
+            nearby: Vec::new(),
         }
     }
 }
 
-impl RoomCells {
-    /// A grid of `size` empty cells.
-    pub fn new(size: RoomGridSize) -> Self {
-        let count = (size.width.max(0) as usize) * (size.height.max(0) as usize);
-        Self {
-            size,
-            cells: vec![Vec::new(); count],
-        }
-    }
-
-    /// The flat index of the cell holding `position_cm`, or none off the
-    /// grid.
-    pub fn index_of(&self, position_cm: Vec3) -> Option<i32> {
-        cell_index(position_cm, self.size)
-    }
-
-    /// Moves `entity` to the cell holding `position_cm`: it leaves its old
-    /// cell, is put at the head of the new one, and the old cell is
-    /// remembered. Off the grid nothing changes. Returns whether the cell
-    /// changed.
-    pub fn move_to(&mut self, entity: Entity, position_cm: Vec3, at: &mut RoomCell) -> bool {
-        let Some(cell) = self.index_of(position_cm) else {
-            return false;
+impl RoomLists {
+    /// Moves `entity` to the room holding `position_cm` (the room move):
+    /// off the grid nothing changes; a cell in no room unlinks it; another
+    /// room unlinks it from its old room, puts it at the head of the new
+    /// room's list, remembers the old room in `previous` (when it was one)
+    /// and sets `room`.
+    pub fn move_to(
+        &mut self,
+        rooms: &Rooms,
+        entity: Entity,
+        position_cm: Vec3,
+        room: &mut i32,
+        previous: &mut i32,
+        nearby: &mut Vec<u64>,
+    ) -> RoomMove {
+        let Some(cell) = grid_cell(rooms, position_cm) else {
+            return RoomMove::OffGrid;
         };
-        if cell == at.cell {
-            return false;
+        let Some(new) = rooms.room_of_index(cell).map(i32::from) else {
+            self.unlink(entity, room, nearby);
+            return RoomMove::Unlinked;
+        };
+        // [Exarust: a level change empties the lists without unlinking the
+        // characters; one still holding its old room number is linked
+        // again.]
+        if new == *room && self.occupants(new).contains(&entity) {
+            return RoomMove::Stayed;
         }
-        self.unlink(entity, at);
-        if 0 <= at.cell {
-            at.previous = at.cell;
+        self.remove_from(*room, entity);
+        self.list(new).insert(0, entity);
+        if 0 <= *room && *room != new {
+            *previous = *room;
         }
-        at.cell = cell;
-        if let Some(list) = self.list(cell) {
-            list.insert(0, entity);
-        }
-        true
+        *room = new;
+        RoomMove::Moved
     }
 
-    /// Unlinks `entity` and sets its cell off the grid, keeping the
-    /// previous cell.
-    pub fn remove(&mut self, entity: Entity, at: &mut RoomCell) {
-        self.unlink(entity, at);
-        if 0 <= at.cell {
-            at.previous = at.cell;
-        }
-        at.cell = OFF_GRID;
+    /// Unlinks `entity` from its room's list: its nearby list is emptied
+    /// and its room becomes −1 (the room before it is kept).
+    pub fn unlink(&mut self, entity: Entity, room: &mut i32, nearby: &mut Vec<u64>) {
+        nearby.clear();
+        self.remove_from(*room, entity);
+        *room = -1;
     }
 
-    fn unlink(&mut self, entity: Entity, at: &RoomCell) {
-        if let Some(list) = self.list(at.cell)
-            && let Some(index) = list.iter().position(|&e| e == entity)
+    /// Drops `entity` from every list (a character that left the scene).
+    pub fn forget(&mut self, entity: Entity) {
+        for list in &mut self.lists {
+            list.retain(|e| *e != entity);
+        }
+        self.loose.remove(&entity);
+    }
+
+    fn remove_from(&mut self, room: i32, entity: Entity) {
+        if let Ok(index) = usize::try_from(room)
+            && let Some(list) = self.lists.get_mut(index)
         {
-            list.remove(index);
+            list.retain(|e| *e != entity);
         }
     }
 
-    fn list(&mut self, cell: i32) -> Option<&mut Vec<Entity>> {
-        if cell < 0 || self.cells.len() <= cell as usize {
-            return None;
+    fn list(&mut self, room: i32) -> &mut Vec<Entity> {
+        let index = room.max(0) as usize;
+        if self.lists.len() <= index {
+            self.lists.resize_with(index + 1, Vec::new);
         }
-        self.cells.get_mut(cell as usize)
+        &mut self.lists[index]
     }
 
-    /// The characters of `cell`, in the order they entered.
-    pub fn occupants(&self, cell: i32) -> &[Entity] {
-        if cell < 0 || self.cells.len() <= cell as usize {
-            return &[];
-        }
-        &self.cells[cell as usize]
+    /// The characters of `room`, the newest first.
+    pub fn occupants(&self, room: i32) -> &[Entity] {
+        usize::try_from(room)
+            .ok()
+            .and_then(|index| self.lists.get(index))
+            .map_or(&[], Vec::as_slice)
     }
 
-    /// The characters the nearby gather weighs: those of the character's
-    /// own cell. The original also weighs the cells of its room's exits;
-    /// Exarust has no room graph in the running game.
-    pub fn nearby(&self, at: &RoomCell) -> Vec<Entity> {
-        self.occupants(at.cell).to_vec()
+    /// The nearby gather: in a room, the list is rebuilt from the
+    /// characters of `room` (`me` skipped), then of the room behind each of
+    /// `exits` (the table's room number, the index plus one; an exit
+    /// leading to the same room as the exit before it is skipped, and `me`
+    /// is not skipped there), each through the nearby insert with its
+    /// squared distance and sight (`weigh`, none for a character that is
+    /// gone). Outside a room the list is kept.
+    pub fn gather(
+        &self,
+        me: Entity,
+        room: i32,
+        exits: impl IntoIterator<Item = i32>,
+        weigh: impl Fn(Entity) -> Option<(f32, bool)>,
+        nearby: &mut Vec<u64>,
+    ) {
+        if room < 0 {
+            return;
+        }
+        let mut around: Vec<(u64, f32, bool)> = Vec::new();
+        let mut add = |list: &[Entity], skip: Option<Entity>| {
+            for &e in list {
+                if Some(e) == skip {
+                    continue;
+                }
+                if let Some((squared, seen)) = weigh(e) {
+                    around.push((e.to_bits(), squared, seen));
+                }
+            }
+        };
+        add(self.occupants(room), Some(me));
+        let mut before = -1;
+        for exit_room in exits {
+            let behind = exit_room - 1;
+            if behind == before {
+                continue;
+            }
+            before = behind;
+            add(self.occupants(behind), None);
+        }
+        *nearby = crate::contacts::nearby(&around)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+    }
+}
+
+/// The level grid's flat cell index of `position_cm` as the room move
+/// reads it: the floor of each horizontal coordinate over 600 cm plus half
+/// the grid (`width·z + x`, in 32 bits); a negative index or one not below
+/// `width·height` is off the grid.
+pub fn grid_cell(rooms: &Rooms, position_cm: Vec3) -> Option<u32> {
+    let width = rooms.width() as i32;
+    let height = rooms.height() as i32;
+    let x = exa_physics::engine_math::floor_to_i32(position_cm.x * INVERSE_CELL)
+        .wrapping_add(((width as u32) >> 1) as i32);
+    let z = exa_physics::engine_math::floor_to_i32(position_cm.z * INVERSE_CELL)
+        .wrapping_add(((height as u32) >> 1) as i32);
+    let index = width.wrapping_mul(z).wrapping_add(x);
+    if index < 0 || i64::from(width) * i64::from(height) <= i64::from(index) {
+        None
+    } else {
+        Some(index as u32)
     }
 }
 
@@ -336,54 +420,181 @@ mod tests {
         assert_eq!(cell_index(Vec3::new(0.0, 0.0, 1800.0), size), None);
     }
 
-    #[test]
-    fn moving_links_the_new_cell_and_remembers_the_old() {
-        let mut world = world();
-        let a = world.spawn_empty().id();
-        let b = world.spawn_empty().id();
-        let mut cells = RoomCells::new(RoomGridSize {
-            width: 8,
-            height: 8,
-        });
-        let mut at_a = RoomCell::default();
-        let mut at_b = RoomCell::default();
-        assert!(cells.move_to(a, Vec3::ZERO, &mut at_a));
-        assert_eq!(at_a.cell, 36);
-        assert_eq!(cells.occupants(36), &[a]);
-        assert!(cells.move_to(b, Vec3::new(10.0, 0.0, 10.0), &mut at_b));
-        assert_eq!(cells.occupants(at_b.cell), &[b, a]);
-        let old = at_a.cell;
-        assert!(cells.move_to(a, Vec3::new(700.0, 0.0, 0.0), &mut at_a));
-        assert_eq!(at_a.previous, old);
-        assert_eq!(cells.occupants(old), &[b]);
-        assert_eq!(cells.occupants(at_a.cell), &[a]);
-        // The same cell changes nothing.
-        assert!(!cells.move_to(a, Vec3::new(710.0, 0.0, 0.0), &mut at_a));
-        assert_eq!(cells.occupants(at_a.cell), &[a]);
-        cells.remove(a, &mut at_a);
-        assert_eq!(at_a.cell, OFF_GRID);
-        assert!(cells.occupants(at_a.cell).is_empty());
+    /// The test level: a 6 × 3 grid whose cells (1, 1) and (2, 1) are
+    /// room 0 and (3, 1) and (4, 1) room 1, one door between them.
+    fn two_rooms() -> exa_world::rooms::Rooms {
+        use exa_formats::level::LevelGrid;
+        use exa_world::rooms::CELL_OPEN;
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        exa_world::rooms::Rooms::flood(&grid)
     }
 
     #[test]
-    fn off_the_grid_keeps_the_link() {
+    fn moving_links_the_new_room_and_remembers_the_old() {
         let mut world = world();
         let a = world.spawn_empty().id();
-        let size = RoomGridSize {
-            width: 4,
-            height: 4,
+        let b = world.spawn_empty().id();
+        let rooms = two_rooms();
+        let mut lists = RoomLists::default();
+        let (mut room_a, mut previous_a, mut nearby_a) = (-1, -1, vec![7]);
+        let (mut room_b, mut previous_b, mut nearby_b) = (-1, -1, Vec::new());
+        let room0 = Vec3::new(-900.0, 0.0, 300.0);
+        let room1 = Vec3::new(300.0, 0.0, 300.0);
+        assert_eq!(
+            lists.move_to(
+                &rooms,
+                a,
+                room0,
+                &mut room_a,
+                &mut previous_a,
+                &mut nearby_a
+            ),
+            RoomMove::Moved
+        );
+        // A first room remembers none before it.
+        assert_eq!((room_a, previous_a), (0, -1));
+        assert_eq!(
+            lists.move_to(
+                &rooms,
+                b,
+                room0 + Vec3::X * 400.0,
+                &mut room_b,
+                &mut previous_b,
+                &mut nearby_b
+            ),
+            RoomMove::Moved
+        );
+        // The newest is at the head.
+        assert_eq!(lists.occupants(0), &[b, a]);
+        assert_eq!(
+            lists.move_to(
+                &rooms,
+                a,
+                room1,
+                &mut room_a,
+                &mut previous_a,
+                &mut nearby_a
+            ),
+            RoomMove::Moved
+        );
+        assert_eq!((room_a, previous_a), (1, 0));
+        assert_eq!(lists.occupants(0), &[b]);
+        assert_eq!(lists.occupants(1), &[a]);
+        // The same room changes nothing, and the nearby list is kept.
+        assert_eq!(
+            lists.move_to(
+                &rooms,
+                a,
+                room1 + Vec3::X * 10.0,
+                &mut room_a,
+                &mut previous_a,
+                &mut nearby_a
+            ),
+            RoomMove::Stayed
+        );
+        assert_eq!(nearby_a, vec![7]);
+        // Off the grid (row 4 of 3) nothing changes.
+        assert_eq!(
+            lists.move_to(
+                &rooms,
+                a,
+                Vec3::new(300.0, 0.0, 2000.0),
+                &mut room_a,
+                &mut previous_a,
+                &mut nearby_a
+            ),
+            RoomMove::OffGrid
+        );
+        assert_eq!((room_a, previous_a), (1, 0));
+        assert_eq!(lists.occupants(1), &[a]);
+        // A cell in no room unlinks: the room becomes -1, the nearby list
+        // is emptied, the room before it is kept.
+        assert_eq!(
+            lists.move_to(
+                &rooms,
+                a,
+                Vec3::new(-1500.0, 0.0, -300.0),
+                &mut room_a,
+                &mut previous_a,
+                &mut nearby_a
+            ),
+            RoomMove::Unlinked
+        );
+        assert_eq!((room_a, previous_a), (-1, 0));
+        assert!(nearby_a.is_empty());
+        assert!(lists.occupants(1).is_empty());
+        // A level change empties the lists: a character holding its old
+        // room number is linked again.
+        lists = RoomLists::default();
+        assert_eq!(
+            lists.move_to(
+                &rooms,
+                b,
+                room0,
+                &mut room_b,
+                &mut previous_b,
+                &mut nearby_b
+            ),
+            RoomMove::Moved
+        );
+        assert_eq!((room_b, previous_b), (0, -1));
+        assert_eq!(lists.occupants(0), &[b]);
+    }
+
+    /// The gather walks its own room's list without itself, then each
+    /// exit's room once per run of the same room, without skipping itself
+    /// there, each through the insert.
+    #[test]
+    fn the_gather_walks_its_room_then_each_exits_room() {
+        let mut world = world();
+        let me = world.spawn_empty().id();
+        let near = world.spawn_empty().id();
+        let next = world.spawn_empty().id();
+        let gone = world.spawn_empty().id();
+        let mut lists = RoomLists::default();
+        lists.list(0).extend([near, me, gone]);
+        lists.list(1).push(next);
+        let weigh = |e: Entity| {
+            if e == gone {
+                None
+            } else if e == next {
+                Some((400.0, true))
+            } else if e == me {
+                Some((0.0, true))
+            } else {
+                Some((100.0, true))
+            }
         };
-        let mut cells = RoomCells::new(size);
-        let mut at = RoomCell::default();
-        cells.move_to(a, Vec3::ZERO, &mut at);
-        let old = at.cell;
-        // Cell x 16 puts the flat index at 4·2 + 16 + 2 = 26, past the 16
-        // cells: nothing changes.
-        assert!(!cells.move_to(a, Vec3::new(10_000.0, 0.0, 0.0), &mut at));
-        assert_eq!(at.cell, old);
-        assert_eq!(at.previous, OFF_GRID);
-        assert_eq!(cells.occupants(old), &[a]);
-        assert_eq!(cells.nearby(&at), vec![a]);
+        let mut nearby = vec![99];
+        // Two exits into room 1 (room numbers are the index plus one): its
+        // list is walked once.
+        lists.gather(me, 0, [2, 2], weigh, &mut nearby);
+        assert_eq!(nearby, vec![near.to_bits(), next.to_bits()]);
+        // An exit back into its own room walks it again, adding itself and
+        // the others a second time (the original skips itself only in its
+        // own room's walk and keeps no check for repeats).
+        lists.gather(me, 0, [1], weigh, &mut nearby);
+        let twice = vec![me.to_bits(), near.to_bits(), near.to_bits()];
+        assert_eq!(nearby, twice);
+        // Outside a room the list is kept.
+        lists.gather(me, -1, [2], weigh, &mut nearby);
+        assert_eq!(nearby, twice);
     }
 
     #[test]
