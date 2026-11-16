@@ -1523,6 +1523,8 @@ the living placement of a character body is ported (word resets, the pose lowere
 
 the inventory character view's equipment side: a bound body's mind cost runs on drag start, cancelled release and drop with the Loyalty limit test, and a failing marker ends and closes the window (F278 fixed); script HasItem answers from the carried list and nested containers (it always answered no); the shield drop runs the full shield take; the swap key respects the GUI drag and the open pack, and the inventory's page buttons and pack follow a swap; the open arsenal takes its keys and a right release (F281, F282 fixed). Grid scenes owed while the GPU is on hold.
 
+the level's cloths run inside the bodies' tick at the original's points: each cloth's own step before the solver, its body contacts inside the solver's object stage (the body takes its share of the push, the slide friction, the rustle tail, the countdown trade), its after-collision and level passes after it, one cloth at a time in object order so results stay deterministic. Hand grabs are grab records spread over their triangle; a normal-mapped cloth rebuilds its tangents; the cloth object grid uses the scene grid. A follow-up brought the stage's CPU cost back to the base on the game's path (two extra pool meetings, about 0.027 ms, remain). Scenes, determinism runs and an FPS check owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
