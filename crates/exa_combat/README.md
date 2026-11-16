@@ -755,11 +755,16 @@ passed disables them all; the parry's end disables them again
 (`release_parry`; the hand grips are left alone). The tick a link goes
 from disabled to held logs `armed parry:` at debug level
 (`GripLinks::parry_held`), the feature sweep's check. The point reads the
-attacker's clip progress, from its blade tip. The shield's plane link is
-not modelled. Its geometry: `parry_blade_height` finds how far up the attacker's
+attacker's clip progress, from its blade's point at the parry height
+(`held_blade_point`, the counter hold's too). A shield's grip makes the
+shield's parry link a plane link to the point along the holder's frame
+forward (`GripLinks::aim_parry_plane`; the grip solver takes 0.8 of its
+offset along that axis off). Its geometry: `parry_blade_height` finds how far up the attacker's
 blade the parry meets it (the chest gap less 20 cm against the reach and
-the blade length), `blade_point` carries that point by the blade's
-tetrahedron now and a tick ago (the fast barycentrics), `parry_point`
+the blade length), `held_blade_point` takes that point on the blade's frame
+now and the same share from its grip to its tip a tick ago (the rigid
+blade's equivalent of `blade_point`, which carries it by the blade's
+tetrahedron with the fast barycentrics), `parry_point`
 sweeps it (its travel's height scaled by 16 − 16·clock outside the stab
 and the overhead, less its part toward the attacker's chest, both
 normalised with the processor's approximate reciprocal square root) and

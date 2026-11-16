@@ -294,8 +294,8 @@ blocks' code bytes.
 | routine | size | left (est.) | role | missing |
 |---|---|---|---|---|
 | #49 | 20,293 | 4,355 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | some state flags; the sampler call's tail (the parts' matrices and foot contacts put on the frame: Exarust's carry and aim stand in); the posture block's remaining writes; the look point's smoothing is data only (its readers are the AI's and the camera's) |
-| #8 | 13,157 | 1,845 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; script hook and callbacks; the struck item's own sound (#4) in the clash branch not called |
-| #18 | 8,061 | 315 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | wet step (no water surface); nav calls; the held footstep voices; condition 0x4000; the get-up's posture-wait clear |
+| #8 | 13,157 | 1,845 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | the opening (impact speed, zone pick) and the sound and blood tail not compared instruction by instruction (fifth pass: the bite link, the callbacks and the struck item's sound were already live; the scripted hook is unreachable) |
+| #18 | 8,061 | 315 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | condition 0x4000 (no runtime writer; fifth pass: the footstep voices wired, the nav call a no-op, the step clock and the get-up's other zeroed field write-only) |
 | #76 | 3,562 | 530 | Pose-only sampler (spawn and placement) | the walking target and the leg reach not called; the render nodes' locals |
 | #82 | 4,499 | 585 | Muscles-off sampler | every part's contacts in the height (legs only); not scheduled |
 | #50 | 7,185 | 835 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | the flat-floor bit only set by `--flat-floor`; the original's pelvis target (the carry's stands in); the leg relaxation runs in the muscle setter, gated on support, not per leg in reach; some thresholds unverified |
@@ -332,7 +332,7 @@ blocks' code bytes.
 | 22 | 438 | Turn the heading toward a fall | `exa_game balance.rs fall_heading, turn_toward_fall` | done | - (round 157: the approximate normalisation and the engine's heading for the yaw) | yes |
 | 23 | 614 | Getting up: pick the rise clip by the pelvis axis, turn, anchor, clear feet, start | `exa_game balance.rs start_getting_up, pick_rise, rise_heading` | done | dead-body frame branch (round 157: the direction and the written facing each normalised approximately, the yaw the engine's heading) | yes |
 | 24 | 255 | Parry end and clinch clear (grip links off, hands' bit off, stance blend 40) | `exa_combat strike_body.rs clear_clinch`; `parry.rs ParryState::end, hold_parry_links`; `exa_physics grip.rs GripLinks::release_parry` | done | - (round 173: the links it disables are the items' parry links, the soft world welds, not the hand grips Exarust disabled; clear_clinch's own caller is the clinch, not modelled) | yes |
-| 25 | 1,881 | Armed parry: parry point on the attacker's blade, falloff, weapon or shield grip, passed-blow path | `exa_combat parry.rs parry_blade_height, blade_point, parry_point, parry_distance, armed_grip, hold_parry_links`; `exa_physics grip.rs GripLinks::aim_parry` | partial (92 %) | live since round 173 (reached from #27 and #34): the weapon's parry link a world link to the point, the other hand's and a passed blow's links disabled, the attacker's clock and the passed test read; open: the shield's plane link (no Exarust law), the point from the blade tip rather than the parry height's barycentric point, the grip's has-link test (always true). Its two normalisations are the approximate ones (round 170) | yes |
+| 25 | 1,881 | Armed parry: parry point on the attacker's blade, falloff, weapon or shield grip, passed-blow path | `exa_combat parry.rs parry_blade_height, blade_point, parry_point, parry_distance, armed_grip, hold_parry_links`; `exa_physics grip.rs GripLinks::aim_parry` | partial (92 %) | live since round 173 (reached from #27 and #34): the weapon's parry link a world link to the point, the other hand's and a passed blow's links disabled, the attacker's clock and the passed test read; fifth pass: the shield's plane link and the point at the blade's parry height wired; open: the grip's has-link test (always true). Its two normalisations are the approximate ones (round 170) | yes |
 | 26 | 136 | Re-pick the parry clip for a new countered motion | `exa_combat parry.rs parry_repick` | done | - | yes |
 | 27 | 788 | Auto-parry and clinch check each tick | `exa_combat parry.rs parry_ends, parry_trigger, parry_counter, parry_start, run_parries` | partial (80 %) | arm bit 8, explicit target (round 173: the armed success writes its links through #25) | yes |
 | 28 | 264 | Chest point (mean of the thorax pins) | `exa_physics body_balance.rs Ragdoll::chest_point`; `exa_combat stance.rs chest_point` | done | - | yes |
@@ -579,6 +579,64 @@ spot-checked (MAXPS against 0, the fall share in double); no change.
 
 Approximations (DEC-7, left as they are): none added. The counter hold's parry point uses
 the approximate normaliser twice, as the parry's (`parry_point`).
+
+## Assembly comparison, fifth pass (motiledyn5 lane)
+
+Checked against the assembly (GPU on hold, tests are the evidence;
+determinism runs and scenes owed, see the lane's artifacts README).
+
+Body tick (#49), the blocks the earlier passes left:
+
+| block | result |
+|---|---|
+| Chest velocities and the jolt | the chest's fast (0.4) and slow (0.1) follows, the term's ×0.85 (MULPS) and its subtraction (SUBPS) from fast − slow with the height zeroed, the 2.5 / 125 cm a tick bases (condition 1), ×1000 jumping or unsupported, the 100·scale cap, the 80-tick latch: match `steps::jolt` (Exarust runs it inside the balance routine, after the posture block; the original before it: order only) |
+| Radius base | 30 cm with the moving byte; over 30 −0.5 (SUBSS, no floor; under 30 back to 30, both compares JP-guarded); 65 with the off-feet bit (no support test). Exarust set 65 for an unsupported body too and decayed it while locomoting; a new body started at 30, the character init writes 60 (as the placements and the re-entry reset). Fixed (`steps::next_base`, `BASE_INIT`) |
+| Off-feet branch | the behaviour's step word, the chest copy, the latch clear, the moving byte, and the hunch's −0.01 (on its feet +0.01 to 0.3, both in double): the hunch matches `step_hunch`; the moving byte's clear is the posture block's (Exarust's decision clears it) |
+| Stop branch | the leg gains (mode 3), the get-up restart under 0.4, the frame follow (5 cm standing under 0.95 support, 0 stepping or unsupported), the fall turn under 0.8 balance; condition 1 (a walk or run clip): the jolt's term := slow velocity × −0.6 (MULPS), condition 0, the stance restart (blend 20), the arm word 2, the feet cleared. The seed was missing; wired (`Ragdoll::walk_stopped` from the movement stage; the behaviours restart the stance as before) |
+| Move branch | the frame anchor := the pelvis (Exarust's `Follow::Pelvis`), the second clock stamp (three stores in the image, no load: vestigial), the stance factor's rise (motiledyn2), the held items' static-only bit (no Exarust reader) |
+| Clip clock | the standing 0.6 rate (double), a get-up's tone × rate × 0.6 above half tone, the attacks' full rate, the 0x80 hold: match `clip_clock` |
+| Twist | the yaw's step (0.02 moving, 0.05 standing, the attack's handling × 0.12), the tilt less the sag (× 0.3 attacking), a power's −x² under 0: as `twist` (motiledyn passes) |
+
+The movement stage's second trailing-foot call (on leaving the walk) never ran: the
+decision clears the flag it read first. The original plants the trailing foot only from
+the plant request (one call site, 0x10016d045), as the carry stage does; removed.
+
+Damage routine (#8): the bite link (`bite::open_bites`), the striker's hook (Force
+Strikes, `StrikeHooked` at the clash and at the end), the struck body's and the weapon
+item's hooks (Force Shell, the item abilities, the weapon arcs: their own components) and
+the struck item's sound (`sounds::struck_item_sound`) were already live; the global hook
+has no store. The player feedback (7Y + 7L in single, the 1.3 compare in double, 2v + 4s,
+the overhead's ×0.4 in double, the camera past 1 with JP) matches `struck_player_jolt`.
+
+Armed grip (#25): the parry height (a NaN gap takes the computing branch, JP, and a NaN
+height is kept), the barycentric weights of (0, h, 0) on the attacker's weapon's rest
+tetrahedron applied to its particles now and before. Exarust took the blade tip; the
+parry and the counter hold now take the blade's frame at the height and the same share
+of the sweep a tick ago (`held_blade_point`: the rigid blade's equivalent; the fast
+barycentric's approximate reciprocal is not reproduced, DEC-7). The shield branch: link
+flags 0x800, its axis the frame forward, strength stamina × weight × falloff × 0.75 × 0.4.
+The link law (TTetraRBD's iteration, 0x10008a70f): with 0x800 the offset loses
+f32(f64(d·u)·0.8)·u, the dot summed (y + x) + z. Wired (`GripLinks::aim_parry_plane`,
+`grip::PLANE`, the grip solver's plane law).
+
+Balance routine (#18): the release footstep and the living sampler's walking plant both
+flip the body's step-voice index (NOT, AND 1) and restart that voice on a set variant
+(`TAudioEnvironment` retrigger), the character init allocating the two voices; Exarust
+played one-shots. Wired (`exa_audio` `StepVoices`). The step clock both write is
+write-only (vestigial). The pathfinder slot 31 the step trigger calls is `xor al,al;
+ret` (Exarust makes no call: equivalent). Condition 0x4000: two compares, no store; the
+only other store of the condition word is the content stream's (a saved condition), so
+it waits for a check of the shipped saves and levels. The get-up's fourth zeroed field
+has stores only (the other reference motiledyn4 counted is the hardware-config form's
+own field at the same offset): vestigial.
+
+Weapon-in-hand gate (#34): an item body (`HeldGrip`, a rigid-root model) can lag its
+hand, so the gate is not always open as motiledyn4 read it; its points (the item's grip
+anchor through the hand's matrix, both sides through a second object's two matrices) are
+not mapped; left.
+
+Approximations (DEC-7): the parry point's fast barycentric is replaced by the exact frame
+transform; none added.
 
 ## Corrections made by the audit
 

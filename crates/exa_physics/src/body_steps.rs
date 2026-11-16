@@ -29,6 +29,9 @@ fn below_floor(balance: f32) -> bool {
 const BASE_STANDING: f32 = 30.0;
 /// The radius base the body reset on re-entry sets (cm).
 pub(super) const BASE_REENTRY: f32 = 60.0;
+/// The radius base a new body starts with (cm): the character init writes
+/// the same 60 as the placements and the re-entry reset.
+const BASE_INIT: f32 = BASE_REENTRY;
 const BASE_AFTER_DOWN: f32 = 65.0;
 /// The base narrows by this (cm) each standing tick.
 const BASE_DECAY: f32 = 0.5;
@@ -195,6 +198,9 @@ pub(super) struct Steps {
     jolt_latch: bool,
     jolt_quiet: i32,
     pub jolt_told: bool,
+    /// A walk stopped this tick: after this tick's jolt the decaying term
+    /// takes the chest's slow velocity × −0.6.
+    pub(super) jolt_seed: bool,
     /// The step loudness the footwork's footstep reads
     /// ([`super::feet::step_loudness`] of the last started step's length).
     pub loudness: f32,
@@ -208,7 +214,7 @@ impl Default for Steps {
             target: Vec3::ZERO,
             standing: Vec3::ZERO,
             placed: false,
-            radius_base: BASE_STANDING,
+            radius_base: BASE_INIT,
             clock: 0,
             started: 0,
             near: 0,
@@ -227,6 +233,7 @@ impl Default for Steps {
             jolt_quiet: 0,
             loudness: 0.0,
             jolt_told: false,
+            jolt_seed: false,
         }
     }
 }
@@ -256,7 +263,10 @@ pub(super) struct Trigger {
     pub supported: bool,
     pub getting_up: bool,
     pub locomoting: bool,
-    pub down: bool,
+    /// The condition's off-feet bit (0x200): the radius base is 65.
+    pub off_feet: bool,
+    /// The body's moving byte (its own locomotion): the radius base is 30.
+    pub moving: bool,
     /// The chest's horizontal offset from the support point (cm).
     pub h_cm: f32,
     pub chest: Vec3,
@@ -356,13 +366,23 @@ pub(super) fn lead(fast: Vec3, support: f32, energy: f32, scale: f32) -> Vec3 {
     }
 }
 
-/// The radius base next tick: 65 while `down`, else 0.5 cm narrower, never
-/// under 30.
-pub(super) fn next_base(base: f32, down: bool) -> f32 {
-    if down {
+/// The radius base next tick, as the body tick writes it before the
+/// balance routine: 65 off its feet (the condition's bit 0x200, whatever
+/// its support), 30 while it locomotes, else 0.5 cm narrower while over 30
+/// (single precision, not floored: the next tick lifts a value under 30
+/// back to 30) and 30 under 30. Both compares are unordered on NaN, which
+/// is kept.
+pub(super) fn next_base(base: f32, off_feet: bool, moving: bool) -> f32 {
+    if off_feet {
         BASE_AFTER_DOWN
+    } else if moving {
+        BASE_STANDING
+    } else if base > BASE_STANDING {
+        base - BASE_DECAY
+    } else if base < BASE_STANDING {
+        BASE_STANDING
     } else {
-        (base - BASE_DECAY).max(BASE_STANDING)
+        base
     }
 }
 
@@ -383,7 +403,7 @@ pub(super) fn next_base(base: f32, down: bool) -> f32 {
 /// its target and the landing count.
 pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
     steps.clock = steps.clock.saturating_add(1);
-    steps.radius_base = next_base(steps.radius_base, t.down || t.getting_up);
+    steps.radius_base = next_base(steps.radius_base, t.off_feet || t.getting_up, t.moving);
     steps.out_of_balance = false;
     // Getting up clears the step and places no foot from its footwork: the
     // original returns before the game tick's footwork block (the feet
@@ -623,6 +643,10 @@ pub(super) fn take_queued(
     super::feet::queued_step(chest, target, queued, look, aim, scale, landings)
 }
 
+/// A walk's stop seeds the jolt's decaying term with the chest's slow
+/// velocity times this.
+const JOLT_SEED: f32 = -0.6;
+
 /// What one tick's jolt asks of the body.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Jolt {
@@ -656,6 +680,12 @@ pub(super) fn jolt(
     steps.jolt_told = false;
     steps.jolt_decay *= 0.85;
     let jolt = (fast - slow).with_y(0.0) - steps.jolt_decay;
+    // The stop branch's seed, later in the original's tick than its jolt:
+    // next tick's term is this tick's slow velocity (all three axes) ×
+    // −0.6, then × 0.85.
+    if std::mem::take(&mut steps.jolt_seed) {
+        steps.jolt_decay = slow * JOLT_SEED;
+    }
     if off_feet {
         steps.jolt_latch = false;
         return None;

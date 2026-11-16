@@ -1290,17 +1290,44 @@ struct Held {
     count: u8,
 }
 
-/// The attacker's first armed blade point now and a tick ago (m), for the
-/// armed parry's point. Zero when it holds no armed blade.
-fn held_blade_tip(wielder: Entity, blades: &Query<&Blade>) -> (Vec3, Vec3) {
+/// The attacker's first armed blade's point at the parry height now and a
+/// tick ago (m), for the armed parry's point: the height
+/// ([`parry_blade_height`], from the defender's and the attacker's chests
+/// in cm, the attacker's reach and the blade's length W21) on the blade's
+/// local y axis, the point the original carries by its barycentric weights
+/// in the weapon body's rest tetrahedron ([`blade_point`]). The blade is a
+/// rigid frame here (grip at the origin, the weapon along +y), so that
+/// point is the frame's at the height now, and the same share of the way
+/// from the grip to the tip a tick ago. Zero when it holds no armed blade;
+/// a blade not yet tracked gives its tip.
+fn held_blade_point(
+    wielder: Entity,
+    blades: &Query<&Blade>,
+    defender_chest_cm: Vec3,
+    attacker_chest_cm: Vec3,
+    reach_cm: f32,
+) -> (Vec3, Vec3) {
     let Some(blade) = blades
         .iter()
         .find(|b| b.wielder == wielder && b.record.armed())
     else {
         return (Vec3::ZERO, Vec3::ZERO);
     };
-    let now = blade.tip_last.unwrap_or(Vec3::ZERO);
-    let before = blade.swept_from.map_or(now, |(_, tip)| tip);
+    let tip = blade.tip_last.unwrap_or(Vec3::ZERO);
+    let Some(frame) = blade.frame else {
+        let before = blade.swept_from.map_or(tip, |(_, tip)| tip);
+        return (tip, before);
+    };
+    let height = parry_blade_height(
+        defender_chest_cm,
+        attacker_chest_cm,
+        reach_cm,
+        blade.record.length,
+    ) / 100.0;
+    let now = frame.transform_point3(Vec3::new(0.0, height, 0.0));
+    let before = blade.swept_from.map_or(now, |(grip, tip)| {
+        grip + (tip - grip) * (height / blade.length)
+    });
     (now, before)
 }
 
@@ -1999,7 +2026,8 @@ pub(crate) fn run_parries(
             best = distance;
             // The attacker's blade point now and a tick ago: the armed
             // parry's point is the blade point pulled back along its sweep.
-            let (tip_now, tip_before) = held_blade_tip(e, &blades);
+            let (tip_now, tip_before) =
+                held_blade_point(e, &blades, def_chest * 100.0, chest * 100.0, reach_cm);
             pick = Some(Pick {
                 motion: motion_index,
                 clip: clip_for(&threat),
@@ -2072,14 +2100,17 @@ pub(crate) fn run_parries(
                 } else {
                     body.clear_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
                 }
-                body.parts.first().map(|part| part.entity)
+                body.parts
+                    .first()
+                    .map(|part| (part.entity, frame_forward(&body)))
             });
-        if let Some(key) = key {
+        if let Some((key, forward)) = key {
             hold_parry_links(
                 &mut grips,
                 key,
                 active.then_some(armed_hold).flatten(),
                 active,
+                forward,
             );
         }
     }
@@ -2179,7 +2210,14 @@ pub(crate) fn hold_counter_parries(
         Some(CounterFoe {
             chest_cm: stance::chest_point(gt, body) * 100.0,
             tip_cm: {
-                let (now, before) = held_blade_tip(t, &blades);
+                let foe_chest = stance::chest_point(gt, body);
+                let (now, before) = held_blade_point(
+                    t,
+                    &blades,
+                    chest * 100.0,
+                    foe_chest * 100.0,
+                    reach_cm(t, &blades),
+                );
                 (now * 100.0, before * 100.0)
             },
             motion: point_motion as i32,
@@ -2196,6 +2234,7 @@ pub(crate) fn hold_counter_parries(
     let key = body
         .as_deref()
         .and_then(|b| b.parts.first().map(|part| part.entity));
+    let forward = body.as_deref().map_or(Vec3::ZERO, frame_forward);
     if let Some(foe) = foe {
         let clears = shield && !ward && !(f64::from(progress) < COUNTER_KEPT_UNTIL);
         let hold = if clears {
@@ -2215,7 +2254,7 @@ pub(crate) fn hold_counter_parries(
                     fighter.parry.point_cm = point.point.to_array();
                 }
                 if let Some(key) = key {
-                    hold_parry_links(&mut grips, key, Some((grip, point.point)), true);
+                    hold_parry_links(&mut grips, key, Some((grip, point.point)), true, forward);
                 }
             }
             Some(CounterHold::Unarmed) => {}
@@ -2226,7 +2265,7 @@ pub(crate) fn hold_counter_parries(
                     body.clear_parry_arms(Ragdoll::PARRY_HANDS);
                 }
                 if let Some(key) = key {
-                    hold_parry_links(&mut grips, key, None, false);
+                    hold_parry_links(&mut grips, key, None, false, forward);
                 }
             }
         }
@@ -2327,8 +2366,9 @@ fn clear_counter(fighter: &mut Fighter) {
 /// shield's link is disabled; while an armed parry holds, a passed blow
 /// disables them all, a weapon's grip makes the link of the item in its
 /// slot a world link to the parry point with the grip's strength and
-/// disables the other hand's item's link, and a shield's grip (a plane link
-/// along the frame's forward, not modelled) only disables the other hand's.
+/// disables the other hand's item's link, and a shield's grip makes the
+/// shield's parry link a plane link to the point along the holder's frame
+/// forward (`forward`) and disables the other hand's.
 /// The holder's held items are its non-shield grips, the right hand's
 /// first (the original's held list). An unarmed parry writes nothing.
 fn hold_parry_links(
@@ -2336,6 +2376,7 @@ fn hold_parry_links(
     key: Entity,
     hold: Option<(Grip, Vec3)>,
     active: bool,
+    forward: Vec3,
 ) {
     use exa_physics::grip::HeldKind;
     let mut items: Vec<(usize, Entity)> = grips
@@ -2350,6 +2391,7 @@ fn hold_parry_links(
             continue;
         }
         let slot = items.iter().position(|&(_, item)| item == e);
+        let shield = grip.kind == HeldKind::Shield;
         let Some(links) = grip.links.as_mut() else {
             continue;
         };
@@ -2358,6 +2400,12 @@ fn hold_parry_links(
             continue;
         }
         let Some((g, point_cm)) = hold else { continue };
+        if shield {
+            if g.flags == SHIELD_PLANE && g.enabled {
+                links.aim_parry_plane(point_cm / 100.0, g.strength, forward);
+            }
+            continue;
+        }
         let Some(slot) = slot else { continue };
         if g.flags == 0 && g.enabled && slot == usize::from(g.slot) {
             if !links.parry_held() && links.has_parry_link() {
@@ -2373,8 +2421,19 @@ fn hold_parry_links(
     }
 }
 
+/// The holder's character frame forward (its frame's z axis), which a
+/// shield's plane link is laid along; zero before the body has a frame.
+fn frame_forward(body: &Ragdoll) -> Vec3 {
+    body.drive
+        .as_ref()
+        .and_then(|d| d.frame())
+        .map_or(Vec3::ZERO, |f| Vec3::from(f.matrix3.z_axis))
+}
+
 /// The armed grip's flags for a blow that has passed the defender.
 const ARMED_PASSED: u32 = 0x10_0000;
+/// The armed grip's flags for a shield: its parry link is a plane link.
+const SHIELD_PLANE: u32 = 0x800;
 
 #[cfg(test)]
 mod stance_tests {
@@ -2512,6 +2571,7 @@ mod wiring_tests {
             flags,
             shares: (1.0, 0.0),
             anchor: None,
+            normal: Vec3::ZERO,
         };
         HeldGrip {
             spec: GripSpec {
@@ -2571,7 +2631,7 @@ mod wiring_tests {
         let run = |world: &mut World, hold: Option<(Grip, Vec3)>, active: bool| {
             world
                 .run_system_once(move |mut q: Query<(Entity, &mut HeldGrip)>| {
-                    hold_parry_links(&mut q, key, hold, active)
+                    hold_parry_links(&mut q, key, hold, active, Vec3::Z)
                 })
                 .unwrap();
         };
@@ -2602,6 +2662,62 @@ mod wiring_tests {
         run(&mut world, Some((weapon, Vec3::ZERO)), true);
         run(&mut world, None, false);
         assert_eq!(link(&world, right).flags, DISABLED);
+    }
+
+    /// A shield's armed grip (flags 0x800) makes the shield's parry link a
+    /// plane link to the parry point along the holder's frame forward, with
+    /// the grip's strength; the parry's end disables every link.
+    #[test]
+    fn a_shield_parry_lays_its_link_as_a_plane() {
+        use bevy::ecs::system::RunSystemOnce;
+        use exa_physics::grip::{DISABLED, HeldGrip, HeldKind, PLANE};
+        let mut world = World::new();
+        let key = world.spawn_empty().id();
+        let weapon = world.spawn(parry_grip(key)).id();
+        let mut shield_grip = parry_grip(key);
+        shield_grip.kind = HeldKind::Shield;
+        shield_grip.spec.hand = 1;
+        let shield = world.spawn(shield_grip).id();
+        let forward = Vec3::new(0.6, 0.0, 0.8);
+        let run = |world: &mut World, hold: Option<(Grip, Vec3)>, active: bool| {
+            world
+                .run_system_once(move |mut q: Query<(Entity, &mut HeldGrip)>| {
+                    hold_parry_links(&mut q, key, hold, active, forward)
+                })
+                .unwrap();
+        };
+        let link = |world: &World, e: Entity| {
+            world
+                .get::<HeldGrip>(e)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap()
+                .links[2]
+                .clone()
+        };
+        let plane = grip(0.9, 0.12, 0, SHIELD_PLANE, true, true);
+        run(&mut world, Some((plane, Vec3::new(10.0, 20.0, 30.0))), true);
+        let laid = link(&world, shield);
+        assert_eq!(laid.flags, PLANE);
+        assert_eq!(laid.anchor, Some(Vec3::new(0.1, 0.2, 0.3)));
+        assert_eq!(laid.strength, 0.12);
+        assert_eq!(laid.normal, forward);
+        assert!(
+            world
+                .get::<HeldGrip>(shield)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap()
+                .parry_held()
+        );
+        // The other slot is the held list's second (1 − 0): the lone
+        // weapon is its first, so its link is left as it was.
+        assert_eq!(link(&world, weapon).flags, 0);
+        run(&mut world, None, false);
+        assert_eq!(link(&world, shield).flags, DISABLED);
+        assert_eq!(link(&world, weapon).flags, DISABLED);
     }
 
     /// An unarmed defender in the combat idle at the origin facing +Z, and
@@ -2960,6 +3076,55 @@ mod wiring_tests {
         );
     }
 
+    /// The armed parry's point is the attacker's blade at the parry height
+    /// (W21 − 20 cm out of reach; less the reach left inside it, at least
+    /// 0) on the blade's local y axis, now on its frame and a tick ago the
+    /// same share from the grip to the tip; an untracked blade gives its
+    /// tip.
+    #[test]
+    fn the_parry_point_starts_at_the_blades_parry_height() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let foe = world.spawn_empty().id();
+        let mut blade = Blade::new(foe, 0.9, sword());
+        let w21 = blade.record.length;
+        blade.frame = Some(bevy::math::Affine3A::from_translation(Vec3::X));
+        blade.tip_last = Some(Vec3::new(1.0, 0.9, 0.0));
+        blade.swept_from = Some((Vec3::ZERO, Vec3::new(0.0, 0.9, 0.0)));
+        world.spawn(blade);
+        let at = |world: &mut World, reach: f32| {
+            world
+                .run_system_once(move |blades: Query<&Blade>| {
+                    held_blade_point(foe, &blades, Vec3::new(0.0, 0.0, 200.0), Vec3::ZERO, reach)
+                })
+                .unwrap()
+        };
+        let near = |a: Vec3, b: Vec3, tolerance: f32| (a - b).length() < tolerance;
+        // 180 cm apart (less 20): out of a 100 cm reach.
+        let h = (w21 - 20.0) / 100.0;
+        let (now, before) = at(&mut world, 100.0);
+        assert!(near(now, Vec3::new(1.0, h, 0.0), 1e-5), "{now}");
+        assert!(near(before, Vec3::new(0.0, h, 0.0), 1e-5), "{before}");
+        // Inside a 250 cm reach: 70 cm less.
+        let (now, _) = at(&mut world, 250.0);
+        assert!(near(now, Vec3::new(1.0, h - 0.7, 0.0), 1e-5), "{now}");
+        // A blade the tracker has not framed yet: its tip.
+        let mut world = World::new();
+        let foe2 = world.spawn_empty().id();
+        let mut raw = Blade::new(foe2, 0.9, sword());
+        raw.tip_last = Some(Vec3::new(0.0, 0.9, 0.5));
+        world.spawn(raw);
+        let (now, before) = world
+            .run_system_once(move |blades: Query<&Blade>| {
+                held_blade_point(foe2, &blades, Vec3::ZERO, Vec3::ZERO, 100.0)
+            })
+            .unwrap();
+        assert_eq!(
+            (now, before),
+            (Vec3::new(0.0, 0.9, 0.5), Vec3::new(0.0, 0.9, 0.5))
+        );
+    }
+
     /// The combat idle's check needs its gates: the auto-parry deadline
     /// (400 ms after the last attack tick, strictly passed), muscle tone of
     /// 0.85, hands holding something, and the combat idle itself.
@@ -3231,6 +3396,45 @@ mod wiring_tests {
         d.tick();
         assert!(d.parrying());
         assert!(matches!(d.get::<Fighter>().guard, Guard::Shield(_)));
+    }
+
+    /// An armed defender behind a shield parries through the shield: the
+    /// character tick's armed grip (flags 0x800) lays the shield's parry
+    /// link as a plane link to the parry point, and the parry's end
+    /// disables it.
+    #[test]
+    fn a_shield_parry_holds_the_shield_by_a_plane_link() {
+        use exa_physics::grip::{DISABLED, HeldGrip, HeldKind, PLANE};
+        let mut d = Duel::high();
+        let me = d.me;
+        d.app.world_mut().spawn(Blade::new(me, 0.9, sword()));
+        let shield = Guard::Shield(damage::ShieldGuard {
+            parry: 0.5,
+            stamina: 1.0,
+            ..damage::ShieldGuard::default()
+        });
+        d.edit::<Fighter>(|f| f.guard = shield);
+        d.app.world_mut().get_mut::<HeldGrip>(d.grip).unwrap().kind = HeldKind::Shield;
+        d.tick();
+        assert!(d.parrying());
+        let link = |d: &Duel| {
+            d.app
+                .world()
+                .get::<HeldGrip>(d.grip)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap()
+                .links[2]
+                .clone()
+        };
+        let laid = link(&d);
+        assert_eq!(laid.flags, PLANE);
+        assert!(laid.anchor.is_some_and(|a| a.is_finite()), "{laid:?}");
+        assert!(laid.strength > 0.0, "{laid:?}");
+        d.foe_rests();
+        d.tick();
+        assert_eq!(link(&d).flags, DISABLED);
     }
 
     /// A defender that has nothing to parry (no foe attacking) or only

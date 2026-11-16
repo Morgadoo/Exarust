@@ -3849,6 +3849,16 @@ impl Ragdoll {
         self.parts.iter().position(|p| p.parent == Some(i))
     }
 
+    /// The stop branch of a body whose condition is the walk's (a walk or
+    /// a run clip plays): the jolt's decaying term is seeded with the
+    /// chest's slow velocity × −0.6 once this tick's jolt has run, as the
+    /// original's stop branch writes it after its jolt block.
+    pub fn walk_stopped(&mut self) {
+        if let Some(d) = self.drive.as_mut() {
+            d.steps.jolt_seed = true;
+        }
+    }
+
     /// A walk's start (another clip playing while it locomotes) clears the
     /// held items' motion flag.
     pub fn walk_started(&mut self) {

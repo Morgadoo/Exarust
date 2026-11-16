@@ -64,6 +64,7 @@ impl Plugin for AudioPlugin {
         exa_physics::mechanism_sound::register(app);
         app.init_resource::<SoundBank>()
             .init_resource::<AudioEnvironment>()
+            .init_resource::<footsteps::StepVoices>()
             .init_resource::<playback::SourceEntities>()
             .init_resource::<MusicSetting>()
             .add_message::<sounds::HealSound>()
