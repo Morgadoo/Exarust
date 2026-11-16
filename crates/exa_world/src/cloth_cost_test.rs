@@ -177,7 +177,8 @@ pub(super) fn hair_scene_in_level(
         .with_inserted_attribute(
             Mesh::ATTRIBUTE_POSITION,
             vertices.iter().map(|v| v.to_array()).collect::<Vec<_>>(),
-        );
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32; 3]; vertices.len()]);
         mesh.insert_indices(bevy::mesh::Indices::U32(
             triangles.iter().flatten().map(|&i| i as u32).collect(),
         ));
@@ -186,6 +187,10 @@ pub(super) fn hair_scene_in_level(
             .world_mut()
             .spawn((
                 ClothInstance::new(hair, mesh, (0..vertices.len()).collect()),
+                ClothShading {
+                    keys: (0..vertices.len() as u32).collect(),
+                    elements: (0..vertices.len() as u32).collect(),
+                },
                 GlobalTransform::from_translation(head_at),
                 ChildOf(head),
             ))
@@ -395,6 +400,14 @@ fn the_meshes_take_the_particles_once_a_frame() {
         .unwrap();
     let instance = app.world().get::<ClothInstance>(hairs[0]).unwrap();
     assert!(!instance.stale_mesh);
+    // The frame draws halfway into the next tick: between the tick before
+    // and the last, `a + (b − a)·t` in centimetres, then metres.
+    let step = app.world().resource::<Time<Fixed>>().timestep();
+    app.world_mut()
+        .resource_mut::<Time<Fixed>>()
+        .accumulate_overstep(step / 2);
+    let alpha = app.world().resource::<Time<Fixed>>().overstep_fraction();
+    assert!((alpha - 0.5).abs() < 1e-3, "{alpha}");
     app.world_mut()
         .run_system_cached(write_cloth_meshes)
         .unwrap();
@@ -402,10 +415,33 @@ fn the_meshes_take_the_particles_once_a_frame() {
     let expected: Vec<[f32; 3]> = instance
         .vertex_particle
         .iter()
+        .map(|&p| {
+            let particle = instance.cloth.particles[p];
+            let (a, b) = (particle.previous, particle.position);
+            ((a + (b - a) * alpha) * 0.01).to_array()
+        })
+        .collect();
+    let newest: Vec<[f32; 3]> = instance
+        .vertex_particle
+        .iter()
         .map(|&p| (instance.cloth.particles[p].position * 0.01).to_array())
         .collect();
     assert_ne!(expected, at_rest);
+    assert_ne!(expected, newest, "the frame drew the newest tick");
     assert_eq!(positions(&app, hairs[0]), expected);
+    // The normals are rebuilt from the moved faces.
+    let meshes = app.world().resource::<Assets<Mesh>>();
+    let mesh = meshes.get(&instance.mesh).unwrap();
+    let normals = mesh
+        .attribute(Mesh::ATTRIBUTE_NORMAL)
+        .and_then(|a| a.as_float3())
+        .unwrap()
+        .to_vec();
+    let indices: Vec<u32> = mesh.indices().unwrap().iter().map(|i| i as u32).collect();
+    let shading = app.world().get::<ClothShading>(hairs[0]).unwrap();
+    let want =
+        exa_formats::rfc::cloth_normals(&expected, &indices, &shading.keys, &shading.elements);
+    assert_eq!(normals, want);
 }
 
 /// Behind the bridge the frame's cloth is the one it built: the mesh

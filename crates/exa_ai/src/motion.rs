@@ -16,11 +16,9 @@
 //!   pitch toward the stored pitch by 1 %, and then eases the body's look
 //!   smoothing direction toward the body's facing by 0.4 of the gap
 //!   (0.64 beyond 1.6 rad).
-//! - **Walking.** [`walk`] is the step/combat walk driver: it follows the
-//!   path, aims the body's look at the step goal, holds the goal within
-//!   150 cm when it lies far to the side, chooses the walk/run flags from
-//!   the facing and the ground, and looks the head at the foe. A body in
-//!   the way stops the walk ([`stop_walk`]).
+//! - **Walking.** The AI's route walk ([`crate::route_walk::walk`]) aims
+//!   the body along its route and looks the head at the AI's look target
+//!   through [`look_at`]; a body in the way ([`body_in_way`]) stops it.
 //! - **Turning.** Out of combat [`turn_towards`] sways the body's look
 //!   around its heading: a draw every four seconds sets an offset of ±1.8
 //!   rad and the look eases toward it by 0.09 − 0.06·encumbrance.
@@ -58,19 +56,6 @@ pub const SWAY_RATE: f32 = f32::from_bits(0x3bcde32e);
 pub const DEGREE: f32 = f32::from_bits(0x3c8e_fa35);
 /// The look is written once the gap is over this many degrees.
 pub const LOOK_WRITE_DEGREES: f32 = 30.0;
-/// The goal is held within this of the body when it lies to the side (cm).
-pub const GOAL_HOLD_CM: f32 = 150.0;
-/// The walk flag bit: running.
-pub const RUN: u32 = 0x4;
-/// The walk flag bit: the sprint latch.
-pub const SPRINT: u32 = 0x8;
-/// The walk flag bit: moving.
-pub const MOVE: u32 = 0x1;
-/// The walk flag bit: stopping.
-pub const STOPPING: u32 = 0x20;
-/// The body's facing dot above which it walks its goal directly, past 100 cm
-/// of goal.
-pub const FAR_GOAL: f32 = 0.7;
 /// The gap above which a body's look turns at the larger rate (rad).
 pub const WIDE_TURN: f64 = 1.6;
 /// The two rates the look smoothing uses for its gap to the facing.
@@ -97,9 +82,6 @@ pub const NARROW_ODDS: u64 = 75;
 /// The out-of-combat sway's span (rad) and its timer (ms).
 pub const SWAY_SPAN: f64 = 3.6;
 pub const SWAY_EVERY_MS: u32 = 4000;
-/// The stop's pull-back: 8·crouch + 20 cm.
-pub const STOP_CROUCH: f32 = 8.0;
-pub const STOP_BASE_CM: f32 = 20.0;
 
 /// The signed gap from `b` to `a`, wrapped once into ±π: the engine's angle
 /// helper compares in double precision against the double π and steps by
@@ -377,136 +359,6 @@ pub fn body_in_way(
         }
     }
     None
-}
-
-/// The body's walk request as the step/combat walk driver writes it.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Walk {
-    /// The step goal (cm).
-    pub goal_cm: Vec3,
-    /// The body's look direction (unit).
-    pub look: Vec3,
-    /// The walk flags ([`MOVE`], [`RUN`], [`SPRINT`]).
-    pub flags: u32,
-    /// The body is steering its own movement.
-    pub steering: bool,
-    /// The body's look smoothing direction (unit).
-    pub look_smooth: Vec3,
-}
-
-/// What [`walk`] reads of the body and its path.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Walking {
-    pub body_cm: Vec3,
-    /// The body's facing (unit).
-    pub facing: Vec3,
-    /// The body's look direction (unit).
-    pub look: Vec3,
-    /// The body's look smoothing direction (unit).
-    pub look_smooth: Vec3,
-    /// The step goal (cm).
-    pub goal_cm: Vec3,
-    /// A path is followed.
-    pub path: bool,
-    /// The climb/step count.
-    pub climb: i32,
-    /// A foe's chest to look at (cm).
-    pub foe_chest: Option<Vec3>,
-    /// The held goal point passed the ground test.
-    pub ground_clear: bool,
-}
-
-/// One tick of the step/combat walk driver.
-///
-/// With no path it does not walk. Otherwise the walk is aimed at the body's
-/// goal: the look eases 0.1 toward the goal's direction (the facing itself
-/// within 1 cm of it); the threshold is 0.7 past 100 cm, else 0.007 a cm.
-/// Facing the goal within the threshold walks it and, past half the
-/// threshold, steers; otherwise the goal is held within 150 cm of the body,
-/// the walk is flagged and, when the held point is clear and the facing
-/// within 0.9, it runs (sprinting at climb 2); the look yaw is the body's
-/// look, its smoothing eases 0.1 toward it, and the head looks at the foe.
-/// Returns the walk, or none while the path runs out.
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
-pub fn walk(gaze: &mut Gaze, at: Walking) -> Option<Walk> {
-    if !at.path {
-        return None;
-    }
-    let delta = at.goal_cm - at.body_cm;
-    let flat = Vec3::new(delta.x, 0.0, delta.z);
-    let len2 = flat.length_squared();
-    // Within 1 cm (or a NaN square) the facing is the direction and the
-    // length counts as 1; otherwise the direction is scaled by the
-    // reciprocal length and the dot is divided by the length.
-    let (direction, dot, len) = if !(len2 > 1.0) {
-        (at.facing, 0.0, 1.0)
-    } else {
-        let len = len2.sqrt();
-        (flat * (1.0 / len), flat.dot(at.facing) / len, len)
-    };
-    let look = unit(at.look + (direction - at.look) * 0.1);
-    // The short threshold is formed in double precision from the f64 0.007.
-    let threshold = if len > 100.0 {
-        FAR_GOAL
-    } else {
-        (f64::from(len) * 0.007) as f32
-    };
-    let mut goal_cm = at.goal_cm;
-    // A NaN facing takes the near branch, as the original's parity jump does.
-    let (flags, steering) = if !(threshold < dot) {
-        (MOVE, threshold * 0.5 < dot)
-    } else {
-        goal_cm = at.body_cm + flat * (GOAL_HOLD_CM / len);
-        let mut flags = MOVE;
-        if at.ground_clear && f64::from(dot) > 0.9 {
-            flags |= RUN;
-            if at.climb == 2 {
-                flags |= SPRINT;
-            }
-        }
-        (flags, true)
-    };
-    let look_yaw = yaw_of(look);
-    let smooth = unit(at.look_smooth + (look - at.look_smooth) * 0.1);
-    gaze.look = look_yaw;
-    if let Some(chest) = at.foe_chest
-        && let Some(head) = look_at(gaze, at.body_cm, chest)
-    {
-        return Some(Walk {
-            goal_cm,
-            look: head,
-            flags,
-            steering,
-            look_smooth: smooth,
-        });
-    }
-    // With no foe the offset target is zeroed before the offset eases
-    // toward it, as the original's no-target branch writes.
-    gaze.target_offset = 0.0;
-    gaze.offset = (f64::from(-gaze.offset) * 0.02 + f64::from(gaze.offset)) as f32;
-    let look = dir_of(gap(gaze.look + gaze.offset, 0.0));
-    Some(Walk {
-        goal_cm,
-        look,
-        flags,
-        steering,
-        look_smooth: smooth,
-    })
-}
-
-/// Stops the walk (the combatant's stop): the path and its replans clear,
-/// the walk flags lose the run bit and gain the stopping bit, and a goal
-/// farther than 8·crouch + 20 cm from the body is pulled to that distance
-/// along the body's facing.
-pub fn stop_walk(body_cm: Vec3, facing: Vec3, crouch: f32, mut walk: Walk) -> Walk {
-    walk.flags = (walk.flags & !RUN) | STOPPING;
-    walk.steering = false;
-    let limit = crouch * STOP_CROUCH + STOP_BASE_CM;
-    let d = walk.goal_cm - body_cm;
-    if d.x * d.x + d.y * d.y + d.z * d.z > limit * limit {
-        walk.goal_cm = body_cm + facing * limit;
-    }
-    walk
 }
 
 /// The body's look as the out-of-combat chain reads it: its own look
@@ -1040,128 +892,6 @@ mod tests {
         assert!((look_smoothing(0.0, 1.0) - 0.4).abs() < 1e-6);
         assert!((look_smoothing(0.0, 2.0) - 0.64).abs() < 1e-6);
         assert!((look_smoothing(2.0, -1.0) - 1.36).abs() < 1e-6);
-    }
-
-    /// The walk holds a far goal within 150 cm, walks toward a near one, and
-    /// runs only on clear ground with the facing within 0.9.
-    #[test]
-    fn the_walk_aims_holds_and_runs() {
-        let base = Walking {
-            body_cm: Vec3::ZERO,
-            facing: Vec3::Z,
-            look: Vec3::Z,
-            look_smooth: Vec3::Z,
-            goal_cm: Vec3::new(0.0, 0.0, 400.0),
-            path: true,
-            climb: 0,
-            foe_chest: None,
-            ground_clear: false,
-        };
-        let mut gaze = Gaze::at(0.0);
-        let w = walk(&mut gaze, base).unwrap();
-        assert_eq!(w.flags, MOVE);
-        assert!(w.steering);
-        assert!((w.goal_cm - Vec3::new(0.0, 0.0, 150.0)).length() < 1e-6);
-        let mut gaze = Gaze::at(0.0);
-        let w = walk(
-            &mut gaze,
-            Walking {
-                ground_clear: true,
-                ..base
-            },
-        )
-        .unwrap();
-        assert_eq!(w.flags, MOVE | RUN);
-        let mut gaze = Gaze::at(0.0);
-        let w = walk(
-            &mut gaze,
-            Walking {
-                ground_clear: true,
-                climb: 2,
-                ..base
-            },
-        )
-        .unwrap();
-        assert_eq!(w.flags, MOVE | RUN | SPRINT);
-        // No path: no walk.
-        let mut gaze = Gaze::at(0.0);
-        assert!(
-            walk(
-                &mut gaze,
-                Walking {
-                    path: false,
-                    ..base
-                }
-            )
-            .is_none()
-        );
-        // A goal 50 cm ahead is still held at 150 cm along its direction.
-        let mut gaze = Gaze::at(0.0);
-        let w = walk(
-            &mut gaze,
-            Walking {
-                goal_cm: Vec3::new(50.0, 0.0, 50.0),
-                ..base
-            },
-        )
-        .unwrap();
-        let along = Vec3::new(50.0, 0.0, 50.0).normalize() * 150.0;
-        assert!((w.goal_cm - along).length() < 1e-4);
-        assert!(
-            (yaw_of(w.look) - 0.07272).abs() < 5e-4,
-            "{}",
-            yaw_of(w.look)
-        );
-        // A NaN goal takes the near branch (the original's parity jump) and
-        // does not steer.
-        let mut gaze = Gaze::at(0.0);
-        let w = walk(
-            &mut gaze,
-            Walking {
-                goal_cm: Vec3::new(f32::NAN, 0.0, 0.0),
-                ..base
-            },
-        )
-        .unwrap();
-        assert_eq!(w.flags, MOVE);
-        assert!(!w.steering);
-        // A goal exactly 100 cm ahead is held at 150 cm too.
-        let mut gaze = Gaze::at(0.0);
-        let w = walk(
-            &mut gaze,
-            Walking {
-                goal_cm: Vec3::new(0.0, 0.0, 100.0),
-                ..base
-            },
-        )
-        .unwrap();
-        assert_eq!(w.flags, MOVE);
-        assert!(w.steering);
-        assert!((w.goal_cm - Vec3::new(0.0, 0.0, 150.0)).length() < 1e-5);
-    }
-
-    /// The stop clears the run bit, sets the stopping bit, and pulls a goal
-    /// out to 8·crouch + 20 cm along the facing.
-    #[test]
-    fn the_stop_pulls_the_goal_in() {
-        let walk = Walk {
-            goal_cm: Vec3::new(0.0, 0.0, 100.0),
-            flags: MOVE | RUN,
-            steering: true,
-            ..Walk::default()
-        };
-        let stopped = stop_walk(Vec3::ZERO, Vec3::Z, 0.5, walk);
-        assert_eq!(stopped.flags, MOVE | STOPPING);
-        assert!(!stopped.steering);
-        assert!((stopped.goal_cm - Vec3::new(0.0, 0.0, 24.0)).length() < 1e-6);
-        let walk = Walk {
-            goal_cm: Vec3::new(0.0, 0.0, 10.0),
-            ..Walk::default()
-        };
-        assert_eq!(
-            stop_walk(Vec3::ZERO, Vec3::Z, 0.0, walk).goal_cm,
-            Vec3::new(0.0, 0.0, 10.0)
-        );
     }
 
     /// The steer line walks 120 cm at most and needs the end within 60 cm;

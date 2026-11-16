@@ -175,7 +175,7 @@ fn contact(
     now: u32,
     roll: &mut EffectRoll,
     body: &mut Ragdoll,
-    route: Option<&mut exa_ai::drive::Driven>,
+    route: Option<&mut exa_ai::route_walk::AiRoute>,
     holder_swing: Option<&mut exa_combat::swing::SwingState>,
     sounds: &mut DomeSounds,
 ) {
@@ -203,7 +203,7 @@ pub(crate) fn tick_bubbles(
     mut casters: Query<&mut PowerCaster>,
     mut bodies: Query<(Entity, &mut Ragdoll, Option<&GlobalTransform>)>,
     (mut routes, mut swings): (
-        Query<&mut exa_ai::drive::Driven>,
+        Query<&mut exa_ai::route_walk::AiRoute>,
         Query<&mut exa_combat::swing::SwingState>,
     ),
     ticks: Option<Res<BodyTicks>>,

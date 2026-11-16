@@ -2,10 +2,14 @@
 //!
 //! Each free particle keeps `0.98977 × 0.5^(1/83)` of its velocity, dragged
 //! 5% toward last tick's mean, then gains gravity. Gravity is the body's
-//! acceleration, in centimetres per tick. Wind above 0.001 moves a particle
-//! by `direction · (noise + 0.25) · wind`. A pin moves toward its rest point
-//! by its weight. An edge corrects by
-//! `(L² / (|d|² + L²) − 0.5) · 0.8774` without a square root. The shipped
+//! acceleration, in centimetres per tick. The world's wind ([`Wind`]) above
+//! 0.001 moves a particle by `direction · ((0.25 + noise) · strength)`. A
+//! pin moves toward its rest point
+//! by its weight. A link `(a, b)` with `d = b − a` moves `a` by `f·d` and
+//! `b` by `−f·d`, `f = 0.5 − rsqrt(|d|²)·h`, where `h` is half the rest
+//! distance and `rsqrt` the processor's approximate reciprocal square root:
+//! the full correction to the rest length. The links come from a walk out
+//! from the pins over the mesh ([`walk_links`]). The shipped
 //! cloth's mode makes one such pass in the step and, while awake, three
 //! more after the body stage ([`crate::cloth_body`]), which pushes the
 //! cloth's triangles off the body spheres the sector hands it and holds
@@ -19,8 +23,8 @@
 //! hands it its own countdown when that is higher, and the tick's end puts
 //! an awake cloth whose count is under 2 to sleep. That sum over the vertex
 //! count is the mean the drag pulls toward. Rustle plays when the same
-//! sum's squared length exceeds 400. The mesh vertices are the particle
-//! positions. These are the built-in record's numbers; a cloth's own record
+//! sum's squared length exceeds 400, for a record that names a rustle
+//! sound. The mesh vertices are the particle positions. These are the built-in record's numbers; a cloth's own record
 //! ([`crate::cloth_record`]) sets its drag, retention, gravity scale,
 //! padding, slide and passes, and its particle mode (the hair's) makes all
 //! its passes in the step and takes bodies particle by particle
@@ -46,10 +50,8 @@ pub fn retention() -> f32 {
 
 /// Drag toward the cloth's mean velocity (the built-in record's).
 pub const MEAN_DRAG: f32 = 0.05;
-/// Edge correction stiffness.
-pub const EDGE_STIFFNESS: f32 = 0.8774;
-/// Wind below this does not move the cloth.
-pub const WIND_FLOOR: f32 = 0.001;
+/// Wind at or below this does not move the cloth (compared in double).
+pub const WIND_FLOOR: f64 = 0.001;
 /// Collision padding, centimetres (the built-in record's).
 pub const PADDING_CM: f32 = 2.0;
 /// The share of a cloth contact handed back to the body: 0.015 for a body
@@ -70,10 +72,9 @@ pub fn gravity_cm(scale: f32) -> Vec3 {
     Vec3::new(0.0, GRAVITY_MPS2 * 100.0 * scale / (BODY_HZ * BODY_HZ), 0.0)
 }
 
-/// The built-in wind direction, `normalise(0.6, 0, 0.3)`.
-pub fn wind_direction() -> Vec3 {
-    Vec3::new(0.6, 0.0, 0.3).normalize()
-}
+/// The wind direction as the game stores it before its first step,
+/// `(0.6, 0, 0.3)`; each step normalises it in place.
+pub const WIND_DIRECTION: Vec3 = Vec3::new(0.6, 0.0, 0.3);
 
 /// One cloth particle. Positions are centimetres.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,12 +83,26 @@ pub struct Particle {
     pub previous: Vec3,
 }
 
-/// An edge and its rest length, in centimetres.
+/// A link between two particles and half its rest distance, in
+/// centimetres (the original stores the distance times 0.5, which its edge
+/// pass multiplies by the reciprocal square root of the squared length).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Edge {
     pub a: usize,
     pub b: usize,
-    pub length: f32,
+    pub half_rest: f32,
+}
+
+impl Edge {
+    /// The link from `a` to `b` at rest where `points` puts them: half the
+    /// distance, summed `(x² + z²) + y²` before the root, times 0.5.
+    pub fn at_rest(points: &[Vec3], a: usize, b: usize) -> Self {
+        Self {
+            a,
+            b,
+            half_rest: crate::engine_math::length3(points[a] - points[b]) * 0.5,
+        }
+    }
 }
 
 /// A vertex pinned toward a rest point by `weight` (0 stays, 1 sits on it).
@@ -171,58 +186,153 @@ pub struct LevelTri {
 }
 
 /// The 16×16 wind noise tile. A cell is 2 m, so a centimetre coordinate is
-/// multiplied by 0.005 before the fractional lookup.
+/// multiplied by 0.005 (in double) before the fractional lookup.
 pub const NOISE_CELLS: usize = 16;
-const NOISE_SCALE: f32 = 0.005;
 
-/// Scene wind times 0.3, the strength the cloth's noise tile walks with.
-pub fn cloth_wind(environment: f32) -> f32 {
-    environment * 0.3
+/// The world's wind as every cloth reads it: the strength and direction a
+/// simulation step's hook sets, the frame the noise tile lies in, and the
+/// tile of 256 noise samples the hook walks each step, with the engine
+/// generator the walk draws from (its own stream here). One for the whole
+/// simulation, as the original keeps it in globals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wind {
+    /// The scene's wind times 0.3: how far a cloth is blown, cm a tick.
+    pub strength: f32,
+    /// The wind's direction, normalised in place each step by the
+    /// approximate reciprocal square root.
+    pub direction: Vec3,
+    /// The rows of the noise tile's frame: across, up and along the wind
+    /// (its origin is the world's).
+    pub frame: [Vec3; 3],
+    /// The noise samples, row by row.
+    pub tile: [f32; NOISE_CELLS * NOISE_CELLS],
+    /// The generator the walk draws from ([`next_random`]).
+    pub roll: u32,
 }
 
-/// One frame of the noise tile. Inside −1 to 1 a sample walks by
-/// `(random − 0.5) · wind · 0.8`. Outside that, it is pushed back by half
-/// that stride times the random value.
-pub fn advance_tile(samples: &mut [f32; NOISE_CELLS * NOISE_CELLS], wind: f32, randoms: &[f32]) {
-    let stride = wind * 0.8;
-    for (index, sample) in samples.iter_mut().enumerate() {
-        let random = randoms.get(index).copied().unwrap_or(0.5);
-        if !sample.is_finite() || !random.is_finite() || !stride.is_finite() {
-            *sample = 0.0;
-            continue;
-        }
-        *sample = if *sample > 1.0 {
-            *sample - stride * 0.5 * random
-        } else if *sample < -1.0 {
-            *sample + stride * 0.5 * random
-        } else {
-            *sample + (random - 0.5) * stride
-        };
+impl Default for Wind {
+    fn default() -> Self {
+        Self::CALM
     }
 }
 
-/// Bilinear sample of the tile at a world position in centimetres.
-pub fn sample_tile(samples: &[f32; NOISE_CELLS * NOISE_CELLS], x_cm: f32, z_cm: f32) -> f32 {
-    let (ix, fx) = tile_cell(x_cm);
-    let (iz, fz) = tile_cell(z_cm);
-    let at = |x: usize, z: usize| samples[z * NOISE_CELLS + x];
-    let x1 = (ix + 1) % NOISE_CELLS;
-    let z1 = (iz + 1) % NOISE_CELLS;
-    let i00 = at(ix, iz);
-    let i10 = at(x1, iz);
-    let i01 = at(ix, z1);
-    let i11 = at(x1, z1);
-    (1.0 - fz) * ((1.0 - fx) * i00 + fx * i10) + fz * ((1.0 - fx) * i01 + fx * i11)
+impl Wind {
+    /// The wind before the first step: no strength, the stored direction,
+    /// an empty frame and a flat tile.
+    pub const CALM: Self = Self {
+        strength: 0.0,
+        direction: WIND_DIRECTION,
+        frame: [Vec3::ZERO; 3],
+        tile: [0.0; NOISE_CELLS * NOISE_CELLS],
+        roll: 0,
+    };
+
+    /// One simulation step's wind hook: the strength is the scene's wind
+    /// times 0.3 (in double); every sample walks by a draw `r`, within
+    /// −1…1 by `(r − 0.5)·s`, above 1 down by `s·0.5·r` and below −1 up by
+    /// as much, with `s = strength·0.2·4` (in double); then the direction
+    /// is normalised and the tile's frame rebuilt from it. Every sample
+    /// draws, also with no wind.
+    pub fn advance(&mut self, scene_wind: f32) {
+        self.strength = (f64::from(scene_wind) * 0.3) as f32;
+        let stride = (f64::from(self.strength) * 0.2 * 4.0) as f32;
+        for sample in &mut self.tile {
+            let value = *sample;
+            // A NaN sample is neither above 1 nor below −1 (`comiss`), so
+            // it takes the in-range walk.
+            *sample = if value > 1.0 {
+                let r = next_random(&mut self.roll);
+                value - stride * 0.5 * r
+            } else if value < -1.0 {
+                let r = next_random(&mut self.roll);
+                stride * 0.5 * r + value
+            } else {
+                let r = next_random(&mut self.roll);
+                (r - 0.5) * stride + value
+            };
+        }
+        self.direction = crate::engine_math::normalize_approx(self.direction);
+        self.frame = wind_frame(self.direction);
+    }
+
+    /// A world point (cm) in the tile's frame: `(p − 0)` dotted with each
+    /// row, summed `(x + y) + z`.
+    pub fn in_frame(&self, point: Vec3) -> Vec3 {
+        let row = |r: Vec3| (point.x * r.x + point.y * r.y) + point.z * r.z;
+        Vec3::new(row(self.frame[0]), row(self.frame[1]), row(self.frame[2]))
+    }
+
+    /// The noise at a point of the tile's frame (its first two
+    /// coordinates, cm), bilinear between the four samples about it and
+    /// wrapping at the tile's edge, summed in the original's order.
+    pub fn sample(&self, x: f32, y: f32) -> f32 {
+        let (ix, fx) = tile_cell(x);
+        let (iy, fy) = tile_cell(y);
+        // [Exarust: a cell index the rounding takes to 16 reads past the
+        // tile in the original (into the frame after it); here 0.]
+        let at = |i: i64| -> f32 {
+            usize::try_from(i)
+                .ok()
+                .and_then(|i| self.tile.get(i))
+                .copied()
+                .unwrap_or(0.0)
+        };
+        let gx = 1.0 - fx;
+        let gy = 1.0 - fy;
+        let mut out;
+        if ix < 15 {
+            let cell = iy * 16 + ix;
+            out = gy * (gx * at(cell));
+            out += gy * (at(cell + 1) * fx);
+            if iy == 15 {
+                out += (gx * at(ix)) * fy;
+                out += (at(ix + 1) * fx) * fy;
+            } else {
+                out += (gx * at(cell + 16)) * fy;
+                out += (at(cell + 17) * fx) * fy;
+            }
+        } else {
+            let row = iy * 16;
+            out = gy * (gx * at(row + 15));
+            out += gy * (at(row) * fx);
+            if iy < 15 {
+                out += (gx * at(row + 16 + 15)) * fy;
+                out += (at(row + 16) * fx) * fy;
+            } else {
+                out += (gx * at(ix)) * fy;
+                out += (at(0) * fx) * fy;
+            }
+        }
+        out
+    }
 }
 
-fn tile_cell(cm: f32) -> (usize, f32) {
-    let mut unit = (cm * NOISE_SCALE).fract();
+/// The tile's frame from the wind's direction: the third row the
+/// direction, the second the world's up less its part along it, the first
+/// their cross product, each of the two normalised by the approximate
+/// reciprocal square root without a zero guard.
+fn wind_frame(direction: Vec3) -> [Vec3; 3] {
+    let unmasked = |v: Vec3| {
+        let squared = (v.x * v.x + v.z * v.z) + (v.y * v.y + 0.0);
+        v * crate::engine_math::reciprocal_sqrt(squared)
+    };
+    let up = unmasked(crate::engine_math::remove_component(Vec3::Y, direction));
+    let across = unmasked(up.cross(direction));
+    [across, up, direction]
+}
+
+/// One coordinate's cell and fraction: the fraction of `cm·0.005` (in
+/// double, then single), lifted by one when negative, times 16; the cell is
+/// its truncation and the fraction what is left.
+fn tile_cell(cm: f32) -> (i64, f32) {
+    let mut unit = exa_formats::text::fraction((f64::from(cm) * 0.005) as f32);
     if unit < 0.0 {
         unit += 1.0;
     }
-    let scaled = unit * NOISE_CELLS as f32;
-    let index = (scaled.floor() as usize) % NOISE_CELLS;
-    (index, scaled - index as f32)
+    let scaled = unit * 16.0;
+    // `cvttss2si` to 64 bits, of which the low word is kept.
+    let cell = scaled as i64 as i32;
+    (i64::from(cell), scaled - cell as f32)
 }
 
 /// The cloth a step advances.
@@ -233,10 +343,6 @@ pub struct Cloth {
     pub pins: Vec<Pin>,
     /// Mean velocity from the previous tick, centimetres per tick.
     pub mean_velocity: Vec3,
-    pub wind: f32,
-    pub wind_direction: Vec3,
-    /// One noise sample per particle, already in −1 to 1.
-    pub noise: Vec<f32>,
     /// Ticks of motion still owed. Zero is asleep.
     pub sleep: i32,
     /// The owner's countdown. This cloth never sleeps deeper than that.
@@ -263,8 +369,6 @@ pub struct Cloth {
     /// How many particle-triangle tests the last level stage made (a debug
     /// count; no rule reads it).
     pub level_tests: usize,
-    /// Wind noise, when the cloth samples the tile instead of `noise`.
-    pub tile: Option<[f32; NOISE_CELLS * NOISE_CELLS]>,
     /// Equal and opposite sum of this tick's collision pushes, for the body.
     pub reaction: Vec3,
     /// The shipped cloth draws both faces.
@@ -272,10 +376,12 @@ pub struct Cloth {
     /// Distance along the mesh from the nearest pin, in centimetres.
     /// Unreachable vertices stay infinite. With no pins, vertex 0 is the source.
     pub distances: Vec<f32>,
+    /// Whether the rustle loop plays this tick, and at what volume and
+    /// pitch (the integrate slot's rustle).
     pub rustle: bool,
     pub rustle_volume: f32,
     pub rustle_pitch: f32,
-    /// The rustle envelope, which decays by 0.9 each tick.
+    /// The rustle's energy tail, which decays by 0.9 each awake tick.
     pub rustle_tail: f32,
     /// The hand's grab: the vertex it holds and the point it is pulled to
     /// (centimetres, the cloth's own frame).
@@ -297,9 +403,6 @@ impl Cloth {
             edges: Vec::new(),
             pins: Vec::new(),
             mean_velocity: Vec3::ZERO,
-            wind: 0.0,
-            wind_direction: wind_direction(),
-            noise: Vec::new(),
             sleep: SLEEP_CAP,
             owner_sleep: 0,
             bodies: Vec::new(),
@@ -311,7 +414,6 @@ impl Cloth {
             level: Vec::new(),
             level_pieces: Vec::new(),
             level_tests: 0,
-            tile: None,
             reaction: Vec3::ZERO,
             double_sided: true,
             distances: Vec::new(),
@@ -339,11 +441,31 @@ impl Cloth {
         self.grabbed = None;
     }
 
-    /// Build a cloth from a triangle mesh. Each vertex is a particle. Each
-    /// triangle edge is a structural link, and the two vertices opposite a
-    /// shared edge are a bend link. Pinned vertices are held at their
-    /// current point. The draw is double sided.
+    /// Build a cloth from a triangle mesh. Each vertex is a particle, and
+    /// the links are the walk out from the pins ([`walk_links`]) over the
+    /// mesh's corner fans in the original's incidence order
+    /// ([`incidence`]), each at half its rest distance. Pinned vertices are
+    /// held at their current point. The draw is double sided.
     pub fn from_mesh(vertices: &[Vec3], triangles: &[[usize; 3]], pinned: &[usize]) -> Self {
+        let kept: Vec<[usize; 3]> = triangles
+            .iter()
+            .copied()
+            .filter(|tri| tri.iter().all(|&index| index < vertices.len()))
+            .collect();
+        let (starts, fans) = incidence(&kept, vertices.len());
+        let links = walk_links(vertices, &kept, &starts, &fans, pinned);
+        Self::from_mesh_linked(vertices, &kept, pinned, &links)
+    }
+
+    /// Build a cloth from a triangle mesh with the links already walked
+    /// (each pair at half its rest distance where `vertices` puts it); a
+    /// link naming a missing vertex is left out.
+    pub fn from_mesh_linked(
+        vertices: &[Vec3],
+        triangles: &[[usize; 3]],
+        pinned: &[usize],
+        links: &[(usize, usize)],
+    ) -> Self {
         let particles = vertices
             .iter()
             .copied()
@@ -353,52 +475,21 @@ impl Cloth {
             })
             .collect();
         let mut cloth = Self::new(particles);
-        let mut seen = Vec::<(usize, usize)>::new();
-        let mut shared: Vec<((usize, usize), Vec<usize>)> = Vec::new();
         for tri in triangles {
-            let corners = [tri[0], tri[1], tri[2]];
-            if corners.iter().any(|index| *index >= vertices.len()) {
+            if tri.iter().any(|index| *index >= vertices.len()) {
                 continue;
             }
             cloth.triangles.push(ClothTri {
-                a: corners[0],
-                b: corners[1],
-                c: corners[2],
+                a: tri[0],
+                b: tri[1],
+                c: tri[2],
             });
-            for (slot, opposite) in corners.iter().copied().enumerate() {
-                let start = corners[(slot + 1) % 3];
-                let end = corners[(slot + 2) % 3];
-                let key = ordered(start, end);
-                let length = vertices[start].distance(vertices[end]);
-                if !seen.contains(&key) {
-                    seen.push(key);
-                    cloth.edges.push(Edge {
-                        a: start,
-                        b: end,
-                        length,
-                    });
-                }
-                if let Some((_, opposites)) = shared.iter_mut().find(|(edge, _)| *edge == key) {
-                    opposites.push(opposite);
-                } else {
-                    shared.push((key, vec![opposite]));
-                }
-            }
         }
-        for (_, opposites) in shared {
-            if opposites.len() >= 2 {
-                let (start, end) = (opposites[0], opposites[1]);
-                let key = ordered(start, end);
-                if !seen.contains(&key) && start < vertices.len() && end < vertices.len() {
-                    seen.push(key);
-                    cloth.edges.push(Edge {
-                        a: start,
-                        b: end,
-                        length: vertices[start].distance(vertices[end]),
-                    });
-                }
-            }
-        }
+        cloth.edges = links
+            .iter()
+            .filter(|&&(a, b)| a < vertices.len() && b < vertices.len())
+            .map(|&(a, b)| Edge::at_rest(vertices, a, b))
+            .collect();
         for index in pinned {
             if let Some(vertex) = vertices.get(*index) {
                 cloth.pins.push(Pin {
@@ -679,6 +770,28 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
 /// the tick changes nothing (non-finite input or no particles), as
 /// [`step`] then skips its level contact too.
 pub fn step_before_level(cloth: &mut Cloth, gravity: Vec3) -> Option<(Vec<Vec3>, bool)> {
+    step_before_level_in(cloth, gravity, None)
+}
+
+/// The world's wind as one cloth meets it: the wind, and the map from the
+/// cloth's own frame to the world's (both in centimetres), whose inverse
+/// turns the wind's direction into the cloth's frame. The original's
+/// particles are in the world already.
+#[derive(Debug, Clone, Copy)]
+pub struct WindAt<'a> {
+    pub wind: &'a Wind,
+    pub to_world: bevy::math::Affine3A,
+}
+
+/// [`step_before_level`] in the world's wind: after the integrate and the
+/// countdown, while the wind is above [`WIND_FLOOR`] each particle moves
+/// along the wind by `(0.25 + n)·strength`, with `n` the tile's noise where
+/// the particle was a tick ago.
+pub fn step_before_level_in(
+    cloth: &mut Cloth,
+    gravity: Vec3,
+    wind: Option<WindAt>,
+) -> Option<(Vec<Vec3>, bool)> {
     if !gravity.is_finite() || !cloth.mean_velocity.is_finite() {
         return None;
     }
@@ -696,41 +809,45 @@ pub fn step_before_level(cloth: &mut Cloth, gravity: Vec3) -> Option<(Vec<Vec3>,
         let keep = cloth.record.retention();
         let drag = cloth.record.mean_drag;
         let gravity = cloth.record.gravity(gravity);
-        let wind = cloth.wind;
-        let wind_direction = cloth.wind_direction;
-        let tile = cloth.tile;
-        let noise = cloth.noise.clone();
-        for (index, particle) in cloth.particles.iter_mut().enumerate() {
+        for particle in &mut cloth.particles {
             if !particle.position.is_finite() || !particle.previous.is_finite() {
                 continue;
             }
             let velocity = particle.position - particle.previous;
             sum += velocity;
+            // `((v + (v̄ − v)·drag)·keep + g) + x`, the integrate loop's
+            // order.
             let retained = (velocity + (mean - velocity) * drag) * keep;
-            let mut next = particle.position + retained + gravity;
-            if wind > WIND_FLOOR {
-                let sample = if let Some(tile) = tile {
-                    sample_tile(&tile, particle.position.x, particle.position.z)
-                } else {
-                    noise.get(index).copied().unwrap_or(0.0)
-                };
-                if wind_direction.is_finite() && sample.is_finite() {
-                    next += wind_direction * (sample + 0.25) * wind;
-                }
-            }
+            let next = (retained + gravity) + particle.position;
             particle.previous = particle.position;
             particle.position = next;
         }
     }
     // The step itself runs only for an awake cloth; a sleeping one keeps
-    // its countdown (never below its owner's) and lets the rustle fade.
+    // its countdown (never below its owner's).
     cloth.mean_velocity = sum * (1.0 / count as f32);
     if awake {
         settle_sleep(cloth, sum.length_squared());
     } else {
         cloth.sleep = cloth.sleep.max(cloth.owner_sleep);
     }
-    settle_rustle(cloth, sum);
+    if awake
+        && let Some(at) = wind
+        && f64::from(at.wind.strength) > WIND_FLOOR
+    {
+        let direction = at.to_world.inverse().transform_vector3(at.wind.direction);
+        for particle in &mut cloth.particles {
+            let place = at
+                .wind
+                .in_frame(at.to_world.transform_point3(particle.previous));
+            let push = (0.25 + at.wind.sample(place.x, place.y)) * at.wind.strength;
+            particle.position += direction * push;
+        }
+    }
+    // The rustle is the integrate slot's, which only an awake cloth runs.
+    if awake {
+        settle_rustle(cloth, sum);
+    }
     if awake {
         // The triangle mode makes one pass here, the particle mode all.
         for _ in 0..cloth.record.step_passes() {
@@ -907,8 +1024,255 @@ fn geodesic(vertices: &[Vec3], triangles: &[[usize; 3]], pinned: &[usize]) -> Ve
     distance
 }
 
+#[cfg(test)]
 fn ordered(a: usize, b: usize) -> (usize, usize) {
     if a < b { (a, b) } else { (b, a) }
+}
+
+/// The corners of every vertex, vertex by vertex, in the order the
+/// original's mesh incidence lists them when no smoothing split reorders
+/// them: faces last first and each face's corners last first. Returns the
+/// prefix bounds (`fans[starts[v]..starts[v + 1]]` are vertex `v`'s) and
+/// the `(face, corner)` list. A corner naming a vertex past `count` is
+/// left out.
+pub fn incidence(faces: &[[usize; 3]], count: usize) -> (Vec<u32>, Vec<(u32, u8)>) {
+    let mut starts = vec![0u32; count + 1];
+    for face in faces {
+        for &vertex in face {
+            if vertex < count {
+                starts[vertex + 1] += 1;
+            }
+        }
+    }
+    for vertex in 0..count {
+        starts[vertex + 1] += starts[vertex];
+    }
+    let mut fill = starts.clone();
+    let mut fans = vec![(0u32, 0u8); starts[count] as usize];
+    for (index, face) in faces.iter().enumerate().rev() {
+        for corner in (0..3).rev() {
+            let vertex = face[corner];
+            if vertex < count {
+                fans[fill[vertex] as usize] = (index as u32, corner as u8);
+                fill[vertex] += 1;
+            }
+        }
+    }
+    (starts, fans)
+}
+
+/// From a face corner, the corner whose vertex the walk calls the first
+/// neighbour (the original's table `2, 0, 1`).
+const FIRST_NEIGHBOUR: [usize; 3] = [2, 0, 1];
+/// From a face corner, the other neighbour's corner (`1, 2, 0`).
+const SECOND_NEIGHBOUR: [usize; 3] = [1, 2, 0];
+
+/// A vertex the walk settles has this state; one still unmet has −1 and
+/// one waiting has its slot in the open list.
+const SETTLED: i32 = -2;
+
+/// One neighbour of the vertex the walk settles: the vertex, and the
+/// neighbours on either side of it around the settled vertex (−1 when the
+/// fan has none there).
+#[derive(Debug, Clone, Copy)]
+struct Neighbour {
+    vertex: usize,
+    before: i64,
+    after: i64,
+}
+
+impl Neighbour {
+    /// Sets a side of `of`'s entry, adding the entry (with the other side
+    /// −1) when the list does not have it yet.
+    fn set(list: &mut Vec<Self>, of: usize, before: Option<usize>, after: Option<usize>) {
+        if let Some(entry) = list.iter_mut().find(|entry| entry.vertex == of) {
+            if let Some(before) = before {
+                entry.before = before as i64;
+            }
+            if let Some(after) = after {
+                entry.after = after as i64;
+            }
+        } else {
+            list.push(Self {
+                vertex: of,
+                before: before.map_or(-1, |v| v as i64),
+                after: after.map_or(-1, |v| v as i64),
+            });
+        }
+    }
+}
+
+/// `(x² + y²) + z²` of `a − b`, the engine's squared distance.
+fn squared_distance(a: Vec3, b: Vec3) -> f32 {
+    let d = a - b;
+    (d.x * d.x + d.y * d.y) + d.z * d.z
+}
+
+/// The cloth's links as the original's set-up walks them out from the pins
+/// (`pins`, in order; vertex 0 when there are none), over each vertex's
+/// corner fan (`fans[starts[v]..starts[v + 1]]`, `(face, corner)` pairs
+/// into `faces`). Returns them in the order the edge pass visits them: the
+/// walk's links from each settled vertex to its unsettled neighbours, then
+/// the neighbour pairs nearly in line through the settled vertex (the
+/// cosine of their arms above 0.7 in double precision), then the other
+/// pairs.
+///
+/// The walk takes the open vertex whose distance is below the first open
+/// one's, the last such in the list (not the nearest: the original compares
+/// each with the first entry only); the taken slot is filled from the end.
+/// A taken vertex lists its fan's neighbours, leaving out the far end of a
+/// face's longest edge from it (a quad's diagonal), and links to each
+/// neighbour not yet settled, opening it at its distance along the link
+/// (`(x² + z²) + y²` under the root) or lowering its distance. A pair of
+/// neighbours is linked unless a settled vertex between them that the fan
+/// does not list, or a face about the first that joins the second to a
+/// settled vertex, shows the pair was linked from there. A vertex no pin
+/// reaches gets no link.
+pub fn walk_links(
+    positions: &[Vec3],
+    faces: &[[usize; 3]],
+    starts: &[u32],
+    fans: &[(u32, u8)],
+    pins: &[usize],
+) -> Vec<(usize, usize)> {
+    let count = positions.len();
+    let mut tree = Vec::new();
+    let mut bent = Vec::new();
+    let mut straight = Vec::new();
+    if count == 0 {
+        return tree;
+    }
+    let fan = |vertex: usize| -> &[(u32, u8)] {
+        match (starts.get(vertex), starts.get(vertex + 1)) {
+            (Some(&a), Some(&b)) => fans.get(a as usize..b as usize).unwrap_or_default(),
+            _ => &[],
+        }
+    };
+    // The two neighbours of a vertex in one of its corners.
+    let sides = |(face, corner): (u32, u8)| -> Option<(usize, usize)> {
+        let face = faces.get(face as usize)?;
+        let corner = usize::from(corner).min(2);
+        let first = face[FIRST_NEIGHBOUR[corner]];
+        let second = face[SECOND_NEIGHBOUR[corner]];
+        (first < count && second < count).then_some((first, second))
+    };
+    let mut state = vec![-1i32; count];
+    let mut open: Vec<(usize, f32)> = Vec::new();
+    for &pin in pins {
+        if pin < count {
+            state[pin] = open.len() as i32;
+            open.push((pin, 0.0));
+        }
+    }
+    if open.is_empty() {
+        open.push((0, 0.0));
+        state[0] = 0;
+    }
+    let mut live = open.len();
+    let mut neighbours: Vec<Neighbour> = Vec::new();
+    while live >= 1 {
+        let mut best = 0;
+        let first = open[0].1;
+        for (slot, &(_, far)) in open.iter().enumerate().take(live).skip(1) {
+            if first > far {
+                best = slot;
+            }
+        }
+        live -= 1;
+        let (vertex, distance) = open[best];
+        open[best] = open[live];
+        state[open[best].0] = best as i32;
+        let at = positions[vertex];
+        neighbours.clear();
+        for &corner in fan(vertex) {
+            let Some((first, second)) = sides(corner) else {
+                continue;
+            };
+            let to_first = squared_distance(at, positions[first]);
+            let to_second = squared_distance(at, positions[second]);
+            let across = squared_distance(positions[first], positions[second]);
+            // The far end of the triangle's longest edge from the vertex.
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
+            let far = if !(across < to_second) {
+                (across < to_first).then_some(first)
+            } else if to_second < to_first {
+                Some(first)
+            } else {
+                Some(second)
+            };
+            if far != Some(first) {
+                Neighbour::set(&mut neighbours, first, None, Some(second));
+            }
+            if far != Some(second) {
+                Neighbour::set(&mut neighbours, second, Some(first), None);
+            }
+        }
+        let listed =
+            |neighbours: &[Neighbour], v: i64| neighbours.iter().any(|n| n.vertex as i64 == v);
+        let settled = |state: &[i32], v: i64| usize::try_from(v).is_ok_and(|v| state[v] < -1);
+        // Whether a face about `from` joins `to` to a settled vertex.
+        let joined = |state: &[i32], from: usize, to: usize| {
+            fan(from).iter().any(|&corner| {
+                sides(corner).is_some_and(|(first, second)| {
+                    (first == to && state[second] < -1) || (second == to && state[first] < -1)
+                })
+            })
+        };
+        for i in 0..neighbours.len() {
+            let here = neighbours[i];
+            if state[here.vertex] > SETTLED {
+                tree.push((vertex, here.vertex));
+                let along = crate::engine_math::length3(at - positions[here.vertex]) + distance;
+                let slot = state[here.vertex];
+                if slot < 0 {
+                    if live < open.len() {
+                        open[live] = (here.vertex, along);
+                    } else {
+                        open.push((here.vertex, along));
+                    }
+                    state[here.vertex] = live as i32;
+                    live += 1;
+                } else if along < open[slot as usize].1 {
+                    open[slot as usize].1 = along;
+                }
+            }
+            for j in i + 1..neighbours.len() {
+                let there = neighbours[j];
+                if here.before >= 0
+                    && here.before == there.after
+                    && settled(&state, here.before)
+                    && !listed(&neighbours, here.before)
+                {
+                    continue;
+                }
+                if here.after >= 0
+                    && here.after == there.before
+                    && settled(&state, here.after)
+                    && !listed(&neighbours, here.after)
+                {
+                    continue;
+                }
+                if there.before == here.vertex as i64 && joined(&state, here.vertex, there.vertex) {
+                    continue;
+                }
+                if there.after == here.vertex as i64 && joined(&state, here.vertex, there.vertex) {
+                    continue;
+                }
+                let arm = at - positions[here.vertex];
+                let other = positions[there.vertex] - at;
+                let cosine = crate::engine_math::cosine(arm, other);
+                if f64::from(cosine) > 0.7 {
+                    straight.push((here.vertex, there.vertex));
+                } else {
+                    bent.push((here.vertex, there.vertex));
+                }
+            }
+        }
+        state[vertex] = SETTLED;
+    }
+    tree.extend(straight);
+    tree.extend(bent);
+    tree
 }
 
 /// One constraint pass: pins, then edges, then (after the body push) the
@@ -953,20 +1317,43 @@ fn settle_sleep(cloth: &mut Cloth, sum_sq: f32) {
     }
 }
 
+/// The integrate slot's rustle, for a cloth whose record names a rustle
+/// sound: while the squared velocity sum is above 400 the loop plays at
+/// `0.5·tail + 0.0001·|sum|` (the half in single, the sum in double) and the
+/// pitch `min(0.5·volume + 0.5, 2)` (`minss`: a NaN takes 2); otherwise it
+/// is stopped. Every awake tick the tail decays by 0.9 in double. (The
+/// tail is what the body contact adds to the cloth's energy; Exarust's
+/// body contact does not add it yet, so the loop plays from the sum
+/// alone.)
 fn settle_rustle(cloth: &mut Cloth, sum: Vec3) {
-    let speed_sq = sum.length_squared();
-    if speed_sq > RUSTLE_SPEED_SQ {
-        let speed = speed_sq.sqrt();
-        cloth.rustle_volume = 0.5 * cloth.rustle_volume + 0.0001 * speed;
-        cloth.rustle_pitch = (0.5 * cloth.rustle_volume + 0.5).min(2.0);
-        cloth.rustle = true;
-        cloth.rustle_tail = cloth.rustle_volume;
-    } else {
-        cloth.rustle = false;
-        cloth.rustle_volume = 0.0;
-        cloth.rustle_pitch = 0.0;
-        cloth.rustle_tail *= 0.9;
+    if cloth.record.rustle.is_some() {
+        let speed_sq = (sum.x * sum.x + sum.y * sum.y) + sum.z * sum.z;
+        if speed_sq > RUSTLE_SPEED_SQ {
+            let volume =
+                (f64::from(cloth.rustle_tail * 0.5) + f64::from(speed_sq.sqrt()) * 0.0001) as f32;
+            let pitch = volume * 0.5 + 0.5;
+            cloth.rustle = true;
+            cloth.rustle_volume = volume;
+            cloth.rustle_pitch = if pitch < 2.0 { pitch } else { 2.0 };
+        } else {
+            cloth.rustle = false;
+        }
     }
+    cloth.rustle_tail = (f64::from(cloth.rustle_tail) * 0.9) as f32;
+}
+
+/// A cloth's rustle loop as the step leaves it, for the sound to follow:
+/// playing at a place (world, metres) with a volume and pitch, or stopped.
+/// Sent while it plays and once when it stops.
+#[derive(bevy::prelude::Message, Debug, Clone, PartialEq)]
+pub struct ClothRustled {
+    pub cloth: bevy::prelude::Entity,
+    /// The record's rustle sound set.
+    pub sound: &'static str,
+    pub position: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+    pub playing: bool,
 }
 
 fn push_plane(particle: &mut Particle, plane: LevelPlane, padding: f32) -> bool {
@@ -982,42 +1369,25 @@ fn push_plane(particle: &mut Particle, plane: LevelPlane, padding: f32) -> bool 
     true
 }
 
-/// Reflect a noise sample into −1 to 1 after one random-walk step.
-pub fn walk_noise(value: f32, random: f32, wind: f32) -> f32 {
-    if !value.is_finite() || !random.is_finite() || !wind.is_finite() {
-        return 0.0;
-    }
-    let mut sample = value + (random - 0.5) * 0.8 * wind;
-    for _ in 0..8 {
-        if sample > 1.0 {
-            sample = 2.0 - sample;
-        } else if sample < -1.0 {
-            sample = -2.0 - sample;
-        } else {
-            break;
-        }
-    }
-    sample.clamp(-1.0, 1.0)
-}
-
+/// The edge pass the original runs (its other, square-root-free form sits
+/// behind a switch the game never sets): `d = b − a`, its squared length
+/// summed `(x² + z²) + y²`, `f = 0.5 − rsqrt(|d|²)·h` with `h` the link's
+/// half rest distance, then `a += f·d` and `b −= f·d`. The reciprocal
+/// square root is the processor's approximation, as the original's. Two
+/// particles on one point make `f` infinite and the move not a number, as
+/// in the original.
 fn correct_edge(particles: &mut [Particle], edge: Edge) {
-    if edge.a == edge.b || edge.a >= particles.len() || edge.b >= particles.len() {
+    if edge.a >= particles.len() || edge.b >= particles.len() {
         return;
     }
-    if !edge.length.is_finite() || edge.length < 0.0 {
-        return;
-    }
-    let delta = particles[edge.a].position - particles[edge.b].position;
-    let distance_sq = delta.length_squared();
-    let length_sq = edge.length * edge.length;
-    let denom = distance_sq + length_sq;
-    if denom <= f32::EPSILON {
-        return;
-    }
-    let scale = (length_sq / denom - 0.5) * EDGE_STIFFNESS;
-    let shift = delta * scale;
-    particles[edge.a].position += shift;
-    particles[edge.b].position -= shift;
+    let a = particles[edge.a].position;
+    let b = particles[edge.b].position;
+    let d = b - a;
+    let squared = (d.x * d.x + d.z * d.z) + d.y * d.y;
+    let f = 0.5 - crate::engine_math::reciprocal_sqrt(squared) * edge.half_rest;
+    let shift = d * f;
+    particles[edge.a].position = a + shift;
+    particles[edge.b].position = b - shift;
 }
 
 /// The cloth's start fields.
@@ -1398,30 +1768,31 @@ mod tests {
         assert!((cloth.particles[0].position.y - (100.0 + g.y)).abs() < 1e-4);
         assert!((cloth.particles[0].previous.y - 100.0).abs() < 1e-6);
 
+        // A link at its rest distance stays (up to the approximate root).
         let mut cloth = Cloth::new(vec![still(Vec3::ZERO), still(Vec3::new(20.0, 0.0, 0.0))]);
         cloth.edges.push(Edge {
             a: 0,
             b: 1,
-            length: 20.0,
+            half_rest: 10.0,
         });
         step(&mut cloth, Vec3::ZERO);
-        assert!(cloth.particles[0].position.abs_diff_eq(Vec3::ZERO, 1e-4));
+        assert!(cloth.particles[0].position.abs_diff_eq(Vec3::ZERO, 1e-2));
         assert!(
             cloth.particles[1]
                 .position
-                .abs_diff_eq(Vec3::new(20.0, 0.0, 0.0), 1e-4)
+                .abs_diff_eq(Vec3::new(20.0, 0.0, 0.0), 1e-2)
         );
-
+        // A link stretched to twice its rest is pulled all the way back.
         let mut cloth = Cloth::new(vec![still(Vec3::ZERO), still(Vec3::new(20.0, 0.0, 0.0))]);
         cloth.edges.push(Edge {
             a: 0,
             b: 1,
-            length: 10.0,
+            half_rest: 5.0,
         });
         step(&mut cloth, Vec3::ZERO);
         let gap = cloth.particles[1].position - cloth.particles[0].position;
-        assert!(gap.x > 9.0 && gap.x < 20.0, "{gap}");
-        assert!(cloth.particles[0].position.x > 0.0);
+        assert!((gap.x - 10.0).abs() < 1e-2, "{gap}");
+        assert!((cloth.particles[0].position.x - 5.0).abs() < 1e-2);
 
         let mut cloth = Cloth::new(vec![still(Vec3::ZERO)]);
         cloth.pins.push(Pin {
@@ -1435,25 +1806,6 @@ mod tests {
                 .position
                 .abs_diff_eq(Vec3::new(5.0, 0.0, 0.0), 1e-4)
         );
-
-        let mut cloth = Cloth::new(vec![still(Vec3::ZERO)]);
-        cloth.wind = 1.0;
-        cloth.wind_direction = Vec3::X;
-        cloth.noise = vec![0.0];
-        step(&mut cloth, Vec3::ZERO);
-        assert!((cloth.particles[0].position.x - 0.25).abs() < 1e-4);
-        let mut calm = Cloth::new(vec![still(Vec3::ZERO)]);
-        calm.wind = WIND_FLOOR;
-        calm.wind_direction = Vec3::X;
-        calm.noise = vec![0.0];
-        step(&mut calm, Vec3::ZERO);
-        assert!(calm.particles[0].position.abs_diff_eq(Vec3::ZERO, 1e-4));
-
-        assert!((walk_noise(0.9, 1.0, 1.0) - 0.7).abs() < 1e-4);
-        assert!(walk_noise(0.0, 0.5, 1.0).abs() < 1e-6);
-        let dir = wind_direction();
-        assert!((dir.length() - 1.0).abs() < 1e-5);
-        assert!(dir.x > dir.z && dir.z > 0.0);
     }
 
     #[test]
@@ -1482,20 +1834,33 @@ mod tests {
         step(&mut cloth, Vec3::ZERO);
         assert!((cloth.particles[0].position.y - PADDING_CM).abs() < 1e-3);
 
+        // The rustle, worked from the integrate slot's assembly: a 30 cm
+        // tick over 400 squared plays at `0.5·tail + 0.0001·30`, pitch
+        // `0.5·v + 0.5`; the tail decays by 0.9 in double each awake tick.
         let mut cloth = Cloth::new(vec![Particle {
             position: Vec3::ZERO,
             previous: Vec3::new(-30.0, 0.0, 0.0),
         }]);
+        cloth.rustle_tail = 0.2;
         step(&mut cloth, Vec3::ZERO);
         assert!(cloth.rustle);
-        assert!(cloth.rustle_volume > 0.0);
-        assert!((0.5..=2.0).contains(&cloth.rustle_pitch));
+        let volume = (f64::from(0.2f32 * 0.5) + f64::from(30.0f32) * 0.0001) as f32;
+        assert_eq!(cloth.rustle_volume, volume);
+        assert_eq!(cloth.rustle_pitch, volume * 0.5 + 0.5);
+        assert_eq!(cloth.rustle_tail, (f64::from(0.2f32) * 0.9) as f32);
         let tail = cloth.rustle_tail;
         cloth.particles[0].previous = cloth.particles[0].position;
         step(&mut cloth, Vec3::ZERO);
         assert!(!cloth.rustle);
-        assert_eq!(cloth.rustle_volume, 0.0);
-        assert!((cloth.rustle_tail - tail * 0.9).abs() < 1e-5);
+        assert_eq!(cloth.rustle_tail, (f64::from(tail) * 0.9) as f32);
+        // A record without a rustle sound never rustles.
+        let mut quiet = Cloth::new(vec![Particle {
+            position: Vec3::ZERO,
+            previous: Vec3::new(-30.0, 0.0, 0.0),
+        }]);
+        quiet.record.rustle = None;
+        step(&mut quiet, Vec3::ZERO);
+        assert!(!quiet.rustle);
 
         let mut cloth = Cloth::new(vec![still(Vec3::new(0.0, 100.0, 0.0))]);
         let rest = cloth.vertices();
@@ -1555,23 +1920,139 @@ mod tests {
         assert_eq!(cloth.pins[0].weight, 1.0);
         assert_eq!(cloth.faces().len(), 4);
         assert!(cloth.faces().contains(&(0, 2, 1)));
+    }
 
-        let mut samples = [0.0; NOISE_CELLS * NOISE_CELLS];
-        let randoms = [1.0; NOISE_CELLS * NOISE_CELLS];
-        advance_tile(&mut samples, cloth_wind(1.0 / 0.3), &randoms);
-        assert!((samples[0] - 0.4).abs() < 1e-4, "{}", samples[0]);
-        samples[0] = 1.5;
-        advance_tile(&mut samples, 1.0, &randoms);
-        assert!((samples[0] - 1.1).abs() < 1e-4, "{}", samples[0]);
-        let flat = [1.0; NOISE_CELLS * NOISE_CELLS];
-        assert!((sample_tile(&flat, 0.0, 0.0) - 1.0).abs() < 1e-5);
+    /// The step's wind hook, worked from its assembly: the strength is the
+    /// scene's wind times 0.3 in double, each sample draws once and walks
+    /// by `(r − 0.5)·s` in range, `−s·0.5·r` above 1 and `+s·0.5·r` below
+    /// −1 (a NaN takes the in-range walk), `s` the strength times 0.2 and
+    /// 4 in double; then the direction is normalised and the frame built
+    /// from it.
+    #[test]
+    fn the_wind_hook_walks_the_tile_and_turns_the_frame() {
+        let mut wind = Wind::CALM;
+        wind.tile[1] = 1.5;
+        wind.tile[2] = -1.5;
+        wind.tile[3] = f32::NAN;
+        wind.advance(2.0);
+        assert_eq!(wind.strength, (2.0f64 * 0.3) as f32);
+        let stride = (f64::from(wind.strength) * 0.2 * 4.0) as f32;
+        let mut roll = 0u32;
+        let r: Vec<f32> = (0..4).map(|_| next_random(&mut roll)).collect();
+        assert_eq!(r[0], (1.0f64 / 4_294_967_296.0) as f32);
+        assert_eq!(wind.tile[0], (r[0] - 0.5) * stride + 0.0);
+        assert_eq!(wind.tile[1], 1.5 - stride * 0.5 * r[1]);
+        assert_eq!(wind.tile[2], stride * 0.5 * r[2] + -1.5);
+        assert!(wind.tile[3].is_nan());
+        // Every sample drew once.
+        let mut check = 0u32;
+        for _ in 0..NOISE_CELLS * NOISE_CELLS {
+            next_random(&mut check);
+        }
+        assert_eq!(wind.roll, check);
+        // The direction is normalised; the frame's last row is it, its up
+        // row the world's up (scaled by the approximate root), its first
+        // row across both.
+        let d = crate::engine_math::normalize_approx(WIND_DIRECTION);
+        assert_eq!(wind.direction, d);
+        assert_eq!(wind.frame[2], d);
+        assert_eq!(wind.frame[1].x, 0.0);
+        assert_eq!(wind.frame[1].z, 0.0);
+        assert!((wind.frame[1].y - 1.0).abs() < 1e-3);
+        assert!(wind.frame[0].dot(d).abs() < 1e-3);
+        assert!((wind.frame[0].length() - 1.0).abs() < 1e-3);
+        // No wind still draws.
+        let mut calm = Wind::CALM;
+        calm.advance(0.0);
+        assert_eq!(calm.strength, 0.0);
+        assert_eq!(calm.roll, check);
+    }
 
+    /// The tile's bilinear sample, worked from its assembly: 2 m cells,
+    /// wrapping at both edges.
+    #[test]
+    fn the_wind_tile_is_sampled_between_its_cells() {
+        let mut wind = Wind::CALM;
+        for (i, sample) in wind.tile.iter_mut().enumerate() {
+            *sample = i as f32;
+        }
+        // On a cell corner: 250 cm is 1.25 tiles, cell 4; 50 cm cell 4.
+        assert_eq!(wind.sample(250.0, 50.0), 68.0);
+        // Inside a cell.
+        let (fx, fy) = (0.25f32, 0.5f32);
+        let at = wind.sample(fx * 12.5, 50.0 + fy * 12.5);
+        let want =
+            (1.0 - fy) * ((1.0 - fx) * 64.0 + fx * 65.0) + fy * ((1.0 - fx) * 80.0 + fx * 81.0);
+        assert!((at - want).abs() < 1e-3, "{at} {want}");
+        // Past the last column and row it wraps to the first.
+        let at = wind.sample(-10.0, 790.0);
+        let (fx, fy) = (0.2f32, 0.2f32);
+        let want =
+            (1.0 - fy) * ((1.0 - fx) * 255.0 + fx * 240.0) + fy * ((1.0 - fx) * 15.0 + fx * 0.0);
+        assert!((at - want).abs() < 1e-2, "{at} {want}");
+    }
+
+    /// In the world's wind each particle moves along it by
+    /// `(0.25 + noise)·strength`, the floor compared in double (a 0.001
+    /// strength in single is above 0.001 in double, so it blows).
+    #[test]
+    fn the_wind_blows_a_cloth_along_it() {
+        let mut wind = Wind::CALM;
+        wind.strength = 1.0;
+        wind.direction = Vec3::X;
+        wind.frame = [Vec3::X, Vec3::Y, Vec3::Z];
+        wind.tile = [1.0; NOISE_CELLS * NOISE_CELLS];
+        let at = WindAt {
+            wind: &wind,
+            to_world: bevy::math::Affine3A::IDENTITY,
+        };
         let mut blown = Cloth::new(vec![still(Vec3::ZERO)]);
-        blown.wind = 1.0;
-        blown.wind_direction = Vec3::X;
-        blown.tile = Some(flat);
-        step(&mut blown, Vec3::ZERO);
-        assert!((blown.particles[0].position.x - 1.25).abs() < 1e-3);
+        step_before_level_in(&mut blown, Vec3::ZERO, Some(at)).unwrap();
+        assert_eq!(blown.particles[0].position, Vec3::new(1.25, 0.0, 0.0));
+        let mut faint = wind.clone();
+        faint.strength = 0.001;
+        let mut cloth = Cloth::new(vec![still(Vec3::ZERO)]);
+        let at = WindAt {
+            wind: &faint,
+            to_world: bevy::math::Affine3A::IDENTITY,
+        };
+        step_before_level_in(&mut cloth, Vec3::ZERO, Some(at)).unwrap();
+        assert_eq!(cloth.particles[0].position.x, 1.25 * 0.001);
+        faint.strength = 0.0009;
+        let mut cloth = Cloth::new(vec![still(Vec3::ZERO)]);
+        let at = WindAt {
+            wind: &faint,
+            to_world: bevy::math::Affine3A::IDENTITY,
+        };
+        step_before_level_in(&mut cloth, Vec3::ZERO, Some(at)).unwrap();
+        assert_eq!(cloth.particles[0].position, Vec3::ZERO);
+        // A sleeping cloth is not blown.
+        let mut asleep = Cloth::new(vec![still(Vec3::ZERO)]);
+        asleep.sleep = 0;
+        let at = WindAt {
+            wind: &wind,
+            to_world: bevy::math::Affine3A::IDENTITY,
+        };
+        step_before_level_in(&mut asleep, Vec3::ZERO, Some(at)).unwrap();
+        assert_eq!(asleep.particles[0].position, Vec3::ZERO);
+    }
+
+    /// The integrate loop adds `((v + (v̄ − v)·drag)·keep + g) + x`.
+    #[test]
+    fn the_integrate_adds_the_travel_and_gravity_before_the_place() {
+        let x = Vec3::new(1000.1, 3.3, -77.7);
+        let previous = x - Vec3::new(0.37, -0.11, 0.05);
+        let v = x - previous;
+        let mut cloth = Cloth::new(vec![Particle {
+            position: x,
+            previous,
+        }]);
+        let g = gravity_cm(1.0);
+        step_before_level(&mut cloth, g).unwrap();
+        let record = cloth.record;
+        let retained = (v + (Vec3::ZERO - v) * record.mean_drag) * record.retention();
+        let want = (retained + record.gravity(g)) + x;
+        assert_eq!(cloth.particles[0].position, want);
     }
 
     #[test]
@@ -2138,5 +2619,105 @@ mod tests {
             pin.weight = *weight;
         }
         cloth
+    }
+
+    /// The original's edge pass, worked from its assembly: `d = b − a`,
+    /// `(x² + z²) + y²`, the approximate reciprocal root times the half
+    /// rest, `f = 0.5 − that`, `a += f·d`, `b −= f·d`.
+    #[test]
+    fn the_edge_pass_is_the_full_correction_through_the_approximate_root() {
+        let a = Vec3::new(1.0, 2.0, 3.0);
+        let b = Vec3::new(4.0, 6.0, 15.0);
+        let mut particles = vec![still(a), still(b)];
+        correct_edge(
+            &mut particles,
+            Edge {
+                a: 0,
+                b: 1,
+                half_rest: 2.5,
+            },
+        );
+        // |d|² = (9 + 144) + 16 = 169: a 13 cm link with a 5 cm rest.
+        let r = crate::engine_math::reciprocal_sqrt(169.0);
+        assert!((r - 1.0 / 13.0).abs() < 1e-4);
+        let f = 0.5 - r * 2.5;
+        let d = b - a;
+        assert_eq!(particles[0].position, a + d * f);
+        assert_eq!(particles[1].position, b - d * f);
+        // About 4 cm in from each end: 5 cm apart.
+        let gap = particles[1].position - particles[0].position;
+        assert!((gap.length() - 5.0).abs() < 2e-2, "{gap}");
+        // The rest a link is built with is half the distance.
+        let edge = Edge::at_rest(&[a, b], 0, 1);
+        assert_eq!(edge.half_rest, 6.5);
+    }
+
+    /// The walk out from the pin over one quad, worked by hand from the
+    /// original's assembly: the incidence lists faces last first; from the
+    /// pin the diagonal is not a neighbour, the open-list pick keeps the
+    /// first entry on a tie, and the two neighbour pairs at right angles
+    /// (the quad's two diagonals) come after the four sides.
+    #[test]
+    fn the_links_are_walked_out_from_the_pins() {
+        let vertices = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        ];
+        let faces = [[0, 1, 2], [1, 3, 2]];
+        let (starts, fans) = incidence(&faces, 4);
+        assert_eq!(starts, vec![0, 1, 3, 5, 6]);
+        assert_eq!(fans, vec![(0, 0), (1, 0), (0, 1), (1, 2), (0, 2), (1, 1)]);
+        let links = walk_links(&vertices, &faces, &starts, &fans, &[0]);
+        assert_eq!(links, vec![(0, 2), (0, 1), (2, 3), (1, 3), (2, 1), (3, 0)]);
+        let cloth = Cloth::from_mesh(&vertices, &faces, &[0]);
+        let pairs: Vec<_> = cloth.edges.iter().map(|e| (e.a, e.b)).collect();
+        assert_eq!(pairs, links);
+        assert_eq!(cloth.edges[0].half_rest, 0.5);
+        // No pins: the walk starts at vertex 0 all the same.
+        assert_eq!(walk_links(&vertices, &faces, &starts, &fans, &[]), links);
+        // A vertex no pin reaches gets no link.
+        let apart = [
+            vertices[0],
+            vertices[1],
+            vertices[2],
+            Vec3::new(9.0, 9.0, 0.0),
+        ];
+        let lone = [[0, 1, 2]];
+        let (starts, fans) = incidence(&lone, 4);
+        let links = walk_links(&apart, &lone, &starts, &fans, &[3]);
+        assert!(links.is_empty(), "{links:?}");
+    }
+
+    /// Along a strip of two quads the pair through the middle vertex is
+    /// nearly in line (cosine above 0.7) and is listed after every walk
+    /// link and before the pairs at an angle.
+    #[test]
+    fn the_in_line_pairs_come_before_the_bent_ones() {
+        let vertices = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(2.0, 1.0, 0.0),
+        ];
+        let faces = [[0, 1, 3], [1, 4, 3], [1, 2, 4], [2, 5, 4]];
+        let cloth = Cloth::from_mesh(&vertices, &faces, &[0, 3]);
+        let pairs: Vec<_> = cloth.edges.iter().map(|e| ordered(e.a, e.b)).collect();
+        let straight = pairs
+            .iter()
+            .position(|&p| p == (0, 2))
+            .expect("the pair through vertex 1");
+        // Seven sides, then the in-line pairs, then the diagonals.
+        assert_eq!(straight, 7, "{pairs:?}");
+        assert!(pairs[..7].iter().all(|&(a, b)| {
+            let d = vertices[a] - vertices[b];
+            (d.length() - 1.0).abs() < 1e-6
+        }));
+        let last = pairs.last().copied().unwrap();
+        let d = vertices[last.0] - vertices[last.1];
+        assert!((d.length() - 2f32.sqrt()).abs() < 1e-6, "{pairs:?}");
     }
 }

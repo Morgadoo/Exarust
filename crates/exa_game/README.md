@@ -2172,7 +2172,9 @@ each cell the body grid's parts then the static grid's meshes, each mapped
 to its placed object, `exa_physics::sector_lists`; a body's possessions as
 its pack; an object at its first node's box centre, searchable when it lies straight under the
 level, a container's contents from its object sections; reachable is the
-level's sight test, a path the grid's route), carrying out each take, wear
+level's sight test, a path the grid's route; the follow's and the search's
+routes are the character's one route, `exa_ai::route_walk::AiRoute`, at the
+follow's urgency, walked by the AI's walk after them), carrying out each take, wear
 or wield on both sides' `Possessions` and logging comments (no dialogue
 engine). The items' values come from the game's object database and the
 level's own records (tagged local). `carry_out_search` then does what the

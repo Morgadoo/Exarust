@@ -66,25 +66,25 @@ A path of fewer than two points SHALL NOT be followed, even when forced. Two poi
 - **THEN** the empty path and the single point are not followed, the 150 cm path is not followed, and the 151 cm path and the forced path are followed
 
 ### Requirement: Path carrot
-A ground point SHALL project onto the nearest path segment and keep the unclamped fraction. The goal SHALL be 100 cm further along that path, measured from the unclamped foot. An equal distance SHALL keep the earlier segment. A vertical segment SHALL be skipped. Exactly 100 cm left SHALL spill, and a zero step SHALL have no goal.
+A ground point SHALL project onto the nearest path segment in 3-D and keep the unclamped fraction. The goal SHALL be 100 cm further along that path, measured from the unclamped foot. An equal distance SHALL keep the earlier segment. A segment with no horizontal length SHALL be skipped. Exactly 100 cm left SHALL spill onto the next segment, and a step of no length SHALL stop the route.
 
 #### Scenario: One hundred centimetres past the foot
-- **WHEN** a ground point 50 cm behind a 200 cm segment is projected, a point on a corner is projected onto a path that then rises, a point at the top of a vertical segment is projected, and a point at the start of a 100 cm segment with another 100 cm after it is projected
-- **THEN** the foot behind is fraction -0.25 and the goal is 50 cm along, the corner keeps the first segment and the goal is 20 cm up and 100 cm along the next, the vertical segment is skipped and the goal is the last point, and the exact 100 cm has no goal while its cursor stays at the start
+- **WHEN** a ground point 100 cm along a 150 cm segment, 20 cm off it, is projected onto a path that then turns
+- **THEN** its fraction is two thirds and the goal lies 50 cm along the next segment
 
 ### Requirement: Out of scene
-When the low two scene bits are clear, a step SHALL advance 2 cm along the segment. The standing height SHALL add the pelvis base, and the ground point SHALL keep the path height. A length that is not strictly past the fraction times the length plus 2 SHALL cross once. The new fraction SHALL be (1 - (1 - fraction) times the length) times (1 - fraction), minus 2, divided by the next length. No horizontal length SHALL count as 0.1. A set low bit SHALL not slide.
+Out of the scene a step SHALL advance 2 cm along the segment. The standing height SHALL add the pelvis base, and the ground point SHALL keep the path height. A length not strictly past the fraction times the length plus 2 SHALL cross once: with `a = 1 − (1 − f)·L`, the new fraction SHALL be `a − (f·a + 2)` over the next segment's flat length. No horizontal length SHALL count as 0.1.
 
-#### Scenario: Two centimetres, or one crossing
-- **WHEN** a body out of the scene is at the start of a 100 cm segment with pelvis base 90, another has fraction 0.75 on an 8 cm segment with 8 cm after it, another is at the start of a vertical segment with 20 cm after it and pelvis base 4, another is 1 cm from the end of a last segment, and bodies with a low scene bit set are stepped, including one whose only set bit is higher
-- **THEN** the first fraction is 0.02, the ground is 2 cm along, and the standing height is 90, the second fraction is -0.28125 and the ground is 5.75 cm along, the vertical crosses onto the next segment behind its start and stands 4 above the path, the last segment stops at its end, a low bit does not slide, and the higher bit still slides
+#### Scenario: Two centimetres, then a crossing
+- **WHEN** a body out of the scene steps twice from the start of a 3 cm segment with a 400 cm segment after it
+- **THEN** the first fraction is two thirds, and the second step crosses onto the next segment at the original's sum
 
 ### Requirement: Run and stop
-Urgency of 0 or less SHALL set the run bit until the carrot fraction, as a double, is past 0.99 on the last segment. Past that the run bit SHALL clear, and a 3-D squared distance under 900 to the carrot SHALL stop. Urgency of 1 or more SHALL clear the run bit and stop under 10000 of the last point. Exactly 900 and 10000 SHALL not stop. A stop SHALL set the stopping bit, clear free walk and following, and pull a far carrot back by 8 times the speed plus 20 along the facing.
+Urgency 0 SHALL set the run bit until the carrot fraction, as a double, is past 0.99 on the last segment; past that the run bit SHALL clear and a ground point under 30 cm of the carrot (3-D) SHALL soft-stop. Urgency above 0 SHALL clear the run bit and soft-stop under 100 cm of the last point (3-D).
 
 #### Scenario: The run bit clears, then a close body stops
-- **WHEN** urgency 0 is not on the last segment, a fraction just under 0.99 is on the last segment, a fraction of 0.99 is 10 cm from the carrot, a fraction of 1 is exactly 30 cm from the carrot and another is 40 cm up, a standing body 100 cm above the carrot stops, urgency 1 is 99 cm from the last point and another is exactly 100 cm, and urgency -1 is not on the last segment
-- **THEN** the first two set the run bit, 10 cm stops with the stopping bit and keeps the carrot, exactly 30 cm clears the run bit and does not stop, 40 cm up does not stop, the raised stop pulls the carrot 20 cm along the facing at the standing height, 99 cm stops, exactly 100 cm clears the run bit and does not stop, and urgency -1 sets the run bit
+- **WHEN** a walk at urgency 0 stands 120, 104 and 20 cm short of its route's end, and a hurried walk 101 and 99 cm short
+- **THEN** 120 cm keeps the run bit, 104 cm clears it without stopping, 20 cm soft-stops, 101 cm goes on and 99 cm soft-stops with the goal pulled to 20 cm ahead
 
 ### Requirement: Line replan
 In the scene, a blocked line from the ground to the carrot SHALL clear the run bit and ask for a re-plan, and SHALL leave the carrot. A clear line SHALL leave the run bit and the re-plan flag. Out of the scene, and a higher scene bit alone, SHALL not walk.
@@ -196,36 +196,32 @@ The investigation's goal callback SHALL take the pathfinder's nearest walkable p
 - **THEN** the goal is (10, −5, 2) with mode 20 and radius 100 cm
 
 ### Requirement: The AI walks on its locomotion
-A character whose body has muscles SHALL walk its route (the roam's and patrol's legs, the flight, the combat chase and the follower's walk) by writing its body's locomotion request each tick through the AI's driver, and its character SHALL take no walk velocity; its body's movement decision SHALL turn and walk it on its feet.
+A character whose body has muscles SHALL walk its route through the AI's one walk, which writes its body's locomotion request each tick, and its character SHALL take no walk velocity; its body's movement decision SHALL turn and walk it on its feet. A body without muscles SHALL be steered toward the follower's goal by the stand-in, with its walk clip.
 
 #### Scenario: A roaming NPC
 - **WHEN** a roaming NPC with muscles follows a route
 - **THEN** its request moves toward the route's carrot and its body walks with its feet
 
 ### Requirement: The driver's request
-While the body steps the driver SHALL write nothing. Otherwise it SHALL ease the heading 0.1 toward the goal's direction, ask only to move (moving past half the gate) while the pelvis's alignment with the goal is not over the gate `min(0.007·|d|, 0.7)`, and otherwise put the goal 150 cm out, move, and run at urgency 1 or more when the grid's cost at the goal is at most 0.5 and the alignment passes 0.9, with the sprint latch at urgency 2.
-
-#### Scenario: An aligned goal
-- **WHEN** the goal lies 1 m straight ahead at urgency 0
-- **THEN** the goal moves to 1.5 m, the body moves and walks
+While the body steps the walk SHALL write nothing. Otherwise it SHALL ease the heading 0.1 toward the goal's direction, ask only to move (moving past half the gate) while the pelvis's alignment with the goal is not over the gate (0.7 past 100 cm, else `0.007·|d|` in double) or the route is no longer followed, and otherwise put the goal 150 cm out, move, and run at urgency above 0 when the grid's cost at the goal is not over 0.5 and the alignment passes 0.9, with the sprint latch at urgency 2.
 
 #### Scenario: Urgency on cheap ground
-- **WHEN** the goal lies 3 m ahead at urgency 2 with cost 0
-- **THEN** the flags are move, run and sprint
+- **WHEN** a route runs 10 m ahead at urgencies 0, 1 and 2 with no grid
+- **THEN** the goal is 150 cm out and the flags are move, move and run, and move, run and sprint
 
 ### Requirement: The soft stop
-A route's end SHALL clear the run bit, set the stopping bit and pull a goal farther than `8·speed + 20` cm to that distance along the frame's forward.
+A soft stop SHALL end the route, clear the run bit, set the stopping bit, pull a goal farther than `8·speed + 20` cm to that distance along the frame's forward, and walk the line from the ground point to the goal through the grid, which clamps it where the grid blocks.
 
 #### Scenario: A far goal
-- **WHEN** a route ends with the goal 5 m away at 2 cm a tick
-- **THEN** the goal is 36 cm ahead and the stopping bit is set
+- **WHEN** a route soft-stops with the goal 100 cm ahead at 0.5 cm a tick
+- **THEN** the goal is 24 cm ahead and the stopping bit is set
 
 ### Requirement: The out-of-scene slide
-While a roaming character is out of the scene and follows a route, its roam SHALL keep running and its standing point SHALL slide 2 cm a tick along the route with no physics; the leg SHALL end within 100 cm of the route's last point.
+While a character is out of the scene and follows a route, whichever state planned it, its standing point SHALL slide 2 cm a tick along the route with no physics, and the route SHALL end by the follower's own stops.
 
 #### Scenario: A walker leaves the range
 - **WHEN** a walker leaves the activation range mid-route
-- **THEN** its standing point moves 2 cm a tick along the route until the leg ends
+- **THEN** its standing point moves 2 cm a tick along the route until the route ends
 
 ### Requirement: The re-entry placement
 When the scene takes a character back, its clip SHALL snap to its stance and its balance radius base SHALL be 60 cm with its counter 0, its standing point SHALL move to the nearest walkable point, and its body SHALL be placed on the ground there facing its body's yaw, or its route's goal while it follows one, its frame taken afresh and its yaw, heading and look set to the placed yaw. A standing character's turn SHALL go through its heading at the body's turn rates.
@@ -242,10 +238,10 @@ After the driver writes its request, a live nearby character that the walk reach
 - **THEN** the walk soft-stops and the route ends; the next check skips it
 
 ### Requirement: One AI state drives the walk
-When combat, a flight or the scene takes a roaming character's body, a leg of its idle walk that is under way SHALL end with the soft stop once; otherwise the idle walk SHALL NOT touch the AI's driver, so a fighter's chase walks its route through it.
+When combat, a flight or the scene takes a roaming character's body, a leg of its idle walk that is followed SHALL end with the soft stop once; otherwise the idle walk SHALL NOT touch the character's route, so a fighter's chase keeps its own.
 
 #### Scenario: A fighter chasing
-- **WHEN** an engaged fighter's chase has its driver driving and its idle walk has no route
+- **WHEN** an engaged fighter's driver is driving and its route is not the roam's
 - **THEN** after the idle walk's tick the driver still drives and the stopping bit is not set
 
 ### Requirement: The AI reads body directions through the engine
@@ -261,3 +257,52 @@ The stand-in that turns an NPC's model to the AI's eased yaw SHALL remember that
 #### Scenario: An idle brain stands for 200 ticks
 - **WHEN** an idle brain placed facing yaw 1.0, with no sway, ticks 201 times
 - **THEN** its model faces the engine's heading of the placed facing after the first tick and the same yaw, within 1e-6, after the last
+
+### Requirement: One route per character
+A character SHALL keep one route: its points, the follower's segment and fraction, whether it is followed, whether a plan is wanted, the walk's urgency and the after-route count. Every state that walks SHALL plan into that route, and a plan the start test refuses SHALL stop it.
+
+#### Scenario: A roam plans its leg
+- **WHEN** a roaming character plans a leg on its turn
+- **THEN** its route holds the leg's points, is followed at urgency 0 and belongs to the roam
+
+### Requirement: The walk follows the state
+The AI's walk SHALL run once a body tick after every state of the brains' tick, for each character whose route is followed, and SHALL not run for a character whose route is not followed.
+
+#### Scenario: The leg is walked in the tick it is planned
+- **WHEN** a roaming character on its locomotion plans its leg facing the route
+- **THEN** in the same tick its request's goal lies 150 cm out along the follower's carrot, its flags ask only to move, it moves, and the AI's look yaw is the eased heading's
+
+### Requirement: The walk writes its flags after the follower
+The walk SHALL write the request's flags after the follower ran, so a soft stop the follower made at the route's end SHALL leave the request asking only to move toward the pulled-back goal, the route not followed and the after-route count at 80.
+
+#### Scenario: The leg's end
+- **WHEN** the roaming character stands on its route's last point
+- **THEN** its route is no longer followed, the after-route count is 80, its request asks only to move toward that point and does not move, and the roam settles on the next tick
+
+### Requirement: The after-route count
+A walk asked while no route is followed SHALL answer 2 and count down while the after-route count is above 0, and SHALL answer 0 once it is 0.
+
+#### Scenario: Counting down
+- **WHEN** the walk is asked twice after its route ended, then with the count at 0
+- **THEN** it answers 2 with the count 79, then 0
+
+### Requirement: The head looks at the look target
+While walking, the head SHALL look at the AI's look target when it lies within a quarter turn of the look (the offset easing 0.02 toward its yaw), and otherwise SHALL ease its offset 0.02 toward 0 in double; the cursor SHALL be the look yaw plus the offset, wrapped once.
+
+#### Scenario: A target in front, then none
+- **WHEN** a walk looks at a point 45° to the side, then walks with no target
+- **THEN** the offset's target is that yaw and the offset 0.02 of it, then the target is 0 and the offset eases back 0.02 of the way
+
+### Requirement: The follower asks no end test
+The path follower SHALL end a route only by its own stops (fewer than two points, a step of no length, the soft stops at its end); the goal record's end test SHALL be asked only by the planner.
+
+#### Scenario: A route's end within 150 cm
+- **WHEN** a roam's route, whose goal record holds the flat test at 150 cm, is walked to 120 cm from its last point
+- **THEN** the route is still followed
+
+### Requirement: A downed body stops its route
+The AI tick SHALL stop the route of a character whose condition has the down bit, whichever state planned it.
+
+#### Scenario: Knocked down mid-leg
+- **WHEN** a roaming character is knocked down while its leg is followed
+- **THEN** its route is no longer followed
