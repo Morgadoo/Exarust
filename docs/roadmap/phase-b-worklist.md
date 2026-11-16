@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 605 | 151,104 | B1 wire (or prove unreachable) |
-| partial | 1,405 | 886,256 | B4 complete the port |
+| uncalled | 604 | 150,416 | B1 wire (or prove unreachable) |
+| partial | 1,395 | 879,169 | B4 complete the port |
 | missing | 52 | 10,114 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,7 +15,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 143,795 | 18,075 | 276 |
-| render | 122,907 | 22,392 | 3,232 |
+| render | 115,820 | 21,704 | 3,232 |
 | ui | 87,272 | 40,819 | 288 |
 | powers | 105,027 | 2,271 | 2,321 |
 | characters | 88,686 | 14,220 | 1,943 |
@@ -42,7 +42,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | XA_Arena (unit routines) | modes | 28 / 16,281 | 3 / 1,321 | 4 / 363 | 17,965 |
 | SG_PlayerControls (unit routines) | ai | 34 / 17,767 | 0 / 0 | 0 / 0 | 17,767 |
 | TVXGIManager | render | 11 / 16,981 | 0 / 0 | 0 / 0 | 16,981 |
-| TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
 | TPathFinder | ai | 4 / 14,517 | 0 / 0 | 0 / 0 | 14,517 |
 | TGUIForm | ui | 31 / 10,077 | 20 / 3,989 | 0 / 0 | 14,066 |
 | TGUIDrawSkin | ui | 2 / 3,550 | 22 / 9,559 | 0 / 0 | 13,109 |
@@ -73,6 +72,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Navigation (unit routines) | render | 7 / 4,895 | 9 / 2,080 | 0 / 0 | 6,975 |
 | SG_GameGUI (unit routines) | ui | 13 / 6,927 | 0 / 0 | 0 / 0 | 6,927 |
 | TRenderer | render | 15 / 6,335 | 1 / 526 | 1 / 10 | 6,871 |
+| TMesh | render | 10 / 6,133 | 2 / 703 | 0 / 0 | 6,836 |
 | Steam Input action bindings | runtime | 10 / 6,237 | 2 / 166 | 3 / 393 | 6,796 |
 | RFE_GridEnvs (unit routines) | world | 7 / 6,790 | 0 / 0 | 0 / 0 | 6,790 |
 | Character roles & relations (script functions) | ai | 11 / 6,145 | 2 / 603 | 0 / 0 | 6,748 |

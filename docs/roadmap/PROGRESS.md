@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r284, 11-16) | target |
+| measure | start (r186, 11-10) | now (r285, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **58.29%** | **100%** |
+| **Ledger: bytes in a final state** | — | **58.6%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,075 | all |
+| Tests passing | 8,489 | 9,082 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,7 +99,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 154 | 162,146 |
-| Rendering & GPU | 10 | 10 | 289 | 148,319 |
+| Rendering & GPU | 10 | 10 | 278 | 140,544 |
 | UI | 12 | 12 | 340 | 128,379 |
 | Thaumaturgy & effects | 9 | 9 | 151 | 109,619 |
 | Characters, motion & animation | 8 | 8 | 227 | 104,849 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,054** | **1,046,564** |
+| **Total** | **90** | **90** | **2,043** | **1,038,789** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 285 | The simulation's mesh queries run the original's per-triangle tests (the face record's closest point, the front push with its two floors, the swept push, the Height Query's swept nearest, the two-sided test) instead of a library projection; the overlap query now asks the two-sided test as the original does (a defect fixed); the segment slot proven unreachable; each binary repeats itself exactly on the worker's GPU, FPS holds (tmesh). Traces change from the first tick |
 | 2026-11-16 | 284 | The game GUI unit's uncalled rows are closed: the inventory's page buttons swap the weapon sets, the journal's entry list drops down and picks an entry, and an open game screen keeps the idle camera from turning, each shown before and after on the worker's GPU; three readings corrected (gamegui2) |
 | 2026-11-16 | 283 | The held terrain lane checked with a free camera on the open outdoor arenas: its 44 m cut-off is the original's and no shipped camera sees it, so it is releasable once blank blocks' plants leave the camera draws (terrainrel lane); F550 split: its light lines were rain whose odd vertex count broke the line pairs across the supersample copies (fixed), its seam is the voxel GI's block edge (open) (terraincheck) |
 | 2026-11-16 | 282 | A test now builds the game's own App headless with the lockstep bridge and fails on any system skipped for a missing resource or message (the bug class of F547); F549 fixed (the Shock charges about 1.2 s by the step length and its burst is aimed); F551 fixed (a dead manager back in the hub ends the session through the death flow and the end menu); F552 fixed (the GI shape box arithmetic wraps) (bridgeaudit) |

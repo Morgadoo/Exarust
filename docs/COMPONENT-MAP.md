@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 58.3% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 58.6% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.3% closed**, of which 46.1% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.3% partial and 6.4% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.6% closed**, of which 46.4% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.0% partial and 6.4% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -22,7 +22,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 39% | 19% | 2% | 32% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
-| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 57% | 40% | 15% | 2% | 36% | 7% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 34% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 33% | 10% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 58% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 48% | 41% | 4% | 3% | 44% | 8% |  |
@@ -173,7 +173,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TObjectDB | Data, assets & I/O | 0 | 72% | 100% | 0% | 100% | 0% | 0% | 0% |
 | TUIDManager | Data, assets & I/O | 0 | 50% | 100% | 0% | 100% | 0% | 0% | 0% |
 | TVXGIManager | Rendering & GPU | 29 | 97% | 42% | 32% | 10% | 0% | 58% | 0% |
-| TMesh | Rendering & GPU | 25 | 91% | 42% | 35% | 7% | 0% | 52% | 5% |
+| TMesh | Rendering & GPU | 25 | 91% | 73% | 63% | 7% | 3% | 24% | 3% |
 | RFE_MeshTools | Rendering & GPU | 19 | 95% | 88% | 86% | 2% | 0% | 0% | 12% |
 | RFE_MeshSubdivide | Rendering & GPU | 18 | 89% | 93% | 91% | 1% | 0% | 7% | 1% |
 | FLX_GPUPrograms | Rendering & GPU | 16 | 84% | 49% | 6% | 44% | 0% | 49% | 2% |
