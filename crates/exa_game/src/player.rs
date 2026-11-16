@@ -708,6 +708,9 @@ impl Plugin for PlayerPlugin {
                     player_combat,
                     camera_hits,
                     feel_blows,
+                    take_mode_records
+                        .after(begin_play_session)
+                        .after(end_play_session),
                     chase_camera,
                 )
                     .chain(),
@@ -742,31 +745,78 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy::<exa_ai::combatant::PlayerContacts>();
 }
 
-/// The start of play: the controls run and the AI's activation centre is
-/// the player, its radius 40 m. The player is spawned by the viewer; the
-/// first frame it exists is the start.
+/// The start of play: the Character mode is entered through the camera
+/// switch (which runs the leave routine of the mode the scene held), the
+/// controls run and the AI's activation centre is the player, its radius
+/// 40 m. The player is spawned by the viewer; the first frame it exists is
+/// the start.
 fn begin_play_session(
     mut session: ResMut<crate::player_controls::PlaySession>,
+    mut modes: ResMut<crate::player_controls::GameModes>,
     players: Query<&Transform, Added<Player>>,
 ) {
     let Some(at) = players.iter().next() else {
         return;
     };
+    crate::player_controls::enter_mode(
+        &mut modes,
+        Some(crate::player_controls::GameMode::Character),
+        "start of play",
+    );
     session.begin(at.translation);
     info!("start of play: activation radius 40 m");
 }
 
 /// The end of play: the controls stop, the activation centre goes back to the
-/// origin with its 200 m radius.
+/// origin with its 200 m radius. The player gone in Character mode is the
+/// level's unload: the scene switches to no mode (a switch to Spectate has
+/// left the Character mode already, and the scene stays in Spectate).
 fn end_play_session(
     mut session: ResMut<crate::player_controls::PlaySession>,
+    mut modes: ResMut<crate::player_controls::GameModes>,
     mut removed: RemovedComponents<Player>,
 ) {
     if removed.read().next().is_none() || !session.playing {
         return;
     }
+    if modes.is(crate::player_controls::GameMode::Character) {
+        crate::player_controls::enter_mode(&mut modes, None, "end of play");
+    }
     session.end();
     info!("end of play: activation radius 200 m");
+}
+
+/// The camera switch's camera half: a camera that has not seen the last
+/// mode switch takes the entered mode's record
+/// ([`ChaseCamera::take_record`]). A camera built from that mode's record
+/// that has had none since takes the switch as its construction; a switch
+/// to no mode leaves the camera its record (the original detaches the
+/// controller from the view, which Exarust's camera has no part for).
+fn take_mode_records(
+    modes: Res<crate::player_controls::GameModes>,
+    mut cameras: Query<&mut ChaseCamera>,
+) {
+    for mut cam in &mut cameras {
+        if cam.switches_seen == Some(modes.switches) {
+            continue;
+        }
+        cam.switches_seen = Some(modes.switches);
+        let Some(mode) = modes.current() else {
+            continue;
+        };
+        if std::mem::take(&mut cam.fresh) && cam.mode == Some(mode) {
+            continue;
+        }
+        let record = mode.camera_record();
+        cam.take_record(record);
+        cam.mode = Some(mode);
+        info!(
+            "camera: takes the {} record (flags {:#x}, zoom {})",
+            mode.name(),
+            cam.record_flags(),
+            cam.zoom
+        );
+    }
 }
 
 /// The player controller's tick: while play runs, the AI's activation
@@ -2399,12 +2449,12 @@ const CAMERA_DISTANCE: f32 = 20.0;
 // [`ChaseCamera::controller`].
 /// The yaw leads the shown yaw by at most this per tick (rad).
 const MAX_YAW_LEAD: f32 = std::f32::consts::FRAC_PI_4;
-/// Zoom stops: 800 + 240·level, in the original's units (2000 = 45°): the
-/// game camera preset's smallest and largest distance, and its first one
-/// the zoom starts from (`nav_camera::GAME_CAMERA_PRESET`).
-const ZOOM_MIN: f32 = crate::nav_camera::GAME_CAMERA_PRESET.min_distance;
-const ZOOM_MAX: f32 = crate::nav_camera::GAME_CAMERA_PRESET.max_distance;
-const ZOOM_START: f32 = crate::nav_camera::GAME_CAMERA_PRESET.distance;
+/// The zoom a new camera starts from, in the original's units (2000 =
+/// 45°): the Character record's first distance
+/// (`nav_camera::CHARACTER_CAMERA_RECORD`). The stops are 800 + 240·level,
+/// between the record's smallest and largest distance, which the wheel
+/// reads from the record the camera holds.
+const ZOOM_START: f32 = crate::nav_camera::CHARACTER_CAMERA_RECORD.distance;
 /// The steepest pitch the orbit drag reaches (rad below the horizon): the
 /// preset's default upper bound.
 const MAX_PITCH: f32 = 1.5;
@@ -2466,10 +2516,20 @@ pub struct ChaseCamera {
     wall_climb: bool,
     wall_tilt: f32,
     wall_before: f32,
-    /// The camera controller the level's view builds from the game camera
-    /// preset: the backward vector's stiffness (the preset's view) and
-    /// retention, and the zoom spring's rate and step, are its numbers.
+    /// The camera controller the level's view builds from the Character
+    /// record, and which each game mode's start gives its own record
+    /// ([`Self::take_record`]): the backward vector's stiffness (the
+    /// preset's view) and retention, the zoom spring's rate and step, the
+    /// zoom stops and the free branch's keys are its numbers.
     controller: crate::nav_camera::NavController,
+    /// The game mode whose record the controller holds, and the mode
+    /// switch count it last saw (none for a camera that has seen none):
+    /// [`take_mode_records`].
+    pub(crate) mode: Option<crate::player_controls::GameMode>,
+    switches_seen: Option<u32>,
+    /// The camera was built from its mode's record and no switch has given
+    /// it one since: the first switch into that mode is its construction.
+    fresh: bool,
     /// The yaw was set by an alignment (Cursor Look's) and the shown yaw
     /// has not yet come within [`ALIGNED`] of it; an orbit drag ends it.
     pub(crate) aligning: bool,
@@ -2496,8 +2556,11 @@ const ALIGNED: f64 = 0.01;
 
 impl Default for ChaseCamera {
     fn default() -> Self {
-        let controller =
-            crate::nav_camera::NavController::new(crate::nav_camera::GAME_CAMERA_PRESET, 0, false);
+        let controller = crate::nav_camera::NavController::new(
+            crate::nav_camera::CHARACTER_CAMERA_RECORD,
+            0,
+            false,
+        );
         let preset = controller.preset;
         let mut cam = Self {
             yaw: 0.0,
@@ -2526,6 +2589,9 @@ impl Default for ChaseCamera {
             wall_tilt: 0.0,
             wall_before: 0.0,
             controller,
+            mode: Some(crate::player_controls::GameMode::Character),
+            switches_seen: None,
+            fresh: true,
             free: None,
         };
         cam.settle_back();
@@ -2697,6 +2763,30 @@ impl ChaseCamera {
             self.zoom_spring.motion = distance;
             self.zoom_spring.previous = distance;
         }
+    }
+
+    /// Gives the existing controller a new preset record, as the camera
+    /// switch does at a game mode's start: the controller's numbers, zoom
+    /// spring and stops become the record's, the distance is the record's
+    /// first one (raised to its smallest), and the placement runs with that
+    /// distance along the backward vector the camera has (so the zoom
+    /// starts again from it and the yaw is the vector's own). A free
+    /// camera keeps its looked-at point [Exarust's: the placement's point
+    /// is the camera node's target, which Exarust's free camera does not
+    /// keep apart].
+    pub fn take_record(&mut self, fields: crate::nav_camera::PresetFields) {
+        let (preset, _) = crate::nav_camera::apply_preset_to(fields, self.zoom, false);
+        self.controller.preset = preset;
+        self.zoom_spring.step = preset.zoom_step;
+        self.zoom_spring.rate = preset.zoom_speed;
+        self.zoom_spring.half_range = preset.min_distance;
+        let back = self.back;
+        self.face_shot(back, Vec3::ZERO, Some(preset.distance));
+    }
+
+    /// The flags of the record the controller holds.
+    pub fn record_flags(&self) -> u32 {
+        self.controller.preset.flags
     }
 
     /// The unit vector from the focus to the eye the last tick left.
@@ -3080,7 +3170,16 @@ pub(crate) fn chase_camera(
                 MouseScrollUnit::Pixel => scroll.delta.y / 24.0,
             };
             let units = (notches * crate::nav_drag::WHEEL_UNITS_PER_NOTCH).round() as i32;
-            cam.zoom = crate::nav_drag::zoom_detents(cam.zoom, units, ZOOM_MIN, ZOOM_MAX);
+            let preset = cam.controller.preset;
+            // The record installs the wheel's handler (its `0x200`).
+            if preset.handlers.wheel {
+                cam.zoom = crate::nav_drag::zoom_detents(
+                    cam.zoom,
+                    units,
+                    preset.min_distance,
+                    preset.max_distance,
+                );
+            }
         }
         if pad_status.as_ref().is_some_and(|s| s.active())
             && let Some(pad) = pad.as_deref()
@@ -3101,7 +3200,13 @@ pub(crate) fn chase_camera(
                 (frame.zoom_out, -crate::gamepad::ZOOM_IN_STEPS),
             ] {
                 if held {
-                    cam.zoom = crate::gamepad::zoom_step(cam.zoom, steps, 800.0, 2000.0);
+                    let preset = cam.controller.preset;
+                    cam.zoom = crate::gamepad::zoom_step(
+                        cam.zoom,
+                        steps,
+                        preset.min_distance,
+                        preset.max_distance,
+                    );
                 }
             }
         }
@@ -4838,12 +4943,13 @@ mod tests {
         assert_eq!(asked, 0);
     }
 
-    /// A free camera pans its looked-at point with W along the drawn
-    /// forward axis, flattened, and it coasts to a stop once the key is
-    /// let go; a followed camera has no free point.
+    /// A free camera with the Spectate record pans its looked-at point with
+    /// W along the drawn forward axis, flattened, and it coasts to a stop
+    /// once the key is let go; a followed camera has no free point.
     #[test]
     fn a_free_camera_pans_with_the_keys() {
         let mut cam = ChaseCamera::behind(0.0);
+        cam.take_record(crate::player_controls::GameMode::Spectate.camera_record());
         assert!(!cam.is_free());
         cam.free_at(Vec3::new(1.0, 1.0, 1.0));
         assert!(cam.is_free());

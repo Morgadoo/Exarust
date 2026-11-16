@@ -85,11 +85,13 @@ fn character_mode(
     mut removed: RemovedComponents<Player>,
     added: Query<(), Added<Player>>,
     players: Query<(), With<Player>>,
-    spectate: Option<Res<crate::spectate::SpectateSession>>,
+    modes: Option<Res<crate::player_controls::GameModes>>,
 ) {
     // A player taken away for the Spectate mode has had its end run by the
-    // mode switch already.
-    let spectating = crate::spectate::SpectateSession::spectating(spectate.as_deref());
+    // mode switch already: the scene is in Spectate.
+    let spectating = modes
+        .as_deref()
+        .is_some_and(|m| m.is(crate::player_controls::GameMode::Spectate));
     if removed.read().next().is_some() && players.is_empty() && !spectating {
         switch_controls(&mut control, true, "end of play");
     }

@@ -490,6 +490,14 @@ impl Plugin for SaveLivePlugin {
 /// player is despawned. The session starts with the camera looking at the
 /// spawn spot. [Exarust's: the chase camera keeps its own orbit around that
 /// point instead of the original's fixed position.]
+/// The controls' state the bench changes: the spectate session, the
+/// controls' switch and the scene's game mode.
+type BenchControls<'a> = (
+    Option<ResMut<'a, crate::spectate::SpectateSession>>,
+    Option<ResMut<'a, crate::player_controls::PlayerControl>>,
+    Option<ResMut<'a, crate::player_controls::GameModes>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn bench_the_manager(
     mut commands: Commands,
@@ -501,10 +509,7 @@ fn bench_the_manager(
     mut players: PlayerSaveQuery,
     roots: Query<Entity, With<crate::player::Player>>,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
-    (session, control): (
-        Option<ResMut<crate::spectate::SpectateSession>>,
-        Option<ResMut<crate::player_controls::PlayerControl>>,
-    ),
+    (session, control, modes): BenchControls,
 ) {
     let (Some(scene), Some(mut session)) = (scene, session) else {
         return;
@@ -537,6 +542,15 @@ fn bench_the_manager(
     });
     for root in &roots {
         commands.entity(root).despawn();
+    }
+    // The Spectate start's camera switch leaves the Character mode (its end
+    // of play) and enters Spectate.
+    if let Some(mut modes) = modes {
+        crate::player_controls::enter_mode(
+            &mut modes,
+            Some(crate::player_controls::GameMode::Spectate),
+            "the arena match is spectated",
+        );
     }
     session.start_arena(Vec3::from_array(scene.spawn_at) / 100.0);
     // The Character mode's end, then the Spectate mode's start: the
