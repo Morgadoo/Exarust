@@ -197,7 +197,8 @@ pub struct Player;
     Locomotion,
     exa_items::possession::Possessions,
     crate::player_practice::PlayerPractice,
-    exa_ai::combatant::PlayerContacts
+    exa_ai::combatant::PlayerContacts,
+    exa_ai::rooms::RoomPlace
 )]
 pub struct PlayerBody {
     pub combat: bool,
@@ -841,7 +842,10 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy_in_resource::<crate::player_controls::PlaySession>()
         .bridge_copy_in_resource::<crate::player_controls::PlayerControl>()
         .bridge_copy::<crate::player_practice::PlayerPractice>()
-        .bridge_copy::<exa_ai::combatant::PlayerContacts>();
+        .bridge_copy::<exa_ai::combatant::PlayerContacts>()
+        .bridge_copy::<exa_ai::rooms::RoomPlace>()
+        .bridge_move_resource::<exa_ai::rooms::RoomLists>()
+        .bridge_copy_resource::<exa_world::room_view::LevelRooms>();
 }
 
 /// The start of play: the Character mode is entered through the camera

@@ -90,7 +90,7 @@ impl Plugin for AiPlugin {
         exa_physics::sim_app::add_frame_start(app);
         bridge_ai_types(app);
         app.init_resource::<presence::ActivationArea>()
-            .init_resource::<rooms::RoomCells>()
+            .init_resource::<rooms::RoomLists>()
             .init_resource::<brain::BrainClock>()
             .init_resource::<freeze::StagingFreeze>()
             .init_resource::<pass_turn::PassTurn>()
@@ -220,7 +220,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_copy::<crate::presence::Presence>()
         .bridge_copy::<crate::roles::Relations>()
         .bridge_copy::<crate::roles::Roles>()
-        .bridge_move_resource::<crate::rooms::RoomCells>()
+        .bridge_move_resource::<crate::rooms::RoomLists>()
         .bridge_copy::<crate::sense::Mind>()
         .bridge_copy::<exa_character::record::CharacterData>()
         .bridge_copy::<exa_combat::AttackHook>()

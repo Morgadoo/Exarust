@@ -3828,11 +3828,11 @@ fn reset_level_state(
         return;
     }
     *seen = changes.changes;
-    // The room cells belong to the brains' tick: reset at the next step.
+    // The room lists belong to the brains' tick: reset at the next step.
     if let Some(mut fixed) = fixed {
         fixed.post(|world| {
-            if let Some(mut rooms) = world.get_resource_mut::<exa_ai::rooms::RoomCells>() {
-                *rooms = exa_ai::rooms::RoomCells::default();
+            if let Some(mut rooms) = world.get_resource_mut::<exa_ai::rooms::RoomLists>() {
+                *rooms = exa_ai::rooms::RoomLists::default();
             }
         });
     }
