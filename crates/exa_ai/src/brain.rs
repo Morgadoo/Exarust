@@ -58,7 +58,7 @@ use crate::idle::Routine;
 use crate::motion::{self, Gaze, Turning};
 use crate::personality::{self, Personality};
 use crate::roles::{self, Partner, Relations, Roles};
-use crate::rooms::{RoomCell, RoomCells};
+use crate::rooms::RoomLists;
 use crate::search::Search;
 use crate::sense::Mind;
 
@@ -208,8 +208,6 @@ pub struct Npc {
     pub plan_goal: crate::route::PlanGoal,
     /// When the alert count is next checked (ms).
     pub alert_until_ms: u32,
-    /// Its cell in the room grid and the cell before it.
-    pub room: RoomCell,
     /// The nearby characters the room list gathered (their ids), by
     /// distance.
     pub nearby: Vec<u64>,
@@ -309,9 +307,13 @@ pub struct PartyChange {
 /// through the behaviour (method slot 25) just before the condition
 /// becomes dead: a follower (activity 4) stops following, its activity word
 /// 0, and leaves the party. Exarust runs it on the tick the condition turns
-/// dead. The hook's other branch fades a golem body's glow material
-/// (record flag 0x1000, material `go`); Exarust draws no live skin
-/// material for it yet (`exa_game::item_effects::fade_material`).
+/// dead. The hook first fades the glow of a body whose record's race word
+/// carries the AI bit `0x1000` (the golems, [`Npc::race_ai`]): its skin's
+/// first material with the parameter word `go`
+/// ([`crate::golem::GLOW_MATERIAL`]) goes to 0 (the square of 0), before
+/// the follower branch. Exarust draws no live skin material with that
+/// parameter yet (`exa_game::item_effects::fade_material`), so the fade is
+/// logged, as the golem wake's and sleep's are.
 pub fn death_hook(
     mut brains: Query<(Entity, &Condition, &mut Npc), Changed<Condition>>,
     mut party: MessageWriter<PartyChange>,
@@ -320,11 +322,23 @@ pub fn death_hook(
         if *condition != Condition::DEAD {
             continue;
         }
+        if let Some(value) = death_glow(&npc) {
+            info!(
+                "{body:?} dies: glow '{}' to {value} (not faded live)",
+                String::from_utf8_lossy(&crate::golem::GLOW_MATERIAL.to_le_bytes())
+            );
+        }
         if npc.death_hook() {
             info!("a follower died: it stops following and leaves the party");
             party.write(PartyChange { body, joins: false });
         }
     }
+}
+
+/// The glow the death hook fades a body's `go` material to: 0 for a body
+/// whose race word carries the AI bit, none otherwise.
+pub fn death_glow(npc: &Npc) -> Option<f32> {
+    npc.race_ai.then_some(0.0)
 }
 
 impl Npc {
@@ -438,7 +452,6 @@ impl Npc {
             alert_count: 1,
             plan_goal: crate::route::PlanGoal::default(),
             alert_until_ms: u32::MAX,
-            room: RoomCell::default(),
             nearby: Vec::new(),
             fled: crate::flee::FledRooms::default(),
             flee_threat_room: -1,
@@ -1406,12 +1419,12 @@ pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
     mut clock: Option<ResMut<BrainClock>>,
     mut turn: Option<ResMut<crate::pass_turn::PassTurn>>,
-    mut rooms: Option<ResMut<RoomCells>>,
+    mut rooms: Option<ResMut<RoomLists>>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
     fighters: Query<(Entity, &GlobalTransform), With<Fighter>>,
-    children: Query<&Children>,
+    (children, placed): (Query<&Children>, Query<(), With<crate::rooms::RoomPlace>>),
     mut traced_s: Local<u32>,
     mut npcs: Query<(
         Entity,
@@ -1450,18 +1463,29 @@ pub fn ai_tick(
     // The staging freeze ([`crate::freeze`]): the idle stand replaces every
     // state's call this tick.
     let frozen = freeze.is_some_and(|freeze| freeze.frozen());
-    // Every fighter's place (cm) and 600 cm room cell, gathered once a tick
-    // for every brain's sightings and nearby list (no system here moves a
-    // fighter's global transform).
-    let size = rooms.as_deref().map(|r| r.size);
-    let places: Vec<(Entity, Vec3, Option<i32>)> = fighters
+    // Every fighter's place (cm), gathered once a tick for every brain's
+    // sightings and nearby list (no system here moves a fighter's global
+    // transform).
+    let places: Vec<(Entity, Vec3)> = fighters
         .iter()
-        .map(|(e, g)| {
-            let at = g.translation() * 100.0;
-            let cell = size.and_then(|size| crate::rooms::cell_index(at, size));
-            (e, at, cell)
-        })
+        .map(|(e, g)| (e, g.translation() * 100.0))
         .collect();
+    // [Exarust: a body no behaviour links (a brainless duellist; every
+    // body of the original has a behaviour) is linked into its room here,
+    // so the brains still gather it.]
+    if let (Some(lists), Some(level)) = (rooms.as_deref_mut(), level.as_deref()) {
+        for &(e, at) in &places {
+            if npcs.contains(e) || placed.contains(e) {
+                continue;
+            }
+            let mut room = lists.loose.get(&e).copied().unwrap_or(-1);
+            let (mut previous, mut nearby) = (-1, Vec::new());
+            lists.move_to(&level.rooms, e, at, &mut room, &mut previous, &mut nearby);
+            lists.loose.insert(e, room);
+        }
+    }
+    // A scratch list for a level without the room lists (tests).
+    let mut scratch = RoomLists::default();
     for (
         _entity,
         mut npc,
@@ -1532,6 +1556,23 @@ pub fn ai_tick(
             }
             mind.casting = hold.held;
         }
+        let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
+        // On a level with a grid the character moves to its room's list
+        // (before the condition gate: a dead body stays linked): off the
+        // grid nothing changes, a cell in no room unlinks it and empties
+        // its nearby list, another room remembers the one it left.
+        if let Some(level) = level.as_deref() {
+            let lists = rooms.as_deref_mut().unwrap_or(&mut scratch);
+            let npc = &mut *npc;
+            lists.move_to(
+                &level.rooms,
+                _entity,
+                observer_cm,
+                &mut npc.level_room,
+                &mut npc.previous_room,
+                &mut npc.nearby,
+            );
+        }
         // After the alert decay, a knocked-out, collapsed or dead body only
         // refreshes its nav footprint: no morale, contacts, state or look
         // (the original's out-of-the-fight condition branch; the footprint
@@ -1556,7 +1597,6 @@ pub fn ai_tick(
             .as_deref()
             .map(|d| foe_of(d.target, |e| fighters.contains(e), &children))
             .or(player);
-        let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let target_cm = target
             .and_then(|t| targets.get(t).ok())
             .map_or(observer_cm, |(_, g)| g.translation() * 100.0);
@@ -1576,10 +1616,7 @@ pub fn ai_tick(
             Some(level) => crate::rooms::level_room(&level.rooms, at),
             None => -1,
         };
-        // [guess: a position off the grid, which the original leaves as it
-        // was, also reads as no room here.]
-        let room = level_room(observer_cm);
-        npc.enter_room(room);
+        let room = npc.level_room;
         let exits = match level.as_deref() {
             Some(level) if room >= 0 => {
                 crate::rooms::room_exits(&level.rooms, &level.tracker, room as u16)
@@ -1605,7 +1642,7 @@ pub fn ai_tick(
                         places
                             .iter()
                             .find(|(e, ..)| e.to_bits() == contact.id)
-                            .map_or(Vec3::ZERO, |(_, at, _)| *at)
+                            .map_or(Vec3::ZERO, |(_, at)| *at)
                     };
                     contacts::Sighting {
                         contact,
@@ -1644,64 +1681,6 @@ pub fn ai_tick(
         let in_combat = duellist
             .as_deref()
             .map_or(combatant.in_combat, |d| d.fighting());
-        // The room bookkeeping: the character is (re)linked into its
-        // 600 cm cell, and the nearby list weighs the cell's characters.
-        if let Some(rooms) = rooms.as_deref_mut() {
-            rooms.move_to(_entity, observer_cm, &mut npc.room);
-            let candidate = |(e, at, _): &(Entity, Vec3, Option<i32>)| {
-                (
-                    e.to_bits(),
-                    (*at - observer_cm).length_squared(),
-                    crate::rooms::in_sight(level.as_deref(), observer_cm, *at),
-                )
-            };
-            if level.is_some() {
-                // The gather walks the characters of the brain's level room,
-                // then those of the room behind each of its exits in turn
-                // (an exit leading to the same room as the exit before it is
-                // skipped), each through the nearby insert and its sight
-                // test (the room-to-room light reach). A brain in no room
-                // keeps its list. Exarust keeps no per-room character list,
-                // so each room's characters are the fighters standing in it,
-                // in the fighters' order.
-                if room >= 0 {
-                    let mut order = vec![room];
-                    let mut before = -1;
-                    for exit in &exits {
-                        let behind = exit.room - 1;
-                        if behind != before {
-                            before = behind;
-                            order.push(behind);
-                        }
-                    }
-                    let mut around: Vec<(u64, f32, bool)> = Vec::new();
-                    for r in order {
-                        around.extend(
-                            places
-                                .iter()
-                                .filter(|p| p.0 != _entity && level_room(p.1) == r)
-                                .map(candidate),
-                        );
-                    }
-                    npc.nearby = contacts::nearby(&around)
-                        .into_iter()
-                        .map(|(id, _)| id)
-                        .collect();
-                }
-            } else {
-                // [Exarust: a level without a room table gathers the
-                // characters of the brain's 600 cm cell.]
-                let around: Vec<(u64, f32, bool)> = places
-                    .iter()
-                    .filter(|(e, _, cell)| *e != _entity && *cell == Some(npc.room.cell))
-                    .map(candidate)
-                    .collect();
-                npc.nearby = contacts::nearby(&around)
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect();
-            }
-        }
         // The target pass wakes a body whose flags are exactly the dormant
         // flag: a sleeper, not a body already knocked out (`0x30`).
         let asleep = flags.as_deref().is_some_and(|f| f.0 == StateFlags::DORMANT);
@@ -1718,6 +1697,25 @@ pub fn ai_tick(
         // ([`crate::pass_turn`]); without a turn every present brain runs
         // it every tick.
         npc.integration.active = presence.is_none_or(|p| p.moves());
+        // The integration's present branch first gathers the nearby list:
+        // the characters of the brain's room and of the room behind each
+        // of its exits, each through the nearby insert's sight test (the
+        // room-to-room light reach) within 3000 cm; a brain in no room, or
+        // on a level without a room table, keeps its list.
+        if npc.integration.active
+            && let (Some(lists), Some(level_rooms)) = (rooms.as_deref(), level.as_deref())
+        {
+            let weigh = |e: Entity| {
+                places.iter().find(|(p, _)| *p == e).map(|&(_, at)| {
+                    (
+                        (at - observer_cm).length_squared(),
+                        crate::rooms::in_sight(Some(level_rooms), observer_cm, at),
+                    )
+                })
+            };
+            let room_numbers: Vec<i32> = exits.iter().map(|exit| exit.room).collect();
+            lists.gather(_entity, room, room_numbers, weigh, &mut npc.nearby);
+        }
         let passed = if !npc.integration.active {
             false
         } else if let Some(turn) = turn.as_deref_mut() {
@@ -1910,7 +1908,7 @@ pub fn ai_tick(
                 places
                     .iter()
                     .find(|(other, ..)| other.to_bits() == id)
-                    .map_or(observer_cm, |(_, at, _)| *at)
+                    .map_or(observer_cm, |(_, at)| *at)
             };
             crate::walker::Attended {
                 score: npc.contacts.iter().find(|c| c.id == id).map(|c| {
@@ -2298,6 +2296,12 @@ pub fn forget_removed(
             if let Some(mut turn) = world.get_resource_mut::<crate::pass_turn::PassTurn>() {
                 for entity in &forgotten {
                     turn.forget(entity.to_bits());
+                }
+            }
+            // So do the room lists (the base removal's room unlink).
+            if let Some(mut lists) = world.get_resource_mut::<RoomLists>() {
+                for entity in &forgotten {
+                    lists.forget(*entity);
                 }
             }
         });
@@ -4962,61 +4966,74 @@ mod tests {
         );
     }
 
-    /// The AI tick links the brain into its 600 cm room cell and fills the
-    /// nearby list with the characters of that cell, by distance.
+    /// The AI tick links each brain into its level room's list (a dead one
+    /// too, the move comes before the condition gate) and fills the nearby
+    /// list from its room's list and the lists of the rooms behind its
+    /// exits; a brain standing in no room is unlinked and its list emptied.
     #[test]
-    fn the_ai_tick_gathers_the_nearby_characters_of_its_room() {
+    fn the_ai_tick_links_its_room_and_gathers_the_nearby_characters() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
         let mut app = App::new();
         app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
-        app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
-            width: 32,
-            height: 32,
-        }));
+        app.insert_resource(LevelRooms::new(std::sync::Arc::new(Rooms::flood(&grid))));
+        app.init_resource::<RoomLists>();
+        // Room 0 is the cells centred at (-9, 3) and (-3, 3) m, room 1 the
+        // ones at (3, 3) and (9, 3) m.
         let player = app
             .world_mut()
             .spawn((
-                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                GlobalTransform::from_translation(Vec3::new(-5.0, 0.0, 3.0)),
                 Fighter::default(),
                 RatedPlayer,
             ))
             .id();
-        let near = app
-            .world_mut()
-            .spawn((
-                Npc::new([0.0; 4]),
-                Combatant::default(),
-                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
-                Fighter::default(),
-                Condition::NORMAL,
-            ))
-            .id();
-        let far = app
-            .world_mut()
-            .spawn((
-                Npc::new([0.0; 4]),
-                Combatant::default(),
-                GlobalTransform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
-                Fighter::default(),
-                Condition::NORMAL,
-            ))
-            .id();
+        let brain = |app: &mut App, at: Vec3, condition: Condition| {
+            app.world_mut()
+                .spawn((
+                    Npc::new([0.0; 4]),
+                    Combatant::default(),
+                    GlobalTransform::from_translation(at),
+                    Fighter::default(),
+                    condition,
+                ))
+                .id()
+        };
+        let near = brain(&mut app, Vec3::new(-9.0, 0.0, 3.0), Condition::NORMAL);
+        let dead = brain(&mut app, Vec3::new(9.0, 0.0, 3.0), Condition::DEAD);
+        let lost = brain(&mut app, Vec3::new(-15.0, 0.0, -3.0), Condition::NORMAL);
+        app.world_mut().get_mut::<Npc>(lost).unwrap().nearby = vec![1];
         app.update();
         let w = app.world();
+        // The dead brain in room 1 is beyond the door's reach.
         assert_eq!(w.get::<Npc>(near).unwrap().nearby, vec![player.to_bits()]);
-        // The far character is in its own cell, so its list holds neither.
-        assert!(w.get::<Npc>(far).unwrap().nearby.is_empty());
-        assert_eq!(
-            w.get::<Npc>(near).unwrap().room.cell,
-            crate::rooms::cell_index(
-                Vec3::ZERO,
-                crate::rooms::RoomGridSize {
-                    width: 32,
-                    height: 32
-                }
-            )
-            .unwrap()
-        );
+        assert_eq!(w.get::<Npc>(near).unwrap().level_room, 0);
+        let lists = w.resource::<RoomLists>();
+        assert!(lists.occupants(0).contains(&near));
+        assert!(lists.occupants(0).contains(&player));
+        assert_eq!(w.get::<Npc>(dead).unwrap().level_room, 1);
+        assert_eq!(lists.occupants(1), &[dead]);
+        assert_eq!(w.get::<Npc>(lost).unwrap().level_room, -1);
+        assert!(w.get::<Npc>(lost).unwrap().nearby.is_empty());
     }
 
     /// On a level with a room table the gather walks the brain's room and
@@ -5069,10 +5086,7 @@ mod tests {
         app.add_message::<PartyChange>();
         app.add_systems(Update, ai_tick);
         app.insert_resource(level);
-        app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
-            width: 32,
-            height: 32,
-        }));
+        app.init_resource::<RoomLists>();
         app.world_mut().spawn((
             GlobalTransform::from_translation(Vec3::new(-90.0, 0.0, 3.0)),
             Fighter::default(),
@@ -5567,5 +5581,8 @@ mod race_word_tests {
         // mere presence of a brain: a human has none.
         assert!(Npc::of_record(&guard, &mut roll).race_ai);
         assert!(!Npc::of_record(&human, &mut roll).race_ai);
+        // The death hook fades a golem's glow to 0, and nobody else's.
+        assert_eq!(death_glow(&Npc::of_record(&guard, &mut roll)), Some(0.0));
+        assert_eq!(death_glow(&Npc::of_record(&human, &mut roll)), None);
     }
 }

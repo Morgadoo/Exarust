@@ -194,11 +194,11 @@ The integration SHALL raise a seen contact's hostility by `(1 − decay)·attitu
 - **THEN** its hostility rises above its 0.999 decay, then only decays
 
 ### Requirement: The AI tick's room cell and alert
-Every frame each brain SHALL link itself into the 600 cm room cell of its body: the floored position over 600 cm on each ground axis, offset by half the grid. Off the grid its link SHALL stay unchanged. The group alert SHALL decay one step every 10 s, down to 1.
+On a level with a grid, each AI tick SHALL first move the brain to the list of its level room, read at the floored position over 600 cm on each ground axis offset by half the grid, before its condition gate. Off the grid nothing SHALL change. A cell in no room SHALL unlink the brain and empty its nearby list. The group alert SHALL decay one step every 10 s, down to 1.
 
 #### Scenario: Off the grid
-- **WHEN** a brain in a 4 × 4 grid moves 100 m along x
-- **THEN** it stays linked in its old cell
+- **WHEN** a brain linked in room 1 of a 6 × 3 grid moves to row 4
+- **THEN** it stays linked in room 1 with its previous room unchanged
 
 ### Requirement: The idle turn
 While not engaged, a brain's model SHALL turn to the out-of-combat eased yaw. The yaw starts at the body's facing and eases toward the look plus a sway by `0.09 − 0.06·encumbrance`. The sway is `u·3.6 − 1.8`, redrawn every 4000 ms plus up to 4000 ms.
@@ -475,3 +475,10 @@ A concern or hostility written on a brain's combatant contact after the brain's 
 #### Scenario: Two hits
 - **WHEN** the player wounds a duel brain twice
 - **THEN** the second hit's concern rise starts from the first's result and the brain's pass reads the sum
+
+### Requirement: Room lists keep the newest first
+A character moving into a room SHALL be put at the head of that room's list and leave its old room's list; its previous room SHALL become the old room only when the old one was a room. A dead brain SHALL stay linked.
+
+#### Scenario: Two brains and a dead one
+- **WHEN** two characters enter room 0 in turn and a dead brain stands in room 1
+- **THEN** room 0 lists the second first and room 1 lists the dead brain
