@@ -73,7 +73,10 @@ impl Plugin for MechanismPlugin {
                 send_relay_forwards.after(exa_physics::body::AfterSolver::Physics),
             );
         if std::env::var_os("EXA_MECHANISM_LIST").is_some() {
-            app.add_systems(Update, list_mechanisms);
+            app.add_systems(
+                Update,
+                list_mechanisms.in_set(exa_physics::FramePhase::Capture),
+            );
         }
     }
 }

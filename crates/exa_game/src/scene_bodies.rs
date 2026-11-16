@@ -1091,7 +1091,10 @@ impl Plugin for SceneBodiesPlugin {
         app.add_message::<SceneCommand>()
             .add_message::<SceneBodyBuilt>()
             .init_resource::<SceneActors>()
-            .add_systems(Update, (apply_scene_commands, reset_kept_bodies));
+            .add_systems(
+                Update,
+                (apply_scene_commands, reset_kept_bodies).in_set(exa_physics::FramePhase::Session),
+            );
     }
 }
 
@@ -1179,7 +1182,7 @@ pub fn reset_kept_bodies(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_scene_commands(
+pub fn apply_scene_commands(
     mut commands: Commands,
     game: Option<Res<Game>>,
     clock: Option<Res<crate::effects::EffectClock>>,
@@ -1307,7 +1310,7 @@ fn apply_scene_commands(
 }
 
 /// The game's tables a spawn reads, parsed once per process.
-struct GameTables {
+pub struct GameTables {
     items: Vec<Item>,
     races: Vec<Race>,
     book: exa_formats::roles::RoleDb,

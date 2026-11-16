@@ -108,8 +108,10 @@ impl RigidPart {
 }
 
 /// The shares of a correction two linked bodies take by their mobilities m
-/// and m_parent: m/(m + m_parent) and m_parent/(m + m_parent).
-fn mobility_shares(m: f32, m_parent: f32) -> (f32, f32) {
+/// and m_parent: m/(m + m_parent) and m_parent/(m + m_parent). The
+/// original has no guard (a zero or non-finite sum gives NaN or zero
+/// shares); Exarust's halves them then.
+pub fn mobility_shares(m: f32, m_parent: f32) -> (f32, f32) {
     let sum = m + m_parent;
     if sum > 0.0 && sum.is_finite() {
         (m / sum, m_parent / sum)

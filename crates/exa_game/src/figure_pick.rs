@@ -808,7 +808,7 @@ pub(crate) fn held_place(hand: usize, kind: possession::ItemKind) -> HeldPlace {
 /// [`release_on_figure`] plan run on the player's possessions, outfit and
 /// hands, and the item given to the panel it landed on.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn release_figure(
+pub(crate) fn release_figure(
     mut commands: Commands,
     mut releases: MessageReader<FigureRelease>,
     mut screens: ResMut<GameScreens>,
@@ -1094,9 +1094,17 @@ impl Plugin for FigurePickPlugin {
                     .chain()
                     .in_set(panel_live::PanelInput)
                     .after(panel_live::press)
-                    .before(panel_live::release),
+                    .before(panel_live::release)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
-            .add_systems(Update, release_figure.after(panel_live::release));
+            .add_systems(
+                Update,
+                release_figure
+                    .after(crate::commands::view_keys)
+                    .after(crate::gui_screens::register_level_items)
+                    .after(panel_live::release)
+                    .in_set(exa_physics::FramePhase::Gui),
+            );
     }
 }
 

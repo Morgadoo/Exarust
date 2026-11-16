@@ -406,6 +406,19 @@ step's copy out). It found the
 bridged duel's drift: query filters were not in the coverage, so `With<Player>`
 matched nothing in the simulation's world.
 
+The function oracle (`crates/exa_oracle`) replays the original's own code
+against these functions bit for bit. Its second pass added the engine's
+lerps (`lerp2`, `lerp3`, `lerp4`: `a + (b − a)·t`, which glam's `lerp`
+is not), the exact normaliser's callers switched to `normalize_exact`
+(`y² + (x² + z²)`, one division), the unmasked approximate normaliser
+(`normalize_approx_unmasked`: zero gives NaN; the door leaf's set-up), the
+negations (`negate3`, `negate4`: `0 − v`, so zero stays +0 and DAZ reads a
+denormal as zero), the `RSQRTSS` length and distance, the frame and 4×4
+products, the rigid inverse and relative frame, the 4×4 point transform and
+row dots (none of these yet replacing the glam calls at their call sites),
+and the library sine and cosine through the x87 unit, which keeps a
+denormal angle's sine denormal.
+
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
 `MINSS`/`MAXSS`/clamp compares, the floor and ceiling conversions (the
@@ -1267,9 +1280,11 @@ leaves it out, each tick only rolls its particle sets and takes one off its
 countdown, and a wake does not unpark it; the AI manager's frame
 (`exa_game::park`) and the golem wake unpark it (`Ragdoll::unpark`). The original's mark and
 unmark walk the character's node tree, where its held items hang: before the solver each linked
-held item takes its holder's mark (`grip_solve::share_holder_park`), and the grip's mark
-(`grip_solve::mark_held`) wakes a held item to the full count every tick, as the tree wake
-leaves it. A body a level placed from its saved
+held item takes its holder's mark (`grip_solve::share_holder_park`) and shares its holder's
+sleep (`grip_solve::share_holder_sleep`, `Ragdoll::follow_holder`): the two take the larger of
+their countdowns, an item whose holder sleeps falls asleep, and a touched item wakes its
+holder, as the original's body tree shares its root's countdown (a living holder keeps it at
+the full count, a dormant one counts it down). A body a level placed from its saved
 pose is built limp and registered at rest
 (`body::Ragdoll::register_placed`, the `body::PlacedCorpse` request): every
 velocity zero and the countdown at 0, so it runs one tick and that tick's
@@ -1802,6 +1817,16 @@ system before another (through chains, `before`/`after` and system sets),
 whether two systems it leaves unordered conflict in their data, and where
 a schedule sits in the main frame. The hook-list checks
 (`docs/re/hook-lists.md`) use it to show the original's priority orders.
+
+`frame_phase` names the drawn frame's phases, after the original's frame
+order: `FramePhase` in `Update` (`Input`, `Gui`, `Hub`, `Session`,
+`Controls`, `Camera`, `Hand`, `Cursor`, `World`, `Audio`, `Draw`, `Capture`)
+and `FramePostPhase` in `PostUpdate` (`Prepare` before the transforms
+propagate, the camera update, the UI and the asset events; `Placed` after
+the propagation, before the bounds, frusta and visibility; `View`;
+`Trace`). `configure_frame_phases` chains them; the game's plugin calls it.
+Every game system of the two schedules sits in one phase, and a pair of one
+phase that touches the same data has its own `before`/`after`.
 
 ## Scope
 

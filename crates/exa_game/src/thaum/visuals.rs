@@ -743,7 +743,7 @@ pub struct VisualPlugin;
 impl Plugin for VisualPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<VisualSpawn>()
-            .add_systems(Update, spawn_visuals);
+            .add_systems(Update, spawn_visuals.in_set(exa_physics::FramePhase::World));
     }
 }
 

@@ -259,7 +259,7 @@ pub fn foot_pitch_target(
 /// `drop` (m), twice the lift term stored before clamping.
 pub(super) fn bend_target(contact: Vec3, anchor: Vec3, anchored: bool, drop: f32) -> Vec3 {
     if anchored {
-        let mid = contact.lerp(anchor, 0.5);
+        let mid = crate::engine_math::lerp3(contact, anchor, 0.5);
         Vec3::new(mid.x, anchor.y, mid.z)
     } else {
         anchor - Vec3::Y * drop
@@ -857,7 +857,8 @@ pub enum FemurPosture {
 }
 
 /// The turn the original multiplies into leg `leg`'s thigh over the clip's
-/// (after the clip's turn, `clip * turn`): about the axis (0, 0, 1) lerped
+/// (applied after the clip's turn: `turn * clip` in glam's order, the
+/// engine's product of the clip turn and this): about the axis (0, 0, 1) lerped
 /// 0.4 toward (−1, 0, 0) (`a + (b − a)·0.4`) and normalised by the
 /// approximate reciprocal square root, the angle by `posture`, its sign
 /// alternating by leg; the quaternion is the engine's (its fast sine and

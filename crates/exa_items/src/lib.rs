@@ -34,8 +34,12 @@ impl Plugin for ItemsPlugin {
             .add_systems(
                 Update,
                 (
-                    (catalogue::load_catalogue, catalogue::swap_weapon_sets).chain(),
-                    desc_phrase::load_phrases,
+                    (
+                        catalogue::load_catalogue.in_set(exa_physics::FramePhase::Input),
+                        catalogue::swap_weapon_sets.in_set(exa_physics::FramePhase::Gui),
+                    )
+                        .chain(),
+                    desc_phrase::load_phrases.in_set(exa_physics::FramePhase::Input),
                 ),
             );
     }

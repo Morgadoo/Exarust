@@ -103,13 +103,20 @@ impl Plugin for CreatorViewPlugin {
         app.init_resource::<CreatorView>()
             .add_systems(
                 Update,
-                (sync_view, script_edits, build_figure)
+                (
+                    sync_view,
+                    script_edits,
+                    build_figure.after(crate::doll_view::equip_dropped),
+                )
                     .chain()
-                    .after(crate::creator_screen::CreatorSystems),
+                    .after(crate::creator_screen::CreatorSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 PostUpdate,
-                tag_parts.before(exa_world::shadow_links::LightCells),
+                tag_parts
+                    .before(exa_world::shadow_links::LightCells)
+                    .in_set(exa_physics::FramePostPhase::Prepare),
             );
     }
 }
@@ -274,7 +281,7 @@ fn sync_view(
 /// Builds the floor once, and the figure from the creator's record when it
 /// is missing or the record changed and the regeneration rule lets it.
 #[allow(clippy::too_many_arguments)]
-fn build_figure(
+pub(crate) fn build_figure(
     mut commands: Commands,
     mut screen: ResMut<CreatorScreen>,
     mut view: ResMut<CreatorView>,

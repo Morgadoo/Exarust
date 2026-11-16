@@ -88,7 +88,17 @@ impl Plugin for OsPointerPlugin {
                     .after(exa_ui::scale::follow_window)
                     .before(bevy::ui::UiSystems::Focus),
             )
-            .add_systems(PostUpdate, (apply_warps, confine_full_screen).chain());
+            .add_systems(
+                PostUpdate,
+                (
+                    apply_warps
+                        .before(exa_render::supersample::start_supersampling)
+                        .after(crate::view_overlay::draw_overlays),
+                    confine_full_screen,
+                )
+                    .chain()
+                    .in_set(exa_physics::FramePostPhase::Prepare),
+            );
     }
 }
 

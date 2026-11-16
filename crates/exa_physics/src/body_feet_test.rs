@@ -158,14 +158,18 @@ fn a_walk_plants_and_lifts_by_its_phase() {
 }
 
 /// The servo pushes a still point d·rate·gain (10 cm off at rate 0.2 and
-/// gain 0.05: 0.1 cm); one already closing 4 % of its gap a tick is pushed
-/// d·(0.2 − 0.04)·gain, one closing 5 % or more not at all.
+/// gain 0.05: 0.1 cm); one moving 4 % of its gap a tick closes it by
+/// 4 % × 1.0375 (its motion over an 80 Hz tick) and is pushed
+/// d·(0.2 − 0.0415)·gain, one closing 5 % or more not at all (4.9 % of the
+/// gap is 5.08 % once scaled).
 #[test]
 fn the_servo_closes_its_rate_of_the_gap() {
     let d = Vec3::new(10.0, 0.0, 0.0);
     let push = |moved: f32| servo(d, Vec3::X * moved, 0.05, 0.2);
     assert!(push(0.0).is_some_and(|p| close(p.x, 0.1, 1e-6) && p.y == 0.0));
-    assert!(push(0.4).is_some_and(|p| close(p.x, 0.08, 1e-6)));
+    assert!(push(0.4).is_some_and(|p| close(p.x, 10.0 * (0.2 - 0.0415) * 0.05, 1e-6)));
+    assert!(push(0.48).is_some());
+    assert_eq!(push(0.49), None);
     assert_eq!(push(0.5), None);
     assert_eq!(servo(Vec3::ZERO, Vec3::ZERO, 1.0, 0.2), None);
 }
@@ -261,6 +265,28 @@ fn a_step_reaches_its_anchor_within_5_cm() {
     assert!(close(leg.approach, 0.95 * 0.95 + 0.05, 1e-6));
     let halfway = (leg.at + anchor) * 0.5;
     assert!(close(leg.anchor.x, halfway.x, 1e-6) && close(leg.anchor.z, halfway.z, 1e-6));
+}
+
+/// A stepping foot's approach takes 0.05 of its closing speed toward the
+/// anchor, the cm it moved this tick along the gap times 80/83 (the class
+/// set-up's per-tick factor).
+#[test]
+fn a_steps_approach_scales_its_closing_speed() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let fd = full();
+    let at = ankle(&body, 0).0;
+    let Ragdoll { parts, legs, .. } = &mut body;
+    let leg = &mut legs[0];
+    leg.state = FootState(FootState::TOUCHING | FootState::ANCHORED);
+    leg.approach = 1.0;
+    // It was 1 cm further back along the gap last tick.
+    leg.at = at - Vec3::new(0.01, 0.0, 0.0);
+    leg.anchor = at + Vec3::new(0.2, 0.0, 0.0);
+    assert!(!drive_contact(&mut parts[leg.shin], leg, &fd));
+    let closing = (leg.at.x - leg.before.x) * 100.0 * (80.0f64 / 83.0) as f32;
+    assert!(close(closing, 0.963_855, 1e-4), "{closing}");
+    let want = (f64::from(closing) * 0.05 + 0.95) as f32;
+    assert!(close(leg.approach, want, 1e-5), "{} {want}", leg.approach);
 }
 
 /// A lifted foot, or one that does not touch, is only pushed up toward its
@@ -927,7 +953,9 @@ fn a_standing_body_plants_its_feet() {
     let far = ankle(&body, 1).0;
     body.measure_balance(floor.as_slice());
     assert_eq!(body.legs[0].state, FootState(FootState::TOUCHING));
-    assert_eq!(body.legs[0].anchor, kept);
+    // The planted foot's probe is the engine's lerp toward its anchor
+    // (`c + (anchor − c)·blend`), which can land a bit off the anchor.
+    assert!((body.legs[0].anchor - kept).abs().max_element() < 1e-6);
     assert_eq!(body.legs[1].state, FootState(FootState::TOUCHING));
     assert!(close(body.legs[1].anchor.x, far.x, 1e-6));
     assert!(close(body.legs[1].anchor.z, far.z, 1e-6));

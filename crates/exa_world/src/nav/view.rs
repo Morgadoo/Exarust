@@ -48,7 +48,8 @@ impl Plugin for NavPlugin {
                 PostUpdate,
                 (collect_source, finish_build)
                     .chain()
-                    .after(TransformSystems::Propagate),
+                    .after(TransformSystems::Propagate)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             )
             .add_systems(
                 FixedPostUpdate,
@@ -62,7 +63,13 @@ impl Plugin for NavPlugin {
             )
             .add_systems(
                 Update,
-                (overlay_key, draw_overlay.run_if(|o: Res<NavOverlay>| o.on)).chain(),
+                (
+                    overlay_key.in_set(exa_physics::FramePhase::Input),
+                    draw_overlay
+                        .in_set(exa_physics::FramePhase::Draw)
+                        .run_if(|o: Res<NavOverlay>| o.on),
+                )
+                    .chain(),
             );
     }
 }
@@ -110,7 +117,7 @@ pub enum NavState {
 
 /// The grid being built off the main thread.
 #[derive(Resource)]
-struct NavBuild(Task<NavGrid>);
+pub struct NavBuild(Task<NavGrid>);
 
 /// A mesh node that carries a rigid body. The original's body attach sets
 /// the node's second flag word's `0x10`, and the grid build stamps no point
@@ -276,7 +283,7 @@ fn share_nav_view(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_source(
+pub fn collect_source(
     mut commands: Commands,
     pending: Option<Res<PendingNav>>,
     children: Query<&Children>,
@@ -349,7 +356,7 @@ pub(super) fn floor_mesh(mesh: Option<&Mesh>, at: bevy::math::Affine3A) -> Optio
     })
 }
 
-fn finish_build(
+pub fn finish_build(
     mut commands: Commands,
     build: Option<ResMut<NavBuild>>,
     mut state: ResMut<NavState>,

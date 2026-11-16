@@ -9,7 +9,13 @@ use exa_physics::engine_math as em;
 
 use crate::Field;
 
+mod batch_a;
+mod batch_b;
+mod batch_c;
+mod batch_d;
+
 /// One registered port.
+#[derive(Clone, Copy)]
 pub struct Port {
     /// The function's name, as its case files carry it.
     pub name: &'static str,
@@ -226,201 +232,202 @@ fn swing_expected_ms(b: &Case) -> Vec<u8> {
     Out::default().bytes(&ms.to_le_bytes()).0
 }
 
-/// Every registered port, by name.
+/// Every registered port, by name: the first lane's and each batch's.
 pub fn ports() -> &'static [Port] {
-    const PORTS: &[Port] = &[
-        Port {
-            name: "normalize_exact_in_place",
-            run: |b| in_place3(b, em::normalize_exact),
-        },
-        // glam's normalise, which the exact normaliser's callers' ports use.
-        Port {
-            name: "normalize_exact_in_place_glam",
-            run: |b| in_place3(b, Vec3::normalize),
-        },
-        Port {
-            name: "normalize_approx_in_place",
-            run: |b| in_place3(b, em::normalize_approx),
-        },
-        Port {
-            name: "normalize_approx_into",
-            run: |b| {
-                let mut i = In(b);
-                i.skip(12);
-                Out::default().vec3(em::normalize_approx(i.vec3())).0
-            },
-        },
-        // The ledger's port for the unmasked normaliser (the door leaf's
-        // set-up): the masked one.
-        Port {
-            name: "normalize_approx_unmasked",
-            run: |b| in_place3(b, em::normalize_approx),
-        },
-        Port {
-            name: "normalize_quat_in_place",
-            run: |b| {
-                let v = In(b).vec4();
-                let q = em::normalize_quat(Quat::from_xyzw(v.x, v.y, v.z, v.w));
-                Out::default().f32s(&q.to_array()).0
-            },
-        },
-        Port {
-            name: "vec4_mul_4x3_difference",
-            run: |b| {
-                let mut i = In(b);
-                i.skip(12);
-                let v = i.vec4();
-                let flat: [f32; 24] = i.array();
-                let rows: [[f32; 3]; 8] =
-                    std::array::from_fn(|r| [flat[3 * r], flat[3 * r + 1], flat[3 * r + 2]]);
-                Out::default().vec3(em::vec4_mul_4x3_difference(v, &rows)).0
-            },
-        },
-        Port {
-            name: "triple_product",
-            run: |b| {
-                let mut i = In(b);
-                let (a, c, d) = (i.vec4(), i.vec4(), i.vec4());
-                Out::default()
-                    .f32(em::triple_product(a.truncate(), c.truncate(), d.truncate()))
-                    .0
-            },
-        },
-        Port {
-            name: "barycentric_exact",
-            run: |b| {
-                let mut i = In(b);
-                i.skip(16);
-                let p = i.vec3();
-                let flat: [f32; 12] = i.array();
-                let tet: [[f32; 3]; 4] =
-                    std::array::from_fn(|r| [flat[3 * r], flat[3 * r + 1], flat[3 * r + 2]]);
-                Out::default().f32s(&em::barycentric_exact(p, &tet)).0
-            },
-        },
-        // The call sites' own form of the engine's lerp.
-        Port {
-            name: "vec3_lerp_into",
-            run: |b| lerp3_into(b, |a, c, t| a + (c - a) * t),
-        },
-        // glam's lerp, which some ports call instead.
-        Port {
-            name: "vec3_lerp_into_glam",
-            run: |b| lerp3_into(b, Vec3::lerp),
-        },
-        Port {
-            name: "vec2_lerp_into",
-            run: |b| {
-                let mut i = In(b);
-                i.skip(8);
-                let (a, c, t) = (i.vec2(), i.vec2(), i.f32());
-                Out::default().vec2(a + (c - a) * t).0
-            },
-        },
-        Port {
-            name: "min_components",
-            run: |b| into3_2(b, em::min_components),
-        },
-        Port {
-            name: "max_components",
-            run: |b| into3_2(b, em::max_components),
-        },
-        Port {
-            name: "min_component",
-            run: |b| Out::default().f32(em::min_component(In(b).vec3())).0,
-        },
-        Port {
-            name: "max_component",
-            run: |b| Out::default().f32(em::max_component(In(b).vec3())).0,
-        },
-        Port {
-            name: "largest_abs",
-            run: |b| {
-                Out::default()
-                    .f32(exa_physics::sector::largest_abs(In(b).array()))
-                    .0
-            },
-        },
-        Port {
-            name: "sign",
-            run: |b| scalar(b, em::sign),
-        },
-        Port {
-            name: "clamp",
-            run: |b| {
-                let mut i = In(b);
-                let (a, lo, hi) = (i.f32(), i.f32(), i.f32());
-                Out::default().f32(em::clamp(a, lo, hi)).0
-            },
-        },
-        Port {
-            name: "floor_to_i32",
-            run: |b| Out::default().i32(em::floor_to_i32(In(b).f32())).0,
-        },
-        Port {
-            name: "ceil_to_i32",
-            run: |b| Out::default().i32(em::ceil_to_i32(In(b).f32())).0,
-        },
-        Port {
-            name: "ln",
-            run: |b| scalar(b, em::ln),
-        },
-        Port {
-            name: "exp",
-            run: |b| scalar(b, em::exp),
-        },
-        Port {
-            name: "sin_cos",
-            run: |b| {
-                let (s, c) = em::sin_cos(In(b).f32());
-                Out::default().f32(s).f32(c).0
-            },
-        },
-        Port {
-            name: "cosine",
-            run: |b| {
-                let mut i = In(b);
-                let (a, c) = (i.vec3(), i.vec3());
-                Out::default().f32(em::cosine(a, c)).0
-            },
-        },
-        Port {
-            name: "heading",
-            run: |b| Out::default().f32(em::heading(In(b).vec3())).0,
-        },
-        Port {
-            name: "direction_from_yaw",
-            run: |b| Out::default().vec3(em::direction_from_yaw(In(b).f32())).0,
-        },
-        Port {
-            name: "quaternion_from_axis_angle",
-            run: |b| {
-                let mut i = In(b);
-                let (axis, angle) = (i.vec3(), i.f32());
-                let q = em::quaternion_from_axis_angle(axis, angle);
-                Out::default().f32s(&q.to_array()).0
-            },
-        },
-        Port {
-            name: "rgba8_lerp",
-            run: rgba8_lerp,
-        },
-        Port {
-            name: "face_new",
-            run: face_new,
-        },
-        Port {
-            name: "face_nearest",
-            run: face_nearest,
-        },
-        Port {
-            name: "door_open_span",
-            run: door_open_span,
-        },
-        Port {
-            name: "swing_expected_ms",
-            run: swing_expected_ms,
-        },
-    ];
-    PORTS
+    static ALL: std::sync::OnceLock<Vec<Port>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        [
+            FIRST,
+            batch_a::PORTS,
+            batch_b::PORTS,
+            batch_c::PORTS,
+            batch_d::PORTS,
+        ]
+        .concat()
+    })
 }
+
+/// The first lane's ports.
+const FIRST: &[Port] = &[
+    Port {
+        name: "normalize_exact_in_place",
+        run: |b| in_place3(b, em::normalize_exact),
+    },
+    Port {
+        name: "normalize_approx_in_place",
+        run: |b| in_place3(b, em::normalize_approx),
+    },
+    Port {
+        name: "normalize_approx_into",
+        run: |b| {
+            let mut i = In(b);
+            i.skip(12);
+            Out::default().vec3(em::normalize_approx(i.vec3())).0
+        },
+    },
+    // The unmasked normaliser (the door leaf's set-up).
+    Port {
+        name: "normalize_approx_unmasked",
+        run: |b| in_place3(b, em::normalize_approx_unmasked),
+    },
+    Port {
+        name: "normalize_quat_in_place",
+        run: |b| {
+            let v = In(b).vec4();
+            let q = em::normalize_quat(Quat::from_xyzw(v.x, v.y, v.z, v.w));
+            Out::default().f32s(&q.to_array()).0
+        },
+    },
+    Port {
+        name: "vec4_mul_4x3_difference",
+        run: |b| {
+            let mut i = In(b);
+            i.skip(12);
+            let v = i.vec4();
+            let flat: [f32; 24] = i.array();
+            let rows: [[f32; 3]; 8] =
+                std::array::from_fn(|r| [flat[3 * r], flat[3 * r + 1], flat[3 * r + 2]]);
+            Out::default().vec3(em::vec4_mul_4x3_difference(v, &rows)).0
+        },
+    },
+    Port {
+        name: "triple_product",
+        run: |b| {
+            let mut i = In(b);
+            let (a, c, d) = (i.vec4(), i.vec4(), i.vec4());
+            Out::default()
+                .f32(em::triple_product(a.truncate(), c.truncate(), d.truncate()))
+                .0
+        },
+    },
+    Port {
+        name: "barycentric_exact",
+        run: |b| {
+            let mut i = In(b);
+            i.skip(16);
+            let p = i.vec3();
+            let flat: [f32; 12] = i.array();
+            let tet: [[f32; 3]; 4] =
+                std::array::from_fn(|r| [flat[3 * r], flat[3 * r + 1], flat[3 * r + 2]]);
+            Out::default().f32s(&em::barycentric_exact(p, &tet)).0
+        },
+    },
+    // The engine's lerp, which the call sites' ports take.
+    Port {
+        name: "vec3_lerp_into",
+        run: |b| lerp3_into(b, em::lerp3),
+    },
+    Port {
+        name: "vec2_lerp_into",
+        run: |b| {
+            let mut i = In(b);
+            i.skip(8);
+            let (a, c, t) = (i.vec2(), i.vec2(), i.f32());
+            Out::default().vec2(em::lerp2(a, c, t)).0
+        },
+    },
+    Port {
+        name: "min_components",
+        run: |b| into3_2(b, em::min_components),
+    },
+    Port {
+        name: "max_components",
+        run: |b| into3_2(b, em::max_components),
+    },
+    Port {
+        name: "min_component",
+        run: |b| Out::default().f32(em::min_component(In(b).vec3())).0,
+    },
+    Port {
+        name: "max_component",
+        run: |b| Out::default().f32(em::max_component(In(b).vec3())).0,
+    },
+    Port {
+        name: "largest_abs",
+        run: |b| {
+            Out::default()
+                .f32(exa_physics::sector::largest_abs(In(b).array()))
+                .0
+        },
+    },
+    Port {
+        name: "sign",
+        run: |b| scalar(b, em::sign),
+    },
+    Port {
+        name: "clamp",
+        run: |b| {
+            let mut i = In(b);
+            let (a, lo, hi) = (i.f32(), i.f32(), i.f32());
+            Out::default().f32(em::clamp(a, lo, hi)).0
+        },
+    },
+    Port {
+        name: "floor_to_i32",
+        run: |b| Out::default().i32(em::floor_to_i32(In(b).f32())).0,
+    },
+    Port {
+        name: "ceil_to_i32",
+        run: |b| Out::default().i32(em::ceil_to_i32(In(b).f32())).0,
+    },
+    Port {
+        name: "ln",
+        run: |b| scalar(b, em::ln),
+    },
+    Port {
+        name: "exp",
+        run: |b| scalar(b, em::exp),
+    },
+    Port {
+        name: "sin_cos",
+        run: |b| {
+            let (s, c) = em::sin_cos(In(b).f32());
+            Out::default().f32(s).f32(c).0
+        },
+    },
+    Port {
+        name: "cosine",
+        run: |b| {
+            let mut i = In(b);
+            let (a, c) = (i.vec3(), i.vec3());
+            Out::default().f32(em::cosine(a, c)).0
+        },
+    },
+    Port {
+        name: "heading",
+        run: |b| Out::default().f32(em::heading(In(b).vec3())).0,
+    },
+    Port {
+        name: "direction_from_yaw",
+        run: |b| Out::default().vec3(em::direction_from_yaw(In(b).f32())).0,
+    },
+    Port {
+        name: "quaternion_from_axis_angle",
+        run: |b| {
+            let mut i = In(b);
+            let (axis, angle) = (i.vec3(), i.f32());
+            let q = em::quaternion_from_axis_angle(axis, angle);
+            Out::default().f32s(&q.to_array()).0
+        },
+    },
+    Port {
+        name: "rgba8_lerp",
+        run: rgba8_lerp,
+    },
+    Port {
+        name: "face_new",
+        run: face_new,
+    },
+    Port {
+        name: "face_nearest",
+        run: face_nearest,
+    },
+    Port {
+        name: "door_open_span",
+        run: door_open_span,
+    },
+    Port {
+        name: "swing_expected_ms",
+        run: swing_expected_ms,
+    },
+];

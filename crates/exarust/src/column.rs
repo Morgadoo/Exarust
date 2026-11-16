@@ -23,7 +23,9 @@ impl Plugin for ColumnPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            log_column.run_if(|o: Res<Options>| !o.debug_column.is_empty()),
+            log_column
+                .run_if(|o: Res<Options>| !o.debug_column.is_empty())
+                .in_set(exa_physics::FramePhase::Capture),
         );
     }
 }

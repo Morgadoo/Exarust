@@ -461,13 +461,14 @@ pub fn view_targets(
 ///
 /// The original halves the field of view in radians in single precision,
 /// then divides the negated near distance by `cos/sin` of it, the cosine in
-/// double precision and the sine in single (its own polynomial; Rust's is
-/// within the last bit), stores that half height in single precision and
-/// multiplies it by the aspect in single. It stores both negated; this
-/// returns them positive.
+/// double precision and the sine in single (the engine's own polynomial,
+/// [`exa_physics::engine_math::sin_cos`]), stores that half height in
+/// single precision and multiplies it by the aspect in single. It stores
+/// both negated; this returns them positive.
 pub fn frustum_half_extents(fov_y_degrees: f32, aspect: f32, near: f32) -> (f32, f32) {
     let half = fov_y_degrees * (std::f32::consts::PI / 180.0) * 0.5;
-    let cotangent = f64::from(half).cos() / f64::from(half.sin());
+    let sine = exa_physics::engine_math::sin_cos(half).0;
+    let cotangent = f64::from(half).cos() / f64::from(sine);
     let height = (f64::from(-near) / cotangent) as f32;
     let width = height * aspect;
     (-width, -height)
@@ -938,6 +939,19 @@ mod tests {
         assert_eq!(view_range(12_500.0), 12_499.0);
         assert_eq!(view_range(0.0), 25_000.0);
         assert_eq!(view_range(f32::NAN), 25_000.0);
+    }
+
+    /// The sine is the engine's polynomial: the oracle's case (a 56.43°
+    /// view, near −0.5566) stores the half height 0x3E98EA0B, which Rust's
+    /// sine missed by two units.
+    #[test]
+    fn the_half_extents_take_the_engines_sine() {
+        let (_, y) = frustum_half_extents(
+            f32::from_bits(0x4261_bb36),
+            -0.0,
+            f32::from_bits(0xbf0e_7e6e),
+        );
+        assert_eq!((-y).to_bits(), 0x3e98_ea0b);
     }
 
     #[test]

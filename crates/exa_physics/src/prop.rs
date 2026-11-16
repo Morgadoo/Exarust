@@ -37,7 +37,9 @@ impl Plugin for PropPlugin {
             .init_resource::<crate::collision_share::CollisionChanges>()
             .add_systems(
                 PostUpdate,
-                register_props.after(TransformSystems::Propagate),
+                register_props
+                    .after(TransformSystems::Propagate)
+                    .in_set(crate::FramePostPhase::Placed),
             )
             .add_systems(
                 FixedUpdate,
@@ -191,7 +193,7 @@ fn skip_weapon_mass() -> bool {
 /// Builds the bodies of props spawned this frame, at their nodes' world
 /// transforms, asleep. A held item's body waits for its holder's
 /// ([`holder_built`]).
-fn register_props(
+pub fn register_props(
     mut commands: Commands,
     pending: Query<(Entity, &PendingProp)>,
     scrape_slots: Query<&PendingScrapes>,

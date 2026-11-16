@@ -43,7 +43,8 @@ impl Plugin for SupersamplePlugin {
                 follow_window,
                 sync_split_taps::<crate::material::ExaMaterial>,
             )
-                .chain(),
+                .chain()
+                .in_set(exa_physics::FramePostPhase::Prepare),
         );
     }
 }
@@ -205,7 +206,7 @@ fn window_size(window: &Window) -> UVec2 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn start_supersampling(
+pub fn start_supersampling(
     mut commands: Commands,
     mut split: ResMut<SplitTaps>,
     cameras: Query<(Entity, &Camera), Added<Supersample>>,

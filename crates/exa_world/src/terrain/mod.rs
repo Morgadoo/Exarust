@@ -83,22 +83,25 @@ impl Plugin for TerrainPlugin {
                     apply_splats,
                     give_terrain_gi,
                     bind_level_cube,
-                    exa_render::supersample::sync_split_taps::<TerrainMaterial>,
+                    exa_render::supersample::sync_split_taps::<TerrainMaterial>
+                        .before(exa_render::supersample::start_supersampling),
                     sync_plant_shadows,
-                    sync_plant_normal_map,
+                    sync_plant_normal_map.after(crate::fire::drive_hosts),
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(exa_physics::FramePostPhase::Prepare),
             )
             .add_plugins(blank_draw::TerrainDrawRulesPlugin)
             .init_resource::<composite_draw::CompositeDraws>()
             .add_systems(
                 Update,
                 (
-                    live::drive_terrain_stream,
+                    live::drive_terrain_stream.after(crate::fire::flicker),
                     composite_draw::release_terrain_caches,
                     composite_draw::draw_terrain_composites,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(exa_physics::FramePhase::World),
             );
     }
 }

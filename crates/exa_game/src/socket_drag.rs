@@ -191,7 +191,7 @@ pub fn give_back(
 pub struct SocketDrag(pub Option<usize>);
 
 /// Keeps a shown card's socket row on the live words of its item.
-fn refresh_card_sockets(mut view: ResMut<CardView>, objects: Option<Res<LiveObjects>>) {
+pub(crate) fn refresh_card_sockets(mut view: ResMut<CardView>, objects: Option<Res<LiveObjects>>) {
     let Some(objects) = objects else {
         return;
     };
@@ -211,8 +211,10 @@ pub struct SocketDragPlugin;
 
 impl Plugin for SocketDragPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SocketDrag>()
-            .add_systems(Update, refresh_card_sockets);
+        app.init_resource::<SocketDrag>().add_systems(
+            Update,
+            refresh_card_sockets.in_set(exa_physics::FramePhase::Gui),
+        );
     }
 }
 

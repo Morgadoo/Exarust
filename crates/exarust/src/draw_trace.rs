@@ -46,7 +46,8 @@ impl Plugin for DrawTracePlugin {
             PostUpdate,
             write_row
                 .after(TransformSystems::Propagate)
-                .run_if(resource_exists::<DrawTrace>),
+                .run_if(resource_exists::<DrawTrace>)
+                .in_set(exa_physics::FramePostPhase::Trace),
         );
     }
 }

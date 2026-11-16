@@ -359,9 +359,16 @@ impl Plugin for PowerSavePlugin {
         app.add_systems(
             Update,
             (
-                give_player_powers.after(crate::mind::runtime::attach_minds),
-                restore_saved_powers.after(give_player_powers),
-                log_player_powers.after(restore_saved_powers),
+                give_player_powers
+                    .in_set(exa_physics::FramePhase::Session)
+                    .after(crate::mind::runtime::attach_minds),
+                restore_saved_powers
+                    .in_set(exa_physics::FramePhase::Session)
+                    .after(crate::save_live::run_save_steps::<false>)
+                    .after(give_player_powers),
+                log_player_powers
+                    .in_set(exa_physics::FramePhase::Capture)
+                    .after(restore_saved_powers),
             ),
         );
     }

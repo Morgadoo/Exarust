@@ -140,6 +140,18 @@ impl Sweep {
         }
     }
 
+    /// [`Sweep::new`] as the pair test sets up a moved sphere's sweep: each
+    /// direction component has +0 added before its reciprocal (the original
+    /// adds (0, 0, 0, 1) to the four lanes), so a −0 component gives +∞
+    /// where [`Sweep::new`] gives −∞.
+    pub fn of_move(start: Vec3, end: Vec3) -> Self {
+        let sweep = Self::new(start, end);
+        Self {
+            inverse_direction: (sweep.direction + Vec3::ZERO).recip(),
+            ..sweep
+        }
+    }
+
     /// The squared distance from `point` to this sweep's segment.
     pub fn point_distance_squared(&self, point: Vec3) -> f32 {
         point_segment_distance_squared(point, self.origin, self.direction, self.length)

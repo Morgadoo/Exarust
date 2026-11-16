@@ -24,7 +24,7 @@ use exa_ui::blend::linear_opacity;
 pub struct TransitionOverlay(pub u8);
 
 #[derive(Component)]
-struct TransitionNode;
+pub(crate) struct TransitionNode;
 
 /// Over the HUD (900), the death fade (895) and the splash (950); under the
 /// cursor (1000).
@@ -37,7 +37,11 @@ impl Plugin for TransitionScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TransitionOverlay>()
             .add_systems(Startup, spawn)
-            .add_systems(Update, draw);
+            .add_systems(
+                Update,
+                draw.in_set(exa_physics::FramePhase::Gui)
+                    .after(crate::body_overlay::show_panel),
+            );
     }
 }
 
@@ -65,7 +69,7 @@ pub fn overlay_colour(alpha: u8) -> Color {
     Color::BLACK.with_alpha(linear_opacity([0.0; 3], f32::from(alpha) / 255.0))
 }
 
-fn draw(
+pub(crate) fn draw(
     overlay: Res<TransitionOverlay>,
     mind: Option<Res<crate::mind::runtime::MindFadeOverlay>>,
     mut nodes: Query<(&mut BackgroundColor, &mut Visibility), With<TransitionNode>>,

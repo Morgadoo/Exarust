@@ -186,7 +186,9 @@ impl Plugin for IdleOrbitPlugin {
             // After the hand (it reads what the hand holds this frame), and
             // so after the chase camera the hand picks through: the turned
             // yaw is followed from the next frame.
-            watch_idle.after(crate::hand::HandSystems),
+            watch_idle
+                .after(crate::hand::HandSystems)
+                .in_set(exa_physics::FramePhase::Hand),
         );
     }
 }

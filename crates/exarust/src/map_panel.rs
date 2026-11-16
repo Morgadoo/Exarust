@@ -154,9 +154,20 @@ impl Plugin for MapPanelPlugin {
             .add_systems(
                 Update,
                 (
-                    toggle_panel,
-                    show_panel,
-                    (press_switches, label_switches, press_levels, shade_buttons)
+                    toggle_panel.in_set(exa_physics::FramePhase::Input),
+                    show_panel
+                        .in_set(exa_physics::FramePhase::Gui)
+                        .after(exa_game::power_screen::draw),
+                    (
+                        press_switches
+                            .in_set(exa_physics::FramePhase::Gui)
+                            .after(label_switches),
+                        label_switches.in_set(exa_physics::FramePhase::Gui),
+                        press_levels
+                            .in_set(exa_physics::FramePhase::Gui)
+                            .before(exa_game::menu_screen::input),
+                        shade_buttons.in_set(exa_physics::FramePhase::Gui),
+                    )
                         .run_if(|panel: Res<MapPanel>| panel.open),
                 )
                     .chain()

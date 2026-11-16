@@ -39,30 +39,41 @@ impl Plugin for RoomViewPlugin {
         app.init_resource::<RoomView>()
             .init_resource::<ForcedRoom>()
             .init_resource::<DoorToggle>()
-            .add_systems(Update, toggle_nearest_door)
             .add_systems(
-                PostUpdate,
-                (assign_static_rooms, inherit_rooms)
-                    .after(TransformSystems::Propagate)
-                    .after(VisibilitySystems::CalculateBounds),
+                Update,
+                toggle_nearest_door.in_set(exa_physics::FramePhase::Input),
             )
             .add_systems(
                 PostUpdate,
                 (
-                    bind_placed_doors,
+                    assign_static_rooms,
+                    inherit_rooms
+                        .after(bevy::mesh::mark_3d_meshes_as_changed_if_their_assets_changed),
+                )
+                    .after(TransformSystems::Propagate)
+                    .after(VisibilitySystems::CalculateBounds)
+                    .in_set(exa_physics::FramePostPhase::View),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    bind_placed_doors.after(give_lights_lids),
                     follow_door_bodies,
                     give_shell_materials,
                     track_rooms,
                 )
                     .chain()
                     .after(TransformSystems::Propagate)
-                    .before(VisibilitySystems::VisibilityPropagate),
+                    .before(VisibilitySystems::VisibilityPropagate)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             )
             .add_systems(
                 PostUpdate,
                 give_lights_lids
+                    .before(exa_render::cube_shadows::add_cube_shadows)
                     .after(TransformSystems::Propagate)
-                    .before(exa_render::lights::LightsSystems::Cubes),
+                    .before(exa_render::lights::LightsSystems::Cubes)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             );
     }
 }
@@ -169,7 +180,7 @@ pub const DOOR_LOG_FRAMES: u32 = 60;
 
 /// The debug toggle's frame count and the leaf it watches.
 #[derive(Default)]
-struct ToggleState {
+pub struct ToggleState {
     frames: u32,
     leaf: Option<Entity>,
     /// The frame the toggle landed on.
@@ -178,7 +189,7 @@ struct ToggleState {
     waiting: bool,
 }
 
-fn toggle_nearest_door(
+pub fn toggle_nearest_door(
     toggle: Res<DoorToggle>,
     level: Option<Res<LevelRooms>>,
     anchors: Query<&GlobalTransform, With<RoomAnchor>>,
@@ -468,7 +479,7 @@ fn inherit_rooms(
 /// [`Rooms::room_at`]); a light outside every room, or in a room without a
 /// lid, takes none. A light whose lid changes (it moved to another room, or
 /// the shells arrived) has its faces put out of date.
-fn give_lights_lids(
+pub fn give_lights_lids(
     mut commands: Commands,
     level: Option<Res<LevelRooms>>,
     shells: Query<(&RoomShell, &Mesh3d)>,
@@ -579,7 +590,7 @@ type ShellQuery<'w, 's> = Query<
 /// Moves the active rooms with the anchor and shows what each room's state
 /// asks for.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn track_rooms(
+pub fn track_rooms(
     time: Res<Time<Real>>,
     view: Res<RoomView>,
     level: Option<ResMut<LevelRooms>>,

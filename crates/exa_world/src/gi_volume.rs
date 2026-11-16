@@ -46,7 +46,8 @@ impl Plugin for GiVolumePlugin {
                 (
                     feed_shading_quality,
                     publish_base_ambient,
-                    collect_source,
+                    collect_source
+                        .after(bevy::mesh::mark_3d_meshes_as_changed_if_their_assets_changed),
                     follow_camera,
                     publish_neighbour_volumes,
                     update_dynamic,
@@ -56,7 +57,8 @@ impl Plugin for GiVolumePlugin {
                     .after(TransformSystems::Propagate)
                     .after(VisibilitySystems::UpdateFrusta)
                     .after(crate::shadow_links::LightCells)
-                    .before(exa_render::gi::GiSystems),
+                    .before(exa_render::gi::GiSystems)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
     }
 }

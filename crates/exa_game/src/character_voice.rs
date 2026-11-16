@@ -20,7 +20,12 @@ pub struct CharacterVoicePlugin;
 
 impl Plugin for CharacterVoicePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, give_voices);
+        app.add_systems(
+            Update,
+            give_voices
+                .in_set(exa_physics::FramePhase::Session)
+                .after(crate::thaum::power::teach_on_death),
+        );
     }
 }
 
@@ -67,7 +72,7 @@ pub fn voice_of(
 const SOUND_GAIN: f32 = 1.0;
 
 /// Gives each new fighter its voice, once.
-fn give_voices(
+pub(crate) fn give_voices(
     mut commands: Commands,
     game: Option<Res<Game>>,
     fighters: Query<(Entity, &Fighter, Option<&CharacterData>), Added<Fighter>>,

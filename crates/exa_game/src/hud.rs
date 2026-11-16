@@ -53,7 +53,14 @@ impl Plugin for HudPlugin {
             .init_resource::<HeartbeatState>()
             .add_systems(
                 Update,
-                (pick_hud, pick_compass, pick_status, heartbeat)
+                (
+                    pick_hud.in_set(exa_physics::FramePhase::Hand),
+                    pick_compass.in_set(exa_physics::FramePhase::Hand),
+                    pick_status.in_set(exa_physics::FramePhase::Hand),
+                    heartbeat
+                        .in_set(exa_physics::FramePhase::World)
+                        .after(crate::thaum::effect_draw::ripple_strikes),
+                )
                     .chain()
                     .after(crate::player::chase_camera)
                     .before(exa_ui::DrawHud),
@@ -63,14 +70,14 @@ impl Plugin for HudPlugin {
 
 /// Values the heartbeat needs from frame to frame.
 #[derive(Resource, Default)]
-struct HeartbeatState {
+pub(crate) struct HeartbeatState {
     /// When the last heartbeat started (s of game time).
     last: Option<f64>,
     sound: Option<Entity>,
 }
 
 #[derive(Component)]
-struct HeartbeatSound;
+pub(crate) struct HeartbeatSound;
 
 /// What the HUD reads off the player's body.
 type HudBody = (
@@ -87,7 +94,7 @@ type HudBody = (
 /// gauge in combat mode, filled to its arm's stamina. The power bar's flag
 /// is the original's: set when the bar opens, cleared when its closing
 /// animation has run ([`power_bar_up`]).
-fn pick_hud(
+pub(crate) fn pick_hud(
     players: Query<&Children, With<Player>>,
     bodies: Query<HudBody>,
     view: Option<Res<crate::flow::GameView>>,
@@ -245,7 +252,7 @@ fn pick_status(
 /// player's body, plays its sound and ends both after 7 s, or when its
 /// 1 s fade-out ([`Heartbeat::start_fade`]) has run.
 #[allow(clippy::too_many_arguments)]
-fn heartbeat(
+pub(crate) fn heartbeat(
     mut commands: Commands,
     mut weakened: MessageReader<Weakened>,
     player_bodies: Query<(), With<PlayerBody>>,

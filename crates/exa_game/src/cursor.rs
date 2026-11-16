@@ -103,7 +103,8 @@ impl Plugin for CursorPlugin {
             Update,
             pick_cursor
                 .after(crate::player::chase_camera)
-                .before(exa_ui::DrawWorldCursor),
+                .before(exa_ui::DrawWorldCursor)
+                .in_set(exa_physics::FramePhase::Cursor),
         );
     }
 }

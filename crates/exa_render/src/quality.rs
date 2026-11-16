@@ -71,7 +71,10 @@ impl Plugin for QualityPlugin {
         app.init_resource::<ShadowQuality>()
             .init_resource::<ShadingQuality>()
             .init_resource::<MultisampleSetting>()
-            .add_systems(PostUpdate, (sync_shadow_maps, sync_multisample));
+            .add_systems(
+                PostUpdate,
+                (sync_shadow_maps, sync_multisample).in_set(exa_physics::FramePostPhase::Prepare),
+            );
     }
 }
 

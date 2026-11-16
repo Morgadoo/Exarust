@@ -86,6 +86,22 @@ fn no_lasting_wounds_take_red_damage_from_yellow() {
     assert_eq!((human.yellow, human.red), (0.152, 0.19));
 }
 
+/// A NaN red amount on a body with no lasting wounds leaves yellow NaN,
+/// which is not under [`LOW_HEALTH`] for the original's unordered compare:
+/// the blow only hurts (the oracle's case 29; the port used to weaken).
+#[test]
+fn a_nan_yellow_only_hurts() {
+    let mut feral = health(0.25, 0.25);
+    let taken = feral.take(vital(0.27, f32::NAN), FERAL, StateFlags::NONE, false);
+    assert!(feral.yellow.is_nan());
+    assert_eq!(taken, Taken::Hurt);
+    // A NaN red bar scales yellow by the NaN share left (case 41).
+    let mut h = health(0.203_773_78, f32::NAN);
+    let taken = h.take(vital(0.63, 0.15), HUMAN, StateFlags::NONE, false);
+    assert!(h.yellow.is_nan());
+    assert_eq!(taken, Taken::Hurt);
+}
+
 /// A potion halves the yellow amount's share (a twentieth): the same
 /// damage leaves a human yellow 0.171 (0.17099999 in single precision)
 /// and red 0.19.

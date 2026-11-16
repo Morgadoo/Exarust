@@ -862,6 +862,21 @@ fn a_step_keeps_off_the_foe() {
     assert_eq!(v, Vec3::new(-200.0 * (56_000.0f32 / 80_000.0), 0.0, 0.0));
 }
 
+/// Inside the circle with the distance squared not under the radius the
+/// original stores a zero vector, its height too (the oracle's case: a
+/// step 88.8 cm high is zeroed).
+#[test]
+fn a_zeroed_step_loses_its_height_too() {
+    let mut v = Vec3::new(-9.395_402, 88.772_74, 29.511_076);
+    keep_off(
+        Vec3::new(214.566_3, 0.0, -156.249_85),
+        Vec3::new(210.316, 0.0, -169.445_8),
+        0.630_391_1,
+        &mut v,
+    );
+    assert_eq!(v, Vec3::ZERO);
+}
+
 #[test]
 fn friends_in_the_way_hold_the_strike() {
     let ahead = Bystander {
@@ -2047,4 +2062,19 @@ fn the_morale_drifts_stress_alarm_courage_panic_and_jitter() {
     );
     assert!((down.health_ratio - 0.6).abs() < 1e-6);
     assert_eq!(down.jitter, -1.0);
+}
+
+/// A blast's place bearing is the engine's heading of the flat offset
+/// turned half a circle in double precision (the oracle's first differing
+/// case: the single-precision turn was one ulp above).
+#[test]
+fn a_blast_bearing_turns_in_double() {
+    let blast = BlastStep {
+        chest: Vec3::new(702.667_24, -246.879_33, 417.516_4),
+        aim: Vec3::new(0.878_298_34, -0.566_801_2, -0.941_918_43),
+        released: false,
+        at: Vec3::ZERO,
+    };
+    let s = blast_place(blast, Vec3::new(-7.303_860_7, 242.548_75, -649.824_65));
+    assert_eq!(s.bearing.to_bits(), 0x3f30_ec4f);
 }

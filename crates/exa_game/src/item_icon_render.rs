@@ -176,10 +176,13 @@ impl Plugin for ItemIconPlugin {
                     prepare_icon_scenes,
                     paint_icon_jobs,
                     start_icon_readbacks,
-                    expire_icon_jobs,
+                    expire_icon_jobs
+                        .after(crate::gui_screens::open_requested_containers)
+                        .after(crate::gui_screens::release_closed_icons),
                 )
                     .chain()
-                    .in_set(IconRenderSystems),
+                    .in_set(IconRenderSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_observer(icon_readback_complete);
     }
@@ -489,7 +492,7 @@ fn icon_paint(
 /// Starts the prepared icons: the GPU camera, or the CPU paint. The plan is
 /// the reviewed render plan; the camera and extents come from the same
 /// scene bounds, so the icon is framed exactly as the plan says.
-fn paint_icon_jobs(
+pub(crate) fn paint_icon_jobs(
     mut commands: Commands,
     mut icons: ResMut<PanelIcons>,
     mode: Res<IconRenderMode>,

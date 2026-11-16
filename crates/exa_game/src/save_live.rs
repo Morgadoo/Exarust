@@ -326,7 +326,7 @@ pub fn loaded_player_morph(record: &CharacterRecord) -> exa_assets::BodyMorph {
 
 /// Posts the loaded player's request with its body's job (the morphed body
 /// model, parsed here; the stream thread builds it).
-fn post_loaded_player(
+pub fn post_loaded_player(
     mut commands: Commands,
     stream: Option<ResMut<LoadedPlayerStream>>,
     requests: Option<Res<crate::content_requests::ContentRequests>>,
@@ -539,21 +539,24 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 (
                     make_slot_lists,
-                    follow_the_view,
+                    follow_the_view.after(crate::flow::apply_steps),
                     report_saves,
                     scripted_saves,
                     run_checkpoint_scripts,
                     journey_saves,
                     // Every save first saves the open screens.
                     crate::gui_screens::save_open_screens_for_saves::<false>,
-                    save_to_new_slot,
-                    run_save_steps::<false>.in_set(SaveLiveSystems::Steps),
-                    load_arena_slot,
-                    load_story_slot,
+                    save_to_new_slot.after(crate::world_clock::apply_restore),
+                    run_save_steps::<false>
+                        .after(crate::experience_live::store_account_experience)
+                        .in_set(SaveLiveSystems::Steps),
+                    load_arena_slot.after(rebuild_player).after(crate::flow::reset_level_state),
+                    load_story_slot.after(crate::arena_live::continue_round),
                     take_loaded_journal,
                 )
                     .chain()
-                    .run_if(resource_exists::<SaveFolder>),
+                    .run_if(resource_exists::<SaveFolder>)
+                    .in_set(exa_physics::FramePhase::Session),
             )
             // The steps a frame asks for are written before a level change
             // asked in the same frame tears the level down, and in the frame
@@ -592,19 +595,24 @@ impl Plugin for SaveLivePlugin {
                 post_loaded_player
                     .after(load_story_slot)
                     .run_if(resource_exists::<LoadedPlayerStream>)
-                    .run_if(resource_exists::<crate::content_requests::ContentRequests>),
+                    .run_if(resource_exists::<crate::content_requests::ContentRequests>)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 Update,
                 sync_before_level_change
-                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+                    .after(crate::level_save::restore_saved_state)
+                    .after(crate::body_inventory::ensure_possessions)
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .add_message::<RebuildPlayer>()
             .add_systems(
                 Update,
-                rebuild_player
+                rebuild_player.after(crate::power_save::restore_saved_powers)
                     .after(SaveLiveSystems::Steps)
-                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .init_resource::<crate::left_behind::LeftBody>()
             .configure_sets(
@@ -616,20 +624,36 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 (prefer_saved_section, crate::left_behind::forget_on_level_change)
                     .chain()
-                    .in_set(SaveLiveSystems::SavedSection),
+                    .in_set(SaveLiveSystems::SavedSection)
+                    .in_set(exa_physics::FramePhase::Session),
             )
-            .add_systems(Update, crate::follower_travel::restore_arrivals)
-            .add_systems(Update, crate::level_save::restore_saved_state)
+            .add_systems(Update, crate::follower_travel::restore_arrivals
+                .in_set(exa_physics::FramePhase::Session)
+                .after(crate::body_inventory::activate_cores)
+                .after(bench_the_manager)
+                .after(crate::mind::runtime::attach_minds))
+            .add_systems(Update, crate::level_save::restore_saved_state
+                .in_set(exa_physics::FramePhase::Session)
+                .before(exa_ai::brain::forget_removed)
+                .after(crate::follower_travel::restore_arrivals))
             .init_resource::<crate::save_level::SceneContentLists>()
-            .add_systems(Update, crate::save_level::track_scene_content)
+            .add_systems(Update, crate::save_level::track_scene_content
+                .in_set(exa_physics::FramePhase::Session))
             .add_systems(
                 Update,
                 crate::world_characters::track_local_characters
-                    .before(crate::follower_travel::restore_arrivals),
+                    .before(crate::follower_travel::restore_arrivals)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 Update,
-                bench_the_manager.before(crate::arena_live::stand_first_round),
+                bench_the_manager
+                    .after(crate::arena_match::tick_arena_match)
+                    .after(crate::npc_search::load_search_items)
+                    .after(crate::character_voice::give_voices)
+                    .after(crate::equip::redress_bodies)
+                    .before(crate::arena_live::stand_first_round)
+                    .in_set(exa_physics::FramePhase::Session),
             );
     }
 }
@@ -658,7 +682,7 @@ type BenchControls<'a> = (
 );
 
 #[allow(clippy::too_many_arguments)]
-fn bench_the_manager(
+pub fn bench_the_manager(
     mut commands: Commands,
     scene: Option<Res<crate::arena_live::ArenaScene>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
@@ -729,7 +753,7 @@ fn bench_the_manager(
 /// not promote: the equip after the load copies the items into the new
 /// local tier, as the original's next fight does. [Exarust's: the other
 /// changes after a world reset (an arena entry, a scripted jump) promote.]
-fn sync_before_level_change(
+pub fn sync_before_level_change(
     mut requests: MessageReader<exa_world::level_lifecycle::LevelChangeRequest>,
     mut live: ResMut<exa_assets::live_objects::LiveObjects>,
     mut players: PlayerSaveQuery,
@@ -1692,7 +1716,7 @@ pub fn restore_manager_loadouts(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn save_to_new_slot(
+pub(crate) fn save_to_new_slot(
     mut requests: MessageReader<SaveToNewSlot>,
     lists: Option<ResMut<SlotLists>>,
     levels: Query<&exa_world::LevelRoot>,
@@ -1973,7 +1997,7 @@ type SaveClocks<'w> = (
 /// every frame, so neither sees a step twice, and only the one for the
 /// app's state writes.
 #[allow(clippy::too_many_arguments)]
-fn run_save_steps<const AT_QUIT: bool>(
+pub(crate) fn run_save_steps<const AT_QUIT: bool>(
     mut commands: Commands,
     mut steps: MessageReader<SaveStep>,
     lists: Option<ResMut<SlotLists>>,
@@ -2571,7 +2595,7 @@ fn regenerate_saved_lists(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_arena_slot(
+pub(crate) fn load_arena_slot(
     mut commands: Commands,
     request: Option<Res<ArenaSlotLoad>>,
     hub: Option<Res<crate::arena_hub_live::ArenaHub>>,

@@ -128,11 +128,11 @@ pub fn border_image(width: u32, height: u32, alpha: u8) -> (UVec2, Vec<u8>) {
 }
 
 #[derive(Component)]
-struct BorderNode;
+pub(crate) struct BorderNode;
 
 /// The image drawn and what it was drawn for.
 #[derive(Resource, Default)]
-struct BorderState {
+pub(crate) struct BorderState {
     painted: Option<(UVec2, u8)>,
     image: Option<Handle<Image>>,
 }
@@ -141,7 +141,12 @@ pub(crate) fn plugin(app: &mut App) {
     app.init_resource::<Heartbeat>()
         .init_resource::<BorderState>()
         .add_systems(Startup, spawn)
-        .add_systems(Update, draw.in_set(DrawHud));
+        .add_systems(
+            Update,
+            draw.after(crate::hud_status::draw_status)
+                .in_set(DrawHud)
+                .in_set(exa_physics::FramePhase::Draw),
+        );
 }
 
 /// Under the HUD's bars.
@@ -165,7 +170,7 @@ fn spawn(mut commands: Commands) {
     ));
 }
 
-fn draw(
+pub(crate) fn draw(
     beat: Res<Heartbeat>,
     time: Res<Time<Real>>,
     loading: Option<Res<LoadingStatus>>,

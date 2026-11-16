@@ -18,10 +18,11 @@ head height comes first in the fixed step.
 `schedule_ambiguity_test` builds the same App and fails on any two systems
 of one schedule that touch the same data with no order between them
 (Bevy's ambiguity analysis): every schedule of the fixed step, the
-character tick, the brains' chain and `PreUpdate` are fully ordered;
-`Update` and `PostUpdate` keep a TODO count of their unordered pairs
-(`FRAME_TODO`), which may only fall. `EXA_AMBIGUITY_DUMP=1` prints each
-schedule's sorted order, edges and pairs.
+character tick, the brains' chain, `PreUpdate`, `Update` and `PostUpdate`
+are fully ordered (the frame's two in `exa_physics::frame_phase`'s
+phases). `ALLOWED` holds the pairs with Bevy's own systems that no public
+set or path names, each with its reason (an entry may name a module).
+`EXA_AMBIGUITY_DUMP=1` prints each schedule's sorted order, edges and pairs.
 `exarust grid <scene>…` (`src/grid.rs`) opens one window split into four
 quadrants, each a separate game in a child process started with
 `--offscreen <file>` (`src/offscreen.rs`): no OS window, its cameras

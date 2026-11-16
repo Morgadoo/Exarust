@@ -29,7 +29,8 @@ impl Plugin for MaterialsPlugin {
             .init_resource::<FadeToBlack>()
             .add_systems(
                 PostUpdate,
-                (mark_shadowless, sync_fade_to_black, order_blended_states),
+                (mark_shadowless, sync_fade_to_black, order_blended_states)
+                    .in_set(exa_physics::FramePostPhase::Prepare),
             );
     }
 }
@@ -115,7 +116,7 @@ fn sync_fade_to_black(
 }
 
 /// Meshes whose material casts no shadows leave the shadow maps.
-fn mark_shadowless(
+pub fn mark_shadowless(
     mut commands: Commands,
     added: Query<(Entity, &MeshMaterial3d<ExaMaterial>), Added<MeshMaterial3d<ExaMaterial>>>,
     materials: Res<Assets<ExaMaterial>>,
