@@ -1189,6 +1189,11 @@ fn tick_arena_match(
     mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
     mut fighters: Query<MatchFighter>,
     mut control: Option<ResMut<crate::player_controls::PlayerControl>>,
+    (mut steps, mut spectate, mut commands): (
+        Option<ResMut<crate::flow::FlowSteps>>,
+        Option<ResMut<crate::spectate::SpectateSession>>,
+        Commands,
+    ),
 ) {
     let (Some(mut arena), Some(clock)) = (arena, clock) else {
         return;
@@ -1307,10 +1312,39 @@ fn tick_arena_match(
                 arena.screen = Some(crate::arena_session::Screen::after(round.state));
             }
             arena.manager_screen = Some(down.screen);
-            // The manager's fall blocks the player's controls (after the
-            // windows close and the tip shows).
+            // The manager's fall, as the tick runs it: the heartbeat's
+            // fade, every game screen and the power tree's bar closed, the
+            // tip of the fall (3 fatal, else 2), then the player's controls
+            // blocked.
+            commands.queue(|world: &mut World| {
+                crate::gui_screens::sweep_screens(
+                    world,
+                    crate::gui_screens::ScreenSweep::EveryAndBar,
+                );
+            });
+            if let Some(steps) = steps.as_deref_mut() {
+                steps.steps.extend([
+                    crate::flow::Step::FadeHeartbeat,
+                    crate::flow::Step::Tip(down.screen),
+                ]);
+            }
             if let Some(control) = control.as_deref_mut() {
                 crate::controls_live::block_controls(control, true, "the manager fell");
+            }
+            // With a teammate still standing the match goes on watched: the
+            // spectate session starts with its room walk forced to the
+            // arena's spawn spot (the hub's arrival ends it). [The GUI byte
+            // the original sets before it is not traced.]
+            if down.ours_standing > 0
+                && let Some(spectate) = spectate.as_deref_mut()
+            {
+                spectate.start();
+                spectate.arena = true;
+                spectate.forced_room_at = Some(Vec3::from_array(arena.spawn_at) / 100.0);
+                info!(
+                    "arena match: the manager fell with {} standing; the match is spectated",
+                    down.ours_standing
+                );
             }
             info!(
                 "arena match: the manager fell (screen {}, fatal {})",
@@ -2286,6 +2320,48 @@ mod tests {
         // The manager's death wipes the career: nothing is logged for it.
         assert!(arena.log.records.is_empty());
         assert_eq!(arena.deaths, 0);
+    }
+
+    /// The manager's fall through the live tick: the heartbeat fades and the
+    /// fall's tip shows (3 fatal), and with a company fighter still
+    /// standing the spectate session starts forced to the arena's room; a
+    /// fall with nobody left standing starts none.
+    #[test]
+    fn the_managers_fall_shows_its_tip_and_spectates_a_standing_teammate() {
+        for standing in [true, false] {
+            let mut app = match_app(true, false);
+            app.init_resource::<crate::flow::FlowSteps>()
+                .init_resource::<crate::spectate::SpectateSession>();
+            app.world_mut().resource_mut::<ArenaMatch>().spawn_at = [100.0, 0.0, 200.0];
+            if standing {
+                app.world_mut().spawn((
+                    Fighter::default(),
+                    Condition::NORMAL,
+                    crate::scene_bodies::SceneFighter {
+                        team: 0,
+                        company: true,
+                        id: 1,
+                        damage: 0.0,
+                        condition_health: 0.0,
+                        act_at_ms: 0,
+                        behaviour: None,
+                    },
+                ));
+            }
+            app.update();
+            app.world_mut().resource_mut::<EffectClock>().now_ms = 1500;
+            app.update();
+            assert_eq!(app.world().resource::<ArenaMatch>().manager_screen, Some(3));
+            let steps = &app.world().resource::<crate::flow::FlowSteps>().steps;
+            assert!(steps.contains(&crate::flow::Step::FadeHeartbeat));
+            assert!(steps.contains(&crate::flow::Step::Tip(3)));
+            let spectate = app.world().resource::<crate::spectate::SpectateSession>();
+            assert_eq!(spectate.active, standing);
+            if standing {
+                assert!(spectate.arena);
+                assert_eq!(spectate.forced_room_at, Some(Vec3::new(1.0, 0.0, 2.0)));
+            }
+        }
     }
 
     #[test]

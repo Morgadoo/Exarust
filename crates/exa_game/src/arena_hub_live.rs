@@ -151,6 +151,7 @@ impl Plugin for ArenaHubPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ArenaHub>()
             .init_resource::<HubRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
             .add_message::<crate::save_live::SaveStep>()
@@ -204,7 +205,7 @@ impl Plugin for ArenaHubPlugin {
                     // launch's level change tears the hub down.
                     hub_clicks.before(crate::save_live::SaveLiveSystems::Steps),
                     scripted_shop,
-                    hub_restock,
+                    (hub_stow_won, hub_restock).chain(),
                     hub_session_fall,
                     shop_drag,
                     sync_shop_preview,
@@ -234,7 +235,8 @@ impl Plugin for ArenaHubPlugin {
             .add_systems(Update, read_hire_facts.before(enter_loaded_hub))
             .add_systems(
                 Update,
-                place_hired_specialists
+                (remove_left_figures, place_hired_specialists)
+                    .chain()
                     .after(enter_loaded_hub)
                     .after(crate::hub_forms::hub_form_input),
             );
@@ -431,6 +433,41 @@ fn place_hired_specialists(
             "arena hub: the hired {:?} {} stands at its spot",
             member.profession, member.name
         );
+    }
+}
+
+/// A specialist's leaving takes his figure from the hub, as the leaving's
+/// routine does: the first character whose record's profession nibble is
+/// the leaver's (4 a merchant, 5 a physician) has its item lists cleared and
+/// its body removed, and the hub may place a new hire of that profession.
+pub(crate) fn remove_left_figures(
+    mut hub: ResMut<ArenaHub>,
+    career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+    mut characters: Query<(Entity, &mut exa_character::record::CharacterData)>,
+    mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
+) {
+    let Some(mut career) = career else {
+        return;
+    };
+    if career.figures_left.is_empty() {
+        return;
+    }
+    for nibble in std::mem::take(&mut career.figures_left) {
+        let found = characters
+            .iter_mut()
+            .find(|(_, data)| data.record.profession() >> 28 == nibble);
+        if let Some((entity, mut data)) = found {
+            data.clear_items();
+            scene_commands.write(crate::scene_bodies::SceneCommand::Despawn(entity));
+            info!("arena hub: the leaving specialist's figure (profession {nibble}) is removed");
+        }
+        let profession = if nibble == 4 {
+            crate::career::Profession::Merchant
+        } else {
+            crate::career::Profession::Physician
+        };
+        hub.specialists_placed
+            .retain(|&placed| placed != profession);
     }
 }
 
@@ -951,7 +988,7 @@ fn confirming(windows: &HubWindows) -> bool {
 /// item catalogue (for the shelf's names), the live stock world and the
 /// name table the trade window shows.
 #[derive(bevy::ecs::system::SystemParam)]
-struct HubShop<'w, 's> {
+pub(crate) struct HubShop<'w, 's> {
     game: Option<Res<'w, exa_assets::Game>>,
     catalogue: Option<ResMut<'w, exa_items::catalogue::ItemCatalogue>>,
     live: ResMut<'w, crate::shop_stock::LiveShopStock>,
@@ -960,6 +997,8 @@ struct HubShop<'w, 's> {
     factories: ResMut<'w, crate::shop_stock::ShopFactories>,
     names: ResMut<'w, crate::hub_windows::HubItemNames>,
     icons: Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
+    /// The frame's engine generator the shop panels' place pass draws from.
+    roll: ResMut<'w, crate::thaum::live::FrameEffectRoll>,
     players: Query<
         'w,
         's,
@@ -969,6 +1008,16 @@ struct HubShop<'w, 's> {
     /// The company's arsenal and holders a confirmed trade reaches.
     stores: Option<ResMut<'w, crate::save_live::ArenaStores>>,
     kinds: Option<Res<'w, crate::arsenal::ShelfKinds>>,
+}
+
+impl HubShop<'_, '_> {
+    /// The icon manager and the generator of the shop panels' place pass.
+    fn placing(&mut self) -> Option<crate::item_panel_draw::Placing<'_>> {
+        let roll = self.roll.word();
+        self.icons
+            .as_deref_mut()
+            .map(|icons| crate::item_panel_draw::Placing { icons, roll })
+    }
 }
 
 /// The shop line for an item's value: a copy's own model value word in the
@@ -1104,6 +1153,42 @@ impl HubShop<'_, '_> {
                     })
                     .collect();
                 bevy::log::info!("hub shop: {panel:?} entry centres (id, screen) {centres:?}");
+            }
+        }
+    }
+
+    /// Makes a won item an item instance in the live object database, as
+    /// the week's verdict has it: the week's prize graded pristine, a
+    /// season reward by the reward maker
+    /// ([`crate::arena_rewards::make_season_reward`]). Without a base tier
+    /// the item stays the id it was drawn as. [Exarust stand-in]
+    fn make_won(&mut self, item: crate::arena_rewards::WonItem) -> u32 {
+        if let Some(game) = self.game.as_deref() {
+            self.objects.ensure_base(&game.0);
+        }
+        if self.objects.db().base.is_empty() {
+            return item.source();
+        }
+        match item {
+            crate::arena_rewards::WonItem::Prize(id) => {
+                let made = self.with_world(|world| {
+                    exa_items::randomise::grade_object(world, id, crate::arena_rewards::PRIZE_GRADE)
+                });
+                self.live.take_refresh_state();
+                // A prize the database cannot read stays the id it was
+                // drawn as rather than an empty entry. [Exarust guard]
+                if made == 0 { id } else { made }
+            }
+            crate::arena_rewards::WonItem::SeasonReward(id) => {
+                let entropy = crate::arena_match::counter_now() as u32;
+                let mut seed = entropy;
+                crate::arena_rewards::make_season_reward(
+                    self.objects.db_mut(),
+                    id,
+                    &self.palette.0,
+                    entropy,
+                    &mut seed,
+                )
             }
         }
     }
@@ -1436,7 +1521,7 @@ fn scripted_shop(
             }
             let trade = (10, crate::hub_windows::SHOP_SIZE.1 - 20);
             let traded = if took {
-                windows.shop_click(trade, &mut career, shop.icons.as_deref_mut())
+                windows.shop_click(trade, &mut career, shop.placing().as_mut())
             } else {
                 None
             };
@@ -1466,6 +1551,41 @@ fn scripted_shop(
             buy.stage = 0;
         }
         _ => buy.stage = 0,
+    }
+}
+
+/// The week's verdict's stow: each item the company won is made an item
+/// instance ([`HubShop::make_won`]) and stowed in the arsenal free of any
+/// holder (flags 0), shelved by the kind of the id it was drawn as. A hub
+/// career with no arsenal drops them.
+pub(crate) fn hub_stow_won(
+    mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+    mut shop: HubShop,
+) {
+    let Some(career) = career.as_mut() else {
+        return;
+    };
+    if career.won_items.is_empty() {
+        return;
+    }
+    let won = std::mem::take(&mut career.won_items);
+    if shop.stores.is_none() {
+        return;
+    }
+    for item in won {
+        let made = shop.make_won(item);
+        let kind = shop
+            .kinds
+            .as_deref()
+            .map_or_else(Default::default, |kinds| kinds.kind(item.source()));
+        let Some(stores) = shop.stores.as_deref_mut() else {
+            return;
+        };
+        let stowed = stores.arsenal.stow(made, kind, 0);
+        info!(
+            "hub arsenal: the won item {:?} is made {made:#x} and stowed ({stowed})",
+            item
+        );
     }
 }
 
@@ -1526,8 +1646,8 @@ pub fn staff_order(stores: Option<&crate::save_live::ArenaStores>) -> Option<&[i
 }
 
 /// Writes what the board's fighter tables changed back into the arena: on
-/// the tournament tab the selected event's entrants (a join rewrites the
-/// row from the lineup, a leaving drops its entrant and moves the later
+/// the tournament tab the selected event's entrants (a join or a move
+/// within the lineup rewrites the row from the lineup, a leaving drops its entrant and moves the later
 /// ones down), on the other tabs the lineup order into the staff's order
 /// list when the staff matches the board's pool.
 pub fn board_table_answer(
@@ -1540,7 +1660,10 @@ pub fn board_table_answer(
     let Some(board) = windows.board.as_ref() else {
         return;
     };
-    if !matches!(action, BoardTableAction::Joined | BoardTableAction::Left(_)) {
+    if !matches!(
+        action,
+        BoardTableAction::Joined | BoardTableAction::Reordered | BoardTableAction::Left(_)
+    ) {
         return;
     }
     if board.tab == exa_ui::match_board::BoardTab::Tournament {
@@ -1964,6 +2087,10 @@ fn hub_clicks(
                             } else if action == exa_ui::match_board::BoardAction::Close {
                                 windows.close_window();
                                 hub.busy = false;
+                            } else if action == exa_ui::match_board::BoardAction::ChooseLineup {
+                                // The weapon pane's Choose opens the event's
+                                // lineup on the loadout form.
+                                windows.open_lineup(&mut career);
                             } else if action == exa_ui::match_board::BoardAction::Forfeit {
                                 // The tournament's Forfeit asks first; its
                                 // Yes forfeits every undecided event.
@@ -1975,7 +2102,7 @@ fn hub_clicks(
                         }
                         HubWindowKind::Shop => {
                             if let Some(trade) =
-                                windows.shop_click(local, &mut career, shop.icons.as_deref_mut())
+                                windows.shop_click(local, &mut career, shop.placing().as_mut())
                             {
                                 let _ = shop.arena_trade(&trade, &mut career);
                             }
@@ -2174,6 +2301,7 @@ fn shop_drag(
     game: Option<Res<exa_assets::Game>>,
     mut items: ResMut<crate::doll_view::DollItems>,
     pick: crate::loadout_kit::PreviewPick,
+    mut roll: ResMut<crate::thaum::live::FrameEffectRoll>,
 ) {
     let pressed = buttons.just_pressed(MouseButton::Left);
     let released = buttons.just_released(MouseButton::Left);
@@ -2346,7 +2474,14 @@ fn shop_drag(
                     match icons.as_deref_mut() {
                         Some(icons) => {
                             let (icon, _) = icons.reserve(id, flags, catalogue);
-                            icons.add_placed(&mut shop.panels.pack, id, icon, flags, bulk);
+                            icons.add_placed(
+                                &mut shop.panels.pack,
+                                id,
+                                icon,
+                                flags,
+                                bulk,
+                                roll.word(),
+                            );
                         }
                         None => {
                             shop.panels.pack.add_at_centre(id, 0, flags, bulk);
@@ -2715,6 +2850,40 @@ mod tests {
         assert!(board.team.is_empty());
     }
 
+    /// A lineup row dragged onto the lineup, through the board's table
+    /// input: a drop on the other row swaps the two, and the lineup order
+    /// follows into the staff's order list.
+    #[test]
+    fn a_lineup_row_dropped_on_the_lineup_moves_within_it() {
+        use exa_ui::match_board::{BoardInput, BoardTab, TableSlot};
+        let mut app = board_app(BoardTab::Matches);
+        {
+            let mut windows = app.world_mut().resource_mut::<HubWindows>();
+            let board = windows.board.as_mut().unwrap();
+            board.handle(BoardInput::SelectMatch(1));
+            while board.team.len() < 2 {
+                assert!(board.move_to_team(0, None));
+            }
+        }
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team.len(), 2, "{:?}", board.team);
+        let (first, second) = (board.team[0], board.team[1]);
+        let order_before = board.lineup.clone();
+        // Row 1 onto row 2: the two swap.
+        let from = row_centre(&app, TableSlot::Lineup, 1);
+        let to = row_centre(&app, TableSlot::Lineup, 2);
+        pointer(&mut app, from, true);
+        pointer(&mut app, to, false);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team, vec![second, first]);
+        let staff = &app
+            .world()
+            .resource::<crate::save_live::ArenaStores>()
+            .staff;
+        assert_eq!(staff.order, board.lineup);
+        assert_ne!(board.lineup, order_before);
+    }
+
     /// A drop on the table the row came from changes nothing.
     #[test]
     fn a_drop_on_its_own_table_does_nothing() {
@@ -2916,6 +3085,179 @@ mod tests {
         fighter.health.red = health;
         app.world_mut()
             .spawn((PlayerBody::new(0.0), Condition(condition), fighter));
+    }
+
+    /// The weapon pane's Choose, through the hub's click and the form
+    /// input: on a weapon event with an entrant the loadout form opens on
+    /// its event page at the entrant's row and the event's rank, the view's
+    /// hands holding the event's weapon words; the form's Close hands the
+    /// out hands back to the event's first entrant (the second word's item
+    /// id cleared) and gives the loadout its own hands back.
+    #[test]
+    fn the_boards_choose_opens_the_events_lineup_and_its_close_writes_the_weapons() {
+        use exa_formats::characters::ItemRef;
+        use exa_ui::match_board::{BoardTab, FLAG_WEAPON, weapon_panel};
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        spawn_hub_level(&mut app);
+        app.update();
+        let (mut career, stores) = board_career();
+        app.insert_resource(stores);
+        // Event 0 is entered by Brom (row 2) with two weapon words.
+        career.entries[0].count = 1;
+        career.entries[0].entries[0].actor_id = 2;
+        career.entries[0].entries[0].weapon = [0x0000_0003_0000_0042, 0x0000_0005_0000_0077];
+        let own = career.company.roster[1].loadouts[0].hands;
+        let mut windows = HubWindows::default();
+        windows.open_board(&career);
+        {
+            let board = windows.board.as_mut().unwrap();
+            board.switch_tab(BoardTab::Tournament);
+            board.tournament_events[0].flags |= FLAG_WEAPON;
+            board.refresh_tournament();
+        }
+        app.insert_resource(career);
+        app.insert_resource(windows);
+        let windows = app.world().resource::<HubWindows>();
+        let bounds = windows.bounds().unwrap();
+        let border = windows.board_form.as_ref().map_or(0, |f| f.geometry.border);
+        let choose = windows.board.as_ref().unwrap().weapon_panel().unwrap()[weapon_panel::CHOOSE];
+        let pointer = IVec2::new(
+            bounds.left + border + choose.x + choose.w / 2,
+            bounds.top + border + choose.y + choose.h / 2,
+        );
+        app.world_mut().write_message(WorldClick {
+            hit: Hit::Level,
+            pointer,
+            double: false,
+        });
+        app.update();
+        let windows = app.world().resource::<HubWindows>();
+        assert_eq!(
+            windows.forms.top().map(|f| f.window),
+            Some(crate::hub_forms::FormWindow::Loadout)
+        );
+        let arsenal = windows.forms.arsenal.unwrap();
+        assert_eq!(arsenal.page, crate::manage::PAGE_EVENT);
+        assert_eq!((arsenal.selection, arsenal.tab), (2, 0));
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(
+            career.company.roster[1].loadouts[0].hands[..2],
+            [ItemRef::new(0x42, 3), ItemRef::new(0x77, 5)]
+        );
+        // The kit puts another weapon in the main hand.
+        app.world_mut()
+            .resource_mut::<crate::hub_windows::ArenaCareer>()
+            .company
+            .roster[1]
+            .loadouts[0]
+            .hands[0] = ItemRef::new(0x99, 1);
+        // The form's Close, pressed and released through the form input.
+        app.world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow));
+        let at = {
+            let windows = app.world().resource::<HubWindows>();
+            let form = windows
+                .forms
+                .get(crate::hub_forms::FormWindow::Loadout)
+                .unwrap();
+            let (ox, oy) = form.origin();
+            let c = &form.controls()[exa_ui::arena_forms::loadout::CLOSE];
+            (ox + c.x + c.w / 2, oy + c.y + c.h / 2)
+        };
+        for press in [true, false] {
+            app.insert_resource(exa_ui::ScriptedPointer(Some(Vec2::new(
+                at.0 as f32,
+                at.1 as f32,
+            ))));
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            if press {
+                mouse.press(MouseButton::Left);
+            } else {
+                mouse.release(MouseButton::Left);
+            }
+            app.update();
+        }
+        let windows = app.world().resource::<HubWindows>();
+        assert!(
+            windows
+                .forms
+                .get(crate::hub_forms::FormWindow::Loadout)
+                .is_none()
+        );
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(
+            career.entries[0].entries[0].weapon,
+            [0x0000_0001_0000_0099, 0x0000_0005_0000_0000]
+        );
+        assert_eq!(career.company.roster[1].loadouts[0].hands, own);
+        let board = windows.board.as_ref().unwrap();
+        assert_eq!(board.entries[0].participants[0].value, 0x99);
+    }
+
+    /// A merchant's leaving through the live hub: his stock is emptied, the
+    /// character with the merchant's profession nibble has its items
+    /// cleared and is asked away, and the hub forgets the placed merchant.
+    #[test]
+    fn a_leaving_merchant_takes_his_stock_and_his_figure() {
+        let mut app = hub_app();
+        app.add_message::<crate::scene_bodies::SceneCommand>();
+        let mut stores = crate::save_live::ArenaStores::default();
+        stores.staff.employees.push(crate::staff::Employee {
+            class: crate::staff::MERCHANT,
+            ..Default::default()
+        });
+        app.insert_resource(stores);
+        app.init_resource::<crate::arsenal::ShelfKinds>();
+        app.insert_resource(crate::hub_windows::ArenaCareer {
+            merchant_stock: vec![11, 12],
+            staff_left: vec![0],
+            ..Default::default()
+        });
+        app.insert_resource(ArenaHub {
+            npcs_spawned: true,
+            specialists_placed: vec![crate::career::Profession::Merchant],
+            ..Default::default()
+        });
+        let mut data = exa_character::record::CharacterData::default();
+        data.record.set_profession(0x4000_0000);
+        data.record.worn = vec![exa_formats::characters::ItemRef::new(5, 0)];
+        let merchant = app.world_mut().spawn(data).id();
+        app.update();
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert!(career.merchant_stock.is_empty());
+        assert!(career.figures_left.is_empty());
+        assert!(
+            app.world()
+                .resource::<crate::save_live::ArenaStores>()
+                .staff
+                .employees
+                .is_empty()
+        );
+        let data = app
+            .world()
+            .get::<exa_character::record::CharacterData>(merchant)
+            .unwrap();
+        assert!(data.record.worn.is_empty());
+        let despawns: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::scene_bodies::SceneCommand>>()
+            .drain()
+            .filter(
+                |c| matches!(c, crate::scene_bodies::SceneCommand::Despawn(e) if *e == merchant),
+            )
+            .collect();
+        assert_eq!(despawns.len(), 1);
+        assert!(
+            !app.world()
+                .resource::<ArenaHub>()
+                .specialists_placed
+                .contains(&crate::career::Profession::Merchant)
+        );
     }
 
     /// The board's Begin, through the hub's click: the first unfit

@@ -1289,7 +1289,8 @@ its crystal, `--flame-sword` is `--ability-item 3`). The item card's
 value's coin control draws the coin sheet's gold, silver and copper icons
 (at four units, standing on the count's baseline, white at the card's GUI
 alpha) before each count. The item card's
-socket row takes crystals (`socket_drag`): a crystal dragged from a pack
+socket row takes crystals (`socket_drag`; its drag-over answer refuses
+every other item before the drop): a crystal dragged from a pack
 onto a socket goes in (the one there goes back to the player, into the
 open pack by its centre add and place pass), one dragged out onto a pack
 comes out, and the row is written into the item's weapon or apparel
@@ -1653,8 +1654,27 @@ other table drops there (a drop on its own table does nothing), and
 `board_table_answer` keeps the change: on the tournament page in the event's
 row (a join rewrites the entrants, a leaving moves the later ones down), on
 the others in the staff's order list. `--board-table STEPS` scripts these
-presses (debug). A drag inside the lineup, which the original reorders, is
-not in.
+presses (debug). A lineup row dropped on the lineup moves within it
+(`Board::reorder_team`: a swap with the row under it, or to the end past
+the rows) and is kept the same way. The tournament tab's weapon pane carries
+its Choose button: it opens the loadout form on its event page at the
+selected event's first entrant with the event's weapon words in the view's
+hands (`HubWindows::open_lineup`), and the form's close writes the out hands
+back to the event (`hub_forms::apply_closed_lineup`).
+
+The arena's won items are item instances in the live object database
+(`arena_rewards`): a swept season's rewards are made by the reward maker
+(instanced, condition bytes 255/0/0/0, the description pass) and a won
+week's prize graded pristine, both stowed by `arena_hub_live::hub_stow_won`.
+An arena slot's load runs the arsenal's id pass
+(`save_live::remap_loaded_items`): base records with the instance bit become
+local instances and their holders (stash, loadouts, hands, packs, kits)
+follow. A merchant's leaving empties his stock, and a merchant's or a
+physician's leaving takes his figure from the hub
+(`arena_hub_live::remove_left_figures`). The manager's fall in a match fades
+the heartbeat, closes the screens, shows its tip and, with a teammate
+standing, starts the spectate session; the in-game EXIT in the arena
+(`Flow::arena_exit`) sends the unfit specialist away, saves and leaves.
 
 The hardware configuration (`hw_config`) runs the settings screen: it holds
 the live options, the saved set and the open page's draft; opens the page
@@ -2114,17 +2134,22 @@ profession word (`& 0xff00 == 0x300`, race 3, refuses), and
 `body_inventory` fills its panels from the body's `Possessions`: the pack
 through the character list's own saved places, the equipment panel with the
 worn items and the shields in the hands (held weapons are not listed)
-through the worn/scatter pass, its generator started from `DOLL_SEED` as a
-stand-in for the engine's shared one. The player's inventory pack is its carried list the same way.
+through the worn/scatter pass, drawing from the frame's engine generator
+(`thaum::live::FrameEffectRoll`) after storing `DOLL_SEED` as the run-time
+library's seed (the frame's run-time stream restarts from it). An item the
+loaded catalogue has no model for gets no icon slot and is left out of the
+list loads, reported as "Item Error". The player's inventory pack is its carried list the same way.
 `panel_live` runs a left-button drag between open panels with the item
 panel's press, accept, drop and drag-end rules; its hit test is the panel's
 two passes over the icons' alpha (`PanelIcons::pixel_hit`, `near_hit`; an
 icon not rendered yet answers by its cell). A drop on another pack moves
 the possession entries, a drop on the same panel repositions and writes
 the new place into the owner's carried list (`body_inventory::reposition`),
-every centre add is followed by the panel's place pass
-(`PanelIcons::add_placed`, drawing from the item GUI's own generator, a
-stand-in for the engine's shared one), a container popup clamps its
+a drop from another panel makes a level-local copy of a base record marked
+for instancing (`panel_live::instance_dropped`), which the destination and
+the possessions take, every centre add is followed by the panel's place
+pass (`PanelIcons::add_placed`, drawing from the frame's engine generator,
+as do the card's description sentences), a container popup clamps its
 children after the load, and a
 drop on a body's equipment panel or outside every panel is refused (a loot
 window has no running character view and there is no GUI-to-world drop
@@ -2282,16 +2307,27 @@ its pack; an object at its first node's box centre, searchable when it lies stra
 level, a container's contents from its object sections; reachable is the
 level's sight test, a path the grid's route; the follow's and the search's
 routes are the character's one route, `exa_ai::route_walk::AiRoute`, at the
-follow's urgency, walked by the AI's walk after them; the follow's mode word
-and the leader's planned point live on that route, which every stop clears
-of its mode; while the combat state fights, the follow route is the combat
-state's follow check's to keep or stop, and `publish_follow_leader` gives
-that check the player as its leader each body tick), carrying out each take, wear
-or wield on both sides' `Possessions` and logging comments (no dialogue
-engine). The items' values come from the game's object database and the
+follow's urgency, which the search's calm walk drops to 0, walked by the AI's
+walk after them; the follow's mode word and the leader's planned point live
+on that route, which every stop clears of its mode; while the combat state
+fights, the follow route is the combat state's follow check's to keep or stop,
+and `publish_follow_leader` gives that check the player as its leader each
+body tick), carrying out each take and wear on both sides' `Possessions`; the
+re-arm's hands go through the inventory (the stow through
+`exa_items::possession::PlannedArms`, the wield's take into the hand through
+`doll_view::hold_item`); a put-on plays the piece's handling sound
+(`exa_audio::HandlingSounded`), and a comment barks through the near
+activation of the Explorer role's `ContextPhrase` topic toward the Leader
+(`bark_search_comments`). The leader the search weighs for is the first
+contact attended 50 or more that is a living character holding the Player
+role. The settle snaps the brain's look to the body's heading and the idle
+look turns the body (`exa_ai::motion::settle_look`, `turn_towards`). A
+dead body that still grips its shield lets it go when the search takes it,
+and the shield's node leaves the world. The items' values come from the game's object database and the
 level's own records (tagged local). `carry_out_search` then does what the
 deeds leave: a taken loose object leaves the world with its colliders, a
-changed container is written back into its sections, and a body whose worn
+changed container is written back into its sections (a new entry at the
+panel's far corner, its size times 40, as the original's add), and a body whose worn
 list or hands changed is dressed again (garments off and on its `Outfit`,
 which the dress refits; a corpse gets the underwear rule first; new hands
 and `Wielded`). The original's search plays no kneel clip: it settles the

@@ -161,10 +161,12 @@ pub struct EngineLogPlugin;
 
 impl Plugin for EngineLogPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(First, tick_engine_log).add_systems(
-            PostUpdate,
-            draw_overlay.before(exa_ui::gui_draw::render_frames),
-        );
+        app.add_systems(First, tick_engine_log)
+            .add_systems(Update, report_invalid_materials)
+            .add_systems(
+                PostUpdate,
+                draw_overlay.before(exa_ui::gui_draw::render_frames),
+            );
         // The probe is captured by its system, not kept as a resource, so a
         // probed run spawns the same entities as any other.
         if let Some(probe) = LogProbe::from_env() {
@@ -210,6 +212,16 @@ impl LogProbe {
             .and_then(|f| f.parse().ok())
             .unwrap_or(30);
         Self::parse(&spec, frame)
+    }
+}
+
+/// The procedural program lookup's error for each unknown material id the
+/// painter met ([`exa_assets::paint::program_material`]), once per id, at
+/// level 4: "Error: Invalid Procedural Material ID.".
+fn report_invalid_materials() {
+    for id in exa_assets::paint::take_invalid_materials() {
+        debug!("procedural materials: unknown material id {id}");
+        log(4, "Error", exa_formats::procedural::INVALID_MATERIAL);
     }
 }
 
@@ -368,5 +380,26 @@ mod tests {
             log_file_path(std::path::Path::new("/u"), "Exanima"),
             std::path::Path::new("/u/Exanima.log")
         );
+    }
+
+    /// An unknown material id the painter met is reported once on the
+    /// overlay by the plugin's system; a second use stays quiet.
+    #[test]
+    fn an_unknown_procedural_material_is_reported_once() {
+        let mut app = App::new();
+        app.add_systems(Update, report_invalid_materials);
+        let count = || {
+            overlay_lines()
+                .iter()
+                .filter(|line| line.contains("Invalid Procedural Material ID."))
+                .count()
+        };
+        let before = count();
+        let _ = exa_assets::paint::program_material(77);
+        app.update();
+        assert_eq!(count(), before + 1);
+        let _ = exa_assets::paint::program_material(77);
+        app.update();
+        assert_eq!(count(), before + 1);
     }
 }

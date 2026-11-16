@@ -114,8 +114,11 @@ pub struct SocketLanding {
 
 /// Drops crystal `id` (its drag flags carry the charge) into socket `i` of
 /// the shown card's item. `from` is the socket the drag left, for a drag
-/// out of the same row. The words are read from the item first; the
-/// commit's drain source goes into `sources`.
+/// out of the same row. The row's drag-over answer comes first: only the
+/// four power crystals are taken ([`Sockets::accepts_id`]), so any other
+/// item gets no drop (the control's "nothing" answer) and the item is not
+/// read. Otherwise the words are read from the item first; the commit's
+/// drain source goes into `sources`.
 #[allow(clippy::too_many_arguments)]
 pub fn drop_on_socket(
     card: &mut ShownCard,
@@ -126,6 +129,13 @@ pub fn drop_on_socket(
     from: Option<usize>,
     sources: &mut Vec<(u32, u32)>,
 ) -> SocketLanding {
+    if !Sockets::accepts_id(id) {
+        return SocketLanding {
+            code: IGNORE,
+            back: None,
+            committed: None,
+        };
+    }
     let mut sockets = live_sockets(objects, card.item)
         .or(card.sockets)
         .unwrap_or_default();
@@ -151,6 +161,7 @@ pub fn give_back(
     catalogue: Option<&ItemCatalogue>,
     possessions: &mut Possessions,
     (id, flags): (u32, u32),
+    roll: &mut u32,
 ) {
     let pack_open = open_panels(screens)
         .iter()
@@ -165,7 +176,7 @@ pub fn give_back(
         let bulk = catalogue.and_then(|c| c.bulk(id)).map_or(0, i32::from);
         // The centre add and its place pass.
         let cell = icons
-            .add_placed(&mut screens.pack, id, icon, flags, bulk)
+            .add_placed(&mut screens.pack, id, icon, flags, bulk, roll)
             .unwrap_or(centre);
         let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
         crate::body_inventory::give(possessions, id, flags, cell, unit, vscale);
@@ -222,5 +233,50 @@ mod tests {
         // Out again: the bare mark, the charge byte kept.
         s.drag_ended(0);
         assert_eq!(s.0[0], 0x0080);
+    }
+
+    /// The row's drag-over answer refuses anything but a power crystal:
+    /// the drop leaves the item's words alone and commits nothing.
+    #[test]
+    fn the_row_takes_no_drop_of_another_item() {
+        let mut objects = LiveObjects::default();
+        let mut card = ShownCard {
+            item: 0x1234,
+            flags: 0,
+            name: String::new(),
+            built: exa_items::card::BuiltCard {
+                page: exa_items::card::CardPage::Plain,
+                value: 0,
+                title_colour: None,
+                content: None,
+                description: String::new(),
+            },
+            icon: 0,
+            at: (0, 0),
+            size: (300, 400),
+            pointer: (0, 0),
+            fade: Default::default(),
+            form_flags: 0,
+            world: false,
+            sockets: Some(Sockets([0x0080, 0, 0, 0])),
+            socket_row: None,
+            sides: [[0; 3]; 2],
+            flip: Default::default(),
+        };
+        let mut sources = Vec::new();
+        let landing = drop_on_socket(&mut card, &mut objects, 0, 7, 0, None, &mut sources);
+        assert_eq!(landing.code, IGNORE);
+        assert_eq!(card.sockets, Some(Sockets([0x0080, 0, 0, 0])));
+        assert!(sources.is_empty());
+        let landing = drop_on_socket(
+            &mut card,
+            &mut objects,
+            0,
+            crystal::B,
+            0,
+            None,
+            &mut sources,
+        );
+        assert_eq!(landing.code, DROP_HANDLED);
     }
 }

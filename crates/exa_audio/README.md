@@ -145,7 +145,10 @@ bus next to the rodio sources) are in.
   lock sound (`exa_physics::mechanism::LockSounded`, the `LkO` an order to
   open the doors under a node plays, a numbered set) draws its pitch first,
   `0.9 + 0.15·draw`, then its volume, `0.15 + 0.1·draw`, from the engine's
-  generator, in double precision (`lock_sound_levels`); a `PointSounded`
+  generator, in double precision (`lock_sound_levels`); a `HandlingSounded`
+  (the AI search's put-on) plays the piece's foley class set at volume 0.3
+  and pitch `0.8 + 0.2·draw` (`exa_items::instance::handling_sound`), nothing
+  for index 0; a `PointSounded`
   plays at its own volume, pitch and voice flags (a taken object's use sound,
   0.25 and 1; the story events' voices and swing with `0x400`, their wail at
   the origin with `0x4460`).

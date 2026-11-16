@@ -72,11 +72,28 @@ pub struct PanelIcons {
     revision: (u16, u16, u64),
     /// Bumped whenever an icon is added to the atlas.
     version: u64,
-    /// The generator the panels' place pass draws from. The original draws
-    /// from the engine's one shared generator, which Exarust does not keep;
-    /// the item GUI keeps its own, seeded with the scatter's run-time
-    /// library seed. [Exarust stand-in]
-    pub random: u32,
+}
+
+/// The icon manager with the generator its place pass draws from (the
+/// frame's engine generator), for callers that hand both down together.
+pub struct Placing<'a> {
+    pub icons: &'a mut PanelIcons,
+    pub roll: &'a mut u32,
+}
+
+impl Placing<'_> {
+    /// [`PanelIcons::add_placed`] with the held generator.
+    pub fn add_placed(
+        &mut self,
+        container: &mut Container,
+        id: u32,
+        icon: usize,
+        flags: u32,
+        bulk: i32,
+    ) -> Option<crate::item_container::Cell> {
+        self.icons
+            .add_placed(container, id, icon, flags, bulk, self.roll)
+    }
 }
 
 impl Default for PanelIcons {
@@ -95,7 +112,6 @@ impl PanelIcons {
             texture: None,
             revision: (0, 0, 0),
             version: 0,
-            random: crate::item_container::SCATTER_SEED,
         }
     }
 
@@ -105,7 +121,11 @@ impl PanelIcons {
     /// condition byte and gains the lit bit; a streamed icon keeps the top
     /// tag bits and gains the effect bit for a model that asks for it. The
     /// slot has no atlas cell (`-1`, which the draw skips) until the
-    /// off-screen renderer fills it.
+    /// off-screen renderer fills it. An id the loaded catalogue holds no
+    /// model for gets no slot: the handle is 0, as the original's streamed
+    /// acquire answers for a record without a model section, and the
+    /// resolve error is reported. Without a catalogue (or before it is
+    /// loaded) the slot is reserved and the renderer decides.
     pub fn reserve(
         &mut self,
         id: u32,
@@ -122,8 +142,10 @@ impl PanelIcons {
                 let effect = model.flags & 0x2000 != 0;
                 streamed_key(flags, lit, effect)
             }
-            // A record without a model has no icon in the original; the
-            // slot still holds the entry so the panel can list it.
+            None if catalogue.is_some_and(|catalogue| !catalogue.is_empty()) => {
+                crate::item_icon_render::report_unresolved(id);
+                return (0, self.icon_half());
+            }
             None => key(flags, false),
         };
         self.reserve_keyed(id, name, model.map_or(0, |m| m.flags))
@@ -313,8 +335,9 @@ impl PanelIcons {
     /// in at the panel's centre ([`Container::add_at_centre`]), then takes
     /// a random spot in the middle half and is pushed out of the others
     /// ([`Container::place_at`], each entry measured by its icon's half
-    /// extents, drawing from [`PanelIcons::random`]). Returns the cell it
-    /// ended at, `None` when the add refused it (no icon).
+    /// extents, drawing from `roll`, the frame's engine generator
+    /// [`crate::thaum::live::FrameEffectRoll`]). Returns the cell it ended
+    /// at, `None` when the add refused it (no icon).
     pub fn add_placed(
         &mut self,
         container: &mut Container,
@@ -322,6 +345,7 @@ impl PanelIcons {
         icon: usize,
         flags: u32,
         bulk: i32,
+        roll: &mut u32,
     ) -> Option<crate::item_container::Cell> {
         if !container.add_at_centre(id, icon, flags, bulk) {
             return None;
@@ -336,7 +360,7 @@ impl PanelIcons {
             })
             .collect();
         let at = container.entries.len() - 1;
-        container.place_at(at, &halves, &mut self.random);
+        container.place_at(at, &halves, roll);
         Some(container.entries[at].cell)
     }
 

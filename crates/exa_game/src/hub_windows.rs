@@ -144,9 +144,14 @@ pub struct ArenaCareer {
     /// the arena's stores ([`crate::hub_forms::apply_staff_changes`]).
     pub staff_left: Vec<usize>,
     /// Items the company won (the week's prize, a season's four rewards),
-    /// in order, for the arsenal to stow free of any holder
-    /// ([`crate::hub_forms::apply_staff_changes`]).
-    pub won_items: Vec<u32>,
+    /// in order, for the arsenal to stow free of any holder once each is
+    /// made an item instance in the live object database
+    /// ([`crate::arena_hub_live::hub_stow_won`]).
+    pub won_items: Vec<crate::arena_rewards::WonItem>,
+    /// The profession nibbles (4 a merchant, 5 a physician) of specialists
+    /// who left, whose figure the hub takes away
+    /// ([`crate::arena_hub_live::remove_left_figures`]).
+    pub figures_left: Vec<u32>,
 }
 
 impl Default for ArenaCareer {
@@ -189,6 +194,7 @@ impl Default for ArenaCareer {
             rivals: [0; crate::career::RIVAL_FIELD],
             staff_left: Vec::new(),
             won_items: Vec::new(),
+            figures_left: Vec::new(),
         };
         // A default career is what the play-mode hub starts with: ten
         // candidates, drawn from a fixed seed until a session host replaces
@@ -1039,6 +1045,8 @@ pub enum BoardTableAction {
     Took,
     /// A company fighter joined the lineup (a double press or a drop).
     Joined,
+    /// A lineup fighter was moved within the lineup (a drop on it).
+    Reordered,
     /// The lineup fighter at this row went back to the company table.
     Left(usize),
 }
@@ -1247,7 +1255,7 @@ impl HubWindows {
             let from = drag.row;
             if let Some((view, _)) = &lineup {
                 // The lineup's accept check: the rank check on a company
-                // row (the board has no reorder within the lineup).
+                // row; a row of its own is moved within it.
                 let refuses = drag.slot == TableSlot::Roster
                     && !board
                         .available
@@ -1266,10 +1274,24 @@ impl HubWindows {
                         answer = BoardTableAction::Joined;
                         return 1;
                     }
+                    if drag.slot == TableSlot::Lineup
+                        && board.handle(BoardInput::ReorderTeam { from, to })
+                            == BoardAction::Changed
+                    {
+                        answer = BoardTableAction::Reordered;
+                        return 1;
+                    }
                     0
                 };
                 if view.owner_query(Some(&mut drop)) != 0 {
-                    remove_moved_row(board, drag.slot, from, source);
+                    if answer == BoardTableAction::Reordered {
+                        // The rows stay in the lineup: only its selection
+                        // is kept within it.
+                        board.team_selection =
+                            board.team_selection.filter(|&row| row < board.team.len());
+                    } else {
+                        remove_moved_row(board, drag.slot, from, source);
+                    }
                 }
                 return Some(answer);
             }
@@ -1498,7 +1520,7 @@ impl HubWindows {
         &mut self,
         point: (i32, i32),
         career: &mut ArenaCareer,
-        icons: Option<&mut crate::item_panel_draw::PanelIcons>,
+        icons: Option<&mut crate::item_panel_draw::Placing<'_>>,
     ) -> Option<ShopTrade> {
         let shop = self.shop.as_mut()?;
         // The bottom row's own record places are not traced; the guessed
@@ -2100,6 +2122,27 @@ fn paint_board(
             BoardPaint::Label { rect, text, .. } => {
                 if let Some(rect) = rect {
                     paint_text(&mut painted, at(origin, rect), &text, look);
+                }
+            }
+            // The weapon pane's Choose: a button record of the pane, drawn
+            // as the line skin draws a button (its pressed and hover states
+            // are not tracked for a pane's record).
+            BoardPaint::Button { rect, text, .. } => {
+                let (font, size) = screen_font(look.textures, look.unit);
+                for layer in gui_paint::paint_button(
+                    at(origin, rect),
+                    0,
+                    look.unit,
+                    &look.palette,
+                    &font,
+                    size,
+                    text,
+                    false,
+                    false,
+                )
+                .layers
+                {
+                    painted.push(layer);
                 }
             }
         }

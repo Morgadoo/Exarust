@@ -202,10 +202,6 @@ pub struct CardView {
     pub shown: Option<ShownCard>,
     /// The card builder's game state ([`sync_card_context`]).
     pub context: CardContext,
-    /// The generator the description sentences draw from. The original
-    /// draws from the engine's one shared generator; Exarust keeps the
-    /// card's own, seeded from the clock at the first card. [Exarust stand-in]
-    pub roll: u32,
     /// The pending delayed build was asked for by a world object's click.
     pub world_pending: bool,
     /// The socket row's cells, made at a large-icon side.
@@ -462,12 +458,13 @@ fn refresh_cards(
     live: Option<Res<exa_assets::live_objects::LiveObjects>>,
     phrases: Option<Res<PhraseBook>>,
     mut view: ResMut<CardView>,
+    mut roll: ResMut<crate::thaum::live::FrameEffectRoll>,
 ) {
     for refresh in refreshes.read() {
         let Some(live) = live.as_deref() else {
             continue;
         };
-        let CardView { shown, roll, .. } = &mut *view;
+        let CardView { shown, .. } = &mut *view;
         let Some(card) = shown.as_mut().filter(|card| card.item == refresh.item) else {
             debug!(
                 "item card: {:#x} repaired, no open card of it",
@@ -477,7 +474,7 @@ fn refresh_cards(
         };
         if refresh_card(
             card,
-            roll,
+            roll.word(),
             live.db(),
             phrases.as_deref().unwrap_or(&PhraseBook::default()),
         ) {
@@ -624,11 +621,14 @@ fn note_item_discovery(
     }
 }
 
+/// The description sentences draw from `roll`, the frame's engine generator
+/// ([`crate::thaum::live::FrameEffectRoll`]), as the original's draw from
+/// its one shared generator.
 #[allow(clippy::too_many_arguments)]
 fn show(
     view: &mut CardView,
     screens: &mut GameScreens,
-    icons: &mut PanelIcons,
+    (icons, roll): (&mut PanelIcons, &mut u32),
     catalogue: &ItemCatalogue,
     phrases: &PhraseBook,
     item: u32,
@@ -657,12 +657,8 @@ fn show(
         return;
     }
     view.close(screens, icons, now);
-    if view.roll == 0 {
-        view.roll = now | 1;
-    }
     let context = view.context;
-    let Some((name, built)) = build_for(catalogue, phrases, &mut view.roll, item, flags, context)
-    else {
+    let Some((name, built)) = build_for(catalogue, phrases, roll, item, flags, context) else {
         debug!(
             "item card: {item:#x} has no card (facts {})",
             if catalogue.card_facts(item).is_some() {
@@ -731,6 +727,7 @@ fn request_card(
     flow: Option<Res<crate::flow::Flow>>,
     parchment: Res<crate::parchment::ParchmentView>,
     devices: Option<ResMut<crate::player_controls::DeviceClock>>,
+    mut roll: ResMut<crate::thaum::live::FrameEffectRoll>,
 ) {
     // The press that ended the use cursor is the cursor's, and one on the
     // parchment is the parchment's.
@@ -766,7 +763,7 @@ fn request_card(
         show(
             &mut view,
             &mut screens,
-            &mut icons,
+            (&mut icons, roll.word()),
             catalogue,
             phrases.as_deref().unwrap_or(&PhraseBook::default()),
             crystal,
@@ -864,7 +861,7 @@ fn request_card(
     show(
         &mut view,
         &mut screens,
-        &mut icons,
+        (&mut icons, roll.word()),
         catalogue,
         phrases.as_deref().unwrap_or(&PhraseBook::default()),
         entry.id,
@@ -894,6 +891,7 @@ fn world_cards(
     time: Res<Time>,
     mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
     flow: Option<Res<crate::flow::Flow>>,
+    mut roll: ResMut<crate::thaum::live::FrameEffectRoll>,
 ) {
     let now = time.elapsed().as_millis() as u32;
     let mode = flow.map(|flow| flow.mode.word() as i32).unwrap_or(0);
@@ -915,7 +913,7 @@ fn world_cards(
         show(
             &mut view,
             &mut screens,
-            &mut icons,
+            (&mut icons, roll.word()),
             catalogue,
             phrases.as_deref().unwrap_or(&PhraseBook::default()),
             request.item,
@@ -946,6 +944,7 @@ fn figure_cards(
     time: Res<Time>,
     mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
     flow: Option<Res<crate::flow::Flow>>,
+    mut roll: ResMut<crate::thaum::live::FrameEffectRoll>,
 ) {
     let now = time.elapsed().as_millis() as u32;
     let mode = flow.map(|flow| flow.mode.word() as i32).unwrap_or(0);
@@ -961,7 +960,7 @@ fn figure_cards(
         show(
             &mut view,
             &mut screens,
-            &mut icons,
+            (&mut icons, roll.word()),
             catalogue,
             phrases.as_deref().unwrap_or(&PhraseBook::default()),
             request.item,
@@ -996,6 +995,7 @@ fn tick_card(
     time: Res<Time>,
     mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
     flow: Option<Res<crate::flow::Flow>>,
+    mut roll: ResMut<crate::thaum::live::FrameEffectRoll>,
 ) {
     let now = time.elapsed().as_millis() as u32;
     let mode = flow.map(|flow| flow.mode.word() as i32).unwrap_or(0);
@@ -1007,7 +1007,7 @@ fn tick_card(
         show(
             &mut view,
             &mut screens,
-            &mut icons,
+            (&mut icons, roll.word()),
             catalogue,
             phrases.as_deref().unwrap_or(&PhraseBook::default()),
             item,
@@ -2195,6 +2195,7 @@ pub struct ItemCardPlugin;
 impl Plugin for ItemCardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CardView>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .init_resource::<crate::parchment::ParchmentView>()
             .add_message::<WorldCard>()
             .add_message::<FigureCard>()
@@ -2298,6 +2299,7 @@ mod tests {
             .init_resource::<Time>()
             .insert_resource(catalogue)
             .insert_resource(ScriptedPointer(Some(Vec2::new(1005.0, 605.0))))
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_systems(Update, request_card);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         app.world_mut().resource_mut::<GameScreens>().task.screen = (1280, 720);
@@ -2338,6 +2340,92 @@ mod tests {
         assert_eq!(shown, Some((crystal::B, 0x30 << 16)));
     }
 
+    /// Two world objects' cards in a row: each description sentence draws
+    /// from the frame's engine generator, the second going on from where
+    /// the first left it (shipped records and phrases, skipped without the
+    /// game).
+    #[test]
+    fn the_card_sentences_draw_from_the_frames_engine_generator() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(exe) = std::fs::read(dir.join("Exanima.exe")) else {
+            return;
+        };
+        let phrases = exa_formats::desc_phrases::DescPhrases::read(&exe).expect("phrase tables");
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(resource) = data.pack(exa_assets::PackKind::Resource) else {
+            return;
+        };
+        let Some(db) = resource
+            .get("objdb.rdb")
+            .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let strings = resource
+            .get("objstrings.rdb")
+            .and_then(|bytes| exa_formats::objstrings::Library::parse(bytes).ok());
+        let catalogue = ItemCatalogue::of_database_with_strings(&db, strings.as_ref());
+        let book = PhraseBook(Some(phrases));
+        let described: Vec<u32> = exa_formats::objdb::items(&db)
+            .into_iter()
+            .map(|item| item.id)
+            .filter(|&id| {
+                catalogue
+                    .card_facts(id)
+                    .is_some_and(|facts| facts.titled && facts.sentence.is_some())
+            })
+            .take(2)
+            .collect();
+        let [first, second] = described[..] else {
+            panic!("two described items: {described:?}");
+        };
+        // What the builder leaves in the generator, from its start (0).
+        let mut expected = 0u32;
+        let context = CardContext::default();
+        assert!(build_for(&catalogue, &book, &mut expected, first, 0, context).is_some());
+        let after_first = expected;
+        assert!(build_for(&catalogue, &book, &mut expected, second, 0, context).is_some());
+        assert_ne!(after_first, 0);
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<CardView>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<Time>()
+            .insert_resource(catalogue)
+            .insert_resource(book)
+            .insert_resource(ScriptedPointer(Some(Vec2::new(400.0, 300.0))))
+            .add_message::<WorldCard>()
+            .add_systems(Update, world_cards);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.world_mut().resource_mut::<GameScreens>().task.screen = (1280, 720);
+        let word = |app: &mut App| {
+            *app.world_mut()
+                .resource_mut::<crate::thaum::live::FrameEffectRoll>()
+                .word()
+        };
+        for (item, state) in [(first, after_first), (second, expected)] {
+            app.world_mut().write_message(WorldCard {
+                item,
+                flags: 0,
+                delayed: false,
+            });
+            app.update();
+            let shown = app
+                .world()
+                .resource::<CardView>()
+                .shown
+                .as_ref()
+                .map(|c| c.item);
+            assert_eq!(shown, Some(item));
+            assert_eq!(word(&mut app), state);
+        }
+    }
+
     /// A right press on the Proctor's Seal in the pack runs its use before
     /// the delayed card (shipped records, skipped without the game).
     #[test]
@@ -2367,6 +2455,7 @@ mod tests {
             .init_resource::<crate::player_controls::DeviceClock>()
             .init_resource::<Time>()
             .insert_resource(catalogue)
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_systems(Update, request_card);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         let (slot, _) = app

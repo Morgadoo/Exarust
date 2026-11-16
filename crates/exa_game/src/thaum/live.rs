@@ -247,9 +247,19 @@ pub struct EffectRoll(pub Roll);
 #[derive(Resource, Default, Debug)]
 pub struct FrameEffectDraws(pub EffectDraws);
 
-/// The frame's engine generator for its effects ([`FrameEffectDraws`]).
+/// The frame's engine generator for its effects ([`FrameEffectDraws`]),
+/// and for the item GUI's draws on the frame (the panels' place pass, a
+/// body's equipment scatter, the card's description sentences), as the
+/// original's one engine generator serves both.
 #[derive(Resource, Default, Debug)]
 pub struct FrameEffectRoll(pub EffectRoll);
+
+impl FrameEffectRoll {
+    /// The generator's state word.
+    pub fn word(&mut self) -> &mut u32 {
+        &mut self.0.0.0
+    }
+}
 
 impl std::ops::Deref for FrameEffectDraws {
     type Target = EffectDraws;

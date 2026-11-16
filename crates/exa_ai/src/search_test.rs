@@ -121,6 +121,7 @@ fn piece(bone: usize, coverage: u32, protection: u8, occupancy: u64) -> Apparel 
         occupancy: o,
         special: 0,
         model_mark: 0,
+        sound: 0,
     }
 }
 
@@ -608,6 +609,7 @@ fn gathering_floods_the_nearby_rooms() {
             pack_id,
             pack: Pack::default(),
             object: body,
+            shield: None,
         });
         let c = scene.corpses.len() - 1;
         scene.grid.characters[cell(4, 5)].push(c);
@@ -645,6 +647,7 @@ fn a_character_with_a_container_object_is_weighed_as_one() {
             pack_id: id + 100,
             pack: Pack::default(),
             object: scene.objects.len() - 1,
+            shield: None,
         });
         scene.grid.characters[cell].push(scene.corpses.len() - 1);
     }
@@ -855,6 +858,7 @@ fn a_corpse_is_looted_worn_then_carried() {
             ..Pack::default()
         },
         object: 0,
+        shield: None,
     });
     scene.grid.objects[4 * 9 + 4].clear();
     scene.grid.characters[4 * 9 + 4].push(0);
@@ -987,6 +991,8 @@ fn the_leader_is_a_living_player_in_sight() {
     ];
     assert_eq!(find_leader(&contacts), Some(2));
     assert_eq!(find_leader(&[c(80.0, false, false)]), None);
+    // The compare lets a NaN attention through.
+    assert_eq!(find_leader(&[c(f32::NAN, false, true)]), Some(0));
 }
 
 fn scene_object(id: u32, kind: u32, corpse: Option<usize>) -> SceneObject {
@@ -1002,6 +1008,9 @@ fn scene_object(id: u32, kind: u32, corpse: Option<usize>) -> SceneObject {
     }
 }
 
+/// The chest's id, tagged as the world database's.
+const CHEST: u32 = 0x8000_0000 | 40;
+
 /// A container, a corpse and a loose item, all in one room cell.
 fn executor_scene() -> Scene {
     let mut scene = Scene::default();
@@ -1009,7 +1018,7 @@ fn executor_scene() -> Scene {
     scene.grid.height = 1;
     scene.grid.objects = vec![vec![0, 1, 2]];
     scene.objects.push(scene_object(
-        40,
+        CHEST,
         object::CONTAINER_KIND | object::PRESENT,
         None,
     ));
@@ -1018,7 +1027,7 @@ fn executor_scene() -> Scene {
         .push(scene_object(60, object::PRESENT, Some(0)));
     scene.objects.push(scene_object(70, object::PRESENT, None));
     scene.containers.insert(
-        40,
+        CHEST,
         Container {
             items: vec![7, 8],
             max_item: 4,
@@ -1030,7 +1039,10 @@ fn executor_scene() -> Scene {
         pack_id: 60,
         pack: Pack {
             carried: vec![
-                Carried { item: 10, flags: 0 },
+                Carried {
+                    item: 10,
+                    flags: SKIP_FLAG,
+                },
                 Carried { item: 11, flags: 0 },
             ],
             worn: vec![9],
@@ -1038,15 +1050,17 @@ fn executor_scene() -> Scene {
             locked: false,
         },
         object: 1,
+        shield: Some(10),
     });
     scene.items.insert(8, Loot::Other);
     scene
 }
 
-/// A take removes the first matching entry from its container, the worn
-/// list, or the carried list; a worn take of the item in the corpse's grip
-/// releases the hand and its carried entry instead; a loose object is
-/// despawned from the scene and its room cell.
+/// A take removes the first matching entry from its container or the worn
+/// list; a worn take of the shield the corpse grips lets go of it, clears
+/// the second hand slot and removes the held carried entry; a carried take
+/// removes only a held entry (an unmarked one stays listed, as in the
+/// original); a loose object is despawned from the scene and its room cell.
 #[test]
 fn the_executors_take_from_each_source() {
     let mut scene = executor_scene();
@@ -1061,7 +1075,7 @@ fn the_executors_take_from_each_source() {
         &mut pack,
         &take(0, Source::Container, 7)
     ));
-    assert_eq!(scene.containers[&40].items, vec![8]);
+    assert_eq!(scene.containers[&CHEST].items, vec![8]);
     assert!(!apply_deed(
         &mut scene,
         &mut pack,
@@ -1076,6 +1090,7 @@ fn the_executors_take_from_each_source() {
         &mut pack,
         &take(1, Source::Worn, 10)
     ));
+    assert_eq!(scene.corpses[0].shield, None);
     assert_eq!(scene.corpses[0].pack.hands[1], 0);
     assert_eq!(
         scene.corpses[0].pack.carried,
@@ -1086,12 +1101,17 @@ fn the_executors_take_from_each_source() {
         &mut pack,
         &take(1, Source::Worn, 10)
     ));
-    assert!(apply_deed(
+    // The search's carried loot reads only unmarked entries, and the take
+    // removes only marked ones: the corpse keeps listing what was looted.
+    assert!(!apply_deed(
         &mut scene,
         &mut pack,
         &take(1, Source::Carried, 11)
     ));
-    assert!(scene.corpses[0].pack.carried.is_empty());
+    assert_eq!(
+        scene.corpses[0].pack.carried,
+        vec![Carried { item: 11, flags: 0 }]
+    );
 
     assert!(apply_deed(
         &mut scene,
@@ -1102,62 +1122,58 @@ fn the_executors_take_from_each_source() {
     assert_eq!(scene.grid.objects[0], vec![0, 1]);
 }
 
-/// Wearing takes an item out of its source and adds it to the worn list;
-/// carrying adds an entry; wielding fills the main hand and marks the
-/// entry held; stowing fills the first stowed slot.
+/// Wearing takes an item out of its source and adds it to the worn list,
+/// once its object is in the scene; carrying adds an entry; wielding marks
+/// the first unmarked entry held and leaves the hands to the inventory, as
+/// stowing does; dropping takes the first carried entry into the container.
 #[test]
 fn the_executors_carry_wear_wield_and_stow() {
     let mut scene = executor_scene();
     let mut pack = Pack::default();
-    assert!(apply_deed(
-        &mut scene,
-        &mut pack,
-        &Deed::Wear {
-            object: 0,
-            source: Source::Container,
-            item: 8,
-        }
-    ));
-    assert_eq!(scene.containers[&40].items, vec![7]);
+    let wear = Deed::Wear {
+        object: 0,
+        source: Source::Container,
+        item: 8,
+    };
+    scene.objects[0].kind &= !object::PRESENT;
+    assert!(!apply_deed(&mut scene, &mut pack, &wear));
+    scene.objects[0].kind |= object::PRESENT;
+    assert!(apply_deed(&mut scene, &mut pack, &wear));
+    assert_eq!(scene.containers[&CHEST].items, vec![7]);
     assert_eq!(pack.worn, vec![8]);
     assert!(apply_deed(&mut scene, &mut pack, &Deed::Carry { item: 11 }));
     assert_eq!(pack.carried.len(), 1);
+    pack.carried.push(Carried { item: 11, flags: 0 });
     assert!(apply_deed(&mut scene, &mut pack, &Deed::Wield { item: 11 }));
-    assert_eq!(pack.hands[0], 11);
-    // The wielded item stays listed, marked held.
-    assert_eq!(
-        pack.carried,
-        vec![Carried {
-            item: 11,
-            flags: SKIP_FLAG
-        }]
-    );
-    // Wielding another returns the first to the pack.
-    pack.carried.push(Carried { item: 13, flags: 0 });
-    assert!(apply_deed(&mut scene, &mut pack, &Deed::Wield { item: 13 }));
+    assert!(apply_deed(&mut scene, &mut pack, &Deed::Wield { item: 11 }));
+    assert_eq!(pack.hands, [0; 4]);
     assert_eq!(
         pack.carried,
         vec![
-            Carried { item: 11, flags: 0 },
             Carried {
-                item: 13,
+                item: 11,
                 flags: SKIP_FLAG
-            }
+            };
+            2
         ]
     );
     assert!(apply_deed(&mut scene, &mut pack, &Deed::Stow { item: 12 }));
-    assert_eq!(pack.hands[2], 12);
+    assert_eq!(pack.hands, [0; 4]);
+    pack.carried.push(Carried { item: 12, flags: 0 });
+    pack.hands[2] = 12;
     scene.sizes.insert(12, 4);
     assert!(apply_deed(
         &mut scene,
         &mut pack,
         &Deed::Drop {
             item: 12,
-            container: 40,
+            container: CHEST,
         }
     ));
-    assert_eq!(scene.containers[&40].items, vec![7, 12]);
-    assert_eq!(pack.hands[2], 0);
+    assert_eq!(scene.containers[&CHEST].items, vec![7, 12]);
+    // The hand keeps the item: only the carried entry goes.
+    assert_eq!(pack.hands[2], 12);
+    assert_eq!(pack.carried.len(), 2);
 }
 
 /// The equip conflict pass of a wear: the overlapping worn pieces come off
@@ -1194,7 +1210,7 @@ fn wearing_takes_off_what_it_overlaps() {
     ));
     assert_eq!(pack.worn, vec![31, 7]);
     assert_eq!(pack.carried, carried(&[30]));
-    assert_eq!(scene.containers[&40].items, vec![8]);
+    assert_eq!(scene.containers[&CHEST].items, vec![8]);
 
     let mut scene = executor_scene();
     let mut locked = piece(1, 100, 10, 0b010);
@@ -1207,7 +1223,7 @@ fn wearing_takes_off_what_it_overlaps() {
         worn: vec![30],
         ..Pack::default()
     };
-    let before = scene.containers[&40].clone();
+    let before = scene.containers[&CHEST].clone();
     assert!(!apply_deed(
         &mut scene,
         &mut pack,
@@ -1219,14 +1235,15 @@ fn wearing_takes_off_what_it_overlaps() {
     ));
     assert_eq!(pack.worn, vec![30]);
     assert!(pack.carried.is_empty());
-    assert_eq!(scene.containers[&40], before);
+    assert_eq!(scene.containers[&CHEST], before);
 }
 
 /// The object edits the deferred jobs ask for: an item's first container
 /// entry goes and the list compacts; a worn item leaves the worn list, or,
-/// when the corpse grips it (the second hand slot), that slot and its
-/// carried entry; a carried item leaves its entry; a container takes an item only
-/// when its size byte fits.
+/// when it is the shield the corpse grips, the grip, the second hand slot
+/// and the last held carried entry go; a carried take removes only a held
+/// entry and clears the fourth hand; a container takes an item only when
+/// its size byte fits.
 #[test]
 fn the_small_object_edits_work_as_the_jobs_ask() {
     let mut container = Container {
@@ -1243,16 +1260,39 @@ fn the_small_object_edits_work_as_the_jobs_ask() {
         hands: [0, 2, 0, 1],
         locked: false,
     };
-    assert!(take_worn(&mut pack, 2));
-    assert_eq!(pack.hands[1], 0);
-    assert_eq!(pack.carried, vec![Carried { item: 1, flags: 0 }]);
-    assert!(take_worn(&mut pack, 9));
+    let mut shield = None;
+    // Without a gripped shield the second hand is a worn take like any.
+    assert!(!take_worn(&mut pack, &mut shield, 2));
+    assert_eq!(pack.hands[1], 2);
+    pack.carried[1].flags = SKIP_FLAG;
+    pack.carried.push(Carried {
+        item: 2,
+        flags: SKIP_FLAG,
+    });
+    shield = Some(2);
+    assert!(take_worn(&mut pack, &mut shield, 2));
+    assert_eq!((shield, pack.hands[1]), (None, 0));
+    // The last held entry goes.
+    assert_eq!(
+        pack.carried,
+        vec![
+            Carried { item: 1, flags: 0 },
+            Carried {
+                item: 2,
+                flags: SKIP_FLAG
+            }
+        ]
+    );
+    assert!(take_worn(&mut pack, &mut shield, 9));
     assert_eq!(pack.worn, vec![8]);
-    assert!(!take_worn(&mut pack, 9));
+    assert!(!take_worn(&mut pack, &mut shield, 9));
+    // The fourth hand clears; the unmarked entry stays.
     assert!(take_carried(&mut pack, 1));
     assert_eq!(pack.hands[3], 0);
-    assert!(pack.carried.is_empty());
+    assert_eq!(pack.carried.len(), 2);
     assert!(!take_carried(&mut pack, 1));
+    assert!(take_carried(&mut pack, 2));
+    assert_eq!(pack.carried, vec![Carried { item: 1, flags: 0 }]);
 
     let mut small = Container {
         items: vec![],
@@ -1264,13 +1304,14 @@ fn the_small_object_edits_work_as_the_jobs_ask() {
     assert_eq!(small.items, vec![11]);
 }
 
-/// Dropping waits on a locked pack, needs the item in the pack and its
-/// size no larger than the container's largest item; the item then leaves
-/// the carried list for the container.
+/// Dropping waits on a locked pack, needs a carried entry of the item, a
+/// container in an object database and the item's size no larger than the
+/// container's largest item; the item then leaves the carried list for the
+/// container.
 #[test]
 fn dropping_into_a_container_needs_a_small_enough_item() {
     let mut scene = executor_scene();
-    scene.containers.get_mut(&40).unwrap().items.clear();
+    scene.containers.get_mut(&CHEST).unwrap().items.clear();
     scene.sizes.insert(1, 4);
     scene.sizes.insert(2, 5);
     let mut pack = Pack {
@@ -1279,15 +1320,29 @@ fn dropping_into_a_container_needs_a_small_enough_item() {
     };
     let drop = |item| Deed::Drop {
         item,
-        container: 40,
+        container: CHEST,
     };
     pack.locked = true;
     assert!(!apply_deed(&mut scene, &mut pack, &drop(1)));
     pack.locked = false;
+    // An item only in a hand is not dropped; nor into an untagged id.
+    pack.hands[0] = 5;
+    scene.sizes.insert(5, 1);
+    assert!(!apply_deed(&mut scene, &mut pack, &drop(5)));
+    assert_eq!(pack.hands[0], 5);
+    scene.containers.insert(40, Container::default());
+    assert!(!apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Drop {
+            item: 1,
+            container: 40
+        }
+    ));
     assert!(apply_deed(&mut scene, &mut pack, &drop(1)));
     assert!(!apply_deed(&mut scene, &mut pack, &drop(2)));
     assert!(!apply_deed(&mut scene, &mut pack, &drop(3)));
-    assert_eq!(scene.containers[&40].items, vec![1]);
+    assert_eq!(scene.containers[&CHEST].items, vec![1]);
     assert_eq!(pack.carried, vec![Carried { item: 2, flags: 0 }]);
     assert_eq!(
         apply_deeds(
