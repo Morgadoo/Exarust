@@ -1552,13 +1552,12 @@ fn duellist(
         }
         let primary = attacker.primary_record(entity, blades.iter()).copied();
         let primary_blend = primary.map(|r| r.blend);
-        // Leave a collapsing or dead target alone.
-        if target_body.is_some_and(|(c, ..)| c.dying()) {
-            if anim.looping {
-                stance::take_ai_stance(&mut anim, *stance, primary_blend);
-            }
-            continue;
-        }
+        // A collapsing or dead target (its condition's collapsing bit) is
+        // dropped: the original's combat tick clears the body's target
+        // before it perceives, so the tick below finds no foe (a focus was
+        // cleared when the foe was taken) and leaves combat, after the
+        // follow and the down exits. Nothing perceives the dropped target.
+        let target_dropped = target_body.is_some_and(|(c, ..)| c.dying());
         let facing = t.rotation * Vec3::Z;
         let to = target.translation() - root_gt.translation();
         let flat = Vec3::new(to.x, 0.0, to.z);
@@ -1609,7 +1608,7 @@ fn duellist(
         let index = combatant.contact_index(foe_key);
         // A focus has cleared the body target, so the old character is not
         // perceived and is not who the fighter attends.
-        if ai.focus.is_some() || ai.dropped {
+        if ai.focus.is_some() || ai.dropped || target_dropped {
             combatant.target = None;
         } else if brains.get(entity).is_err() {
             // A duellist without a brain (the practice opponent) perceives
@@ -1660,12 +1659,14 @@ fn duellist(
         // The brain's perception pass already saw the target this tick,
         // with its own contacts and the relations' trust. A focus attends
         // that entity instead, so the old character stays unattended.
-        if ai.focus.is_none() && !ai.dropped {
+        if ai.focus.is_none() && !ai.dropped && !target_dropped {
             combatant.target = Some(foe_key);
-            let contact = &mut combatant.contacts[index];
-            if target_condition.is_dead() && contact.died_ms.is_none() {
-                contact.died_ms = Some(now);
-            }
+        }
+        // The contact keeps when its character died (the original reads
+        // its body's death clock), which a dropped dead target still has.
+        let contact = &mut combatant.contacts[index];
+        if target_condition.is_dead() && contact.died_ms.is_none() {
+            contact.died_ms = Some(now);
         }
         let target_swing = target_fighter_entity
             .and_then(|e| target_swings.get(e).ok())
@@ -1808,7 +1809,7 @@ fn duellist(
         blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, blow.angle);
         let foe = combat::Foe {
             condition: target_condition.0,
-            dead: target_condition.is_dead(),
+            dead: target_dropped,
             reach_cm: reach_of(foe_key, &blades, unarmed_reach(target_fighter)) * CM,
             chest: foe_chest,
             step_goal: foe_step_cm,
@@ -2962,6 +2963,34 @@ mod tests {
         assert!((contact.closeness - (1.0 - 200.0 / 1200.0)).abs() < 1e-5);
         // Facing each other 2 m apart: the observer's view weight is 1.
         assert!((contact.view - 1.0).abs() < 1e-5, "{}", contact.view);
+    }
+
+    /// A target that collapses (its condition's collapsing bit, which the
+    /// dead word carries too) is dropped: the duellist leaves combat and
+    /// forgets it, and the contact keeps when a dead one died.
+    #[test]
+    fn the_duellist_drops_a_collapsing_or_dead_target() {
+        for word in [Condition::COLLAPSING, Condition::DEAD] {
+            let (mut app, foe, _) = duel(2.0, false);
+            let target = app.world().get::<Duellist>(foe).unwrap().target;
+            app.world_mut().entity_mut(target).insert(Condition::NORMAL);
+            engage(&mut app, foe);
+            for _ in 0..3 {
+                step(&mut app);
+            }
+            let combatant = app.world().get::<Combatant>(foe).unwrap();
+            assert_eq!(combatant.target, Some(target));
+            assert!(combatant.in_combat);
+            app.world_mut().entity_mut(target).insert(word);
+            step(&mut app);
+            let ai = app.world().get::<Duellist>(foe).unwrap();
+            assert!(!ai.in_combat, "{word:?}");
+            let combatant = app.world().get::<Combatant>(foe).unwrap();
+            assert_eq!(combatant.target, None, "{word:?}");
+            assert!(!combatant.in_combat, "{word:?}");
+            let died = combatant.contact(target).and_then(|c| c.died_ms);
+            assert_eq!(died.is_some(), word == Condition::DEAD, "{word:?}");
+        }
     }
 
     /// It stands idle until the fight starts, then takes the guard, its
