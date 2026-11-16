@@ -192,11 +192,12 @@ impl Plugin for ArenaHubPlugin {
                     auto_rematch.before(crate::save_live::SaveLiveSystems::Steps),
                     crate::hub_forms::open_hub_window_on_load,
                     crate::hub_forms::hub_employee_kit_on_load,
-                    crate::hub_forms::hub_arsenal_on_load,
+                    crate::hub_forms::hub_arsenal_on_load.after(hub_enter_on_load),
                     crate::hub_forms::hub_stash_on_load,
                     (
                         crate::hub_forms::hub_form_input,
-                        crate::hub_forms::manage_table_script,
+                        crate::hub_forms::manage_table_script
+                            .after(crate::option_forms::load_emblem_textures),
                         board_table_input,
                         board_table_script,
                         hub_pad,
@@ -217,31 +218,40 @@ impl Plugin for ArenaHubPlugin {
                     release_shop_icons,
                 )
                     .chain()
-                    .in_set(HubWindowSystems),
+                    .in_set(HubWindowSystems)
+                    .in_set(exa_physics::FramePhase::Hub),
             )
             .add_systems(
                 Update,
                 hub_enter_on_load
                     .after(crate::hub_forms::hub_employee_kit_on_load)
-                    .before(hub_clicks),
+                    .before(hub_clicks)
+                    .in_set(exa_physics::FramePhase::Hub),
             )
             .add_systems(
                 Update,
                 (
-                    crate::option_forms::hub_form_typing,
+                    crate::option_forms::hub_form_typing.after(place_hired_specialists),
                     crate::option_forms::load_emblem_textures,
                 )
                     .chain()
                     .after(crate::hub_forms::hub_form_input)
-                    .in_set(HubWindowSystems),
+                    .in_set(HubWindowSystems)
+                    .in_set(exa_physics::FramePhase::Hub),
             )
-            .add_systems(Update, read_hire_facts.before(enter_loaded_hub))
+            .add_systems(
+                Update,
+                read_hire_facts
+                    .before(enter_loaded_hub)
+                    .in_set(exa_physics::FramePhase::Hub),
+            )
             .add_systems(
                 Update,
                 (remove_left_figures, place_hired_specialists)
                     .chain()
                     .after(enter_loaded_hub)
-                    .after(crate::hub_forms::hub_form_input),
+                    .after(crate::hub_forms::hub_form_input)
+                    .in_set(exa_physics::FramePhase::Hub),
             );
         crate::hub_windows::add_hub_draw(app);
     }

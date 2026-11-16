@@ -75,7 +75,8 @@ impl Plugin for GiPlugin {
                     bind_level_cube,
                 )
                     .chain()
-                    .in_set(GiSystems),
+                    .in_set(GiSystems)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;

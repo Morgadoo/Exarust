@@ -190,6 +190,12 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         bridge_game_types(app);
+        // The frame's phases, and the scripts' frame in the session's.
+        exa_physics::frame_phase::configure_frame_phases(app);
+        app.configure_sets(
+            Update,
+            exa_script::ScriptSystems.in_set(exa_physics::FramePhase::Session),
+        );
         // The save unit's importer hook for a level read from the archive.
         exa_world::set_archive_pass(archive_pass::archive_pass);
         app.add_plugins((
@@ -224,7 +230,8 @@ impl Plugin for GamePlugin {
         ))
         .init_resource::<prelude::Tips>()
         .init_resource::<os_clipboard::SystemClipboard>()
-        .add_systems(Update, prelude::sync_tips_setting)
+        .add_systems(Update, prelude::sync_tips_setting
+        .in_set(exa_physics::FramePhase::Gui))
         .add_plugins(prelude::TipsScreenPlugin)
         .add_plugins((
             limp::LimpPlugin,

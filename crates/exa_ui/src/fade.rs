@@ -40,12 +40,17 @@ pub fn opacity(elapsed: f64) -> u8 {
 }
 
 #[derive(Component)]
-struct FadeNode;
+pub(crate) struct FadeNode;
 
 pub(crate) fn plugin(app: &mut App) {
     app.init_resource::<DeathFade>()
         .add_systems(Startup, spawn)
-        .add_systems(Update, draw.in_set(DrawHud));
+        .add_systems(
+            Update,
+            draw.after(crate::heartbeat::draw)
+                .in_set(DrawHud)
+                .in_set(exa_physics::FramePhase::Draw),
+        );
 }
 
 /// Over the heartbeat's border, under the HUD's bars, as the original
@@ -70,7 +75,7 @@ fn spawn(mut commands: Commands) {
     ));
 }
 
-fn draw(
+pub(crate) fn draw(
     fade: Res<DeathFade>,
     loading: Option<Res<LoadingStatus>>,
     mut nodes: Query<(&mut BackgroundColor, &mut Visibility), With<FadeNode>>,

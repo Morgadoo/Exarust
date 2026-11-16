@@ -279,7 +279,7 @@ fn load_account_experience(
 
 /// The level-start hook: the first frame of play takes the player's record,
 /// and the body takes the technique word its skills name.
-fn begin_story_experience(
+pub(crate) fn begin_story_experience(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     play: Option<Res<PlaySession>>,
     players: Query<(Entity, &exa_character::record::CharacterData), With<PlayerBody>>,
@@ -359,7 +359,7 @@ impl ExploreGrid for RoomCells<'_> {
 /// The flow's discovery pass: explore around the player in a grid level,
 /// convert, write the player's record back and put the technique word on
 /// the body when it changed.
-fn tick_story_experience(
+pub(crate) fn tick_story_experience(
     mut passes: MessageReader<DiscoveryTick>,
     mut players: Query<
         (
@@ -468,7 +468,7 @@ pub fn apply_technique_word(mut bodies: TechniqueReaders) {
 
 /// Play ended: the account experience goes to the settings store when it
 /// changed.
-fn store_account_experience(
+pub(crate) fn store_account_experience(
     play: Option<Res<PlaySession>>,
     mut live: ResMut<StoryExperience>,
     mut entries: MessageWriter<SettingsEntry>,
@@ -504,13 +504,17 @@ impl Plugin for ExperienceLivePlugin {
                 Update,
                 (
                     load_account_experience,
-                    keep_party,
+                    keep_party.after(crate::save_live::sync_before_level_change),
                     begin_story_experience,
-                    tick_story_experience,
-                    apply_technique_word,
+                    tick_story_experience.after(crate::golem_alarm::return_from_alarm),
+                    apply_technique_word
+                        .after(crate::flow::apply_steps)
+                        .after(crate::thaum::cast::broadcast_level_change)
+                        .after(crate::save_live::save_to_new_slot),
                     store_account_experience,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Session),
             );
     }
 }

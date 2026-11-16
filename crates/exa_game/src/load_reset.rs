@@ -76,7 +76,10 @@ pub fn apply_game_gui_reset(world: &mut World, reset: GameGuiReset) {
 }
 
 /// A scene load's way in: each level change asked for runs the reset once.
-fn reset_on_level_change(mut requests: MessageReader<LevelChangeRequest>, mut commands: Commands) {
+pub fn reset_on_level_change(
+    mut requests: MessageReader<LevelChangeRequest>,
+    mut commands: Commands,
+) {
     if requests.read().count() == 0 {
         return;
     }
@@ -90,7 +93,9 @@ impl Plugin for LoadResetPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<LevelChangeRequest>().add_systems(
             Update,
-            reset_on_level_change.before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+            reset_on_level_change
+                .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                .in_set(exa_physics::FramePhase::Session),
         );
     }
 }

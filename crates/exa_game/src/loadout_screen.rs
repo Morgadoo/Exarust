@@ -188,7 +188,14 @@ impl Plugin for LoadoutScreenPlugin {
             .add_message::<LoadoutDropped>()
             .add_systems(
                 Update,
-                (open_form, press_form, close_form, paint_form).chain(),
+                (
+                    open_form,
+                    press_form,
+                    close_form,
+                    paint_form.after(crate::prelude::draw_tips),
+                )
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -241,7 +248,7 @@ fn close_form(
     }
 }
 
-fn paint_form(
+pub(crate) fn paint_form(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut screen: ResMut<LoadoutScreen>,
     mut frames: Option<ResMut<GuiFrames>>,

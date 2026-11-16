@@ -126,7 +126,7 @@ fn loadout_form_block(
 
 /// The switch's effect on the hand: off clears its per-frame bytes (the
 /// out-of-reach one and the left button's keep are the hand's here).
-fn hand_bytes(control: Res<PlayerControl>, hand: Option<ResMut<crate::hand::Hand>>) {
+pub(crate) fn hand_bytes(control: Res<PlayerControl>, hand: Option<ResMut<crate::hand::Hand>>) {
     if control.is_changed()
         && control.off
         && let Some(mut hand) = hand
@@ -214,7 +214,16 @@ impl Plugin for ControlsLivePlugin {
                         .before(bevy::ui::UiSystems::Focus),
                 ),
             )
-            .add_systems(Update, (hand_bytes, loadout_form_block));
+            .add_systems(
+                Update,
+                (
+                    hand_bytes,
+                    loadout_form_block
+                        .after(crate::thaum::kinesis_live::read_kinesis_input)
+                        .after(hand_bytes),
+                )
+                    .in_set(exa_physics::FramePhase::Controls),
+            );
     }
 }
 

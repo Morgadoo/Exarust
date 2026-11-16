@@ -33,7 +33,8 @@ impl Plugin for TracksPlugin {
                 Update,
                 (start_all_on_key, start_tracks, play_tracks)
                     .chain()
-                    .in_set(TrackSystems),
+                    .in_set(TrackSystems)
+                    .in_set(exa_physics::FramePhase::World),
             );
     }
 }
@@ -176,7 +177,7 @@ fn start_tracks(
     }
 }
 
-fn play_tracks(
+pub fn play_tracks(
     time: Res<Time<Virtual>>,
     mut playing: ResMut<PlayingTracks>,
     mut nodes: Query<(&NodeTracks, &mut Transform, Option<&Name>)>,

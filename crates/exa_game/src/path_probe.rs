@@ -34,7 +34,9 @@ impl Plugin for PathProbePlugin {
             )
             .add_systems(
                 Update,
-                draw_probe.run_if(|p: Res<PathProbe>| p.goal.is_some()),
+                draw_probe
+                    .run_if(|p: Res<PathProbe>| p.goal.is_some())
+                    .in_set(exa_physics::FramePhase::Draw),
             );
     }
 }

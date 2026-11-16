@@ -96,10 +96,17 @@ pub struct LocalReflectionPlugin;
 impl Plugin for LocalReflectionPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(ExtractResourcePlugin::<SceneLowField>::default())
-            .add_systems(PostUpdate, (follow_window, bind_scene_low).chain())
             .add_systems(
                 PostUpdate,
-                log_surfaces.after(bevy::transform::TransformSystems::Propagate),
+                (follow_window, bind_scene_low)
+                    .chain()
+                    .in_set(exa_physics::FramePostPhase::Prepare),
+            )
+            .add_systems(
+                PostUpdate,
+                log_surfaces
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             );
     }
 }
@@ -232,7 +239,7 @@ type NewSurface = (
 /// With `RUST_LOG=exa_render::local_reflection=debug`, logs where each new
 /// local-reflection surface stands (its bounds centre, metres), so a shot
 /// can be framed on one.
-fn log_surfaces(
+pub fn log_surfaces(
     materials: Res<Assets<ExaMaterial>>,
     added: Query<NewSurface, Added<MeshMaterial3d<ExaMaterial>>>,
 ) {

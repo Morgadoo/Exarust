@@ -794,21 +794,34 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 Update,
-                (begin_play_session, end_play_session, release_on_death),
+                (begin_play_session
+                    .after(end_play_session), end_play_session, release_on_death)
+                    .in_set(exa_physics::FramePhase::Controls),
             )
             .add_systems(
                 Update,
                 (
-                    cursor_look,
-                    cursor_ground,
-                    player_combat,
-                    camera_hits,
-                    feel_blows,
+                    cursor_look
+                        .in_set(exa_physics::FramePhase::Input)
+                        .after(crate::pad_cursor::show_pad_cursor)
+                        .after(crate::sim_control::sim_keys),
+                    cursor_ground
+                    .in_set(exa_physics::FramePhase::Input),
+                    player_combat
+                        .after(crate::thaum::cast::run_bar_commands)
+                        .in_set(exa_physics::FramePhase::Controls),
+                    camera_hits
+                    .in_set(exa_physics::FramePhase::Controls),
+                    feel_blows
+                    .in_set(exa_physics::FramePhase::Controls),
                     take_mode_records
+                    .in_set(exa_physics::FramePhase::Camera)
                         .after(begin_play_session)
                         .after(end_play_session),
-                    chase_camera,
-                    crate::pad_cursor::take_pad_view,
+                    chase_camera
+                    .in_set(exa_physics::FramePhase::Camera),
+                    crate::pad_cursor::take_pad_view
+                    .in_set(exa_physics::FramePhase::Camera),
                 )
                     .chain(),
             )
@@ -818,7 +831,8 @@ impl Plugin for PlayerPlugin {
                 Update,
                 crate::pad_cursor::show_pad_cursor
                     .before(cursor_ground)
-                    .before(crate::cursor::pick_cursor),
+                    .before(crate::cursor::pick_cursor)
+                    .in_set(exa_physics::FramePhase::Input),
             );
     }
 }
@@ -3280,7 +3294,7 @@ fn camera_focus(feet: Vec3, body: Option<&Ragdoll>, alpha: f32) -> Vec3 {
 /// The camera ticks on real time, so it keeps orbiting while the
 /// simulation is paused or slowed (`docs/DEBUGGING.md`).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub(crate) fn chase_camera(
+pub fn chase_camera(
     time: Res<Time<Real>>,
     fixed: Res<Time<Fixed>>,
     motion: Res<AccumulatedMouseMotion>,

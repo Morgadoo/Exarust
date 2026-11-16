@@ -53,15 +53,20 @@ pub struct NewGamePlugin;
 
 impl Plugin for NewGamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NewGameOnLoad>()
-            .add_systems(Update, start_on_load.before(FlowSystems::ApplySteps));
+        app.init_resource::<NewGameOnLoad>().add_systems(
+            Update,
+            start_on_load
+                .after(crate::thaum::power::teach_on_death)
+                .before(FlowSystems::ApplySteps)
+                .in_set(exa_physics::FramePhase::Session),
+        );
     }
 }
 
 /// Starts [`NewGameOnLoad`]'s game once, the first frame no load is
 /// showing and a player exists.
 #[allow(clippy::too_many_arguments)]
-fn start_on_load(
+pub fn start_on_load(
     mut on_load: ResMut<NewGameOnLoad>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     flow: Option<ResMut<Flow>>,

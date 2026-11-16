@@ -242,7 +242,7 @@ fn mark_collect(levels: Query<(), Added<exa_world::LevelRoot>>, mut state: ResMu
 }
 
 /// The collect pass, once the level and the player are in.
-fn collect_sources(
+pub fn collect_sources(
     mut state: ResMut<CrystalDrain>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     players: Query<&Possessions, With<PlayerBody>>,
@@ -275,7 +275,7 @@ fn collect_sources(
 /// What the inventory source reads of an open inventory: its pack panel
 /// and the icon manager that resolves the drained entries' icons again.
 #[derive(bevy::ecs::system::SystemParam)]
-struct OpenPack<'w> {
+pub(crate) struct OpenPack<'w> {
     screens: Option<ResMut<'w, crate::gui_screens::GameScreens>>,
     icons: Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
     catalogue: Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
@@ -283,7 +283,7 @@ struct OpenPack<'w> {
 
 /// Once a game second: every source drained in turn.
 #[allow(clippy::too_many_arguments)]
-fn drain_sources(
+pub(crate) fn drain_sources(
     mut state: ResMut<CrystalDrain>,
     time: Option<Res<Time<Virtual>>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
@@ -412,10 +412,11 @@ impl Plugin for CrystalDrainPlugin {
                 mark_collect,
                 collect_sources,
                 take_filed_sources,
-                drain_sources,
+                drain_sources.after(crate::flow::open_named_level),
             )
                 .chain()
-                .after(crate::panel_live::PanelInput),
+                .after(crate::panel_live::PanelInput)
+                .in_set(exa_physics::FramePhase::Session),
         );
     }
 }

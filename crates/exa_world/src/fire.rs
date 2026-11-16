@@ -20,8 +20,13 @@ pub struct FirePlugin;
 
 impl Plugin for FirePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, flicker);
-        app.add_systems(PostUpdate, drive_hosts);
+        app.add_systems(Update, flicker.in_set(exa_physics::FramePhase::World));
+        app.add_systems(
+            PostUpdate,
+            drive_hosts
+                .in_set(exa_physics::FramePostPhase::Prepare)
+                .after(crate::light_source::apply_light_state),
+        );
     }
 }
 
@@ -924,7 +929,7 @@ fn seed(node: Entity, index: usize) -> u32 {
 }
 
 /// Sets each fire light from its emitter's state, computed at the tick.
-fn flicker(mut fires: Query<(&Fire, &mut PointLight)>) {
+pub fn flicker(mut fires: Query<(&Fire, &mut PointLight)>) {
     for (fire, mut light) in &mut fires {
         light.intensity = crate::LUMENS_PER_INTENSITY * fire.intensity.max(0.0);
         light.radius = crate::shadow_radius(fire.softness);
@@ -935,7 +940,7 @@ fn flicker(mut fires: Query<(&Fire, &mut PointLight)>) {
 /// does, and then gives it the emitter's emissive scale every frame (the
 /// original writes that scale into the host mesh's first part). The part
 /// gets its own material copy, so other meshes keep theirs.
-fn drive_hosts(
+pub(crate) fn drive_hosts(
     mut hosts: Query<(Entity, &mut FireHost)>,
     mut handles: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,

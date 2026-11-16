@@ -538,8 +538,11 @@ impl Plugin for LightSourcePlugin {
                 FixedUpdate,
                 fade_from_levers.before(exa_physics::body::TickBehaviour),
             )
-            .add_systems(Update, flicker_lights)
-            .add_systems(PostUpdate, apply_light_state);
+            .add_systems(Update, flicker_lights
+            .in_set(exa_physics::FramePhase::World))
+            .add_systems(PostUpdate, apply_light_state
+                .in_set(exa_physics::FramePostPhase::Prepare)
+                .after(exa_render::material::mark_shadowless));
     }
 }
 
@@ -576,7 +579,7 @@ fn flicker_lights(
 /// Moves a changed light's intensity into its point light, and its
 /// fixture scale into the parent mesh's first part (only once a lever or
 /// the flicker has run: a light at rest leaves its mesh as loaded).
-fn apply_light_state(
+pub(crate) fn apply_light_state(
     mut commands: Commands,
     lights: Query<(Entity, &LightSource, &ChildOf, Option<&LightFixture>), Changed<LightSource>>,
     parents: Query<&crate::node_parts::NodeParts>,

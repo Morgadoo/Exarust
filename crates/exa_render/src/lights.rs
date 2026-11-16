@@ -45,12 +45,18 @@ impl Plugin for LightsPlugin {
                     .chain(),
             )
             .add_systems(Startup, create_buffer)
-            .add_systems(PostUpdate, assign_light_ids.in_set(LightsSystems::Ids))
+            .add_systems(
+                PostUpdate,
+                assign_light_ids
+                    .in_set(LightsSystems::Ids)
+                    .in_set(exa_physics::FramePostPhase::Placed),
+            )
             .add_systems(
                 PostUpdate,
                 (cube_records, assign_mesh_slots, free_mesh_slots, upload)
                     .chain()
-                    .in_set(LightsSystems::Lists),
+                    .in_set(LightsSystems::Lists)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
     }
 }
@@ -155,7 +161,7 @@ impl Default for Record {
 }
 
 #[derive(Resource, Default)]
-struct LightTable {
+pub(crate) struct LightTable {
     records: Vec<Record>,
     /// Per mesh slot: count, then the light ids.
     lists: Vec<[u32; 8]>,
@@ -228,7 +234,7 @@ fn create_buffer(mut buffers: ResMut<Assets<ShaderBuffer>>) {
 
 /// Gives every new light an id, carried above the default bias in its
 /// depth-bias field.
-fn assign_light_ids(
+pub(crate) fn assign_light_ids(
     mut commands: Commands,
     mut table: ResMut<LightTable>,
     mut lights: Query<(Entity, &mut PointLight, Option<&LightShaping>), Without<LightId>>,

@@ -492,7 +492,16 @@ impl Plugin for GuiDrawPlugin {
             .init_resource::<GuiTextures>()
             .init_resource::<GuiCanvas>()
             .add_systems(Startup, load_gui_textures)
-            .add_systems(PostUpdate, (render_frames, layer_canvas).chain());
+            .add_systems(
+                PostUpdate,
+                (
+                    render_frames.in_set(exa_physics::FramePostPhase::Prepare),
+                    layer_canvas
+                        .in_set(exa_physics::FramePostPhase::View)
+                        .after(bevy::ui::UiSystems::Stack),
+                )
+                    .chain(),
+            );
     }
 }
 

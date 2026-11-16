@@ -294,12 +294,13 @@ impl Plugin for PowerScreenPlugin {
                 (
                     creator_tree,
                     hotkeys,
-                    pointer,
-                    draw,
+                    pointer.after(crate::panel_live::track_pointer),
+                    draw.after(crate::transition_screen::draw),
                     suspend_controls,
                     ui_sounds,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -541,7 +542,7 @@ pub fn domain_cells(sheets: &TreeSheets) -> [u32; 7] {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn hotkeys(
+pub(crate) fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
     bindings: Option<Res<Bindings>>,
@@ -866,14 +867,14 @@ fn pointer(
 pub struct PowerCanvas;
 
 #[derive(Component, Default)]
-struct CanvasState {
+pub struct CanvasState {
     size: (u32, u32),
     open: bool,
 }
 
 /// Draws the open screen into its image.
 #[allow(clippy::too_many_arguments)]
-fn draw(
+pub fn draw(
     time: Res<Time>,
     game: Option<Res<Game>>,
     mut screen: ResMut<PowerScreen>,
@@ -1171,7 +1172,7 @@ pub fn frame_draw(
 /// environment: the tree's sounds are 2D, at the listener's origin, with the
 /// volume and pitch the action names. A missing sound is remembered so the
 /// pack is not searched again.
-fn ui_sounds(
+pub(crate) fn ui_sounds(
     game: Option<Res<Game>>,
     mut screen: ResMut<PowerScreen>,
     bank: Option<ResMut<SoundBank>>,

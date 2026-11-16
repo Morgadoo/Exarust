@@ -69,10 +69,19 @@ impl Plugin for CutAwayPlugin {
             .init_resource::<CutAwayEnabled>()
             .add_systems(
                 PostUpdate,
-                (detect_cut_away, fade_cut_away, draw_cut_away)
+                (
+                    detect_cut_away,
+                    fade_cut_away,
+                    draw_cut_away.after(
+                        bevy::pbr::check_entities_needing_specialization::<
+                            exa_render::material::ExaMaterial,
+                        >,
+                    ),
+                )
                     .chain()
                     .after(TransformSystems::Propagate)
-                    .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
+                    .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
     }
 }

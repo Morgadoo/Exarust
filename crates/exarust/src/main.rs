@@ -2517,9 +2517,13 @@ fn build_app(
             .add_systems(
                 Update,
                 (
-                    user_settings::gui_size_from_display,
-                    user_settings::save_applied_bindings,
-                    user_settings::write_flow_settings,
+                    user_settings::gui_size_from_display.in_set(exa_physics::FramePhase::Gui),
+                    // The settings files are written after the frame's changes.
+                    (
+                        user_settings::save_applied_bindings,
+                        user_settings::write_flow_settings,
+                    )
+                        .in_set(exa_physics::FramePhase::Capture),
                 ),
             );
     }
