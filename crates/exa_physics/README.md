@@ -538,8 +538,17 @@ appends, the player taking the front, a leaver's place taken by the last
 entry), runs the nine stages of the
 `body::CharacterTick` schedule, `body::CharacterStage`, before the next one
 starts; `exa_game` fills them: clips sampled and targets set), the body
-solver over every awake body (`body::BodySystems`) and the per-character
-post-step (`body::BodyPostStep`). The solver calls the registered
+solver over every awake body (`body::BodySystems`), the work after the
+solver in its phases (`body::AfterSolver`: what reads the bodies as the
+solver left them, the bodies' sounds, the level's mechanisms, the strikes,
+the blood sprays, then the physics' own follow-up: the grips' lengths, the
+mechanisms' step `body::MechanismStep`, the props, the sector lists) and
+the per-character post-step (`body::BodyPostStep`). The mechanisms'
+registration (`body::MechanismRegistration`: slides, plates, levers,
+doors) comes between the behaviour and the character controllers. No two
+fixed-step systems that touch the same data are left unordered: each such
+pair runs in the order the step ran before the phases were named, and
+`exarust`'s `schedule_ambiguity_test` fails on a new one. The solver calls the registered
 `body::SolverStages` at the original's points: after integration, the pair
 pass and links between bodies in each of the 20 iterations, sim objects,
 body–body detection, sim-object contacts, the pair friction of each of the

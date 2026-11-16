@@ -383,9 +383,12 @@ pub(crate) fn plugin(app: &mut App) {
         FixedUpdate,
         (
             register_doors
-                .after(crate::body::TickBehaviour)
+                .in_set(crate::body::MechanismRegistration)
+                .after(crate::body::lever_body::register_levers)
                 .before(BodySystems),
-            step_doors.after(BodySystems),
+            step_doors
+                .in_set(crate::body::MechanismStep)
+                .after(crate::body::lever_body::step_levers),
         ),
     );
 }
@@ -394,7 +397,7 @@ pub(crate) fn plugin(app: &mut App) {
 /// mobility 0.05, the door frame from its parent node, and a partner in a
 /// sibling node's leaf (both then take pair layer bits `0x3000`).
 #[allow(clippy::type_complexity)]
-fn register_doors(
+pub(crate) fn register_doors(
     mut commands: Commands,
     mut pending: Query<(Entity, &PendingDoor, &mut Ragdoll)>,
     mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll), Without<PendingDoor>>,
@@ -456,7 +459,7 @@ fn register_doors(
 
 /// Steps every awake leaf, its partner's door rules taken along, and
 /// sends the sounds each tick asks for.
-fn step_doors(
+pub(crate) fn step_doors(
     ticks: Option<Res<BodyTicks>>,
     mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>,
     mut sounds: MessageWriter<MechanismSounded>,

@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use rapier3d::prelude::{ColliderHandle, Pose};
 
 use crate::Physics;
-use crate::body::{BodySystems, Ragdoll, RigidPart};
+use crate::body::{Ragdoll, RigidPart};
 
 /// `user_data` of the colliders that stand in for a rigid body's meshes
 /// ([`crate::contact::Level::movable`]).
@@ -43,7 +43,8 @@ impl Plugin for PropPlugin {
                 FixedUpdate,
                 (move_stand_ins, remove_fallen_props)
                     .chain()
-                    .after(BodySystems),
+                    .in_set(crate::body::AfterSolver::Physics)
+                    .after(crate::body::MechanismStep),
             );
         app.add_message::<crate::mechanism::MechanismSignal>();
         crate::body::door_body::plugin(app);
