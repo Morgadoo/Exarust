@@ -8,9 +8,9 @@
 //! The inventory and journal are painted through the GUI draw path
 //! ([`crate::gui_paint`]): their frames, the item pack's panel and the
 //! control records the constructors append (labels and buttons, placed by
-//! the control layout pass). The character view, the item icons, the
-//! journal's entry list and the controls' callbacks are not wired. The
-//! forms are base forms ([`exa_ui::base_form::BaseForm`]) on a rooted task
+//! the control layout pass). The journal's New, Erase and entry list (its
+//! drop-down list of titles) and the inventory's page buttons (the set
+//! swap) run their record callbacks. The forms are base forms ([`exa_ui::base_form::BaseForm`]) on a rooted task
 //! the pointer drives ([`crate::form_input`]): a title press drags a window,
 //! a release over its close mark closes it, a pressed window draws on top,
 //! the frame marks and the records take their hover inks and a record that
@@ -241,7 +241,9 @@ fn button_record(x: i32, y: i32, w: i32, text: &str) -> Control {
 /// dots beside it and the two page buttons, Primary and Secondary, in
 /// radio group 1. The fill lights one of them
 /// ([`exa_ui::game_gui::inventory_tab_states`]; the table stores Primary
-/// lit).
+/// lit). Both buttons carry the same record callback: the one turned on
+/// swaps the shown character's weapon sets
+/// ([`exa_ui::game_gui::page_button_swaps`]).
 fn inventory_records() -> Vec<Control> {
     let mut label = Control::new(5, 4, INVENTORY_LABEL_ROW, 12, 28);
     label.style = 0;
@@ -254,9 +256,11 @@ fn inventory_records() -> Vec<Control> {
     let mut primary = button_record(4, -0x7ff8, 108, "Primary");
     primary.group = 1;
     primary.state = primary_state;
+    primary.reports = true;
     let mut secondary = button_record(-0x7ff7, -0x8000, 108, "Secondary");
     secondary.group = 1;
     secondary.state = secondary_state;
+    secondary.reports = true;
     vec![label, dots, primary, secondary]
 }
 
@@ -868,6 +872,24 @@ pub struct GameScreens {
     pub drain_sources: Vec<(u32, u32)>,
     /// The default tooltip the task's tick showed, while it is up.
     pub tooltip: Option<crate::form_input::ShownTooltip>,
+    /// A page button (Primary or Secondary) of the open inventory turned
+    /// on this frame: its record callback asks the shown character to
+    /// swap its weapon sets ([`swap_from_page_button`]).
+    pub page_swap: bool,
+    /// The journal's entry list as the selection writes it into the list
+    /// record: its titles (in the ANSI code page) and the 1-based row.
+    pub journal_titles: Vec<Vec<u8>>,
+    pub journal_row: i32,
+    /// The journal list's drop-down list while it is open over the
+    /// journal.
+    pub journal_list: Option<JournalList>,
+}
+
+/// The journal list's open drop-down list and its place on the screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalList {
+    pub list: exa_ui::drop_down::DropDownList,
+    pub rect: exa_ui::settings::Rect,
 }
 
 impl Default for GameScreens {
@@ -901,6 +923,10 @@ impl Default for GameScreens {
             released_icons: Vec::new(),
             drain_sources: Vec::new(),
             tooltip: None,
+            page_swap: false,
+            journal_titles: Vec::new(),
+            journal_row: 0,
+            journal_list: None,
         }
     }
 }
@@ -929,6 +955,15 @@ impl GameScreens {
         self.journal_box
             .as_ref()
             .is_some_and(|b| self.task.active == Some(b.form))
+    }
+
+    /// Whether an in-game screen is open on the task: any form whose tag
+    /// has the 0xce100000 family bits (the inventory, a loot window, the
+    /// journal, a container popup). The controls' idle turn asks it
+    /// ([`exa_ui::game_gui::has_game_screen`]).
+    pub fn has_game_screen(&self) -> bool {
+        let tags: Vec<u32> = self.open.iter().filter_map(|s| s.kind.tag()).collect();
+        exa_ui::game_gui::has_game_screen(&tags)
     }
 
     /// The window manager's focus is on a game screen (a window or its
@@ -1220,6 +1255,15 @@ impl GameScreens {
     pub fn journal_selected(&mut self) {
         let state = self.journal.list_state();
         self.journal_text = state.text.clone();
+        // The list record keeps the row, the count and every title for its
+        // drop-down list.
+        self.journal_row = state.selected;
+        self.journal_titles = state
+            .titles
+            .iter()
+            .map(|title| crate::os_clipboard::text_to_ansi(title))
+            .collect();
+        debug_assert_eq!(self.journal_titles.len() as i32, state.count);
         if let Some(form) = self
             .find(GameScreen::Journal)
             .and_then(|screen| self.task.form_mut(screen.form))
@@ -1239,10 +1283,12 @@ impl GameScreens {
     /// A journal record's callback: New stores the text, appends a "New
     /// Entry" and selects it, then focuses the third control (the list);
     /// Erase removes the selected entry (or blanks the only one) and
-    /// selects what is left. The list's own change is not wired (its drop
-    /// list does not open on the journal).
+    /// selects what is left. A landed release on the list (the combo box)
+    /// opens its drop-down list of the entries' titles
+    /// ([`GameScreens::open_journal_list`]).
     pub fn journal_record(&mut self, record: usize) {
         match record {
+            JOURNAL_LIST => self.open_journal_list(),
             JOURNAL_NEW => {
                 let text = self.journal_text.clone();
                 self.journal.add_entry(&text);
@@ -1263,6 +1309,77 @@ impl GameScreens {
             }
             _ => {}
         }
+    }
+
+    /// The journal list's drop-down list opens under the list record with
+    /// the titles the selection stored and its row chosen
+    /// ([`crate::option_forms::open_drop_list`]).
+    pub fn open_journal_list(&mut self) {
+        if self.journal_titles.is_empty() {
+            return;
+        }
+        let Some(owner) = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form(screen.form))
+            .and_then(|f| f.base())
+            .and_then(|f| f.records.get(JOURNAL_LIST))
+            .map(|r| (r.x, r.y, r.w, r.h))
+        else {
+            return;
+        };
+        let (list, rect) = crate::option_forms::open_drop_list(
+            self.journal_titles.clone(),
+            owner,
+            self.journal_unit.max(1),
+            self.task.screen.1,
+            self.journal_row,
+        );
+        info!(
+            "gui: the journal's entry list opens with {} titles at {rect:?}",
+            list.items.len()
+        );
+        self.journal_list = Some(JournalList { list, rect });
+    }
+
+    /// A row picked in the journal's drop-down list (1-based): the list
+    /// record's callback, not editing, stores the text box's text into the
+    /// selected entry and selects the picked one
+    /// ([`exa_ui::game_gui::Journal::list_changed`]), whose title and text
+    /// the list and the box then show.
+    pub fn journal_pick(&mut self, row: i32) {
+        let text = self.journal_text.clone();
+        self.journal.list_changed(false, "", row, &text);
+        self.journal_selected();
+        info!(
+            "gui: journal entry {} of {} picked",
+            self.journal.current + 1,
+            self.journal.entries.len()
+        );
+    }
+
+    /// The pointer over the journal's open drop-down list, which takes it
+    /// while it is up (its form sits over the others): see
+    /// [`crate::option_forms::drive_drop_list`]. Returns whether the list
+    /// took the frame.
+    pub fn journal_list_pointer(&mut self, frame: &crate::form_input::PointerFrame) -> bool {
+        let Some(mut open) = self.journal_list.take() else {
+            return false;
+        };
+        let at = frame.at.unwrap_or((i32::MIN, i32::MIN));
+        let (keep, row) = crate::option_forms::drive_drop_list(
+            &mut open.list,
+            open.rect,
+            at,
+            frame.pressed,
+            frame.released,
+        );
+        if keep {
+            self.journal_list = Some(open);
+        }
+        if let Some(row) = row {
+            self.journal_pick(row);
+        }
+        true
     }
 
     /// Keeps the journal's text box on its journal (a title drag moves the
@@ -1813,6 +1930,7 @@ impl GameScreens {
         match screen.kind {
             GameScreen::Journal => {
                 self.journal_box = None;
+                self.journal_list = None;
                 self.journal.store_text(&self.journal_text);
                 self.journal.place = place;
             }
@@ -2103,6 +2221,12 @@ impl Plugin for GameScreensPlugin {
             )
             .add_systems(
                 Update,
+                swap_from_page_button
+                    .after(screens_pointer)
+                    .before(exa_items::catalogue::swap_weapon_sets),
+            )
+            .add_systems(
+                Update,
                 draw_screens
                     .after(open_requested_screens)
                     .after(crate::item_icon_render::IconRenderSystems),
@@ -2138,6 +2262,44 @@ impl Plugin for GameScreensPlugin {
 
 /// The inventory's page buttons (records 2 and 3, Primary and Secondary).
 const PAGE_BUTTONS: [usize; 2] = [2, 3];
+
+/// The page buttons' record callback, after the pointer's press: the
+/// character the inventory shows is asked to swap its weapon sets, as the
+/// swap key asks ([`exa_items::possession::Possessions::swap_request`]): a
+/// busy body (state bits 0x10202) or an item drag in flight refuses it,
+/// and with its inventory open the sets swap at once. The open window
+/// then lights the other button and loads its pack again
+/// ([`inventory_follows_the_set`]).
+#[allow(clippy::type_complexity)]
+pub(crate) fn swap_from_page_button(
+    mut commands: Commands,
+    mut screens: ResMut<GameScreens>,
+    drag: Option<Res<crate::panel_live::PanelDrag>>,
+    players: Query<Entity, With<crate::player::PlayerBody>>,
+    bodies: Query<Option<&exa_combat::Condition>, With<exa_items::possession::Possessions>>,
+) {
+    if !std::mem::take(&mut screens.page_swap) {
+        return;
+    }
+    let Some(body) = screens
+        .find(GameScreen::Inventory)
+        .and_then(|_| screens.inventory_bound(players.iter().next()))
+    else {
+        return;
+    };
+    let Ok(condition) = bodies.get(body) else {
+        return;
+    };
+    let word = condition.map_or(0, |c| c.0);
+    let dragging = drag.is_some_and(|d| d.source.is_some());
+    let answer = exa_items::possession::Possessions::swap_request(word, dragging, true);
+    info!("gui: the page button's swap for {body:?}: {answer:?}");
+    if answer == exa_items::possession::SwapRequest::Now {
+        commands
+            .entity(body)
+            .insert(exa_items::catalogue::SwapRequested);
+    }
+}
 
 /// The open inventory follows its character's weapon set. The fill lights
 /// the page button of the set the record has out
@@ -2956,6 +3118,11 @@ fn screens_pointer(
     }
     let screens = &mut *screens;
     screens.sync_journal_box();
+    // The journal's open drop-down list is over the windows and takes the
+    // pointer while it is up.
+    if screens.journal_list_pointer(&frame) {
+        return;
+    }
     let tick = crate::form_input::drive(&mut screens.task, &frame, timers.as_deref_mut());
     crate::form_input::ShownTooltip::follow(
         &mut screens.tooltip,
@@ -2985,6 +3152,22 @@ fn screens_pointer(
                 }
                 exa_ui::base_form::BaseEvent::Changed(record) if kind == GameScreen::Journal => {
                     screens.journal_record(record);
+                }
+                exa_ui::base_form::BaseEvent::Changed(record)
+                    if kind == GameScreen::Inventory && PAGE_BUTTONS.contains(&record) =>
+                {
+                    // The page buttons' callback: the button that turned on
+                    // asks for the swap; the one turned off does nothing.
+                    let state = screens
+                        .task
+                        .form(form)
+                        .and_then(|f| f.base())
+                        .and_then(|f| f.records.get(record))
+                        .map_or(0, |r| r.state);
+                    if exa_ui::game_gui::page_button_swaps(state) {
+                        info!("gui: inventory page button {record} asks for the set swap");
+                        screens.page_swap = true;
+                    }
                 }
                 _ => {}
             }
@@ -4019,6 +4202,22 @@ pub(crate) fn draw_screens(
             },
             _ => continue,
         };
+        painted.submit(&mut frames);
+    }
+    // The journal's drop-down list over the windows.
+    if let Some(open) = screens.journal_list.as_ref() {
+        let list_unit = screens.journal_unit.max(1);
+        let level = exa_ui::gui_font::level_for_unit(list_unit);
+        let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
+        let mut painted = gui_paint::Painted::default();
+        crate::option_forms::paint_drop_list(
+            &mut painted,
+            &open.list,
+            open.rect,
+            (list_unit, 1.0),
+            &gui_paint::palette(),
+            (&font, size),
+        );
         painted.submit(&mut frames);
     }
     // The default tooltip over the windows.
@@ -6315,6 +6514,64 @@ mod tests {
         assert!(lit.contains(&true) && lit.contains(&false), "{lit:?}");
     }
 
+    /// The inventory's Secondary page button, pressed and released, asks
+    /// the shown body for the set swap (its inventory is open, so at
+    /// once); pressing the lit button again asks for nothing, and a busy
+    /// body (a switch in progress) refuses the swap.
+    #[test]
+    fn the_inventory_page_buttons_swap_the_sets() {
+        fn app_with(condition: exa_combat::Condition) -> (App, Entity) {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<ButtonInput<MouseButton>>()
+                .init_resource::<crate::flow::FlowSteps>()
+                .init_resource::<exa_ui::ScriptedPointer>()
+                .add_plugins(GameScreensPlugin);
+            app.world_mut().spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1600, 900),
+                    ..default()
+                },
+                PrimaryWindow,
+            ));
+            let body = app
+                .world_mut()
+                .spawn((crate::player::PlayerBody::new(0.0), condition))
+                .id();
+            app.update();
+            app.world_mut()
+                .write_message(ScreenRequest::screen(GameScreen::Inventory, true, true));
+            app.update();
+            (app, body)
+        }
+        let click = |app: &mut App, record: usize| {
+            let at = {
+                let screens = app.world().resource::<GameScreens>();
+                let form = screens.find(GameScreen::Inventory).unwrap().form;
+                let r = &screens.task.form(form).unwrap().base().unwrap().records[record];
+                ((r.x + r.w / 2) as f32, (r.y + r.h / 2) as f32)
+            };
+            point(app, at);
+            app.update();
+            button(app, MouseButton::Left, true);
+            button(app, MouseButton::Left, false);
+        };
+        let swapping = |app: &App, body: Entity| {
+            app.world()
+                .entity(body)
+                .contains::<exa_items::catalogue::SwapRequested>()
+        };
+        let (mut app, body) = app_with(exa_combat::Condition::NORMAL);
+        click(&mut app, PAGE_BUTTONS[0]);
+        assert!(!swapping(&app, body), "the lit Primary asks for nothing");
+        click(&mut app, PAGE_BUTTONS[1]);
+        assert!(swapping(&app, body), "Secondary asks for the swap");
+        let (mut app, body) = app_with(exa_combat::Condition(0x200));
+        click(&mut app, PAGE_BUTTONS[1]);
+        assert!(!swapping(&app, body), "a busy body refuses it");
+    }
+
     /// New stores the text, adds a "New Entry" and shows it empty; Erase
     /// removes the selected entry and shows the one left.
     #[test]
@@ -6352,6 +6609,63 @@ mod tests {
         assert_eq!(screens.journal.entries.len(), 1);
         assert_eq!(screens.journal.current, 0);
         assert_eq!(screens.journal_text, "first");
+        assert_eq!(
+            screens.journal_box.as_ref().unwrap().text.text.as_bytes(),
+            b"first"
+        );
+    }
+
+    /// The journal's entry list: a release over it opens its drop-down list
+    /// of the titles with the selected row chosen; picking the first row
+    /// stores the text typed into the second entry and shows the first.
+    #[test]
+    fn the_journal_list_drops_down_and_picks_an_entry() {
+        let (mut app, window) = journal_app();
+        let (centre, _) = journal_box_points(&app);
+        point(&mut app, centre);
+        app.update();
+        type_text(&mut app, window, "first");
+        let release_over = |app: &mut App, record: usize| {
+            let at = {
+                let screens = app.world().resource::<GameScreens>();
+                let form = screens.find(GameScreen::Journal).unwrap().form;
+                let r = &screens.task.form(form).unwrap().base().unwrap().records[record];
+                ((r.x + r.w / 2) as f32, (r.y + r.h / 2) as f32)
+            };
+            point(app, at);
+            app.update();
+            button(app, MouseButton::Left, true);
+            button(app, MouseButton::Left, false);
+        };
+        release_over(&mut app, JOURNAL_NEW);
+        point(&mut app, centre);
+        app.update();
+        type_text(&mut app, window, "second");
+        release_over(&mut app, JOURNAL_LIST);
+        let (rect, row_y) = {
+            let screens = app.world().resource::<GameScreens>();
+            assert_eq!(screens.journal_row, 2);
+            let open = screens.journal_list.as_ref().expect("the list opens");
+            assert_eq!(
+                open.list.items,
+                vec![b"New Entry".to_vec(), b"New Entry".to_vec()]
+            );
+            assert_eq!(open.list.selected, 2, "the selected entry's row");
+            let y = (open.rect.y..open.rect.y + open.rect.h)
+                .find(|&y| open.list.row_at(y - open.rect.y) == 1)
+                .unwrap();
+            (open.rect, y + 2)
+        };
+        point(&mut app, ((rect.x + rect.w / 2) as f32, row_y as f32));
+        app.update();
+        button(&mut app, MouseButton::Left, true);
+        button(&mut app, MouseButton::Left, false);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(screens.journal_list.is_none(), "the pick closes the list");
+        assert_eq!(screens.journal.current, 0);
+        assert_eq!(screens.journal.entries[1].text, "second");
+        assert_eq!(screens.journal_text, "first");
+        assert_eq!(screens.journal_row, 1);
         assert_eq!(
             screens.journal_box.as_ref().unwrap().text.text.as_bytes(),
             b"first"

@@ -172,6 +172,56 @@ impl OptionForms {
     }
 }
 
+/// A combo box's drop-down list, opened under its owner record at
+/// `owner` (screen x, y, width, height) with `selected` (1-based) chosen:
+/// the list takes its opener's form skin. The line skin's opening sets
+/// bit 1 of its mark word, and the opener then clears the list's panel
+/// frame style (0x80), so the skin draws only its wide window frame, and
+/// lifts the list by a unit less one. The list is placed below the owner,
+/// or above it when the screen has no room ([`exa_ui::controls::drop_down_place`]).
+pub(crate) fn open_drop_list(
+    items: Vec<Vec<u8>>,
+    owner: (i32, i32, i32, i32),
+    unit: i32,
+    screen_h: i32,
+    selected: i32,
+) -> (DropDownList, Rect) {
+    let (x, mut top, w, h) = owner;
+    let mut list = DropDownList::new(items, w, unit);
+    let mark = exa_ui::skin::open_skin(unit, 0, true).map_or(0, |skin| skin.mark);
+    if mark & 1 != 0 {
+        list.style &= !0x80;
+        top -= unit - 1;
+    }
+    let layout = list.lay_out();
+    let place = exa_ui::controls::drop_down_place(
+        (x, top, w, h),
+        layout.height,
+        list.border,
+        layout.row,
+        screen_h,
+    );
+    list.select(selected, 0);
+    info!(
+        "combo list opens at ({}, {}) {}x{}, rows {} px from y {}",
+        place.x,
+        place.y,
+        place.w,
+        place.h,
+        layout.row,
+        place.y + list.border
+    );
+    (
+        list,
+        Rect {
+            x: place.x,
+            y: place.y,
+            w: place.w,
+            h: place.h,
+        },
+    )
+}
+
 /// The drop-down's owner as the combo box's record: the chosen row.
 struct ComboOwner {
     chosen: Option<i32>,
@@ -182,6 +232,40 @@ impl DropDownOwner for ComboOwner {
         self.chosen = Some(row);
     }
     fn drop_closed(&mut self) {}
+}
+
+/// One frame of the pointer over an open drop-down list at `rect`: the
+/// row under the pointer is selected, a left press inside arms it and a
+/// press outside closes the list; the release of an armed press writes the
+/// selection back (the chosen 1-based row) and closes the list. Returns
+/// whether the list stays open and the row chosen.
+pub(crate) fn drive_drop_list(
+    list: &mut DropDownList,
+    rect: Rect,
+    at: (i32, i32),
+    pressed: bool,
+    released: bool,
+) -> (bool, Option<i32>) {
+    let inside = contains(rect, at);
+    if inside {
+        let row = list.row_at(at.1 - rect.y);
+        list.select(row, 0);
+    }
+    let mut keep = true;
+    if pressed {
+        if !inside {
+            keep = false;
+        } else {
+            list.press(1);
+        }
+    }
+    if released && list.pressed > 0 {
+        let mut owner = ComboOwner { chosen: None };
+        list.release(&mut owner);
+        list.close(&mut owner);
+        return (false, owner.chosen);
+    }
+    (keep, None)
 }
 
 /// A record's rectangle on the screen.
@@ -354,51 +438,19 @@ impl HubWindows {
             return;
         }
         let c = &form.controls()[record];
-        let mut rect = on_screen(form, c);
-        let mut list = DropDownList::new(
+        let rect = on_screen(form, c);
+        let (list, place) = open_drop_list(
             items.iter().map(|item| item.as_bytes().to_vec()).collect(),
-            c.w,
-            unit,
-        );
-        // The list takes its opener's form skin. The hub's forms keep the
-        // line skin, whose opening sets bit 1 of its mark word: the opener
-        // then clears the list's panel frame style (0x80), so the line
-        // skin draws only its wide window frame, and lifts the list by a
-        // unit less one.
-        let mark = exa_ui::skin::open_skin(unit, 0, true).map_or(0, |skin| skin.mark);
-        if mark & 1 != 0 {
-            list.style &= !0x80;
-            rect.top -= unit - 1;
-        }
-        let layout = list.lay_out();
-        let place = exa_ui::controls::drop_down_place(
             (rect.left, rect.top, c.w, c.h),
-            layout.height,
-            list.border,
-            layout.row,
+            unit,
             screen_h,
-        );
-        let selected = form.amounts[record] as i32;
-        list.select(selected, 0);
-        info!(
-            "combo list opens at ({}, {}) {}x{}, rows {} px from y {}",
-            place.x,
-            place.y,
-            place.w,
-            place.h,
-            layout.row,
-            place.y + list.border
+            form.amounts[record] as i32,
         );
         self.forms.options.popup = Some(Popup::List {
             window,
             record,
             list,
-            rect: Rect {
-                x: place.x,
-                y: place.y,
-                w: place.w,
-                h: place.h,
-            },
+            rect: place,
         });
     }
 
@@ -424,26 +476,10 @@ impl HubWindows {
                 list,
                 rect,
             } => {
-                let inside = contains(*rect, at);
-                if inside {
-                    let row = list.row_at(at.1 - rect.y);
-                    list.select(row, 0);
-                }
-                if pressed {
-                    if !inside {
-                        keep = false;
-                    } else {
-                        list.press(1);
-                    }
-                }
-                if released && list.pressed > 0 {
-                    let mut owner = ComboOwner { chosen: None };
-                    list.release(&mut owner);
-                    if let Some(row) = owner.chosen {
-                        chosen = Some((*window, *record, row as u32));
-                    }
-                    list.close(&mut owner);
-                    keep = false;
+                let (open, row) = drive_drop_list(list, *rect, at, pressed, released);
+                keep = open;
+                if let Some(row) = row {
+                    chosen = Some((*window, *record, row as u32));
                 }
             }
             Popup::Palette {
@@ -1624,6 +1660,61 @@ fn popup_frame(rect: GuiRect, look: &Look, style: u32, attributes: u32) -> LineF
     .0
 }
 
+/// Paints a drop-down list at `rect` through the line skin's form draw
+/// with the list's own words: its shadow and backdrop, the selection band,
+/// the rows (the selected one in the skin's eighth label ink, the others
+/// in the seventh) and the wide window frame over them.
+pub(crate) fn paint_drop_list(
+    painted: &mut Painted,
+    list: &DropDownList,
+    rect: Rect,
+    (unit, fade): (i32, f32),
+    palette: &exa_ui::skin::SkinPalette,
+    (font, size): (&exa_ui::gui_font::GuiFont, Option<(u16, u16)>),
+) {
+    let r = GuiRect::new(rect.x, rect.y, rect.w, rect.h);
+    let mut frame = crate::gui_paint::paint_top_form(
+        r,
+        unit,
+        palette,
+        fade,
+        crate::gui_paint::FormWords {
+            style: list.style,
+            attributes: list.attributes,
+        },
+        None,
+    )
+    .0;
+    painted.layers.extend(frame.under());
+    let mut batch = exa_ui::skin::SkinBatch::new();
+    list.paint(&mut batch, palette, 0);
+    crate::gui_paint::offset_batch(&mut batch, rect.x, rect.y);
+    painted.push(exa_ui::gui_draw::GuiLayer::new(
+        batch,
+        exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+    ));
+    if let Some(texture) = size {
+        for row in list.rows(font) {
+            let Some(item) = list.items.get((row.row - 1) as usize) else {
+                continue;
+            };
+            let ink = if row.selected {
+                palette.text[7]
+            } else {
+                palette.text[6]
+            };
+            painted.push(crate::gui_paint::caption_layer(
+                font,
+                texture,
+                item,
+                (rect.x + row.pen.0, rect.y + row.pen.1),
+                ink,
+            ));
+        }
+    }
+    painted.layers.extend(frame.over());
+}
+
 /// Paints the open popup over the forms through the line skin's form
 /// draw: a drop-down list's shadow, backdrop, selection band and rows and
 /// wide window frame, or the palette swatch popup's, with its cells and
@@ -1631,37 +1722,15 @@ fn popup_frame(rect: GuiRect, look: &Look, style: u32, attributes: u32) -> LineF
 pub(crate) fn paint_popup(painted: &mut Painted, popup: &Popup, look: &Look) {
     match popup {
         Popup::List { list, rect, .. } => {
-            let r = GuiRect::new(rect.x, rect.y, rect.w, rect.h);
-            let mut frame = popup_frame(r, look, list.style, list.attributes);
-            painted.layers.extend(frame.under());
-            let mut batch = exa_ui::skin::SkinBatch::new();
-            list.paint(&mut batch, &look.palette, 0);
-            crate::gui_paint::offset_batch(&mut batch, rect.x, rect.y);
-            painted.push(exa_ui::gui_draw::GuiLayer::new(
-                batch,
-                exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
-            ));
             let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
-            if let Some(texture) = size {
-                for row in list.rows(&font) {
-                    let Some(item) = list.items.get((row.row - 1) as usize) else {
-                        continue;
-                    };
-                    let ink = if row.selected {
-                        look.palette.text[7]
-                    } else {
-                        look.palette.text[6]
-                    };
-                    painted.push(crate::gui_paint::caption_layer(
-                        &font,
-                        texture,
-                        item,
-                        (rect.x + row.pen.0, rect.y + row.pen.1),
-                        ink,
-                    ));
-                }
-            }
-            painted.layers.extend(frame.over());
+            paint_drop_list(
+                painted,
+                list,
+                *rect,
+                (look.unit, look.fade),
+                &look.palette,
+                (&font, size),
+            );
         }
         Popup::Palette { swatch, rect, .. } => {
             let r = GuiRect::new(rect.x, rect.y, rect.w, rect.h);

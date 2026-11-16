@@ -1595,6 +1595,8 @@ the build worker's RTX 4000 runs the game offscreen (a shared runner with slots,
 
 garments take the body's skin through the original's morph transfer (about 27 percent of the garment vertices change their dominant bone); held since round 241 for a picture check, released on the build worker's GPU: on main, bent bodies in gambeson and brigandine showed a garment ring floating above the back and torn back panels, coats a white tear at the front and the gambeson skirt flaring off the hips; with this lane all of them follow the body; golems and uwc2harna unchanged; FPS within the worker's noise.
 
+the death CONTINUE rebuilds the player from the saved record (a bug fixed: the respawned player had woken wearing the gear the corpse also kept); the title loads the menu scene with no player under the original's fixed camera, after the splash and on every return to the title (shown on the build worker's GPU against main); early level exits make the checkpoint by the original's rule (only for a destination the save lacks and before the fourth level, overwriting the old checkpoint); exits ask whether the level is available, save first then archive; save steps run in the frame the flow applies them. A reading corrected (the between-round reload's first call is a form activation). Left: the arena's between-round reimport, the menu scene's indoor preset.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the

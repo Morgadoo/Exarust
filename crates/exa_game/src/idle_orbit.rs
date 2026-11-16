@@ -16,7 +16,10 @@
 //! A screen that blocks the controls turns the camera the same way without
 //! the idle test (only the ten seconds since the stamp); an open window, the
 //! active view not being the game's, restamps the clock; a dialogue or the
-//! power bar makes the player busy. Exarust's in-game menu is such a window.
+//! power bar makes the player busy. An idle player with an in-game screen open (the
+//! inventory, a loot window, the journal, a container popup) does not turn
+//! the camera either: once the ten seconds are past, the stamp is taken
+//! again instead. Exarust's in-game menu is such a window.
 //! The controls' block (the knock-out, the death, the practice ladder's
 //! last win, the arena manager's fall:
 //! [`crate::player_controls::PlayerControl::set_blocked`]) stamps the clock
@@ -91,6 +94,11 @@ pub struct Frame {
     /// The active view is not the game's (a window has the input): the idle
     /// clock is restamped and nothing turns.
     pub window_open: bool,
+    /// An in-game screen (the inventory, a loot window, the journal, a
+    /// container popup: a form tagged in the 0xce100000 family) is open on
+    /// the task: once the ten seconds are past, the clock is restamped
+    /// instead of the camera turning.
+    pub game_screen: bool,
 }
 
 /// Whether the pointer stayed still: under 3 pixels across (the original's
@@ -146,8 +154,15 @@ impl IdleWatch {
         if !f.buttons && !f.modal && still {
             let mut yaw = yaw;
             if i64::from(self.stamp) + IDLE_MS < i64::from(f.now) {
-                self.follows_cursor = false;
-                yaw = turned(yaw, f.now, self.last);
+                if f.game_screen {
+                    // An open game screen keeps the player from idling:
+                    // the stamp moves on and the cursor read stays as it
+                    // was.
+                    self.stamp = f.now;
+                } else {
+                    self.follows_cursor = false;
+                    yaw = turned(yaw, f.now, self.last);
+                }
             }
             self.last = f.now;
             yaw
@@ -184,6 +199,7 @@ fn watch_idle(
     scripted: Res<ScriptedPointer>,
     hand: Option<Res<Hand>>,
     menu: Option<Res<crate::menu_screen::MenuScreen>>,
+    screens: Option<Res<crate::gui_screens::GameScreens>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<(Option<&Condition>, Option<&Ragdoll>), With<PlayerBody>>,
     mut cameras: Query<&mut ChaseCamera>,
@@ -229,6 +245,7 @@ fn watch_idle(
         blocked,
         modal: false,
         window_open: menu.as_ref().is_some_and(|m| m.open),
+        game_screen: screens.as_ref().is_some_and(|s| s.has_game_screen()),
     };
     for mut cam in &mut cameras {
         let yaw = watch.frame(frame, cam.yaw);
@@ -253,6 +270,7 @@ mod tests {
             blocked: false,
             modal: false,
             window_open: false,
+            game_screen: false,
         }
     }
 
@@ -361,6 +379,46 @@ mod tests {
         };
         assert_eq!(w.frame(window, 1.0), 1.0);
         assert_eq!((w.stamp, w.last, w.follows_cursor), (20_000, 0, false));
+    }
+
+    /// With an in-game screen open (the journal) the ten idle seconds only
+    /// restamp the clock: the live watch leaves the chase camera still;
+    /// once the screen closes, ten more seconds turn it.
+    #[test]
+    fn an_open_game_screen_keeps_the_camera_from_turning() {
+        use crate::gui_screens::GameScreens;
+        use exa_ui::game_gui::{GameScreen, ScreenAction};
+        let mut app = App::new();
+        app.init_resource::<Time<Virtual>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ScriptedPointer>()
+            .init_resource::<IdleWatch>()
+            .add_systems(Update, watch_idle);
+        let mut screens = GameScreens::default();
+        assert_eq!(screens.open_journal(true, true), ScreenAction::Opened);
+        assert!(screens.has_game_screen());
+        app.insert_resource(screens);
+        app.world_mut()
+            .spawn((PlayerBody::new(0.0), Condition::NORMAL));
+        let camera = app.world_mut().spawn(ChaseCamera::default()).id();
+        let step = |app: &mut App, ms: u64| {
+            app.world_mut()
+                .resource_mut::<Time<Virtual>>()
+                .advance_by(std::time::Duration::from_millis(ms));
+            app.update();
+            app.world().get::<ChaseCamera>(camera).unwrap().yaw
+        };
+        let start = step(&mut app, 0);
+        for _ in 0..30 {
+            assert_eq!(step(&mut app, 1000), start, "the open journal keeps it");
+        }
+        // Restamped at 11 s and 22 s, each time ten seconds had passed.
+        assert_eq!(app.world().resource::<IdleWatch>().stamp, 22_000);
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .close(GameScreen::Journal);
+        assert_eq!(step(&mut app, 1000), start);
+        assert_ne!(step(&mut app, 2000), start, "closed, the camera turns");
     }
 
     /// Walking (word 1), a stepping foot, a hold or a button keep the camera
