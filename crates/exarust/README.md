@@ -3,6 +3,13 @@
 The game binary: `exarust [--game <dir>] [options] (play <level> | level
 <name> | character [moveset/action] | model <pack> <entry> | texture
 <name>)`; the options are listed at the top of `src/main.rs`.
+`main` reads the command line (`parse_command_line`) and builds the App
+(`build_app`); `app_skips_test` builds the same App headless (no window, no
+renderer) with the simulation bridge in lockstep and fails on any system of
+either world that Bevy did not run for a missing resource or message
+(`exa_physics::skip_watch`): the arena without game data everywhere, and
+with `EXANIMA_DIR` the arena with a duellist and a Shock cast and the first
+level, each 300 ticks past its load.
 `exarust grid <scene>…` (`src/grid.rs`) opens one window split into four
 quadrants, each a separate game in a child process started with
 `--offscreen <file>` (`src/offscreen.rs`): no OS window, its cameras

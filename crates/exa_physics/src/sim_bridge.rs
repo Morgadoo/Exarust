@@ -2498,6 +2498,8 @@ pub struct BridgeSetup {
     halves: Vec<Box<dyn BridgeHalf>>,
     already_built: Vec<String>,
     free: bool,
+    /// The frame's world holds [`crate::skip_watch::WatchSkips`].
+    watch_skips: bool,
 }
 
 /// The frame's side of the bridge (a resource of the frame's world).
@@ -2726,6 +2728,7 @@ pub fn frame_gather(world: &mut World) -> Option<BridgeIn> {
             }
             let mut setup = take_schedules(world, &bridge.fixed_order, &bridge.extra, sim_halves);
             setup.free = bridge.free;
+            setup.watch_skips = world.contains_resource::<crate::skip_watch::WatchSkips>();
             Some(setup)
         } else {
             None
@@ -2788,6 +2791,7 @@ fn take_schedules(
         halves,
         already_built,
         free: false,
+        watch_skips: false,
     }
 }
 
@@ -2804,10 +2808,20 @@ pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCovera
     let reserved = std::mem::take(&mut packet.reserved);
     world.entity_allocator_mut().free_many(&reserved);
     if let Some(setup) = setup {
+        let watch_skips = setup.watch_skips;
+        if watch_skips {
+            // A check of the whole game (`exa_physics::skip_watch`): every
+            // system not run for a missing parameter is recorded.
+            world.insert_resource(bevy::ecs::error::FallbackErrorHandler(
+                crate::skip_watch::sim_handler,
+            ));
+        }
         let c = install(world, setup);
         report_coverage(&c);
         if !c.missing.is_empty() {
-            if cfg!(debug_assertions) {
+            if watch_skips {
+                crate::skip_watch::note_unbridged(&c.missing);
+            } else if cfg!(debug_assertions) {
                 // Debug and test builds stop: a lane that adds a fixed-step
                 // system must register what it touches.
                 panic!(
