@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 613 | 152,136 | B1 wire (or prove unreachable) |
-| partial | 1,406 | 886,583 | B4 complete the port |
+| uncalled | 612 | 152,075 | B1 wire (or prove unreachable) |
+| partial | 1,405 | 886,569 | B4 complete the port |
 | missing | 52 | 10,114 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,7 +15,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 143,795 | 18,075 | 276 |
-| render | 122,921 | 22,453 | 3,232 |
+| render | 122,907 | 22,392 | 3,232 |
 | ui | 87,251 | 41,368 | 288 |
 | powers | 105,361 | 2,271 | 2,321 |
 | characters | 88,686 | 14,220 | 1,943 |
@@ -41,7 +41,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMotilePart | characters | 37 / 17,208 | 4 / 1,296 | 2 / 1,370 | 19,874 |
 | XA_Arena (unit routines) | modes | 28 / 16,281 | 3 / 1,321 | 4 / 363 | 17,965 |
 | SG_PlayerControls (unit routines) | ai | 34 / 17,767 | 0 / 0 | 0 / 0 | 17,767 |
-| TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
+| TVXGIManager | render | 11 / 16,981 | 0 / 0 | 0 / 0 | 16,981 |
 | TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
 | TPathFinder | ai | 4 / 14,517 | 0 / 0 | 0 / 0 | 14,517 |
 | TGUIForm | ui | 31 / 10,077 | 20 / 3,989 | 0 / 0 | 14,066 |

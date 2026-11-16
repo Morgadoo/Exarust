@@ -22,7 +22,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 39% | 19% | 2% | 32% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
-| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 57% | 40% | 15% | 2% | 36% | 8% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 57% | 40% | 15% | 2% | 36% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 33% | 10% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 58% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 48% | 41% | 4% | 3% | 44% | 8% |  |
