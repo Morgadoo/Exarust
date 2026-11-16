@@ -1545,6 +1545,8 @@ F544 closed: every practice and arena staging (practice start, next fight, the a
 
 the save header's camera pair is the view camera's eye in centimetres and the controller's current zoom, kept live from the chase camera (F415 closed); journal pages carry their id word; a door's arrival runs the original's save landing (the stance restarted, full tone, condition and flags cleared, the pelvis at the landing word plus 13 or 5 cm over the probed floor); the arena match's return reads the hub from the arena slot's saved section. Left: the between-round reload, the death CONTINUE's player rebuild, the menu scene. Story traces through a door change; scenes owed while the GPU is on hold.
 
+Vanish and the Long Door take the body out of the world the original way: the vanished bit on the state flags and status word, the node-tree disable with the first grab dropped, the enable with the 1000-tick settling, and the clear at the fade-in; the duellist drops a vanished target, a vanished player leaves no new footprint, and the Displacement gate sees the bit; the after-image is a real tendril image, and every body image is sized by the body. Two old readings corrected (the restore and clear walks are body-state walks). Left: the Summon's hold on its demon, the vanish and door sounds, the particle contact pass, the fire release hook. Scenes and determinism runs owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
