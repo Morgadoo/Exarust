@@ -31,8 +31,8 @@
 //!   double), with the sprint latch at urgency 2;
 //! - the AI's look yaw is the heading's; the body's look eases a tenth of
 //!   the way toward the heading (a unit again);
-//! - the head looks at the AI's look target ([`crate::motion::look_at`])
-//!   when it has one in front; otherwise the head's offset target is 0 and
+//! - the head looks at the AI's look target, the contact its target pass
+//!   attends ([`crate::motion::look_at`]), when it has one in front; otherwise the head's offset target is 0 and
 //!   the offset eases 0.02 of the way toward it (in double); the cursor is
 //!   the look yaw plus the offset, wrapped once;
 //! - a nearby body in the way ([`crate::motion::body_in_way`]) soft-stops
@@ -756,8 +756,14 @@ pub fn walk_routes(
             }
             continue;
         }
-        let look_at_cm = combatant
-            .and_then(|c| c.look_target)
+        // The AI's look target is the contact its target pass attends (the
+        // character's look target when it has no brain).
+        let look_at_cm = npc
+            .as_ref()
+            .map_or_else(
+                || combatant.and_then(|c| c.look_target),
+                |n| n.pass.attention.and_then(Entity::try_from_bits),
+            )
             .and_then(|e| targets.get(e).ok())
             .map(|g| g.translation() * CM);
         let nearby: Vec<(u64, Vec3, bool)> = npc.as_ref().map_or_else(Vec::new, |n| {
@@ -1098,6 +1104,64 @@ mod tests {
         assert_eq!(walked.in_way, Some(0));
         assert!(!r.following);
         assert_eq!(body.flags & flags::STOPPING, flags::STOPPING);
+    }
+
+    /// With the real AI plugin, the walk's head looks at the contact the
+    /// brain's target pass attends: the head's offset target turns toward
+    /// it; attending no one, it stays 0.
+    #[test]
+    fn the_walking_head_looks_at_the_attended_contact() {
+        use exa_physics::body::locomotion::Locomotion;
+        let offset_with = |attends: bool| {
+            let mut app = App::new();
+            app.add_plugins((bevy::MinimalPlugins, crate::AiPlugin));
+            app.insert_resource(BodyTicks(1));
+            let seen = app
+                .world_mut()
+                .spawn(GlobalTransform::from_translation(Vec3::new(1.0, 0.0, 1.0)))
+                .id();
+            let root = app
+                .world_mut()
+                .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+                .id();
+            let mut brain = crate::brain::Npc::new([0.0; 4]);
+            if attends {
+                brain.pass.attention = Some(seen.to_bits());
+            }
+            let mut route = AiRoute::default();
+            route.start(
+                vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 800.0)],
+                0,
+                Walker::Follow,
+            );
+            let (req, motor) = Locomotion::facing(0.0);
+            let npc = app
+                .world_mut()
+                .spawn((
+                    brain,
+                    route,
+                    req,
+                    motor,
+                    crate::drive::Driven::default(),
+                    GlobalTransform::IDENTITY,
+                    Transform::default(),
+                    ChildOf(root),
+                ))
+                .id();
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.world_mut().run_schedule(crate::BrainChain);
+            app.world()
+                .get::<crate::brain::Npc>(npc)
+                .unwrap()
+                .gaze
+                .target_offset
+        };
+        // An eighth of a turn to the right, measured from the look (yaw 0).
+        assert_eq!(
+            offset_with(true),
+            motion::yaw_of(Vec3::new(100.0, 0.0, 100.0))
+        );
+        assert_eq!(offset_with(false), 0.0);
     }
 
     /// The soft stop pulls a far goal to `8·speed + 20` cm along the
