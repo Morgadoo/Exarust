@@ -408,8 +408,11 @@ pub struct LiveArcs {
     /// entered into the world on the emitter's first step.
     pub node: ArcNode,
     /// The node's offset from its parent node, in the parent's frame (cm):
-    /// the mace's hum arcs sit 53 cm along it.
+    /// the mace's hum arcs sit 53 cm along it, a spark at the contact.
     pub offset: Vec3,
+    /// The body and bone of the part whose node the arcs hang under (a
+    /// spark on the part a shock weapon struck).
+    pub part: Option<(Entity, usize)>,
 }
 
 impl LiveArcs {
@@ -428,6 +431,7 @@ impl LiveArcs {
             keep: false,
             node: ArcNode::built(parent_local_frame),
             offset: Vec3::ZERO,
+            part: None,
         }
     }
 }
@@ -445,6 +449,20 @@ pub struct LiveWisps {
     pub wisps: Wisps,
     pub body: Entity,
     pub parts: Vec<usize>,
+}
+
+/// A spark's node under the part `bone` of `body` (entity `target`) that a
+/// blow struck at `point` (m): the part, and the contact in its frame (cm),
+/// the node's offset. `None` when the body has no such part.
+pub(crate) fn spark_on_part(
+    body: &Ragdoll,
+    target: Entity,
+    bone: usize,
+    point: Vec3,
+) -> Option<((Entity, usize), Vec3)> {
+    let part = body.parts.iter().find(|part| part.bone == bone)?;
+    let local = part.transform().inverse().transform_point3(point) * CM;
+    Some(((target, bone), local))
 }
 
 /// The mesh an effect draws.
@@ -1402,6 +1420,7 @@ fn spawn_debug_effects(
                 keep: true,
                 node: ArcNode::built(false),
                 offset: Vec3::ZERO,
+                part: None,
             },
         ));
         info!("debug arcs on the player's right hand");
@@ -1634,7 +1653,14 @@ fn arc_node_place(
     if live.node.render & super::arcs::LOCAL_FRAME == 0 {
         return held;
     }
-    let parent = if let Some(weapon) = live.weapon {
+    let parent = if let Some((body, bone)) = live.part {
+        parents.bodies.get(body).ok().and_then(|body| {
+            body.parts
+                .iter()
+                .find(|part| part.bone == bone)
+                .map(|part| part.drawn(alpha))
+        })
+    } else if let Some(weapon) = live.weapon {
         parents.bodies.get(weapon).ok().and_then(|body| {
             body.parts
                 .iter()
@@ -2132,6 +2158,7 @@ mod tests {
                 keep: true,
                 node: ArcNode::built(false),
                 offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         let hand = ArcEmitter::new(&hand_arcs(), &mut Mt19937::new(1));
@@ -2145,6 +2172,7 @@ mod tests {
                 keep: true,
                 node: ArcNode::built(false),
                 offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         app.update();
@@ -2212,6 +2240,7 @@ mod tests {
                 keep: true,
                 node: ArcNode::built(false),
                 offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         app.update();
@@ -2252,6 +2281,7 @@ mod tests {
                 keep: true,
                 node: ArcNode::built(false),
                 offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         app.update();
@@ -2446,6 +2476,66 @@ mod tests {
         let n = drawn.len();
         let mid = (Vec3::from(drawn[n - 2]) + Vec3::from(drawn[n - 1])) * 0.5;
         let expect = (turn * local) / CM + Vec3::X;
+        assert!((mid - expect).length() < 1e-4, "{mid} {expect}");
+    }
+
+    /// A spark's node hangs under the part it struck at the contact: the
+    /// frame draws it where the part's drawn matrix carries the contact,
+    /// so it rides the part as it moves.
+    #[test]
+    fn a_spark_rides_the_part_it_struck() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<ArcMaterial>()
+            .add_message::<ArcShocked>()
+            .insert_resource(EffectDraws(Mt19937::new(5489)))
+            .insert_resource(FrameEffectDraws::default())
+            .add_systems(Update, (tick_arcs, draw_arcs).chain());
+        let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let placed =
+            bevy::math::Affine3A::from_rotation_translation(turn, Vec3::new(0.0, 1.0, 0.0));
+        let body = target_body(placed);
+        let contact = Vec3::new(0.1, 1.0, 0.0);
+        let (part, local) =
+            spark_on_part(&body, Entity::PLACEHOLDER, CHEST, contact).expect("the struck part");
+        assert_eq!(part.1, CHEST);
+        let struck = app.world_mut().spawn(body).id();
+        let mut arcs = ArcEmitter::allocate(1, 4, 2.0);
+        arcs.anchor = Some(contact * CM);
+        let spark = app
+            .world_mut()
+            .spawn(LiveArcs {
+                keep: true,
+                offset: local,
+                part: Some((struck, CHEST)),
+                ..LiveArcs::new(arcs, true)
+            })
+            .id();
+        app.update();
+        let live = app.world().get::<LiveArcs>(spark).unwrap();
+        let count = live.arcs.tendrils[0].count;
+        let end = live.arcs.point(0, count as usize - 1);
+        let handle = app
+            .world()
+            .get::<Mesh3d>(spark)
+            .expect("a ribbon")
+            .0
+            .clone();
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(drawn)) = meshes
+            .get(&handle)
+            .unwrap()
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("positions");
+        };
+        let n = drawn.len();
+        let mid = (Vec3::from(drawn[n - 2]) + Vec3::from(drawn[n - 1])) * 0.5;
+        // The node sits at the contact, turned with the part.
+        let expect = contact + (turn * end) / CM;
         assert!((mid - expect).length() < 1e-4, "{mid} {expect}");
     }
 

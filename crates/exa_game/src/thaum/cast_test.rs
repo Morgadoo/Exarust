@@ -304,6 +304,7 @@ fn an_armed_blade_shocks_the_body_it_hits() {
             keep: false,
             node: crate::thaum::arcs::ArcNode::built(true),
             offset: Vec3::ZERO,
+            part: None,
         })
         .id();
     {

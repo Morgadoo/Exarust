@@ -569,6 +569,7 @@ pub(crate) fn ability_tick(
                                         keep: false,
                                         node: crate::thaum::arcs::ArcNode::built(true),
                                         offset: crate::thaum::arcs::HUM_ARCS_OFFSET,
+                                        part: None,
                                     },
                                     ItemArcs {
                                         item: blade,
@@ -771,6 +772,7 @@ fn hit_hooks(
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut shocked: MessageWriter<ArcShocked>,
     mut commands: Commands,
+    struck: Query<&exa_physics::body::Ragdoll>,
 ) {
     let (Some(mut objects), Some(mut draws)) = (objects, draws) else {
         for _ in hits.read() {}
@@ -834,6 +836,10 @@ fn hit_hooks(
                 }
                 let mut burst = spark_burst(&mut draws.0.0);
                 burst.anchor = Some(hit.point * 100.0);
+                // The spark's node hangs under the struck part at the contact.
+                let on = struck.get(hit.target).ok().and_then(|body| {
+                    crate::thaum::live::spark_on_part(body, hit.target, hit.bone, hit.point)
+                });
                 commands.spawn((
                     Name::new("_MaceSpark"),
                     LiveArcs {
@@ -843,7 +849,8 @@ fn hit_hooks(
                         caster: Some(blade.wielder),
                         keep: false,
                         node: crate::thaum::arcs::ArcNode::built(true),
-                        offset: Vec3::ZERO,
+                        offset: on.map_or(Vec3::ZERO, |(_, local)| local),
+                        part: on.map(|(part, _)| part),
                     },
                 ));
                 info!(
