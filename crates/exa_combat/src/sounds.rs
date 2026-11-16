@@ -122,12 +122,18 @@ pub fn mark_golem_layers(armour: &mut [PartArmour; 18], golem_race: bool) {
         return;
     }
     for part in armour.iter_mut() {
-        if let Some(outer) = part.outer.as_mut().filter(|l| !(l.coverage < 0.5)) {
+        if let Some(outer) = part.outer.as_mut().filter(|l| covers(l.coverage)) {
             outer.material = GOLEM_CLASS;
-        } else if !(part.inner.coverage < 0.5) {
+        } else if covers(part.inner.coverage) {
             part.inner.material = GOLEM_CLASS;
         }
     }
+}
+
+/// A layer covers its part unless `0.5 > coverage` holds: a NaN coverage
+/// covers.
+fn covers(coverage: f32) -> bool {
+    !matches!(coverage.partial_cmp(&0.5), Some(std::cmp::Ordering::Less))
 }
 
 /// A bone's share of a foley loop, by the character's part order.

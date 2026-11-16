@@ -466,6 +466,16 @@ pub fn share_holder_park(
     }
 }
 
+/// A held item the release walks: its grip, its body, whether a collapse
+/// let go of it, and its weapon mass.
+type FreedItem = (
+    Entity,
+    &'static mut HeldGrip,
+    &'static mut Ragdoll,
+    Has<GripRelease>,
+    Option<&'static crate::weapon_mass::WeaponMass>,
+);
+
 /// Releases the items whose holder has left the world, and those a
 /// collapse let go of ([`GripRelease`]): the link records stop acting, the
 /// item body loses its holder and held mask, takes the dropped weapon's
@@ -482,13 +492,7 @@ pub fn share_holder_park(
 /// ([`held_contact_base`]): the arm setter no longer scales it.
 pub fn release_freed_grips(
     mut commands: Commands,
-    mut held: Query<(
-        Entity,
-        &mut HeldGrip,
-        &mut Ragdoll,
-        Has<GripRelease>,
-        Option<&crate::weapon_mass::WeaponMass>,
-    )>,
+    mut held: Query<FreedItem>,
     bodies: Query<(Entity, &Ragdoll), Without<HeldGrip>>,
     mut loose: MessageWriter<crate::grip::CameLoose>,
 ) {

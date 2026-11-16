@@ -141,6 +141,7 @@ pub fn hold_revived(
 
 /// The reset over every AI character (see the module), run in the world
 /// that runs the fixed step.
+#[allow(clippy::too_many_arguments)]
 pub fn revive_brains(
     In(()): In<()>,
     mut commands: Commands,
