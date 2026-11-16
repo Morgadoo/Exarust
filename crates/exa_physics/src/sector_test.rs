@@ -1107,7 +1107,12 @@ fn a_scene_grid_takes_half_its_size_and_its_node_cell() {
     // 1500 cm is 2.5 cells (even: 2), −1800 cm −3; −900 cm −1.5 (even: −2).
     let moved = GridShape::of_scene(32, 40, Vec3::new(1500.0, 70.0, -1800.0));
     assert_eq!(moved.origin, (18, 17));
-    assert_eq!(GridShape::of_scene(32, 40, Vec3::new(-900.0, 0.0, 0.0)).origin.0, 14);
+    assert_eq!(
+        GridShape::of_scene(32, 40, Vec3::new(-900.0, 0.0, 0.0))
+            .origin
+            .0,
+        14
+    );
     // A point's flat index: (floor(z/600) + oz) · columns + floor(x/600) + ox.
     assert_eq!(
         level.index_of(Vec3::new(-1.0, 0.0, 601.0)),
@@ -1119,7 +1124,10 @@ fn a_scene_grid_takes_half_its_size_and_its_node_cell() {
     });
     assert_eq!(model.bias, [16, 20]);
     assert_eq!(model.offsets, level.offsets());
-    assert_eq!(model.sector_cell(Vec3::new(1500.0, 70.0, -1800.0)), [18, 17]);
+    assert_eq!(
+        model.sector_cell(Vec3::new(1500.0, 70.0, -1800.0)),
+        [18, 17]
+    );
 }
 
 /// The pair contact's relative frame takes the other part's transpose as
@@ -1159,5 +1167,8 @@ fn the_relative_frame_takes_the_transpose() {
     );
     let d = Affine3A::from_translation(Vec3::new(0.1, 0.2, 0.3));
     let x = relative_frame(&d, &c).translation.x;
-    assert_eq!(x.to_bits(), ((0.1f32 * 0.7 + 0.2 * 0.3) + 0.3 * 0.9).to_bits());
+    assert_eq!(
+        x.to_bits(),
+        ((0.1f32 * 0.7 + 0.2 * 0.3) + 0.3 * 0.9).to_bits()
+    );
 }

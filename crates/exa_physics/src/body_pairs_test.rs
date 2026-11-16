@@ -1655,7 +1655,11 @@ fn a_part_past_the_grid_rows_goes_back_two_ticks_and_parks() {
     let p = &a.parts[0];
     assert!(!p.cell_entry.parked);
     assert!(centre(&a).y < y);
-    assert!((centre(&a).z - (start.z - 0.2)).abs() < 1e-4, "{}", centre(&a));
+    assert!(
+        (centre(&a).z - (start.z - 0.2)).abs() < 1e-4,
+        "{}",
+        centre(&a)
+    );
     assert_eq!(p.cell_entry.cell, (6 * 4 + 2, 0));
 }
 
@@ -1707,10 +1711,7 @@ fn the_step_takes_the_scene_grid() {
             .get::<Pairs>()
             .map(|p| (p.phase(), p.grid()))
     };
-    assert_eq!(
-        pairs(&app),
-        Some((BroadPhase::Cells, Some(small_grid())))
-    );
+    assert_eq!(pairs(&app), Some((BroadPhase::Cells, Some(small_grid()))));
     let a = app.world().get::<Ragdoll>(body).unwrap();
     assert_eq!(a.parts[0].positions, before);
     app.insert_resource(crate::SceneGrid::AllPairs);
@@ -1750,13 +1751,21 @@ fn the_pair_correction_takes_the_originals_precision() {
     let (c, across) = worked();
     assert!(across.length_squared() < limit);
     let slid = correction(a, b, a_start, b, n, 0.37).unwrap();
-    assert_eq!(slid, (c + across * (f64::from(limit) * -0.01) as f32) / 100.0);
+    assert_eq!(
+        slid,
+        (c + across * (f64::from(limit) * -0.01) as f32) / 100.0
+    );
     // No friction: the whole slip goes.
     let full = correction(a, b, a_start, b, n, 0.0).unwrap();
     assert_eq!(full, (c - across) / 100.0);
     // A NaN limit takes the slide branch (the parity jump), so the NaN
     // reaches the correction.
-    assert!(correction(a, b, a_start, b, n, f32::NAN).unwrap().x.is_nan());
+    assert!(
+        correction(a, b, a_start, b, n, f32::NAN)
+            .unwrap()
+            .x
+            .is_nan()
+    );
     // At the slop or a NaN depth: nothing.
     assert_eq!(correction(a, n * 0.0001, a, n * 0.0001, n, 0.37), None);
     assert_eq!(correction(a, Vec3::NAN, a, b, n, 0.37), None);

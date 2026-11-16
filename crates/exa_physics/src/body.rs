@@ -715,11 +715,7 @@ impl Part {
     /// velocity, and its last-tick frame is its frame now (no sweep this
     /// tick). Its drawn history and its displacement records are left alone.
     pub(crate) fn reset_to_two_ticks_ago(&mut self) {
-        crate::sector::reset_overflow(
-            &mut self.positions,
-            &mut self.previous,
-            &self.two_ticks_ago,
-        );
+        crate::sector::reset_overflow(&mut self.positions, &mut self.previous, &self.two_ticks_ago);
         self.start = self.two_ticks_ago;
         self.settled = self.transform();
     }

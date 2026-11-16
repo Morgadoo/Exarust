@@ -419,8 +419,7 @@ impl CellKeys {
 }
 
 /// The original logs the first position overflow of a run only.
-static OVERFLOW_REPORTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static OVERFLOW_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `EXA_CELL_ORDER`, a debug aid for the cell lists: `join` meets each
 /// cell's parts in joining order (as before the head move), `trace` logs
