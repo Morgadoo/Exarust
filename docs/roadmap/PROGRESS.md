@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r238, 11-16) | target |
+| measure | start (r186, 11-10) | now (r240, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **53.8%** | **100%** |
+| **Ledger: bytes in a final state** | — | **53.78%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 315 of 2,801 (11%) | 100% |
+| Live rows with scene or retail evidence | — | 314 of 2,800 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,794 | all |
+| Tests passing | 8,489 | 8,805 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -100,11 +100,11 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 170 | 179,606 |
 | UI | 12 | 12 | 380 | 150,606 |
-| Rendering & GPU | 10 | 10 | 295 | 150,293 |
+| Rendering & GPU | 10 | 10 | 293 | 149,713 |
 | Thaumaturgy & effects | 9 | 9 | 167 | 118,909 |
-| AI & behaviour | 8 | 8 | 165 | 109,550 |
+| AI & behaviour | 8 | 8 | 164 | 109,255 |
 | Characters, motion & animation | 8 | 8 | 236 | 107,315 |
-| Game modes, arena & session | 7 | 7 | 210 | 87,674 |
+| Game modes, arena & session | 7 | 7 | 212 | 88,970 |
 | World, levels & terrain | 5 | 5 | 168 | 87,048 |
 | Items, materials & crafting | 5 | 5 | 162 | 74,827 |
 | Data, assets & I/O | 6 | 6 | 142 | 44,244 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,288** | **1,159,444** |
+| **Total** | **90** | **90** | **2,287** | **1,159,865** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 239–240 | Each game mode gives the camera its own record and GameModes is the live mode word (F361, F362 fixed); window points use the original's projection (a 2x lift-warp bug under supersampling fixed); the post sharpen follows the supersample level (cammodes). The living placement of a character body replaces the rigid moves for the arena's kept bodies, the golem reset, the revive, the player's level placement and the hub entry (replace). Two lanes held before integration: clothbody (CPU cost being cut) and skinning (a large garment-weight change waiting for a picture check). Scenes owed (GPU on hold). |
 | 2026-11-16 | 238 | The in-game GUI unit: the heartbeat fades out, the HUD takes the shield, the power bar and the bars' holds, the dead powers close the corpse's windows, the AI search reads the open-container registry, a bound body's inventory sets its mind window, a save writes the open packs (gamegui; F31, F32, F34-F38). Grid scenes owed (GPU on hold). |
 | 2026-11-16 | 237 | A scanned player's story death runs the record strip: the dressed corpse stays in the level and is saved there (F543 fixed); every story level change reads the save's own section first; the session's arrival words and the story levels' fog follow the original (savegames2). Scenes owed (GPU on hold). |
 | 2026-11-16 | 235–236 | The player controls' switches follow the assembly (Spirit Form's hold, the drag reach limit, the lifted item's turn and put-back, drop scripts, the power retry, the held GUI button's release, object tracks, the idle double click, the pointer warp, the walk-latch reach); two defects fixed: a used object was deleted, the device power-down had the wrong trigger (playerctl). Body part sounds from the race and suit, the step reach's order, the weightless share, held re-places, the drops and attach on the item's own body (motilepart). Scenes owed (GPU on hold). |

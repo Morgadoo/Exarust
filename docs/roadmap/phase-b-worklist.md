@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 753 | 189,707 | B1 wire (or prove unreachable) |
-| partial | 1,479 | 956,067 | B4 complete the port |
+| uncalled | 750 | 188,893 | B1 wire (or prove unreachable) |
+| partial | 1,481 | 957,302 | B4 complete the port |
 | missing | 64 | 14,580 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -16,12 +16,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 153,634 | 23,907 | 2,065 |
 | ui | 97,814 | 51,433 | 1,359 |
-| render | 123,703 | 23,570 | 3,232 |
+| render | 123,703 | 22,990 | 3,232 |
 | powers | 112,105 | 3,755 | 3,049 |
-| ai | 104,210 | 5,312 | 28 |
+| ai | 103,915 | 5,312 | 28 |
 | characters | 89,820 | 15,398 | 2,097 |
-| modes | 73,059 | 13,673 | 942 |
-| world | 65,235 | 21,250 | 563 |
+| modes | 74,355 | 13,673 | 942 |
+| world | 65,469 | 21,016 | 563 |
 | items | 63,071 | 11,086 | 670 |
 | data | 31,939 | 12,305 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
@@ -37,9 +37,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMotileDynamics | physics | 48 / 99,121 | 5 / 5,469 | 1 / 38 | 104,628 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 26 / 32,570 | 5 / 2,048 | 2 / 28 | 34,646 |
-| SG_PlayerControls (unit routines) | ai | 39 / 22,829 | 0 / 0 | 0 / 0 | 22,829 |
-| XA_Arena (unit routines) | modes | 32 / 19,447 | 8 / 1,658 | 8 / 942 | 22,047 |
+| SG_PlayerControls (unit routines) | ai | 38 / 22,534 | 0 / 0 | 0 / 0 | 22,534 |
 | TSimSector | physics | 29 / 21,802 | 0 / 0 | 0 / 0 | 21,802 |
+| XA_Arena (unit routines) | modes | 32 / 19,158 | 8 / 1,658 | 8 / 942 | 21,758 |
 | TMotilePart | characters | 36 / 17,100 | 6 / 1,449 | 2 / 1,370 | 19,919 |
 | TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
 | TVCCloth | physics | 15 / 15,321 | 6 / 1,514 | 1 / 1,638 | 18,473 |
@@ -49,9 +49,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
 | TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
 | TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
+| XA_SaveGames (unit routines) | modes | 24 / 12,557 | 3 / 704 | 0 / 0 | 13,261 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
-| XA_SaveGames (unit routines) | modes | 23 / 11,426 | 3 / 704 | 0 / 0 | 12,130 |
 | TForceTorrentEffect | powers | 6 / 11,171 | 0 / 0 | 1 / 728 | 11,899 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | TStaticTerrain | world | 12 / 10,617 | 3 / 522 | 0 / 0 | 11,139 |
@@ -63,6 +63,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGUIItemContainer | items | 8 / 7,880 | 2 / 1,584 | 0 / 0 | 9,464 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTetraRBD | physics | 17 / 8,115 | 4 / 917 | 1 / 151 | 9,183 |
+| SG_GameMain (unit routines) | modes | 20 / 7,488 | 3 / 1,300 | 0 / 0 | 8,788 |
 | RF_GUI_Main (unit routines) | ui | 7 / 5,075 | 19 / 2,486 | 3 / 1,167 | 8,728 |
 | RF_OS_Functions (unit routines) | runtime | 13 / 6,781 | 5 / 1,749 | 1 / 49 | 8,579 |
 | FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
@@ -70,7 +71,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | FLX_Materials_Procedural (unit routines) | items | 9 / 5,600 | 11 / 2,821 | 1 / 76 | 8,497 |
 | RFE_Export_RFC2 (unit routines) | data | 13 / 8,152 | 2 / 240 | 0 / 0 | 8,392 |
 | FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
-| SG_GameMain (unit routines) | modes | 19 / 7,034 | 3 / 1,300 | 0 / 0 | 8,334 |
 | RF_Morphing (unit routines) | characters | 6 / 7,170 | 2 / 836 | 1 / 154 | 8,160 |
 | TTendrilEffect | powers | 2 / 8,075 | 0 / 0 | 0 / 0 | 8,075 |
 | SG_ObjectDB2 (unit routines) | data | 8 / 4,937 | 25 / 3,098 | 0 / 0 | 8,035 |
@@ -92,7 +92,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Textures (unit routines) | render | 17 / 5,574 | 9 / 1,051 | 0 / 0 | 6,625 |
 | TLoadoutForm | modes | 7 / 6,452 | 1 / 80 | 0 / 0 | 6,532 |
 | T3DViewport | ui | 19 / 4,915 | 2 / 1,101 | 0 / 0 | 6,016 |
-| TNavCameraControl | render | 2 / 5,215 | 3 / 772 | 0 / 0 | 5,987 |
 | TForceBlastEffect | powers | 3 / 5,947 | 0 / 0 | 0 / 0 | 5,947 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
 | SG_Character_Data (unit routines) | characters | 10 / 2,511 | 22 / 3,260 | 0 / 0 | 5,771 |
@@ -100,6 +99,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TProcMaterial | items | 9 / 5,114 | 0 / 0 | 1 / 525 | 5,639 |
 | TIconManager | ui | 0 / 0 | 6 / 5,573 | 0 / 0 | 5,573 |
 | TCombatant | ai | 9 / 4,839 | 3 / 690 | 0 / 0 | 5,529 |
+| TNavCameraControl | render | 2 / 5,215 | 1 / 192 | 0 / 0 | 5,407 |
 | TSkinController2 | characters | 6 / 3,997 | 2 / 1,193 | 0 / 0 | 5,190 |
 | Engine math (vectors, matrices, fast trig) | core | 18 / 4,941 | 1 / 235 | 0 / 0 | 5,176 |
 | Item description phrases | items | 5 / 4,855 | 2 / 288 | 0 / 0 | 5,143 |
@@ -195,7 +195,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_UIDManager (unit routines) | data | 1 / 248 | 7 / 1,148 | 0 / 0 | 1,396 |
 | RF_Material_Manager (unit routines) | render | 2 / 1,201 | 1 / 180 | 0 / 0 | 1,381 |
 | TMemBlockLibrary | data | 1 / 272 | 4 / 1,092 | 0 / 0 | 1,364 |
-| RF_SceneEditor (unit routines) | world | 0 / 0 | 4 / 1,351 | 0 / 0 | 1,351 |
+| RF_SceneEditor (unit routines) | world | 1 / 234 | 3 / 1,117 | 0 / 0 | 1,351 |
 | FG_AIFunctions (unit routines) | script | 11 / 1,343 | 0 / 0 | 0 / 0 | 1,343 |
 | TTexture | render | 2 / 872 | 2 / 451 | 0 / 0 | 1,323 |
 | RF_Renderer (unit routines) | render | 0 / 0 | 6 / 1,315 | 0 / 0 | 1,315 |
