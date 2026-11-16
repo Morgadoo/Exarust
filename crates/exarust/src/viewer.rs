@@ -2805,8 +2805,9 @@ fn place_player_in_step(
     for (entity, mut transform, mut ragdoll) in &mut bodies {
         transform.rotation = Quat::from_rotation_y(yaw);
         let mut height = height;
-        if landing && let Ok((body, fighter, anim, stance, condition, flags, request)) =
-            landed.get_mut(entity)
+        if landing
+            && let Ok((body, fighter, anim, stance, condition, flags, request)) =
+                landed.get_mut(entity)
         {
             exa_game::save_level::landing_resets(
                 anim.map(|a| a.into_inner()),
@@ -5087,13 +5088,23 @@ mod placement_tests {
             ))
             .id();
         world
-            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::ZERO, 0.0, 0, LANDING, false))
+            .run_system_once_with(
+                place_player_in_step,
+                (Vec3::X, Vec3::ZERO, 0.0, 0, LANDING, false),
+            )
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 0);
         world
             .run_system_once_with(
                 place_player_in_step,
-                (Vec3::X, Vec3::X, 0.5, PLACED_SETTLE, FrameHeight::Given, false),
+                (
+                    Vec3::X,
+                    Vec3::X,
+                    0.5,
+                    PLACED_SETTLE,
+                    FrameHeight::Given,
+                    false,
+                ),
             )
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 16);
@@ -5116,7 +5127,10 @@ mod placement_tests {
             .id();
         let at = Vec3::new(3.0, 0.4, -2.0);
         world
-            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, 0, LANDING, false))
+            .run_system_once_with(
+                place_player_in_step,
+                (at, Vec3::ZERO, 0.7, 0, LANDING, false),
+            )
             .unwrap();
         let asked = *world
             .get::<exa_game::limp::LivingPlacement>(body)
@@ -5128,7 +5142,14 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (at, Vec3::ZERO, 0.7, PLACED_SETTLE, FrameHeight::Given, false),
+                (
+                    at,
+                    Vec3::ZERO,
+                    0.7,
+                    PLACED_SETTLE,
+                    FrameHeight::Given,
+                    false,
+                ),
             )
             .unwrap();
         let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
@@ -5138,7 +5159,14 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (at.with_y(0.0), Vec3::ZERO, 0.7, 0, FrameHeight::Stand, false),
+                (
+                    at.with_y(0.0),
+                    Vec3::ZERO,
+                    0.7,
+                    0,
+                    FrameHeight::Stand,
+                    false,
+                ),
             )
             .unwrap();
         let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();

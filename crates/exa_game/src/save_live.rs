@@ -4425,7 +4425,10 @@ mod tests {
             door: false,
         });
         app.update();
-        assert!(!app.world().contains_resource::<exa_world::SavedLevelSection>());
+        assert!(
+            !app.world()
+                .contains_resource::<exa_world::SavedLevelSection>()
+        );
         // The return: the slot's own section.
         app.world_mut()
             .resource_mut::<crate::arena_hub_live::ArenaHub>()

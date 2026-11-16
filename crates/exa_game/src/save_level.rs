@@ -55,7 +55,11 @@ pub fn landing_target(height: f32) -> f32 {
 /// The lift the save landing adds over the probed floor and the target
 /// word (cm): 13 for a body in combat mode, else 5.
 pub fn landing_lift(combat: bool) -> f32 {
-    if combat { SPAWN_LIFT_RAISED } else { SPAWN_LIFT }
+    if combat {
+        SPAWN_LIFT_RAISED
+    } else {
+        SPAWN_LIFT
+    }
 }
 
 /// The frame height the save landing puts a surviving body's pelvis at
