@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 695 | 169,053 | B1 wire (or prove unreachable) |
-| partial | 1,441 | 913,134 | B4 complete the port |
+| partial | 1,439 | 911,425 | B4 complete the port |
 | missing | 58 | 11,783 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -19,7 +19,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | ui | 86,242 | 45,948 | 1,311 |
 | powers | 109,096 | 3,157 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
-| ai | 98,816 | 3,406 | 28 |
+| ai | 97,107 | 3,406 | 28 |
 | world | 65,469 | 21,016 | 563 |
 | modes | 66,538 | 10,669 | 779 |
 | items | 55,764 | 8,673 | 601 |
@@ -37,8 +37,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMotileDynamics | physics | 47 / 98,866 | 3 / 558 | 1 / 38 | 99,462 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 22 / 30,743 | 3 / 233 | 2 / 28 | 31,004 |
-| SG_PlayerControls (unit routines) | ai | 39 / 23,073 | 0 / 0 | 0 / 0 | 23,073 |
 | TSimSector | physics | 28 / 21,578 | 0 / 0 | 0 / 0 | 21,578 |
+| SG_PlayerControls (unit routines) | ai | 37 / 21,364 | 0 / 0 | 0 / 0 | 21,364 |
 | TMotilePart | characters | 37 / 17,208 | 5 / 1,341 | 2 / 1,370 | 19,919 |
 | XA_Arena (unit routines) | modes | 29 / 17,125 | 6 / 1,436 | 7 / 779 | 19,340 |
 | RF_SceneNodes (unit routines) | world | 10 / 15,347 | 12 / 2,377 | 0 / 0 | 17,724 |

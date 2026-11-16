@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r257, 11-16) | target |
+| measure | start (r186, 11-10) | now (r258, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **56.44%** | **100%** |
+| **Ledger: bytes in a final state** | — | **56.51%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,924 | all |
+| Tests passing | 8,489 | 8,929 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -103,7 +103,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | UI | 12 | 12 | 365 | 133,501 |
 | Thaumaturgy & effects | 9 | 9 | 161 | 114,574 |
 | Characters, motion & animation | 8 | 8 | 234 | 107,087 |
-| AI & behaviour | 8 | 8 | 148 | 102,250 |
+| AI & behaviour | 8 | 8 | 146 | 100,541 |
 | World, levels & terrain | 5 | 5 | 168 | 87,048 |
 | Game modes, arena & session | 7 | 7 | 189 | 77,986 |
 | Items, materials & crafting | 5 | 5 | 141 | 65,038 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,186** | **1,093,060** |
+| **Total** | **90** | **90** | **2,184** | **1,091,351** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 258 | The lift's placement follows the original: the item's box centre starts 600 cm back along the cursor ray and slides to its spheres' first contact within 1000 cm (the level, the other props and the loose props' meshes); each sphere starts at the camera's near plane, which an older reading had taken for a support plane; with the controls off the hand's own frame places the lift and a block holds it (playerctl2). Lift scenes owed and their traces change (GPU on hold) |
 | 2026-11-16 | 257 | The duellist drops a collapsing or dead target and leaves combat instead of standing guard; apply roles reads the fierce bit and drives the party list (companions join the story experience, are written back to their records, leave on death); an arriving follower restarts its idle search; the idle driver's room-walk goal proven unreachable (motileai3). Arena and story scenes and determinism runs owed (GPU on hold) |
 | 2026-11-16 | 256 | The line skin's wide frames: the combo drop-down lists and the palette popup draw the wide window frame; the colour picker's close mark lights, draws its icon and closes; the swatch backs and the tables' header line go through the skins; F24 closed (the title band is six units deep) and the span bar half of F29 (linesrest). Hub window scenes owed (GPU on hold) |
 | 2026-11-16 | 255 | The swing's opening block: a counter keeps its armed hold while the target plays the countered motion, a shield without Ward lets go at 0.4 of the clip, two weapons guard the off hand; the supported walk's head tilt, the ground placement's clinch clear and the get-up tick's clears; the muscles-off sampler proven unreachable (motiledyn4). F545 opened and held for a GPU check: the ground placement's sampler. An arena staging order bug between the end screen and the flow's steps fixed on integration. Traces change in every scene with walking bodies; determinism runs owed (GPU on hold) |
