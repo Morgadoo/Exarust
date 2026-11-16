@@ -9,7 +9,7 @@ Two numbers are published while the function ledger is being completed (see `doc
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - **Estimate 82.3% + 5.1% engine; ledger 53.4% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.4% closed**, of which 41.6% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.3% partial and 8.3% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.4% closed**, of which 41.6% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.3% partial and 8.2% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -305,7 +305,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TWeaponBlood | Combat, weapons & damage | 2 | 85% | 20% | 20% | 0% | 0% | 80% | 0% |
 | RFE_Effects_Blood | Combat, weapons & damage | 1 | 80% | 41% | 32% | 9% | 0% | 59% | 0% |
 | TBloodSprays | Combat, weapons & damage | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 62% | 62% | 0% | 0% | 31% | 7% |
+| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 63% | 62% | 0% | 0% | 31% | 6% |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
 | Item description phrases | Items, materials & crafting | 16 | 86% | 69% | 64% | 2% | 3% | 29% | 2% |
 | SG_ItemGUI | Items, materials & crafting | 15 | 84% | 52% | 46% | 2% | 4% | 29% | 18% |
@@ -484,7 +484,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TGUIDrawSkin | UI | 35 | 93% | 55% | 45% | 0% | 10% | 13% | 31% |
 | TGSLines | UI | 24 | 89% | 23% | 23% | 0% | 0% | 59% | 18% |
 | SG_GameGUI | UI | 22 | 90% | 51% | 33% | 1% | 16% | 42% | 8% |
-| TGUIForm | UI | 20 | 96% | 16% | 15% | 1% | 0% | 46% | 38% |
+| TGUIForm | UI | 20 | 96% | 17% | 17% | 1% | 0% | 49% | 33% |
 | TSkillUI | UI | 18 | 88% | 76% | 76% | 0% | 0% | 20% | 4% |
 | RF_GUI_Controls_Ex | UI | 16 | 87% | 75% | 12% | 1% | 62% | 25% | 0% |
 | RF_HW_Config | UI | 15 | 93% | 67% | 59% | 5% | 2% | 32% | 1% |

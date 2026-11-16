@@ -5,9 +5,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 772 | 193,157 | B1 wire (or prove unreachable) |
-| partial | 1,497 | 962,000 | B4 complete the port |
-| missing | 67 | 14,941 | B4 port |
+| uncalled | 767 | 192,191 | B1 wire (or prove unreachable) |
+| partial | 1,500 | 962,721 | B4 complete the port |
+| missing | 66 | 14,788 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
 ## By section (open bytes)
@@ -15,14 +15,14 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 153,634 | 23,907 | 2,065 |
-| ui | 99,805 | 53,282 | 1,673 |
+| ui | 100,526 | 52,457 | 1,520 |
 | render | 123,703 | 23,570 | 3,232 |
 | powers | 112,105 | 3,852 | 3,049 |
 | ai | 105,364 | 6,305 | 75 |
 | characters | 90,034 | 15,398 | 2,097 |
 | modes | 74,751 | 14,043 | 942 |
 | world | 65,583 | 21,250 | 563 |
-| items | 63,514 | 11,227 | 670 |
+| items | 63,514 | 11,086 | 670 |
 | data | 31,939 | 12,305 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
 | core | 12,324 | 3,411 | 59 |
@@ -44,7 +44,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
 | TVCCloth | physics | 15 / 15,321 | 6 / 1,514 | 1 / 1,638 | 18,473 |
 | RF_SceneNodes (unit routines) | world | 10 / 15,347 | 12 / 2,377 | 0 / 0 | 17,724 |
-| TGUIForm | ui | 29 / 9,509 | 28 / 7,744 | 1 / 153 | 17,406 |
+| TGUIForm | ui | 32 / 10,230 | 24 / 6,919 | 0 / 0 | 17,149 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
 | TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
@@ -57,8 +57,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_GameGUI (unit routines) | ui | 19 / 9,465 | 10 / 1,573 | 1 / 161 | 11,199 |
 | TStaticTerrain | world | 12 / 10,617 | 3 / 522 | 0 / 0 | 11,139 |
 | TForceBarricadeEffect | powers | 5 / 10,372 | 0 / 0 | 0 / 0 | 10,372 |
-| TGUIItemContainer | items | 9 / 8,203 | 3 / 1,725 | 0 / 0 | 9,928 |
 | Character equipment & inventory routines (TCharacterView by address) | items | 16 / 8,337 | 9 / 1,514 | 0 / 0 | 9,851 |
+| TGUIItemContainer | items | 9 / 8,203 | 2 / 1,584 | 0 / 0 | 9,787 |
 | TTendrilEmitter | powers | 6 / 9,672 | 1 / 67 | 0 / 0 | 9,739 |
 | TAISearchActivity | ai | 14 / 9,316 | 3 / 212 | 0 / 0 | 9,528 |
 | TMatchBoard | modes | 6 / 9,526 | 0 / 0 | 0 / 0 | 9,526 |
