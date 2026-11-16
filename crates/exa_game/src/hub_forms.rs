@@ -105,6 +105,9 @@ pub struct HubForms {
     /// The lineup the loadout form's close handed back, for the career's
     /// event row ([`apply_closed_lineup`]).
     pub closed_lineup: Option<LineupEdit>,
+    /// The page the loadout form showed when it closed, for the bodies'
+    /// re-dress ([`crate::equip::redress_at_loadout_close`]).
+    pub closed_loadout: Option<u32>,
 }
 
 /// An event's lineup on the loadout form's event page: the event, its
@@ -353,7 +356,9 @@ impl HubForms {
             self.forms.remove(i);
         }
         if window == FormWindow::Loadout {
-            self.arsenal = None;
+            if let Some(arsenal) = self.arsenal.take() {
+                self.closed_loadout = Some(arsenal.page);
+            }
             // An event page's close runs the lineup's close hook.
             if let Some(edit) = self.lineup.take() {
                 self.closed_lineup = Some(edit);

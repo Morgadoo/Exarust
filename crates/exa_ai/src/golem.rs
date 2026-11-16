@@ -127,8 +127,10 @@ pub const SLEEP_SCALES_LATCH: u32 = exa_combat::StateFlags::TURNS_BLOWS;
 /// The race word's AI bit a character needs for the radius query to visit
 /// it (the golem races).
 pub const AI_BIT: u32 = crate::personality::AI_FLAG;
-/// The body flag-word bit that keeps the wake routine from running (its
-/// meaning beyond that is not traced).
+/// The body rule bit that keeps the wake routine from running: the
+/// coreless mark a golem race carries while it wears no core crystal (the
+/// armour pass sets it and a worn core clears it; the character view's core
+/// drop clears it and its take-off sets it, `exa_game::equip`).
 pub const WAKE_EXEMPT: u32 = 0x100;
 /// The condition word's dying bit (0x800, held by the dead condition
 /// 0xA00 too): the homeward callback skips a guardian that carries it.

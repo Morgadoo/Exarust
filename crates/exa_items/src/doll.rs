@@ -712,64 +712,80 @@ pub fn node_final(mode: u32, both_hands_empty: bool) -> NodeFinal {
     }
 }
 
-/// What a finished equipment job does. The three finalisers differ only in
-/// which of these they run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FinishSteps {
-    /// The body's effect attachments are cleared.
-    pub detach_effects: bool,
-    /// The body's apparel is rebuilt.
-    pub rebuild_apparel: bool,
-    /// The body's effect attachments are refreshed.
-    pub refresh_effects: bool,
-    /// The player's controls are refreshed.
-    pub refresh_player: bool,
-    /// The view's view-side callback runs.
-    pub callback: bool,
-    /// The view's job slot is cleared (the job is over).
-    pub finish_job: bool,
+/// One step a finished equipment job runs on the main thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishStep {
+    /// The shared hand attachment the job made is released (its node
+    /// detached once no other job holds it).
+    ReleaseAttachment,
+    /// The body's hand effects are cleared.
+    ClearEffects,
+    /// The body's apparel is rebuilt (the armour pass).
+    RebuildApparel,
+    /// The body's hand effects are installed again and its focus slot set.
+    RefreshEffects,
+    /// The view's own callback runs (when the view has one).
+    ViewCallback,
+    /// The body's open view, if any, refreshes its encumbrance dots and its
+    /// job slot is cleared: the job is over and the next one may start.
+    SyncView,
+    /// The player's light switch is run again from what the player wears
+    /// and holds.
+    RefreshPlayerLight,
 }
 
-/// Which finaliser runs after an equipment step.
+/// Which finaliser a job posts when it is done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinishKind {
-    /// The doll's own finaliser: effects cleared and refreshed, the apparel
-    /// rebuilt, the player's controls refreshed, the job finished.
-    Doll,
-    /// The other character's: the same on it, plus the view's callback and
-    /// its job cleared, then the player's controls refreshed.
-    Other,
-    /// The light one: the apparel rebuilt and the job finished.
+    /// A body's own finaliser (the job had no view): its effects cleared,
+    /// its apparel rebuilt, its effects refreshed, the player's light
+    /// switch only when the body is the player, then its view synced.
+    Body { player: bool },
+    /// A view's finaliser (the job was the view's): the same on the view's
+    /// own body, then the view's callback, the world body the view stands
+    /// for synced (when it has one), then the player's light switch
+    /// whatever the body is.
+    View { world_body: bool },
+    /// The light finaliser of a take-out: the apparel rebuilt and the view
+    /// synced.
     Light,
+    /// The scene attachment's finaliser: the attachment released, then the
+    /// body's view synced.
+    Attachment,
 }
 
 /// The steps a finaliser runs, in the original's order.
-pub fn finish(kind: FinishKind) -> FinishSteps {
+pub fn finish(kind: FinishKind) -> Vec<FinishStep> {
+    use FinishStep::*;
     match kind {
-        FinishKind::Doll => FinishSteps {
-            detach_effects: true,
-            rebuild_apparel: true,
-            refresh_effects: true,
-            refresh_player: true,
-            callback: false,
-            finish_job: true,
-        },
-        FinishKind::Other => FinishSteps {
-            detach_effects: true,
-            rebuild_apparel: true,
-            refresh_effects: true,
-            refresh_player: true,
-            callback: true,
-            finish_job: true,
-        },
-        FinishKind::Light => FinishSteps {
-            detach_effects: false,
-            rebuild_apparel: true,
-            refresh_effects: false,
-            refresh_player: false,
-            callback: false,
-            finish_job: true,
-        },
+        FinishKind::Body { player } => {
+            let mut steps = vec![ClearEffects, RebuildApparel, RefreshEffects];
+            if player {
+                steps.push(RefreshPlayerLight);
+            }
+            steps.push(SyncView);
+            steps
+        }
+        FinishKind::View { world_body } => {
+            let mut steps = vec![ClearEffects, RebuildApparel, RefreshEffects, ViewCallback];
+            if world_body {
+                steps.push(SyncView);
+            }
+            steps.push(RefreshPlayerLight);
+            steps
+        }
+        FinishKind::Light => vec![RebuildApparel, SyncView],
+        FinishKind::Attachment => vec![ReleaseAttachment, SyncView],
+    }
+}
+
+/// The finaliser a take-out or take-in posts: the view's when the job was
+/// made by a view, else the body's own.
+pub fn finish_of(view: bool, world_body: bool, player: bool) -> FinishKind {
+    if view {
+        FinishKind::View { world_body }
+    } else {
+        FinishKind::Body { player }
     }
 }
 
@@ -1507,14 +1523,59 @@ mod tests {
                 lit: false
             }
         );
-        let doll = finish(FinishKind::Doll);
-        assert!(doll.detach_effects && doll.rebuild_apparel && doll.refresh_effects);
-        assert!(doll.refresh_player && doll.finish_job && !doll.callback);
-        let other = finish(FinishKind::Other);
-        assert!(other.callback && other.finish_job && other.rebuild_apparel);
-        let light = finish(FinishKind::Light);
-        assert!(light.rebuild_apparel && light.finish_job);
-        assert!(!light.detach_effects && !light.refresh_player && !light.callback);
+        use FinishStep::*;
+        // A body's own finaliser refreshes the player's light only for the
+        // player, before its view sync.
+        assert_eq!(
+            finish(FinishKind::Body { player: true }),
+            [
+                ClearEffects,
+                RebuildApparel,
+                RefreshEffects,
+                RefreshPlayerLight,
+                SyncView
+            ]
+        );
+        assert_eq!(
+            finish(FinishKind::Body { player: false }),
+            [ClearEffects, RebuildApparel, RefreshEffects, SyncView]
+        );
+        // A view's finaliser runs its callback, syncs the world body and
+        // then the player's light, whatever the body.
+        assert_eq!(
+            finish(FinishKind::View { world_body: true }),
+            [
+                ClearEffects,
+                RebuildApparel,
+                RefreshEffects,
+                ViewCallback,
+                SyncView,
+                RefreshPlayerLight
+            ]
+        );
+        assert_eq!(
+            finish(FinishKind::View { world_body: false }),
+            [
+                ClearEffects,
+                RebuildApparel,
+                RefreshEffects,
+                ViewCallback,
+                RefreshPlayerLight
+            ]
+        );
+        assert_eq!(finish(FinishKind::Light), [RebuildApparel, SyncView]);
+        assert_eq!(
+            finish(FinishKind::Attachment),
+            [ReleaseAttachment, SyncView]
+        );
+        assert_eq!(
+            finish_of(false, false, false),
+            FinishKind::Body { player: false }
+        );
+        assert_eq!(
+            finish_of(true, true, false),
+            FinishKind::View { world_body: true }
+        );
     }
 
     #[test]

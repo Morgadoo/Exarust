@@ -942,6 +942,16 @@ fn move_item(
     let Some(flags) = take_from_source(bodies, player, source, taken, flags) else {
         return;
     };
+    // A body's equipment panel that gave up the core crystal its race takes
+    // (the body now passes the core test for it) reacts as the figure's
+    // take-off does ([`crate::equip::core_taken_off`]).
+    if let Panel::BodyEquipment(body) = source
+        && let Some(entity) = body_entity(bodies, body)
+    {
+        commands.queue(move |world: &mut World| {
+            crate::equip::core_left_equipment(world, entity, taken);
+        });
+    }
     match destination {
         Panel::PlayerPack => {
             if let Some(player) = player
