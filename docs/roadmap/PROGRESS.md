@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r299, 11-16) | target |
+| measure | start (r186, 11-10) | now (r300, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,168 | all |
+| Tests passing | 8,489 | 9,170 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 300 | Fixed-frame runs now repeat their pictures exactly (offscreen frames read back in lockstep, the game saves the exact shot frames, pipelines compile synchronously, background jobs are waited for): three-run noise fell from up to 0.15 to 0 on every golden shot; F567 (segfault at quit) was not reproduced in 225 runs, the renderer now finishes its compiles and GPU work before exit and the exit trace lists live threads. |
 | 2026-11-16 | 299 | The arena NEW CAREER opens the company name and emblem dialog first (F446): BACK fades to the title, a named NEXT stores the company and starts the arena creator; the menu plays its back cue and keeps a dragged-off press unselected, its hide takes the version line down, the transition screen takes the pointer, divination deals from a running stream and closes on a right press, the loadout shows the kit's encumbrance dots, the tip banner box is rounded and the destination rows carry their destination words. |
 | 2026-11-16 | 298 | The powers sound as in the original: Shock's charge and release, the Vanish and Long Door starts and come-backs on a voice that follows the body, the wave's charge loop and throw; a missed throw and a refused kinesis pick play the failure cue; Force Strikes swaps the body's swing set and loudness; Mind powers mark their bar slots; a barricade ended by an event fells its wall, the cast end returns to the stored stance and the power tree reopens on its domain only for the same body. |
 | 2026-11-16 | 297 | NPC bodies turn and look through their locomotion as the player body does (look, look smoothing and heading kept as in the original, combat look snap past 30 degrees); the search creates the perceived goal entity the brain weighs and attends (F389), and a classify bug was fixed (the attention bonus belongs to the attended contact). |
