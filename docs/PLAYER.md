@@ -1067,10 +1067,11 @@ wakes the door bodies under it, a latched or motorised leaf waiting 120
 ticks before it opens; a class 5 push its surface; relays and deferred
 fire and light jobs are not run yet. exanima01's levers mostly name its
 portcullises, which are sliding doors: the 37 leaves are bodies running
-the door's sliding rules right after their integration. Each lies slid
-into its wall at the open end of a level rail and shuts 170 cm along it
-into its frame: a close drives it there and latches it, a motorised open
-crawls it back, a plain open unlatches it and shoves it (the hand drags it
+the door's sliding rules right after their integration. Each stands in its
+arch at the open end of a level rail (fraction 0) and "shuts" 170 cm along
+it into a slot in its wall, which clears the arch: a close drives it there
+and latches it (so a lever, on at load, opens its gate with the off signal,
+as the original's does), a motorised open crawls it back into the arch, a plain open unlatches it and shoves it (the hand drags it
 along its rail). A woken leaf at rest creeps under 2 cm and sleeps
 (`--static-sliding-doors` keeps them static level geometry).
 Mechanism sounds (creaks, the lever's tick loop, a plate's grind and

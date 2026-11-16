@@ -1757,9 +1757,11 @@ on its travel link's fraction right after its integration, before the
 link passes (`body::slide_body::SlideStage`, the solver's `integrated`
 stage), as the original's door step integrates a slider first; a
 command's fraction is written into the link first, and an open command
-wakes the body to 256 each tick it runs. exanima01's 37 portcullises lie
-at the open end of level rails (slid into their walls, fraction 0) and
-shut 170 cm along them; a woken leaf at rest creeps under 2 cm and sleeps.
+wakes the body to 256 each tick it runs. exanima01's 37 portcullises stand
+in their arches at the open end of level rails (fraction 0) and "shut" 170
+cm along them into slots in their walls, which clears the arch (the
+original's reading: its levers, on at load, clear a gate with their off
+signal); a woken leaf at rest creeps under 2 cm and sleeps.
 The hand's drag of a sliding leaf is `SlideBody::take_hold`, `pull_to`
 (the cursor's offset along the leaf's x axis) and `let_go`; each tick the
 step keeps the link's anchor within 60 cm of its point. Each body's tick

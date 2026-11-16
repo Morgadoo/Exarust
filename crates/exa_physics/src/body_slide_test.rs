@@ -1,7 +1,8 @@
 //! Synthetic sliding leaves (not game data): a 2 m panel held by three
 //! slider links of 1.7 m travel, either down vertical rails (at their
 //! bottom, travel fraction 1, shut) or along level rails like the shipped
-//! portcullises' (placed at the open end, fraction 0). Each tick runs the
+//! portcullises' (placed at the open end, fraction 0, which on the shipped
+//! leaves is the pose in the arch). Each tick runs the
 //! solver with the leaves' stage, so the door's step runs right after the
 //! integration, as the original's does.
 use super::*;
@@ -217,6 +218,36 @@ fn a_close_slides_a_level_leaf_shut_and_latches_it() {
     let link = &body.world[glue.travel_link()];
     assert_eq!(link.smoothing, door::SLIDE_HELD_SMOOTH);
     assert!(link.length > 0.999, "{}", link.length);
+}
+
+/// The reading of a level leaf as the original's (F563): placed with its
+/// slider points on their anchors it stands at its placed pose (on the
+/// shipped portcullises, in its arch) and reads open; the close order (the
+/// lever's off signal) takes it 1.7 m along its rail to the far end (the
+/// wall), where it reads shut and has left its placed pose; a motorised open
+/// starts it back toward the placed pose and it reads open again.
+#[test]
+fn a_level_leaf_reads_open_at_its_placed_pose_and_shut_at_the_far_end() {
+    let saved = door::stored_word(door::MODE_TOGGLE, 200, false);
+    let (mut body, mut glue) = slide_on(Vec3::ZERO, LEVEL, MOTORISED, saved);
+    assert!(glue.at_placed_pose(&body) && !glue.door.closed);
+    body.wake_to(WAKE_COUNT);
+    let start = along_x(&body);
+    for n in 0..1500 {
+        tick(&mut body, &mut glue, n);
+    }
+    assert!(!glue.at_placed_pose(&body) && glue.door.closed);
+    assert!((start - along_x(&body) - TRAVEL).abs() < 0.02);
+    glue.door.open();
+    body.wake_to(WAKE_COUNT);
+    for n in 1500..1800 {
+        tick(&mut body, &mut glue, n);
+    }
+    assert!(
+        !glue.door.closed && glue.fraction(&body) < 0.9,
+        "{}",
+        glue.fraction(&body)
+    );
 }
 
 /// A motorised open on a shut level leaf crawls the fraction down 0.01 a

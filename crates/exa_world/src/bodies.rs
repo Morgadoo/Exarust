@@ -1339,16 +1339,16 @@ mod tests {
     /// The installed `exanima01`'s sliding doors (its 37 portcullises,
     /// skipped without the game) as bodies by default: each leaf registers
     /// with its sliding rules and stays a mover of the navigation grid
-    /// (its mesh node keeps [`crate::nav::MovingMesh`]); placed slid into
-    /// its wall at the open end of its level rail (fraction 0), it reads
-    /// open and its room link stays open. Woken and left alone it creeps
+    /// (its mesh node keeps [`crate::nav::MovingMesh`]); placed in its
+    /// arch at the open end of its level rail (fraction 0), it reads open
+    /// (the original's reading) and its room link stays open. Woken and left alone it creeps
     /// under 2 cm along its rail and falls asleep. A toggle signalled to
     /// the placed object of each unlatched fast leaf (the router's door
-    /// order, a close and lock) slides it shut along its rail, 170 cm into
-    /// its frame, where it reads shut; the grid's refresh over the
+    /// order, a close and lock) slides it along its rail, 170 cm into the
+    /// slot in its wall, where it reads shut; the grid's refresh over the
     /// rectangles of both frames, with the leaves where they now stand,
-    /// frees the cells they left and raises the floored doorway cells they
-    /// now stand over (the doorway the path finder routes through).
+    /// frees the arch's cells they left (the doorway the path finder now
+    /// routes through) and raises the floored cells they now stand over.
     #[test]
     fn shipped_portcullises_slide_shut_and_raise_their_doorway() {
         use crate::mechanisms::MechanismRecords;

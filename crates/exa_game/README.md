@@ -3115,7 +3115,9 @@ panels and the worn figure read (`doll_view::DollItems`, whose tagged ids
 keep their own copies and container lists) and the card's wear byte
 (`exa_items::catalogue`); they are not saved (no live object database).
 
-`equip::apply_head_height` finds each armed grip's holder through `exa_physics::body::first_by_key`.
+`equip::apply_head_height` finds each armed grip's holder through `exa_physics::body::first_by_key`; it runs first in the fixed step (before `exa_physics::body::deal_shoves` and the grip builder), so every stage of a tick reads the same arm link (F560: left unordered, the schedule's layout decided it).
+
+The hand's pick names a door's leaf, hinged (`DoorBody`) or sliding (`SlideBody`), by its door record (`hand::leaf_blocked`): a hinge pick, or nothing when the record bars clicks, whatever the leaf's mobility (F566).
 
 Status-effect broadcast (`thaum::cast`): a caster's active list is passed event 2 once when the body starts to collapse or dies and the player's event 8 at an in-process level change (`PowerCaster::broadcast`, `broadcast_level_change`), before the tick's own walk; each power's control answers as in the walk.
 

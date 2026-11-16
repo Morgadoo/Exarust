@@ -39,6 +39,7 @@ pub fn bodies(game: &GameData, pack: &str, entry: &str) -> Result<()> {
                 let parent = node.parent.and_then(|p| scene.nodes.get(p - 1));
                 let child = parent.is_some_and(|p| p.has_rigid_body());
                 print_body(i + 1, &node.name, child, body);
+                print_node_frame(&scene, node);
                 print_material(game, &scene, node, body);
             }
         }
@@ -47,6 +48,25 @@ pub fn bodies(game: &GameData, pack: &str, entry: &str) -> Result<()> {
         println!("{pack}/{entry}: no rigid body or cloth marker");
     }
     Ok(())
+}
+
+/// The node's transform in its parent's frame (its rows, the last the
+/// translation) and its parent's name, as the links' parent points are
+/// read against them.
+fn print_node_frame(scene: &Scene, node: &exa_formats::rfc::Node) {
+    let parent = node
+        .parent
+        .and_then(|p| scene.nodes.get(p - 1))
+        .map_or("none".to_string(), |p| format!("{:?}", p.name));
+    let t = node.transform;
+    let row = |r: [f32; 3]| format!("({:.3}, {:.3}, {:.3})", r[0], r[1], r[2]);
+    println!(
+        "  node frame in parent {parent}: x {} y {} z {} at {}",
+        row(t[0]),
+        row(t[1]),
+        row(t[2]),
+        cm(t[3])
+    );
 }
 
 fn print_body(index: usize, name: &str, child: bool, b: &RigidBody) {
