@@ -586,11 +586,19 @@ mod tests {
         }
         let mut picks = ContainerPicks::new(&mut objects, Some(&game), FILL_SEED);
         let mut made = Vec::new();
+        let mut rows = Vec::new();
         let again = fill_containers_with(&mut picked, &catalogue, FILL_SEED, &mut |row| {
             let id = picks.pick(row.id, row.condition).unwrap_or(row.id);
             made.push(id);
+            rows.push(row.id);
             id
         });
+        // exanima01's tables pick 283 rows: one names a level record, which
+        // the dispatcher duplicates in the local tier; 101 picks are local
+        // copies and the other 182 base records that are not instanced on use.
+        assert_eq!(rows.len(), 283);
+        assert_eq!(rows.iter().filter(|&&r| r & LOCAL != 0).count(), 1);
+        assert_eq!(made.iter().filter(|&&m| m & LOCAL != 0).count(), 101);
         assert_eq!(again, 292);
         assert!(objects.local.len() > level_records);
         let local: Vec<exa_formats::objdb::Item> = objects
