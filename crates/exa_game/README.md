@@ -485,7 +485,8 @@ the two editor sub-forms) and the routing of a drop onto the preview (item
 modelled. Painting the form and its controls, loading the model and the
 sounds' samples, the object database behind the kit, record serialization,
 the power tree's own screen and the running mode transitions are not in;
-the running creator (`creator_screen`) and save chooser (`save_screen`)
+the running creator (`creator_screen`) and save chooser (`save_screen`,
+whose paint runs after the game screens' per-frame clear of the GUI queue)
 call these rules where they have the caller (the voice pick goes through
 `select_voice`), and the panels and continue texts are not wired yet. Rules are plain
 functions with tests pinned to concrete numbers.
@@ -951,7 +952,7 @@ walk's foot plant sends a `Footstep` at the character plus `3·speed + 4`
 cm along its facing for the race's set (`movement::gait_footsteps`), and
 a shock on a releasing race ends its step and stops its clip rate
 (`Ragdoll::force_release`, from the energy arcs' `shock_fighters`), with
-its next shock 500 ms on, no draw and no burn; a body asked to go limp keeps its motion unless
+its next shock 500 ms on, no draw and no burn (attacking, its swing stalls with no strength until 600 ms on; dying, it takes no shock at all); a body asked to go limp keeps its motion unless
 given a velocity (`limp`), and a level's placed dead are built limp from their
 saved pose and registered at rest (`exa_physics::body::PlacedCorpse`: one
 tick, then sleep; only a `--corpse` without a pose falls),
@@ -1021,7 +1022,9 @@ body and grip waiting for the holder's body when it is lit first; its
 tests pin the "Torch" clips' arm on the body model; `--floor-torch` lays
 one on the floor for retail comparisons (optionally in a given frame,
 `floor_torch_transform`); a story start without a carried
-torch lays the start's torch, item 0x1f, at its pose: `StoryTorch`), the
+torch lays the start's torch, item 0x1f, at its pose: `StoryTorch`; the
+respawn's rebuilt player, `save_live::RebuiltPlayer`, gets no carried torch
+and starts at the respawn placement: `spawn_carries_torch`), the
 tip banner and the manual in play (`help_live`: `Step::Tip` shows the
 prelude's line, the menu's MANUAL rows open `manualkm.fds` over the
 covered menu; the topic list is the item view and the page the text box,
@@ -1907,6 +1910,11 @@ which gives back the first lend of every box), then writes a new entry with
 no flags for an item of another category that neither had lent; nothing
 calls `return_to_arsenal` from the live screen yet. The hub's loadout
 form does not use that screen: its item side is `loadout_kit`. On the
+hire page the form takes the constructor's hire-mode records
+(`exa_ui::arena_forms::HIRE_LOADOUT_FORM`) and the kit shows the shown
+candidate in its outfit in the preview and the profession's description in
+the top-right text box (`HireView`); the company windows' coin controls
+draw on their own baseline. On the
 roster page the form draws the shown person's kit list (the hub stash for
 the manager, the employee's kit list otherwise, the equipped mark on what
 the shown rank wears or holds), the arsenal box the shelf and box buttons

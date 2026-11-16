@@ -65,7 +65,7 @@ AI's walk (`route_walk`; the follower's hurried soft stop ends it once
 its ground is within a metre of the route's end in 3-D; a combat tick
 that does not reach the chase, or stops a running body, lets it go); it can be told
 to hold its ground (a debug aid). The fighter's skill and blend come from
-its brain's personality, else skill 0 (as the original's player behaviour keeps it: only the AI's constructor and the companion conversion write it) and blend 1. A chase that leaves for want of a fresh foe clears the body's target and the duellist's focus before the idle return. The death hook fades a golem's (race word AI bit) `go` glow to 0 (logged: no live skin material carries it yet).
+its brain's personality, else skill 0 (as the original's player behaviour keeps it: only the AI's constructor and the companion conversion write it) and blend 1. A chase that follows no route leaves when the brain's integration no longer sees the foe (its fresh mark; a brainless fighter always sees it): it clears the body's target, the duellist's focus and its level before the idle return. Each chase tick writes the foe as the driver's body in the way, so the route's way test does not stop at it. The death hook fades a golem's (race word AI bit) `go` glow to 0 (logged: no live skin material carries it yet).
 
 A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle

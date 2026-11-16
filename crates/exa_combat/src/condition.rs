@@ -491,7 +491,10 @@ impl Plugin for ConditionPlugin {
                 track_condition.in_set(CharacterStage::Posture),
             ),
         )
-        .add_systems(FixedUpdate, silence_the_dead);
+        .add_systems(
+            FixedUpdate,
+            silence_the_dead.before(exa_physics::body::TickBehaviour),
+        );
     }
 }
 

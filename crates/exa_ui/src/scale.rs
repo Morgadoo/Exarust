@@ -41,10 +41,7 @@ pub(crate) fn plugin(app: &mut App) {
 }
 
 /// Picks the scale for the window's current height.
-pub(crate) fn follow_window(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut gui: ResMut<GuiScale>,
-) {
+pub fn follow_window(windows: Query<&Window, With<PrimaryWindow>>, mut gui: ResMut<GuiScale>) {
     let Ok(window) = windows.single() else { return };
     let scale = gui_scale(window.physical_height(), gui.size);
     if gui.scale != scale {

@@ -102,8 +102,9 @@ pub mod timers;
 pub use timers::BodyTimers;
 
 pub use stages::{
-    BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, SolverStage, SolverStages,
-    TickBehaviour, TickedCharacter, run_character_ticks, solve_among, solve_with,
+    AfterSolver, BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, MechanismRegistration,
+    MechanismStep, SolverStage, SolverStages, TickBehaviour, TickedCharacter, run_character_ticks,
+    solve_among, solve_with,
 };
 pub use steps::step_length;
 #[path = "body_frame.rs"]
@@ -2935,7 +2936,9 @@ impl Plugin for BodyPlugin {
             .add_systems(FixedUpdate, step_bodies.in_set(BodySystems))
             .add_systems(
                 FixedUpdate,
-                crate::sector_lists::rebuild_sector_bodies.after(BodySystems),
+                crate::sector_lists::rebuild_sector_bodies
+                    .in_set(AfterSolver::Physics)
+                    .after(MechanismStep),
             )
             // Once a frame, before its ticks: in the simulation's world
             // behind the bridge (`crate::sim_app::SimFrameStart`).

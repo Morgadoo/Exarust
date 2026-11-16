@@ -682,6 +682,54 @@ pub const LOADOUT_FORM: FormSpec = FormSpec {
     children: &[],
 };
 
+/// The loadout form's records as its constructor leaves them on the hire
+/// page (mode 1), before the layout: Previous and Next 0x70 wide, Next at
+/// x 0x78; Dismiss, the rank row (Rank, the slider, the points line and
+/// Encumbrance with its dots) and the ten shelf and box buttons hidden
+/// (0x110); the hire block (HIRE, the fee and upkeep captions and coins,
+/// the profession line) shown. With the rank row hidden the profession
+/// line, on row 0x1e, has its row to itself.
+pub const HIRE_LOADOUT_RECORDS: [FormRecord; 28] = hire_records();
+
+const fn hire_records() -> [FormRecord; 28] {
+    let mut r = LOADOUT_RECORDS;
+    r[loadout::PREVIOUS].w = 0x70;
+    r[loadout::NEXT].x = 0x78;
+    r[loadout::NEXT].w = 0x70;
+    r[loadout::DISMISS].state = crate::settings::HIDDEN;
+    let mut i = loadout::RANK_LABEL;
+    while i <= loadout::ENCUMBRANCE {
+        r[i].state = crate::settings::HIDDEN;
+        i += 1;
+    }
+    i = loadout::SHELVES[0];
+    while i <= loadout::BOXES[4] {
+        r[i].state = crate::settings::HIDDEN;
+        i += 1;
+    }
+    i = loadout::HIRE;
+    while i <= loadout::PROFESSION {
+        r[i].state = 0;
+        i += 1;
+    }
+    r
+}
+
+/// The loadout form on the hire page: [`LOADOUT_FORM`] with
+/// [`HIRE_LOADOUT_RECORDS`].
+pub const HIRE_LOADOUT_FORM: FormSpec = FormSpec {
+    records: &HIRE_LOADOUT_RECORDS,
+    ..LOADOUT_FORM
+};
+
+/// The hire page's profession text box: 0xec × 0x100 at y 0x20, four
+/// pixels from the form's right edge (the constructor's mode 1 builds it
+/// over the arsenal box's place, which that mode leaves out). The hire
+/// page's refresh writes the candidate's profession description into it.
+pub const HIRE_TEXT_SIZE: (i32, i32) = (0xec, 0x100);
+pub const HIRE_TEXT_Y: i32 = 0x20;
+pub const HIRE_TEXT_MARGIN: i32 = 4;
+
 /// The dismiss dialog.
 pub const DISMISS_FORM: FormSpec = FormSpec {
     size: (0x188, 0x70),
@@ -919,6 +967,52 @@ mod tests {
         );
         // HIRE and its fee stay hidden on the roster page.
         assert_eq!(form.controls()[loadout::HIRE].state, 0x110);
+    }
+
+    /// F561: on the hire page the constructor hides the rank row, Dismiss
+    /// and the shelf and box buttons and shows the hire block, so the
+    /// profession line (row 0x1e) no longer lies over the points line
+    /// (row 31, one grid row under it); Previous and Next widen to 0x70.
+    #[test]
+    fn the_hire_page_shows_the_hire_block_in_place_of_the_rank_row() {
+        let roster = RecordForm::open(&LOADOUT_FORM, (1024, 768), 4);
+        let hire = RecordForm::open(&HIRE_LOADOUT_FORM, (1024, 768), 4);
+        let shown = |f: &RecordForm, i: usize| f.controls()[i].state & 0x110 != 0x110;
+        // On the roster's table the two rows overlap: the reason the rank
+        // row must go on the hire page.
+        let (prof, points) = (
+            &roster.controls()[loadout::PROFESSION],
+            &roster.controls()[loadout::POINTS],
+        );
+        assert!((prof.y - points.y).abs() < prof.h);
+        for i in [loadout::DISMISS]
+            .into_iter()
+            .chain(loadout::RANK_LABEL..=loadout::ENCUMBRANCE)
+            .chain(loadout::SHELVES)
+            .chain(loadout::BOXES)
+        {
+            assert!(!shown(&hire, i), "record {i} shows on the hire page");
+        }
+        for i in loadout::HIRE..=loadout::PROFESSION {
+            assert!(shown(&hire, i), "record {i} hidden on the hire page");
+        }
+        let (previous, next) = (
+            &hire.controls()[loadout::PREVIOUS],
+            &hire.controls()[loadout::NEXT],
+        );
+        assert_eq!((previous.x, previous.w), (4, 0x70));
+        assert_eq!((next.x, next.w), (0x78, 0x70));
+        assert_eq!(next.y, previous.y);
+        // Nothing shown overlaps the profession line.
+        let p = &hire.controls()[loadout::PROFESSION];
+        for (i, c) in hire.controls().iter().enumerate() {
+            if i == loadout::PROFESSION || !shown(&hire, i) || c.w == 0 {
+                continue;
+            }
+            let apart =
+                c.x >= p.x + p.w || p.x >= c.x + c.w || c.y >= p.y + p.h || p.y >= c.y + c.h;
+            assert!(apart, "record {i} overlaps the profession line");
+        }
     }
 
     #[test]

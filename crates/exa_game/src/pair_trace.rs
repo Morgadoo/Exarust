@@ -12,7 +12,7 @@ use std::path::Path;
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use exa_physics::body::{BodySystems, BodyTicks, Pairs, Ragdoll, SolverStages, Touch};
+use exa_physics::body::{BodyTicks, Pairs, Ragdoll, SolverStages, Touch};
 
 /// Centimetres per metre.
 const CM: f32 = 100.0;
@@ -102,8 +102,11 @@ impl Plugin for PairTracePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
+            // The pairs after the hits' reactions, before the bites they
+            // open.
             trace_pairs
-                .after(BodySystems)
+                .after(exa_combat::react_to_hits)
+                .before(exa_combat::bite::open_bites)
                 .run_if(resource_exists::<PairTrace>),
         );
     }

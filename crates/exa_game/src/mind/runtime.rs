@@ -232,10 +232,13 @@ impl Plugin for MindRuntimePlugin {
                 (
                     feed_mind_powers.before(exa_ai::BrainTick),
                     feed_mind_status.before(exa_ai::BrainTick),
-                    take_broken_holds.after(exa_ai::BrainTick),
+                    take_broken_holds
+                        .after(exa_ai::BrainTick)
+                        .before(exa_physics::body::CharacterTicks),
                     tick_minds
                         .after(exa_physics::body::BodySystems)
-                        .after(crate::thaum::cast::tick_casters),
+                        .after(crate::thaum::cast::tick_casters)
+                        .after(crate::thaum::cast::follow_weapon_changes),
                     break_on_blows
                         .after(exa_ai::struck::HitReactions)
                         .after(tick_minds),
@@ -1960,7 +1963,7 @@ fn log_mind_bodies(
 /// The hit's break: a blow on a body that is not down or dead, whose AI is
 /// not set aside, and whose status has [`HANDED_OVER`].
 #[allow(clippy::type_complexity)]
-fn break_on_blows(
+pub(crate) fn break_on_blows(
     mut commands: Commands,
     mut blows: MessageReader<BlowNoticed>,
     bodies: Query<(Option<&PowerCaster>, &MindBody), Without<HeldBehaviour>>,
@@ -2032,7 +2035,7 @@ fn feed_mind_powers(
 /// Before the brains' tick: the enraged bit of each body's status word is
 /// the contact integration's marked body (its contacts' hostility follows
 /// the soothe term instead of the attitude).
-fn feed_mind_status(mut brains: Query<(&MindBody, Option<&PowerCaster>, &mut Npc)>) {
+pub(crate) fn feed_mind_status(mut brains: Query<(&MindBody, Option<&PowerCaster>, &mut Npc)>) {
     for (mind, caster, mut npc) in &mut brains {
         let status = caster.map_or(mind.cast.status_bits, |c| c.body.status_bits)
             | (mind.cast.status_bits & MIND_STATUS_BITS);

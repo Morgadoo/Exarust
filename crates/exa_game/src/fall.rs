@@ -30,7 +30,7 @@ use exa_combat::fall::{FallDeath, FallReading, scream_voice};
 use exa_combat::voice::{Answer, CharacterVoice};
 use exa_combat::{Condition, Fighter, Roll};
 use exa_physics::body::{
-    BodySystems, BodyTicks, CharacterStage, CharacterTick, GAME_MS_PER_TICK, OutOfScene, Ragdoll,
+    BodyTicks, CharacterStage, CharacterTick, GAME_MS_PER_TICK, OutOfScene, Ragdoll,
     TickedCharacter, pairs,
 };
 use exa_ui::DeathFade;
@@ -49,7 +49,12 @@ impl Plugin for FallPlugin {
                 .in_set(CharacterStage::Posture)
                 .after(crate::balance::take_posture),
         )
-        .add_systems(FixedUpdate, fall_out_of_world.after(BodySystems))
+        .add_systems(
+            FixedUpdate,
+            fall_out_of_world
+                .in_set(exa_physics::body::AfterSolver::Observe)
+                .after(crate::trace::trace_bodies),
+        )
         .add_systems(Update, drive_death_fade);
     }
 }
@@ -319,7 +324,7 @@ pub(crate) fn fall_to_death(
 /// below −50 m loses its health and, but for the player's, leaves the
 /// world; once.
 #[allow(clippy::type_complexity)]
-fn fall_out_of_world(
+pub(crate) fn fall_out_of_world(
     mut commands: Commands,
     mut bodies: Query<(
         Entity,

@@ -25,7 +25,7 @@ use exa_anim::{Animator, BodyPart, Motions, Stature};
 use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter};
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
-use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
+use exa_physics::body::{BodyTicks, Ragdoll, world_with};
 use exa_physics::prop::PropBody;
 
 use crate::limp::clip_pose;
@@ -158,8 +158,11 @@ impl Plugin for TracePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
+            // The bodies as the solver left them, before anything after
+            // it writes them.
             trace_bodies
-                .after(BodySystems)
+                .in_set(exa_physics::body::AfterSolver::Observe)
+                .after(crate::item_ability::follow_items)
                 .run_if(resource_exists::<BodyTrace>),
         );
         // Debug aid: `EXA_ARCHETYPE_TRACE=1` logs every character body's
@@ -167,7 +170,12 @@ impl Plugin for TracePlugin {
         // it gained and lost), in the order the bodies moved; the trace's
         // rows follow that order.
         if std::env::var("EXA_ARCHETYPE_TRACE").is_ok_and(|v| v == "1") {
-            app.add_systems(FixedUpdate, trace_archetypes.after(BodySystems));
+            app.add_systems(
+                FixedUpdate,
+                trace_archetypes
+                    .in_set(exa_physics::body::AfterSolver::Observe)
+                    .after(trace_bodies),
+            );
         }
         // Debug aid: `EXA_ENTITY_TRACE=1` logs every entity of the frame's
         // world the first frame it is seen (the frame, its id and its
@@ -313,7 +321,7 @@ impl Row {
 }
 
 #[allow(clippy::type_complexity)]
-fn trace_bodies(
+pub(crate) fn trace_bodies(
     mut trace: ResMut<BodyTrace>,
     clock: Res<BodyTicks>,
     motions: Option<Res<Motions>>,

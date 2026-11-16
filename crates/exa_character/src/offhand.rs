@@ -450,7 +450,14 @@ impl Plugin for OffHandPlugin {
                 .run_if(resource_exists::<Game>)
                 .after(super::equip_outfits),
         )
-        .add_systems(FixedUpdate, drop_shield_holds.after(GripSolveSet::Build));
+        .add_systems(
+            FixedUpdate,
+            drop_shield_holds
+                .after(GripSolveSet::Build)
+                .after(exa_physics::body::CharacterTicks)
+                .after(crate::body_words::ungroup_dead_hands)
+                .before(exa_physics::grip_solve::share_holder_park),
+        );
     }
 }
 
