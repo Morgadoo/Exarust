@@ -416,12 +416,13 @@ tested rules of their own.
   at once. A collapsing holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
   arm; neither the collapse nor death changes the held item's welds (their
-  limit-link writes are the legs', in `exa_physics::body`). When the switch clip passes 60% the runtime trades the two held
-  weapons' blade slots, the attacker's primary and the `Hands` main and
-  second weapon once, so `choose_held_movesets` picks the moveset again
-  from the new main weapon (a two-hander and a one-hander trade "Two
-  Handed" for the two-weapon moveset) (`condition::swap_due`,
-  `swap_on_switch`). The choice runs in the frame; behind the simulation
+  limit-link writes are the legs', in `exa_physics::body`).A weapon switch changes the hands through the weapon-set swap its clip
+  posts at 60% (`exa_game::equip::swap_at_switch_point`), and
+  `choose_held_movesets` picks the moveset again from the new hands. The
+  body tick's two-hand group (`body_words::group_two_hands`) writes the
+  shared group bit on the hands, their forearms and the left humerus every
+  living tick, by the condition and the in-combat flag, and the death clears
+  it (`ungroup_dead_hands`). The choice runs in the frame; behind the simulation
   bridge its switch of the animator's config is queued for the
   simulation's copy (`FixedCommands::write`), not sent as the frame's whole
   animator; the dresser's armour layers reach the fighter the same way.

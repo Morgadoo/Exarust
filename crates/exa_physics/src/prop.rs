@@ -448,6 +448,7 @@ mod tests {
             daze: 0.0,
             step: None,
             sag: None,
+            light: false,
         });
         for _ in 0..30 {
             app.update();

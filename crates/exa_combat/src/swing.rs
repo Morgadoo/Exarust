@@ -715,7 +715,9 @@ impl SwingState {
             event = SwingEvent::Chains;
         }
         if self.has(flags::STALLING) {
-            self.strength = (self.strength - self.stall).max(0.0);
+            // Floored at 0 by an ordered compare: a NaN strength stays.
+            let drained = self.strength - self.stall;
+            self.strength = if drained < 0.0 { 0.0 } else { drained };
             if self.end_ms < t.at.now_ms {
                 // The stance's start shuts the window, as every clip start.
                 self.flags = 0;
@@ -938,6 +940,9 @@ pub fn run_swings(
         strikers,
         aim: facing.with_y(0.0).normalize_or_zero(),
     };
+    // The posture block's attack arms read the swing strength before the
+    // attack routine's stall drain.
+    let strength = state.strength;
     match state.tick(&swing, &t, &mut attacker.primary) {
         SwingEvent::Plays => {}
         SwingEvent::Chains => {
@@ -1009,7 +1014,7 @@ pub fn run_swings(
             pitch,
         });
     }
-    // P is this tick's, after the stall drain. The progress is the clip's
+    // P is the one before this tick's stall drain. The progress is the clip's
     // as this stage read it. The motion is the one that played, so a chain
     // does not change the arms. A shield's off arm is 0.4 while a parry is
     // up: the original reads a partner index, and a parry in progress
@@ -1021,7 +1026,7 @@ pub fn run_swings(
     let huge = f64::from(fighter.stats.size) > 1.4 && attacking.weapon_class & 0x30 == 0;
     if let Some(arms) = attack_arm_stiffness(
         progress,
-        state.strength,
+        strength,
         huge,
         arm,
         attacker.stance_class,

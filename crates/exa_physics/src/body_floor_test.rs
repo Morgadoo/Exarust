@@ -255,6 +255,7 @@ fn a_shoved_body_does_not_sink_through_a_trimesh_floor() {
                     daze: 0.5,
                     step: None,
                     sag: None,
+                    light: false,
                 });
             }
         }
@@ -611,6 +612,7 @@ fn the_simulation_shell_in_lockstep_changes_no_tick() {
                     daze: 0.5,
                     step: None,
                     sag: None,
+                    light: false,
                 });
             }
             app.update();
@@ -661,6 +663,7 @@ fn the_bridged_fixed_step_changes_no_tick() {
                     daze: 0.5,
                     step: None,
                     sag: None,
+                    light: false,
                 });
             }
             app.update();

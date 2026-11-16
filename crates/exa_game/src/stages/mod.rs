@@ -114,6 +114,7 @@ fn bridge_character_tick_types(app: &mut App) {
         .bridge_copy::<exa_ai::combatant::Combatant>()
         .bridge_copy::<exa_ai::Duellist>()
         .bridge_copy::<exa_combat::CombatTarget>()
+        .bridge_copy::<exa_combat::strike_body::TangleCount>()
         .bridge_copy::<exa_combat::Attacking>()
         .bridge_copy::<exa_combat::attack::Attacker>()
         .bridge_copy::<exa_combat::Condition>()

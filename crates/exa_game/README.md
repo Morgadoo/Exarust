@@ -1357,7 +1357,10 @@ is the player-control singleton's creation state (hotkey mask 31 and the two
 constructor flags). The character doll's equipment (`equip`) follows the record's out set:
 after a weapon-set swap the record's hands become the moveset's hands (the
 main hand's weapon, a second weapon, the off hand's shield or its torch;
-an off-hand weapon that also has a light section is the light). The GUI
+an off-hand weapon that also has a light section is the light). The swap
+key queues the switch motion (the sets swap at once only with the
+character's own inventory open), and the switch clip's 60 % point swaps the
+sets for any body (`equip::swap_at_switch_point`). The GUI
 character preview (`char_view`) turns the
 figure toward the mouse: 0.7 of the pointer's arc-cosine yaw clamped to
 ±1.5 rad, a 5 % step under 1 rad and a clamped 0.05 rad above (the wrap

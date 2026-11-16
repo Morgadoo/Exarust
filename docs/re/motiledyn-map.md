@@ -315,7 +315,7 @@ blocks' code bytes.
 | 5 | 481 | Apply damage to the yellow and red bars, lasting-wound rule, low and kill thresholds, death | `exa_combat fighter.rs Health::take, failing` | done | player-kill callback hook | yes |
 | 6 | 89 | Bite layers on the struck part, its parent and children | `exa_combat bite.rs stuck_layers` | done | - | no |
 | 7 | 266 | Attacker recoil after a blocked or shield hit | `exa_combat swing.rs recoil, SwingState::recoil_from` | done | - | yes |
-| 8 | 13,157 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | `exa_combat damage.rs resolve, hit_sounds, block, notices_damage`; `pain.rs pain_sounds, PainSounded, wound_set, struck_player_jolt, striking_player_rumble`; `voice.rs CharacterVoice`; `lib.rs react_to_hits, strike_back`; `exa_audio hits.rs pain_sounds`; `exa_game character_voice.rs`, `player.rs feel_blows`; `sounds.rs weapon_ring, ring_clock, HAFT_SETS`; `pain.rs BlowFelt, ClashFelt, clash_rumble` | partial (86 %) | bite link not attached; the scripted damage hook and the two damage callbacks; the struck item's own sound (#4) in the clash branch | yes |
+| 8 | 13,157 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback (a light blow dates the step start back), kill | `exa_combat damage.rs resolve, hit_sounds, block, notices_damage`; `lib.rs light_blow`; `pain.rs pain_sounds, PainSounded, wound_set, struck_player_jolt, striking_player_rumble`; `voice.rs CharacterVoice`; `lib.rs react_to_hits, strike_back`; `exa_audio hits.rs pain_sounds`; `exa_game character_voice.rs`, `player.rs feel_blows`; `sounds.rs weapon_ring, ring_clock, HAFT_SETS`; `pain.rs BlowFelt, ClashFelt, clash_rumble` | partial (87 %) | bite link not attached; the two damage callbacks; the struck item's own sound (#4) in the clash branch (the scripted damage hook is unreachable: its global has no writer) | yes |
 | 9 | 651 | Bite: the weapon sticks in the struck part (grab link, strength, lifetime, weapon layer) | `exa_combat bite.rs stick, grab_of, BiteHold` | done | not wired into the hit path: the grab link joins two parts of one body, but the weapon is a separate entity (bone-attached or a gripped item body) and no cross-body grab exists | no |
 | 10 | 490 | Follow-through after a wound | `exa_combat swing.rs follow_through, SwingState::after_wound` | done | - | yes |
 | 11 | 286 | Push at a point, cut by how far the point already moves | `exa_physics body.rs push_fraction, Ragdoll::push_at` | done | - (called by the stab's handling pushes and the swing's edge and overhead pushes) | yes |
@@ -377,7 +377,7 @@ blocks' code bytes.
 | 67 | 26 | String release helper (runtime library) | - | n.a. | - | n.a. |
 | 68 | 184 | Footstep sound set | `exa_audio voices.rs step_set`; `exa_game stages/movement.rs gait_footsteps` | done | wet steps not wired | yes |
 | 69 | 140 | Voice set by race and sex | `exa_audio voices.rs voice_choice` | done | no caller | no |
-| 70 | 412 | Two-hand group bit | `exa_combat strike_body.rs two_hand_group` | done | not wired: the body tick's prologue calls it every tick (mode 1 in the walk and run, else 0; mode 2/3 forced without a hands-bit class), on the group masks of two held items and their parent chain, which Exarust's held items (separate bodies, no shared group mask with the hands) do not carry | no |
+| 70 | 412 | Two-hand group bit | `exa_combat strike_body.rs two_hand_group`; `exa_character body_words.rs two_hand_mode, group_hands, group_two_hands, ungroup_dead_hands` | done | the group is the character's hand list (the hand parts), their parents and the second hand's grandparent, not held items: wired every living tick (motiledyn3) and at death (mode 2) | yes |
 | 71 | 168 | Add to the scene's dynamics list, player first | (spawn) | n.a. | - | n.a. |
 | 72 | 360 | Part mobilities and masses | `exa_physics body.rs INVERSE_MASS, LINK_MOBILITY` | partial (40 %) | normalisation from measured size, limp parts | yes |
 | 73 | 5,423 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | `exa_formats character_stats.rs CharacterStats::derive (RACE_PRESETS), BodyRules`; `exa_game scene_bodies.rs character_muscles`; `exa_combat sounds.rs`; `exa_physics body.rs Ragdoll::smooth_golem_links, legs_swap`; `body_pairs.rs register_legs` (foot-mask union) | partial (77 %) | the leg swap is not called: every shipped race model's first thigh sits at negative x (checked on all 17 exported race models, human −9.07 cm to the ogre's −20.2 cm), so part order is the original's leg order for every body the game builds (equivalent live; the mirrored test fixtures would swap); the ghouls' half-scale head-part set-up; a word set to 4 for creatures with no reader found; gait scale check | yes (leg swap equivalent) |
@@ -416,11 +416,11 @@ Byte counts are estimated from block landmarks in the research notes.
 | block | bytes | share | notes |
 |---|---|---|---|
 | Prologue: fatigue factors, wound painting, dead hold, look smoothing, red regeneration | 1,030 | 70 % | body timers, red regeneration, blood |
-| Impact accumulator, burn call, retention, grip helpers, readiness, stepping decay, queued motion, Break Tangle call | 980 | 50 % | grip relax, weapon flip and block stamina ported and live; Break Tangle called (round 29) |
+| Impact accumulator, burn call, retention, two-hand group, grip helpers, readiness, stepping decay, queued motion, Break Tangle call | 980 | 70 % | grip relax, weapon flip and block stamina ported and live; Break Tangle called (round 29) |
 | Pin gain and energy ramps, blow sag, daze and shock stagger | 760 | 80 % |  |
 | Link-iteration target, jolt, grip relax and weapon flip, chest velocity, standing anchor, look target | 1,700 | 80 % | grip relax and flip: `exa_physics grip.rs`, run by `exa_character grip_runtime.rs` |
 | Behaviour call, waking, collapse branch | 520 | 80 % |  |
-| Posture block: falls, get-ups, weak, stance switch, clinch trigger | 4,370 | 80 % | not every state flag written |
+| Posture block: falls, get-ups, weak, stance switch, clinch trigger | 4,370 | 85 % | compared arm by arm (motiledyn3): the shock end, the stagger capture, the tangle blend and the strength read fixed; the Fend entry, the dormant arm's frame height and the arms' extra off-balance terms open |
 | Attack and engage, muscles-off snap, focus tick, item effects, health bookkeeping | 1,860 | 85 % | block stamina: `exa_combat regen.rs ShieldStamina::tick`, live. Audited item by item (kernel carry lane): the posture wait's countdown, the held voices' fade, the stance's clip-rate reset and the parry counter's drift while not parrying, the parry routine every parrying tick, the focus tick, the once-a-second item effects (both use counters cleared with no effect), the heal pool, second wind, yellow regeneration and clamps are live; the full tone reset's call (#21) on a muscles-off tick is not called |
 | Move and stop branches | 735 | 90 % | stance factor rise and the move/stop compare checked (motiledyn2); the move branch's standing-anchor copy and second clock stamp are not written, the held items' static-only bit is set by the attack condition, not by armed-and-moving (no reader) |
 | Movement decision | 490 | 85 % | the gates' order, constants and NaN sides match (motiledyn2); Exarust's own steady balance stays |
@@ -443,9 +443,9 @@ Body tick (#49):
 | Impact accumulator, dead copy, look smoothing | rate 0.0125 standing or when the 0x800 condition bit is set, +0.0025 a tick moving, 0.15 cap; the look's vertical step is scaled by 0.1 in double; the follow by 0.6. Exarust ignores the 0x800 bit (standing rate either way except while moving) |
 | Red regeneration | 0.25 × 5e-5 in double, clamped to the maximum with the NaN kept: matches `Health::regenerate_red` |
 | Burn call | gated on either burn value above 0: matches (no writer of the strength in Exarust) |
-| Two-hand group | called every tick with a mode by the muscles byte, the off-feet bit and condition 2; `two_hand_group` is not called (Exarust's held items carry no shared group mask) |
+| Two-hand group | called every tick with a mode by the in-combat byte, the off-feet bit, walking and condition 2 (corrected and wired by the third pass) |
 | Readiness | rises 0.004 (double) to 1 while the stance is the combat idle or parrying and the clip is the idle, a parry or a released attack: matches `readiness_step` |
-| Queued motion | a living, muscled body starts its queued motion (the weapon switch from the AI and the inventory) when no busy bit (0x10203) is set, ending a parry first, then clears it unless moving with the second movement byte. Not ported: Exarust's starters play the clip at once (the AI's draw is in the AI lane) |
+| Queued motion | a living, muscled body starts its queued motion (the weapon switch from the AI and the inventory) when no busy bit (0x10203) is set, ending a parry first, then clears it unless moving and not free-walking (see the third pass) |
 | Locomotion push into the carry | while moving, carry += drive × (((S × S) × push gain) × lag) before the balance and feet calls, with no support gate. Fixed this round (it came after the lift and only with support) |
 | Footwork end after the balance call | the use counter's 0.005 (knockback step) or 0.0025 (double) matches `body_balance.rs`; the episode end (the 100- and 200-tick windows, the 20 × scale reach, the 0.05 projection, the 32-tick counter) has the same structure as `steps::episode_over`, not re-checked constant by constant |
 
@@ -492,10 +492,34 @@ the second write). So it is the race's hover flag, already ported (`RaceMuscles:
 player's `PlayerBody` hover). The steer's look-ahead now takes the grid's straight walk for a
 hovering player body (`exa_game player.rs straight_walk`), as the original's steer does.
 
-Not done here (need other components): the queued-motion start (the AI's and the
-inventory's starters) and the two-hand group call (held-item group masks); the sampler's
-tail (part matrices and foot contacts on the frame) is structurally different and was not
-compared; the posture block was not re-compared arm by arm.
+Not done here: the queued-motion start, the two-hand group call and the posture block were
+taken by the third pass (below); the sampler's tail is structurally different.
+
+## Assembly comparison, third pass (motiledyn3 lane, round 239)
+
+Checked against the assembly, GPU on hold, tests are the evidence (traces owed, see the
+lane's artifacts README).
+
+Body tick (#49):
+
+| block | result |
+|---|---|
+| Queued motion | the gate (muscles on, no 0xA00), the busy mask 0x10203, the parry end first, the start with blend 0, the keep (moving and not free-walking) match the AI's `begin_requested`, which already queued. The gap was the view's swap request: it swaps at once only with the character's own inventory window open, else writes the switch motion (31) into the request; Exarust swapped on the key. Fixed (`hotkeys` SwapSets queues) |
+| Switch arm | past 0.6 (double; a NaN progress keeps the switching word, Exarust gave switched) with bit 4 clear it posts the set swap to the main thread's queue, then writes the switched word; the swap is the view's immediate swap, for any body (the AI's draw too). Exarust traded two held weapons' slots instead (no original counterpart). Fixed (`WeaponSwapDue`, `equip::swap_at_switch_point`; the slot trade removed) |
+| Two-hand group | the call block: in combat (the behaviour's in-combat byte) mode 1 off its feet (0x200) or walking, else 0; out of combat 0 attacking, else 1; the routine needs two hands, forces 2 without hands bits in the class, and writes bit 30 on the hand list (the hand parts), their parents and the second hand's grandparent; the death calls mode 2. Wired (`group_two_hands`) |
+| Posture block | compared arm by arm (branch order, compare sides, precision, the clip rates, the leg layers, the arm curves). Fixed: the shocked arm returns to normal past the force release's busy deadline (unsigned; Exarust never ended a shock); a stagger takes the whole capture every time, the jump only on a new clip; the relaxed blend sets both arms to 0.5 while the tangle counter is above 0; the attack arms read the swing strength before the attack routine's stall drain, and the drain keeps a NaN. Open: the Fend skill's auto-parry entry and the idle deadline's Fend term (no skill flags passed); the dormant lying arm's frame-height write and full capture; Exarust's arm setter adds its own unsupported and same-tick balance terms to the off-balance test; the get-up start reads the root's forward, not the heading vector, and goes on at a NaN progress; the stance switch runs before the posture stage (a tick late after a recovery, refuses NaN balance); the shield's off arm reads the parry flag for the partner index |
+| Sampler tail | the part matrices and foot contacts written on the frame are Exarust's carry and aim (structurally different), not ported; no approximate normaliser call added |
+
+Damage routine (#8):
+
+| path | result |
+|---|---|
+| Flesh (kind 1) | compared instruction by instruction: the coverage roll (over the roll, else (c − 0.5)·1.75 above 0.5, NaN skips), the layer sound weights ((1 − 0.8·s₁)·w in double), padding and the three resistances in single precision in the assembly's order (pierce scaled by 0.5 + 0.5·roll), the sag min(2·hit, 1) (NaN kept), total 1.25·hit, J = hit − 0.2·pad (double) over pad² + 1 + pad, the stab energy over (pad/2)² + 1 + pad/2, the bite 0.1·hit (double), the stab pierce (the thrust·1.58 in double, × √2 from an energy of 2, else × the exact root once J is over ε), the crush, slash (chop and draw) and pierce channels with their fast powers, 1.58 in double, the bite terms and their max-with-0, the half bite, J's second division ((2J − 0.2)·pad + 1 in double), the pierce remainder, the penetration (slash + pierce, + crush, + half of max(J − 0.8, 0)), the readiness, the daze and its stall factor and the bars: all match `damage::resolve`. The fists' class zeroes the bite, which Exarust's bite gate (hands bits) already refuses |
+| Knockback test | a blow of J not over 0.5 (float compare, NaN too) dates the struck body's step start 1000 ms back; its readers' windows are 100, 200 and 300 ms. Wired (`light_blow`, `Shove::light`, `Ragdoll::date_step_back`) |
+| Scripted damage hook | the global has no store and no data pointer in the image: unreachable in 0.9.5. Only the damage call, the blood and the wound and pain sounds sit in its other branch; the notice, the callbacks and the player feedback follow both |
+
+Approximations (DEC-7, left as they are): the flesh channels' fast log/exp pair (three
+fast powers) and the ones listed for #49 and #8 above; none added.
 
 ## Corrections made by the audit
 

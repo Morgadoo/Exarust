@@ -380,6 +380,22 @@ fn responses_start_as_the_original() {
     assert!(body.drive.as_ref().unwrap().supported);
     let (_, _, anim, _) = run(Response::Stagger(Rise::FaceUp));
     assert_eq!((anim.time, anim.capture_key), (40.0, 2));
+    // A stagger into the get-up already playing (its start returned past a
+    // quarter of the clip): no new start or jump, but the whole capture.
+    let mut body = pelvis(Quat::IDENTITY);
+    let mut anim = Animator::new("Default", "Get up");
+    anim.time = 70.0;
+    let mut condition = Condition::DOWN;
+    assert!(!begin(
+        Response::Stagger(Rise::FaceDown),
+        &mut body,
+        &mut anim,
+        &mut condition,
+        &motions,
+        "Idle"
+    ));
+    assert_eq!((anim.time, anim.pending), (70.0, Some(Capture::Whole)));
+    assert_eq!(condition, Condition::GETTING_UP);
 
     // Falling on: no new start, the fast ease again.
     let mut body = pelvis(Quat::IDENTITY);
