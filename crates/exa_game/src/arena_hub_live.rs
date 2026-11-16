@@ -155,6 +155,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
+            .add_message::<crate::equip::Redress>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<ArenaLeave>()
             .add_message::<crate::arsenal_view::OpenArsenal>()
@@ -1030,6 +1031,9 @@ pub(crate) struct HubShop<'w, 's> {
     /// The company's arsenal and holders a confirmed trade reaches.
     stores: Option<ResMut<'w, crate::save_live::ArenaStores>>,
     kinds: Option<Res<'w, crate::arsenal::ShelfKinds>>,
+    /// The player's body, which a confirmed trade re-dresses.
+    player_bodies: Query<'w, 's, Entity, With<crate::player::PlayerBody>>,
+    redress: Option<MessageWriter<'w, crate::equip::Redress>>,
 }
 
 impl HubShop<'_, '_> {
@@ -1256,6 +1260,13 @@ impl HubShop<'_, '_> {
                 &career.goods,
             );
             career.goods_changed = false;
+        }
+        // The trade system re-dresses the player after the bought items
+        // joined its record (the character view's re-dress).
+        if let Some(redress) = self.redress.as_mut() {
+            for player in &self.player_bodies {
+                redress.write(crate::equip::Redress(player));
+            }
         }
         let Some(stores) = self.stores.as_deref_mut() else {
             return Vec::new();
@@ -3118,6 +3129,49 @@ mod tests {
         fighter.health.red = health;
         app.world_mut()
             .spawn((PlayerBody::new(0.0), Condition(condition), fighter));
+    }
+
+    /// A confirmed trade re-dresses the player, as the trade system runs
+    /// the character view's re-dress after the bought items joined the
+    /// player's record: its hands are made to show its record's out set.
+    #[test]
+    fn a_confirmed_trade_redresses_the_player() {
+        let mut app = hub_app();
+        app.init_resource::<exa_items::catalogue::ItemCatalogue>()
+            .add_plugins(crate::equip::EquipPlugin)
+            .add_systems(
+                Update,
+                |mut shop: HubShop,
+                 career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+                 mut done: Local<bool>| {
+                    if let Some(mut career) = career
+                        && !std::mem::replace(&mut *done, true)
+                    {
+                        shop.arena_trade(&crate::hub_windows::ShopTrade::default(), &mut career);
+                    }
+                },
+            );
+        app.init_resource::<crate::hub_windows::ArenaCareer>();
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerBody::new(0.0),
+                exa_items::possession::Possessions::default(),
+                exa_character::held::Hands {
+                    main: Some(exa_character::held::HeldItem::weapon(0x521)),
+                    ..Default::default()
+                },
+            ))
+            .id();
+        for _ in 0..2 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .get::<exa_character::held::Hands>(player)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// A click on a season reward slot of the open board asks for the
