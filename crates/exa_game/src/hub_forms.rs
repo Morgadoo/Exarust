@@ -578,7 +578,13 @@ impl HubForms {
     /// it with the button down; the release acts on the held mark while
     /// the pointer is still over it (the close mark closes the form) and
     /// clears it. Returns true when the release closed the form.
-    fn frame_marks(&mut self, target: usize, at: (i32, i32), pressed: bool, released: bool) -> bool {
+    fn frame_marks(
+        &mut self,
+        target: usize,
+        at: (i32, i32),
+        pressed: bool,
+        released: bool,
+    ) -> bool {
         let top = &mut self.forms[target];
         if top.form.client_top.is_none() {
             return false;
@@ -602,13 +608,11 @@ impl HubForms {
         if held >= 0 {
             return false;
         }
-        let words = crate::gui_paint::commit_words(
-            top.form.spec.placement,
-            top.form.spec.attributes,
-            true,
-        );
+        let words =
+            crate::gui_paint::commit_words(top.form.spec.placement, top.form.spec.attributes, true);
         let last = top.form.controls().len() as i32 - 1;
-        let actions = exa_ui::form::release_actions(held, code == held, last, words.attributes, false);
+        let actions =
+            exa_ui::form::release_actions(held, code == held, last, words.attributes, false);
         if actions.contains(&exa_ui::form::ReleaseAction::Close) {
             let window = top.window;
             info!("{window:?}: the close mark closes the form");

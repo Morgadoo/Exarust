@@ -1528,7 +1528,10 @@ fn paint_swatch_back(painted: &mut Painted, c: &Control, rect: GuiRect, look: &L
     let mut batch = exa_ui::skin::line_skin_batch();
     batch.set_ink(shade.outer_ink);
     for quad in &shade.outer {
-        let uv = quad.sample.map(|s| s.map(f32::from_bits)).unwrap_or_default();
+        let uv = quad
+            .sample
+            .map(|s| s.map(f32::from_bits))
+            .unwrap_or_default();
         for (k, (x, y)) in quad.corners.iter().enumerate() {
             batch.set_uv(uv[k * 2], uv[k * 2 + 1]);
             batch.vertex(*x, *y);

@@ -733,10 +733,18 @@ fn wide_panel_frame(u: i64, w: i64, h: i64) -> Vec<SliderQuad> {
         quad64(WIDE_BAR, [(u, h - two), (-u, h - two), (-u, two), (u, two)]),
         quad64(WIDE_CAP, [(u, two), (-u, two), (-u, 0), (u, 0)]),
         quad64(WIDE_CAP, [(u, h - two), (-u, h - two), (-u, h), (u, h)]),
-        quad64(WIDE_CAP, [(two, h - u), (two, h + u), (0, h + u), (0, h - u)]),
+        quad64(
+            WIDE_CAP,
+            [(two, h - u), (two, h + u), (0, h + u), (0, h - u)],
+        ),
         quad64(
             WIDE_BAR,
-            [(two, h - u), (two, h + u), (w - two, h + u), (w - two, h - u)],
+            [
+                (two, h - u),
+                (two, h + u),
+                (w - two, h + u),
+                (w - two, h - u),
+            ],
         ),
         quad64(
             WIDE_CAP,
@@ -744,9 +752,17 @@ fn wide_panel_frame(u: i64, w: i64, h: i64) -> Vec<SliderQuad> {
         ),
         quad64(
             WIDE_BAR,
-            [(w - u, h - two), (w + u, h - two), (w + u, two), (w - u, two)],
+            [
+                (w - u, h - two),
+                (w + u, h - two),
+                (w + u, two),
+                (w - u, two),
+            ],
         ),
-        quad64(WIDE_CAP, [(w - u, two), (w + u, two), (w + u, 0), (w - u, 0)]),
+        quad64(
+            WIDE_CAP,
+            [(w - u, two), (w + u, two), (w + u, 0), (w - u, 0)],
+        ),
         quad64(
             WIDE_CAP,
             [(w - u, h - two), (w + u, h - two), (w + u, h), (w - u, h)],

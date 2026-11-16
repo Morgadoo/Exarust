@@ -1075,7 +1075,10 @@ pub(crate) fn paint_mark_icons(
         let (quads, ink) = match (icon.scale, icon.ink) {
             (Some(scale), _) => {
                 let inks = exa_ui::hud_status::status_inks(palette);
-                (level.small.draw_outlined(handle, x, y, scale, &inks), inks.face)
+                (
+                    level.small.draw_outlined(handle, x, y, scale, &inks),
+                    inks.face,
+                )
             }
             (None, Some(ink)) => (level.small.draw(handle, x as f32, y as f32), ink),
             (None, None) => continue,
