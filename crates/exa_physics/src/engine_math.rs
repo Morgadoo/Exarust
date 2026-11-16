@@ -70,12 +70,24 @@ pub fn clamp(a: f32, lo: f32, hi: f32) -> f32 {
     min(max(a, lo), hi)
 }
 
+/// A denormal operand as the engine's floating-point mode reads it: a zero
+/// of its sign (denormals-are-zero). The library's `floor` and `ceil` work
+/// on the bits and do not see the mode, where the original's conversion
+/// does.
+fn as_read(x: f32) -> f32 {
+    if x.is_subnormal() {
+        0.0f32.copysign(x)
+    } else {
+        x
+    }
+}
+
 /// `CVTSS2SI` with the rounding control set to round down (the mode's
 /// other bits kept, the caller's mode restored after): the floor, and the
 /// processor's integer indefinite (`i32::MIN`) for a NaN or out-of-range
-/// value.
+/// value. A denormal reads as zero.
 pub fn floor_to_i32(x: f32) -> i32 {
-    let rounded = x.floor();
+    let rounded = as_read(x).floor();
     if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
         i32::MIN
     } else {
@@ -152,9 +164,10 @@ pub fn reciprocal_approx3(v: Vec3) -> Vec3 {
 }
 
 /// The same with the rounding control set to round up (and restored
-/// after): the ceiling. NaN and out-of-range values give `i32::MIN`.
+/// after): the ceiling. NaN and out-of-range values give `i32::MIN`. A
+/// denormal reads as zero.
 pub fn ceil_to_i32(x: f32) -> i32 {
-    let rounded = x.ceil();
+    let rounded = as_read(x).ceil();
     if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
         i32::MIN
     } else {
@@ -1141,6 +1154,18 @@ mod tests {
         assert_eq!(ceil_to_i32(f32::NAN), i32::MIN);
         assert_eq!(floor_to_i32(3e9), i32::MIN);
         assert_eq!(floor_to_i32(-2_147_483_648.5), i32::MIN);
+    }
+
+    #[test]
+    fn a_denormal_floors_and_ceils_as_zero() {
+        // The oracle's case: the original's conversion runs under
+        // denormals-are-zero, so the smallest denormal ceils to 0, not 1,
+        // and its negative floors to 0, not -1.
+        assert_eq!(ceil_to_i32(f32::from_bits(0x0000_0001)), 0);
+        assert_eq!(floor_to_i32(f32::from_bits(0x8000_0001)), 0);
+        assert_eq!(ceil_to_i32(f32::from_bits(0x007F_FFFF)), 0);
+        assert_eq!(floor_to_i32(f32::from_bits(0x807F_FFFF)), 0);
+        assert_eq!(ceil_to_i32(f32::MIN_POSITIVE), 1);
     }
 
     #[test]

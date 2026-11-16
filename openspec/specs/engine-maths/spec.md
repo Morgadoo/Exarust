@@ -119,3 +119,10 @@ The contact eviction SHALL measure the squared distance of two 4-float points as
 #### Scenario: Small squares in pairs
 - **WHEN** the squares are 1, 2^-24, 0 and 2^-24
 - **THEN** the distance is the next float above 1
+
+### Requirement: Denormals read as zero by the conversions
+The floor and ceiling conversions SHALL read a denormal input as a zero of its sign, as the original's conversion does under denormals-are-zero.
+
+#### Scenario: The smallest denormals
+- **WHEN** the smallest positive denormal is ceiled and its negative floored
+- **THEN** both give 0
