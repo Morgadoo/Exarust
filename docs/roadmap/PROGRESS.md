@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r297, 11-16) | target |
+| measure | start (r186, 11-10) | now (r298, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **59.85%** | **100%** |
+| **Ledger: bytes in a final state** | — | **60.02%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,150 | all |
+| Tests passing | 8,489 | 9,160 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,10 +98,10 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 146 | 159,976 |
+| Physics, bodies & cloth | 7 | 7 | 145 | 159,884 |
 | Rendering & GPU | 10 | 10 | 277 | 139,841 |
 | UI | 12 | 12 | 339 | 127,230 |
-| Thaumaturgy & effects | 9 | 9 | 151 | 109,619 |
+| Thaumaturgy & effects | 9 | 9 | 135 | 105,532 |
 | Characters, motion & animation | 8 | 8 | 222 | 101,754 |
 | Game modes, arena & session | 7 | 7 | 178 | 76,192 |
 | World, levels & terrain | 5 | 5 | 146 | 73,180 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,008** | **1,007,372** |
+| **Total** | **90** | **90** | **1,991** | **1,003,193** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 298 | The powers sound as in the original: Shock's charge and release, the Vanish and Long Door starts and come-backs on a voice that follows the body, the wave's charge loop and throw; a missed throw and a refused kinesis pick play the failure cue; Force Strikes swaps the body's swing set and loudness; Mind powers mark their bar slots; a barricade ended by an event fells its wall, the cast end returns to the stored stance and the power tree reopens on its domain only for the same body. |
 | 2026-11-16 | 297 | NPC bodies turn and look through their locomotion as the player body does (look, look smoothing and heading kept as in the original, combat look snap past 30 degrees); the search creates the perceived goal entity the brain weighs and attends (F389), and a classify bug was fixed (the attention bonus belongs to the attended contact). |
 | 2026-11-16 | 296 | The frame's Update and PostUpdate are fully ordered in named phases following the original's frame order, and the schedule test now holds every schedule to zero unordered conflicting pairs (seven documented pairs with private engine systems allowed); ordering the frame fixed a GUI bug: paints that ran before the game screens' per-frame clear were wiped every frame, so the story death's tip banner now shows (ambiguity2) |
 | 2026-11-16 | 295 | The function oracle covers 110 original functions bit for bit over 5000 cases each: the callers now take the original's exact normaliser and lerp, the swing time on non-finite input matches, and about fifteen small port defects it found are fixed (NaN and negative-zero handling, a denormal sine, reciprocal-first weights, a bearing in double, a wrapped tick count); the simulation changes in the last bit from the first tick; F569 opened (oracle2) |
