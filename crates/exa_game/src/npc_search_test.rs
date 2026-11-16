@@ -654,3 +654,34 @@ fn the_search_reads_the_open_container_registry() {
     let open = app.world().resource::<OpenSearchScreens>().clone();
     assert!(!open.containers.is_open(7 | 0x2000_0000));
 }
+
+/// The leader the combat state's follow check reads is the player: its
+/// root's place (cm), its body's facing and its request's run and sprint
+/// bits.
+#[test]
+fn the_follow_leader_is_the_player() {
+    let mut app = App::new();
+    app.init_resource::<exa_ai::FollowLeader>()
+        .add_systems(Update, publish_follow_leader);
+    app.world_mut().spawn((
+        Player,
+        GlobalTransform::from_translation(Vec3::new(2.0, 0.5, -3.0)),
+    ));
+    let body = app
+        .world_mut()
+        .spawn((
+            PlayerBody::new(0.0),
+            GlobalTransform::from_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+        ))
+        .id();
+    app.world_mut()
+        .get_mut::<exa_physics::body::locomotion::Locomotion>(body)
+        .unwrap()
+        .flags = exa_physics::body::locomotion::flags::RUN;
+    app.update();
+    let (who, leader) = app.world().resource::<exa_ai::FollowLeader>().0.unwrap();
+    assert_eq!(who, body);
+    assert_eq!(leader.position, Vec3::new(200.0, 50.0, -300.0));
+    assert!((leader.facing - Vec3::X).length() < 1e-6);
+    assert!(leader.sprinting && !leader.running);
+}

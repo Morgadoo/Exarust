@@ -187,14 +187,20 @@ pub enum FleeAct {
     Run { replan: bool },
 }
 
+/// The threat is no longer fresh and stands in another room than the
+/// character's and its home: the flight is over (and a body its walk moves
+/// soft-stops).
+pub fn escaped(flight: &Flight) -> bool {
+    !flight.fresh
+        && flight.threat_room >= 0
+        && flight.threat_room != flight.room
+        && flight.threat_room != flight.home
+}
+
 /// The flee state's tick (the route planning and the cornered fall-back
 /// are the caller's, through [`way_out`] and [`cornered`]).
 pub fn tick(flight: &Flight, level: &mut i32, roll: &mut u32) -> FleeAct {
-    let escaped = !flight.fresh
-        && flight.threat_room >= 0
-        && flight.threat_room != flight.room
-        && flight.threat_room != flight.home;
-    if escaped || (!flight.has_foe && !flight.has_focus) {
+    if escaped(flight) || (!flight.has_foe && !flight.has_focus) {
         *level = 0;
         *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
         let wait = ((u64::from(*roll) * 10_000) >> 32) as u32;

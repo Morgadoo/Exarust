@@ -106,7 +106,9 @@ fighter's chase walks its own.
 Every state that walks (the roam and patrol legs, the flight, the chase,
 the follow and its search) plans into the character's one route
 (`route_walk::AiRoute`: the points, the follower's segment and fraction,
-the following and plan-wanted bytes, the urgency, the after-route count);
+the following and plan-wanted bytes, the urgency, the after-route count,
+the walk's mode word that every stop clears, the leader's point the follow
+planned from and the body the walk lets pass);
 the AI's walk (`route_walk::walk_routes`, after every state of the brains'
 tick, as the original's AI tick calls its walk after the state call) walks
 it once a body tick: the path follower's carrot 100 cm along the route
@@ -114,8 +116,8 @@ from the ground point's projection (out of the scene the standing point
 slides 2 cm a tick), the urgency-0 run bit and 30 cm soft stop at the end,
 the hurried 100 cm soft stop, the blocked line's plan request; then the
 walk's aim (the goal 150 cm out past the 0.7/0.007 gate, the run and
-sprint flags), the head look at the AI's look target (`motion::look_at`)
-or its offset eased back, and the body in the way's soft stop. A body
+sprint flags), the head look at the AI's look target, the contact the
+target pass attends (`motion::look_at`), or its offset eased back, and the body in the way's soft stop. A body
 that is down stops its route. The original's reset when the level is
 written out on leaving it (the body heals to its lasting health, forgets
 every contact, and a roaming AI is put down along fresh wander paths and
@@ -292,8 +294,14 @@ once the power system is done (`cast`). A duellist with `DuelPowers`
 asks it as its power system: the game answers its slots before
 `DuelSystems` and casts the chosen power after it
 (`exa_game::thaum::cast`); a level character whose record knows powers
-gets one. The follow check is ported and not yet
-wired into the running game.
+gets one. The follow check runs first in the combat tick of a fighter
+whose activity is the follow, while its body does not step
+(`combat_follow` in the duellist): the band (400 cm out of combat) eases
+toward 700 cm, a follower inside 0.7 of it soft-stops its walk, past it
+the walk's urgency is set and a forced route to the leader's ground point
+20 cm up is planned (stop 40, size class 1), and a follower walking to its
+leader ends its combat tick there. The leader is `FollowLeader`, which the
+game fills with the player each body tick.
 
 **Morale.** The AI tick's morale (`combat::drift_morale`): stress falls
 0.01 a tick and the alarm by 0.9999; a drop in the health ratio
@@ -338,7 +346,12 @@ leave also restores the idle state at its first step
 (`lifecycle::restart_idle`). The combat state's finally frame stamps the
 lifted foe's footprint back on every exit, and while the body is down it
 takes the down exit every tick (the aim, heading and look directions
-follow the body's facing). A follower inside its personal stop backs off
+follow the body's facing; the arc kind it publishes for the position
+scores around it is recovering, none once its getting-up clip is past
+0.9; its stance becomes the guard without a clip start; its pose word
+clears, as on every combat tick past the leave). An escaped flight whose
+walk moves the body soft-stops it, and a running flight's cursor and
+wanted directions take its heading. A follower inside its personal stop backs off
 to 400 cm from the leader along their line (`idle::closing_goal`, the
 closing walk: motion 0x14, radius 300).
 
