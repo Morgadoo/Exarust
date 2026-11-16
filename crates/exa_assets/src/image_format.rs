@@ -66,15 +66,16 @@ impl fmt::Display for ImageReadError {
 
 impl std::error::Error for ImageReadError {}
 
-/// The extension a name is dispatched by: `None` without a dot, else the
-/// bytes after the last dot (a leading dot counts too). An extension longer
-/// than the original's 16-byte field is not copied at all, so it is empty,
-/// as is the extension of a name ending in a dot; an empty extension matches
-/// no reader. The reader lookup folds ASCII case.
+/// The extension a name is dispatched by: the bytes after the last dot (a
+/// leading dot counts too). The original copies it into a zeroed 16-byte
+/// field and its callers ignore whether the copy happened, so a name
+/// without a dot, a name ending in a dot and an extension longer than the
+/// field all leave the field empty and are looked up alike: `None` for all
+/// three. The reader lookup folds ASCII case.
 pub fn extension_of(name: &str) -> Option<&str> {
     let dot = name.rfind('.')?;
     let extension = &name[dot + 1..];
-    Some(if extension.len() > 16 { "" } else { extension })
+    (!extension.is_empty() && extension.len() <= 16).then_some(extension)
 }
 
 /// The extension as the original's message prints it: the first 15 bytes,
@@ -124,13 +125,27 @@ mod tests {
         // A leading dot starts an extension too; a trailing dot leaves it
         // empty.
         assert_eq!(extension_of(".rfi"), Some("rfi"));
-        assert_eq!(extension_of("wall01n."), Some(""));
+        // A trailing dot copies nothing: the same empty field as no dot.
+        assert_eq!(extension_of("wall01n."), None);
         // Sixteen bytes fit the field; seventeen are not copied at all.
         assert_eq!(
             extension_of("wall01n.abcdefghijklmnop"),
             Some("abcdefghijklmnop")
         );
-        assert_eq!(extension_of("wall01n.abcdefghijklmnopq"), Some(""));
+        assert_eq!(extension_of("wall01n.abcdefghijklmnopq"), None);
+        // All three go to the same reader as a bare name.
+        for name in ["wall01n", "wall01n.", "wall01n.abcdefghijklmnopq"] {
+            assert_eq!(
+                reader_for(name, &IMAGE_MAGIC),
+                Ok(ImageFormat::Rfi),
+                "{name}"
+            );
+            assert_eq!(
+                reader_for(name, b"junk"),
+                Err(ImageReadError::Format),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -161,11 +176,8 @@ mod tests {
                 "abcdefghijklmno".into()
             ))
         );
-        // An empty extension matches no reader, whatever the bytes.
-        assert_eq!(
-            reader_for("wall01n.", &IMAGE_MAGIC),
-            Err(ImageReadError::UnrecognisedExtension(String::new()))
-        );
+        // An empty extension is no extension: the bytes decide.
+        assert_eq!(reader_for("wall01n.", &IMAGE_MAGIC), Ok(ImageFormat::Rfi));
         assert_eq!(
             ImageReadError::UnrecognisedExtension("dds".into()).to_string(),
             "Unrecognised file extension: dds"

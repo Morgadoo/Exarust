@@ -227,3 +227,10 @@ A factory job whose areas roll Gemstone SHALL, after every colour pass, multiply
 #### Scenario: A gem texel
 - **WHEN** a Gemstone layer at shade 128, quality 0.6, damage 0.3 and dirt 0.4 with the test library is drawn with a full mask over an opaque texel
 - **THEN** the program gives 0x3e1b910e and the texel's alpha is 39
+
+### Requirement: Copy bulk from the template
+The bulk of a tagged item SHALL be the model section's bulk byte of the record its header names as template, one step, and 0 when that record or its model section is missing; the copy's own byte SHALL NOT count.
+
+#### Scenario: A copy with its own byte
+- **WHEN** a level copy with bulk byte 9 names a template with bulk 3
+- **THEN** its bulk is 3, and a copy naming no template weighs 0

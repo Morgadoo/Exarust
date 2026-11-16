@@ -50,6 +50,28 @@ impl Texels {
         let p = &self.rgba[(y * self.width + x) * 4..][..4];
         std::array::from_fn(|k| p[k] as f32 / 255.0)
     }
+
+    /// GL's bilinear filter at texel coordinates (`s`, `t`) (texel centres
+    /// at whole numbers, as `u·width − ½` places them), wrapping: the four
+    /// texels around the point, weighted by its fractions.
+    fn bilinear(&self, s: f32, t: f32) -> [f32; 4] {
+        let (i, j) = (s.floor(), t.floor());
+        let (a, b) = (s - i, t - j);
+        let (w, h) = (self.width as i64, self.height as i64);
+        let i0 = (i as i64).rem_euclid(w) as usize;
+        let j0 = (j as i64).rem_euclid(h) as usize;
+        let i1 = if i0 + 1 == self.width { 0 } else { i0 + 1 };
+        let j1 = if j0 + 1 == self.height { 0 } else { j0 + 1 };
+        let texel = |x: usize, y: usize| &self.rgba[(y * self.width + x) * 4..][..4];
+        let (p00, p10) = (texel(i0, j0), texel(i1, j0));
+        let (p01, p11) = (texel(i0, j1), texel(i1, j1));
+        std::array::from_fn(|k| {
+            let c = |p: &[u8]| p[k] as f32 / 255.0;
+            let top = c(p00) + (c(p10) - c(p00)) * a;
+            let bottom = c(p01) + (c(p11) - c(p01)) * a;
+            top + (bottom - top) * b
+        })
+    }
 }
 
 /// Damage and dirt textures repeat once per this many target texels.
@@ -2727,17 +2749,52 @@ pub(crate) fn sample_at(t: &Texels, x: usize, y: usize, w: usize, h: usize) -> f
 
 /// A texture sampled at the paint's resolution (masks may be smaller).
 fn sample_scaled(t: &Texels, x: usize, y: usize, w: usize, h: usize) -> Vec3 {
-    t.at((x * t.width / w) as i64, (y * t.height / h) as i64)
+    sample_stretched(t, x, y, w, h, 1.0)
 }
 
 /// [`sample_scaled`] with the region's vertical coordinate times `scale`
 /// (the blade programs' `UVScale`), wrapping past the texture's edge.
+///
+/// The original's passes sample a region's own maps (shade, masks, item
+/// normal) through samplers that filter linearly, whose filter GL picks by
+/// how many texels one painted texel spans along the wider axis: at most
+/// one (a map as large as the region or smaller, which the region
+/// magnifies) is the magnification filter, bilinear over the four texels
+/// around the fragment's centre, wrapping; a map exactly the region's size
+/// lands every centre on a texel centre and reads that texel. A larger map
+/// is minified through its mip chain [Exarust gap: the painter has no mip
+/// chain and reads the nearest texel of the full image there].
 fn sample_stretched(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: f32) -> Vec3 {
+    let a = sample_stretched4(t, x, y, w, h, scale);
+    Vec3::new(a[0], a[1], a[2])
+}
+
+/// [`sample_stretched`] with the alpha channel.
+fn sample_stretched4(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: f32) -> [f32; 4] {
     if scale == 1.0 {
-        return sample_scaled(t, x, y, w, h);
+        if t.width == w && t.height == h {
+            return t.at4(x as i64, y as i64);
+        }
+        if t.width > w || t.height > h {
+            // Minified: the nearest texel of the full image.
+            return t.at4((x * t.width / w) as i64, (y * t.height / h) as i64);
+        }
     }
-    let v = (y as f32 * scale * t.height as f32 / h as f32).floor();
-    t.at((x * t.width / w) as i64, v as i64)
+    let rows = t.height as f32 * scale;
+    let (step_u, step_v) = (t.width as f32 / w as f32, rows / h as f32);
+    if step_u.max(step_v) > 1.0 {
+        // Minified: the nearest texel of the full image.
+        let v = if scale == 1.0 {
+            (y * t.height / h) as i64
+        } else {
+            (y as f32 * scale * t.height as f32 / h as f32).floor() as i64
+        };
+        return t.at4((x * t.width / w) as i64, v);
+    }
+    t.bilinear(
+        (x as f32 + 0.5) * step_u - 0.5,
+        (y as f32 + 0.5) * step_v - 0.5,
+    )
 }
 
 #[cfg(test)]
@@ -3267,6 +3324,27 @@ mod tests {
         }
         // Row 3 of 4 at scale 2: v = 6 wraps to texel row 2.
         assert_eq!(sample_stretched(&t, 0, 3, 4, 4, 2.0).x, 100.0 / 255.0);
+    }
+
+    /// A mask smaller than its region is magnified bilinearly around each
+    /// painted texel's centre, wrapping; one as large as the region reads
+    /// its texels as they are.
+    #[test]
+    fn a_magnified_map_is_filtered_linearly() {
+        // Two columns: 0 and 255.
+        let t = Texels {
+            width: 2,
+            height: 1,
+            rgba: [0, 0, 0, 255, 255, 255, 255, 255].to_vec(),
+        };
+        // A region of 4: centres at texel coordinates −0.25, 0.25, 0.75,
+        // 1.25 (wrapping around to column 0 past the right edge).
+        let row: Vec<f32> = (0..4).map(|x| sample_at(&t, x, 0, 4, 1)).collect();
+        assert_eq!(row, [0.25, 0.25, 0.75, 0.75]);
+        // A region of 2 reads the texels.
+        assert_eq!(sample_at(&t, 1, 0, 2, 1), 1.0);
+        // A larger map keeps the nearest texel.
+        assert_eq!(sample_at(&t, 0, 0, 1, 1), 0.0);
     }
 
     #[test]
