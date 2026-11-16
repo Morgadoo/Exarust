@@ -557,7 +557,12 @@ original's start sets them, the per-part contact in each struck part's
 frame against its node mesh (the chunk pushed out of the faces it reaches,
 the limb push with the part's velocity at the chunk's particle weights,
 the knock, pins and wake per part; a part without a mesh answers with its
-spheres; the part's node mesh asked its two-sided sphere query), the
+spheres; the part's node mesh asked its two-sided sphere query), met in
+the next tick's first pass of the sector step before the character ticks
+(`thaum::pre_pass::meet_bodies_first`: the thrown blasts and waves in
+entity order, the parts of the nine grid cells around each, the sector's
+sphere and box gates, a disabled body skipped, the caster's own parts
+skipped by the slot), the
 cloths' stir (their particles, rustle envelope and wake), the level's
 static meshes walked from the static grid (`strike_level_mesh`: the mesh
 walk's two-sided query and the rebound; the bolt's sampled walk through
@@ -608,8 +613,8 @@ either's end clears both). A cast barricade's floor probe meets floor
 nodes only. A wave cast runs its wave round the caster's body root
 (`thaum::wave_live`): charging on the blast's hook, paying its drain each
 tick, and thrown through the blast's contact slots, which its class shares
-(the level's meshes, the cloths, each other body part by part with the
-character knock); its throw alerts the caster's known characters as the
+(the level's meshes and the cloths after its tick, each other body part by
+part with the character knock in the next tick's first pass); its throw alerts the caster's known characters as the
 blast's release does (`thaum::blast_live::alert_known`). A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
 its hook until the caster lets go or runs out, its points walking the

@@ -222,6 +222,53 @@ pub fn sphere_contacts(
     hit
 }
 
+/// A node mesh's two-sided sphere query in centimetres (the mesh's own
+/// frame), the query slot the effects' part contacts ask (the force blast's
+/// chunks, the particles' body pass): every triangle whose plane is within
+/// the sphere's radius on either side and whose closest point is nearer
+/// than `r² − ε` ([`crate::mesh_query::two_sided_point`]) hands `on_point`
+/// the sphere and that point, and the next triangle sees the sphere as the
+/// callback left it. Through the mesh's kd-tree when it has one (the
+/// leaves the sphere's box reaches, in the tree's order), else every
+/// triangle in the file's order. `triangles` are in metres, tested in
+/// centimetres as the tree stores them. Returns whether a face was met.
+pub fn two_sided_contacts(
+    triangles: &[[Vec3; 3]],
+    tree: Option<&MeshTree>,
+    sphere: &mut (Vec3, f32),
+    mut on_point: impl FnMut(&mut (Vec3, f32), Vec3),
+) -> bool {
+    let mut face = |s: &mut (Vec3, f32), t: &[Vec3; 3]| -> bool {
+        let t = t.map(|v| v * TREE_SCALE);
+        match crate::mesh_query::two_sided_point(&t, s.0, s.1, crate::mesh_query::SMALL) {
+            Some(q) => {
+                on_point(s, q);
+                true
+            }
+            None => false,
+        }
+    };
+    match tree {
+        // The tree is built in centimetres.
+        Some(tree) => tree.tree.sphere_leaves(sphere, 1.0, |s, ids| {
+            let mut hit = false;
+            for &id in ids {
+                if let Some(t) = triangles.get(id as usize) {
+                    hit |= face(s, t);
+                }
+            }
+            hit
+        }),
+        None => {
+            let mut hit = false;
+            for t in triangles {
+                hit |= face(sphere, t);
+            }
+            hit
+        }
+    }
+}
+
 /// The signed volume a closed mesh encloses (in its units cubed): positive
 /// when its fronts ((b − a) × (c − a)) face out, as the mesh queries need
 /// (a debug check of a mesh's winding).

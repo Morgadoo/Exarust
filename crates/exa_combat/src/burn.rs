@@ -329,6 +329,43 @@ pub fn burn_upkeep(
     }
 }
 
+/// The particles' doses of this tick's solver
+/// ([`exa_world::particle_stage::ParticleSolve`]), each through its body's
+/// dose slot in the order the passes made them: a character's part (a body
+/// with a [`Burn`]) adds it to the burn's strength when its skin bone index
+/// is above zero ([`Burn::add_dose`]); any other body's slot keeps nothing.
+/// The character's next upkeep burns the strength.
+pub fn take_particle_doses(
+    stages: Option<ResMut<exa_physics::body::SolverStages>>,
+    mut bodies: Query<(Entity, &exa_physics::body::Ragdoll, Option<&mut Burn>)>,
+    mut owners: Local<bevy::ecs::entity::EntityHashMap<Entity>>,
+) {
+    let Some(mut stages) = stages else {
+        return;
+    };
+    let Some(stage) = stages.get_mut::<exa_world::particle_stage::ParticleSolve>() else {
+        return;
+    };
+    let doses = stage.take_doses();
+    if doses.is_empty() {
+        return;
+    }
+    owners.clear();
+    for (entity, body, _) in &bodies {
+        for part in &body.parts {
+            owners.insert(part.entity, entity);
+        }
+    }
+    for dose in doses {
+        let Some(&body) = owners.get(&dose.part) else {
+            continue;
+        };
+        if let Ok((_, _, Some(mut burn))) = bodies.get_mut(body) {
+            burn.add_dose(dose.skin_bone, dose.dose);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,5 +667,82 @@ mod tests {
         let base = f64::from(pitch_draw) * 0.2 + 0.8;
         assert_eq!(crackle.pitch, (f64::from(gains.pitch) * base) as f32);
         assert_eq!(roll.0, expect.0);
+    }
+
+    /// A fire's particle meets a character's part in the solver's object
+    /// stage and its dose lands on the character's burn through the part's
+    /// dose slot; the next upkeep would burn it. A boneless body (a prop)
+    /// keeps nothing.
+    #[test]
+    fn a_particle_dose_reaches_the_characters_burn() {
+        use bevy::math::Affine3A;
+        use exa_physics::body::{PartSetup, Ragdoll, SolverStages};
+        use exa_world::particle_stage::{ParticleSolve, StagedEmitter};
+        use exa_world::particles::{Emitter, NodeFrame, Seed, Source};
+        let run = |bone: usize| {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, exa_physics::PhysicsPlugin))
+                .add_systems(
+                    FixedUpdate,
+                    take_particle_doses.after(exa_physics::body::BodySystems),
+                );
+            let node = app.world_mut().spawn_empty().id();
+            let mut body = Ragdoll::new(&[PartSetup {
+                bone,
+                entity: node,
+                parent: None,
+                world: Affine3A::IDENTITY,
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+            }]);
+            // One face of the node mesh, on the part's +x side.
+            body.set_part_triangles(
+                0,
+                vec![[
+                    Vec3::new(0.1, -1.0, -1.0),
+                    Vec3::new(0.1, 1.0, -1.0),
+                    Vec3::new(0.1, 0.0, 1.0),
+                ]],
+            );
+            let character = app.world_mut().spawn((body, Burn::default())).id();
+            let mut emitter = Emitter::new(
+                exa_world::fire::SMALL.scaled(0.2),
+                0.2,
+                vec![Source::at_node()],
+            );
+            emitter.enter(NodeFrame::default());
+            emitter.params.dose = 0.5;
+            let start = emitter.params.start_life;
+            let rate = emitter.params.collision_growth / start as f32;
+            let at = Vec3::new(12.0, 0.0, 0.0);
+            emitter.seed(&[Seed {
+                at,
+                before: at,
+                life: start - (5.0 / rate).ceil() as i32,
+                variant: 0,
+            }]);
+            app.world_mut()
+                .resource_mut::<SolverStages>()
+                .add(ParticleSolve::new(
+                    vec![StagedEmitter {
+                        entity: Entity::PLACEHOLDER,
+                        emitter,
+                        parent: None,
+                        contacts: true,
+                    }],
+                    Default::default(),
+                ));
+            app.world_mut().run_schedule(FixedUpdate);
+            app.world().get::<Burn>(character).unwrap().strength
+        };
+        // The lumbar (bone 8, skin bone 7) takes the dose; a part of bone 1
+        // (skin bone 0: the pelvis, or a prop's only part) keeps nothing.
+        assert_eq!(run(8), 0.5);
+        assert_eq!(run(1), 0.0);
     }
 }

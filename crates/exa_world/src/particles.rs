@@ -298,6 +298,8 @@ pub struct Params {
     pub density_count: i32,
     pub keys: Keys,
     pub light: LightDesc,
+    /// The body dose of one contacting particle (the template's).
+    pub dose: f32,
 }
 
 impl Params {
@@ -368,6 +370,7 @@ impl Params {
             density_count,
             keys: d.keys,
             light: d.light,
+            dose: d.dose,
         }
     }
 }
@@ -1386,41 +1389,74 @@ impl Emitter {
         };
     }
 
-    /// A body contact pass over a slot range: particles inside the body are
-    /// pushed out, lose a life tick, and count toward the emitter's dose.
-    pub fn contact(&mut self, body: &mut impl BodyContact, first: usize, last: usize) {
-        let p = self.params;
-        let last = last.min(self.slots.len().saturating_sub(1));
-        for i in first..=last {
-            if self.slots[i].life <= 0 {
-                continue;
+    /// The particles' body pass on one body part, the emitter's
+    /// body-contact slot: the contact count starts at 0, the live ring is
+    /// walked in one range or, wrapped, in two ([`Emitter::contact`]), and
+    /// the part takes `hits × dose` (the count converted to single, then
+    /// the product) as its dose, which the caller hands to the body's dose
+    /// slot. The caller skips the part whose node is the emitter's node's
+    /// parent.
+    pub fn body_pass(&mut self, body: &impl BodyContact) -> f32 {
+        self.hits = 0;
+        let (first, next, cap) = (self.first, self.next, self.params.capacity);
+        if first > next {
+            self.contact(body, first, cap);
+            if let Some(last) = next.checked_sub(1) {
+                self.contact(body, 0, last);
             }
-            let s = self.slots[i];
-            let age = (p.start_life - s.life) as f32;
-            let radius = age * (p.collision_growth / p.start_life.max(1) as f32);
-            let local = body.to_local(s.p);
-            if local.length_squared() > (radius + body.radius()).powi(2) {
-                continue;
-            }
-            if !body.inside(local, radius) {
-                continue;
-            }
-            let out = body.push_out(local);
-            let hit = body.to_world(out);
-            let old = s.p;
-            let slot = &mut self.slots[i];
-            slot.p = hit;
-            slot.q += (old - hit) * -0.98;
-            slot.life -= 1;
-            self.hits = self.hits.saturating_add(1);
+        } else if next > first {
+            self.contact(body, first, next - 1);
         }
+        self.hits as i32 as f32 * self.params.dose
     }
 
-    /// The body dose for the contacts counted since the last call.
-    pub fn take_dose(&mut self, dose: f32) -> f32 {
-        let n = self.hits as f32;
-        self.hits = 0;
-        n * dose
+    /// The contact walk over slots `first..=last`: each live particle
+    /// (life at least 1) is taken into the part's frame with a radius of
+    /// its age (`start_life − life`, an integer converted to single) times
+    /// `collision_growth / start_life` (the quotient taken once, in single,
+    /// a zero life giving an infinite or NaN rate as the original's). It
+    /// goes on when `(r + R)² < d²` fails against the node's bound sphere
+    /// (centre `c`, radius `R`, `d` its distance from `c`) and `r² <` the
+    /// squared overhang past the node's box fails (a NaN goes on through
+    /// both), and the node mesh's sphere query then pushes it out of every
+    /// face it reaches ([`particle_push_out`]). A particle the mesh met goes
+    /// back to the world there, its velocity takes `(old − new) × −0.98`,
+    /// the contact count rises and its life falls by one.
+    pub fn contact(&mut self, body: &impl BodyContact, first: usize, last: usize) {
+        let p = self.params;
+        let rate = p.collision_growth / p.start_life as f32;
+        let last = last.min(self.slots.len().saturating_sub(1));
+        if last < first {
+            return;
+        }
+        let (centre, half, bound) = body.bound();
+        for i in first..=last {
+            let s = self.slots[i];
+            if s.life < 1 {
+                continue;
+            }
+            let local = body.to_local(s.p);
+            let radius = (i64::from(p.start_life) - i64::from(s.life)) as f32 * rate;
+            let reach = radius + bound;
+            if reach * reach < local.distance_squared(centre) {
+                continue;
+            }
+            let outside = exa_physics::intersect::point_aabb_distance_squared(local, centre, half);
+            if radius * radius < outside {
+                continue;
+            }
+            let mut sphere = (local, radius);
+            if !body.query(&mut sphere, &mut particle_push_out) {
+                continue;
+            }
+            let hit = body.to_world(sphere.0);
+            let moved = s.p - hit;
+            let slot = &mut self.slots[i];
+            slot.p = hit;
+            slot.q += moved * CONTACT_KEEP;
+            self.hits = self.hits.wrapping_add(1);
+            slot.life -= 1;
+        }
     }
 
     /// The looping sound the template names, if any.
@@ -1466,18 +1502,46 @@ impl Emitter {
     }
 }
 
-/// A body the particles can collide with.
+/// The velocity share a particle's push gives it back: its velocity takes
+/// the push (old place less the new) times this.
+pub const CONTACT_KEEP: f32 = -0.98;
+
+/// A body part as the particles' body pass meets it: the part's frame, its
+/// scene node's bound and the node mesh's sphere query, in centimetres.
 pub trait BodyContact {
-    /// The body's radius (cm).
-    fn radius(&self) -> f32;
-    /// A world point in the body's local space.
+    /// A world point (cm) into the part's frame (the original's transpose
+    /// product with its matrix).
     fn to_local(&self, point: Vec3) -> Vec3;
-    /// A body-local point in world space.
+    /// A point of the part's frame back to the world (cm).
     fn to_world(&self, point: Vec3) -> Vec3;
-    /// Whether a body-local point is inside the body.
-    fn inside(&mut self, point: Vec3, radius: f32) -> bool;
-    /// The nearest surface point to a body-local point inside the body.
-    fn push_out(&mut self, point: Vec3) -> Vec3;
+    /// The node's bound in the part's frame (cm): its box centre (the
+    /// sphere's centre too), the box's half extents and the sphere's
+    /// radius.
+    fn bound(&self) -> (Vec3, Vec3, f32);
+    /// The node mesh's two-sided sphere query in the part's frame (cm):
+    /// every face the sphere reaches hands `on_point` the sphere and its
+    /// closest point, the next face seeing the sphere as the callback left
+    /// it. Whether a face was met.
+    fn query(
+        &self,
+        sphere: &mut (Vec3, f32),
+        on_point: &mut dyn FnMut(&mut (Vec3, f32), Vec3),
+    ) -> bool;
+}
+
+/// The particle's push-out off one face's closest point `point`: with `d`
+/// the sphere's centre less the point and `d²` summed `(x² + y²) + z²`, a
+/// `d²` at or past `r²`, or under the engine's small float, leaves it (a
+/// NaN goes on); otherwise the centre moves by `d × (r / √d² − 1)`, onto
+/// the sphere about the point.
+pub fn particle_push_out(sphere: &mut (Vec3, f32), point: Vec3) {
+    let d = sphere.0 - point;
+    let d2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+    let r = sphere.1;
+    if r * r <= d2 || d2 < exa_physics::mesh_query::SMALL {
+        return;
+    }
+    sphere.0 += d * (r / d2.sqrt() - 1.0);
 }
 
 /// What the renderer needs from a frame: the camera.
@@ -2565,40 +2629,132 @@ mod tests {
         assert_eq!(e.live(), 0);
     }
 
-    #[test]
-    fn the_body_contact_pushes_a_particle_out_and_counts_the_dose() {
-        struct Ball;
-        impl BodyContact for Ball {
-            fn radius(&self) -> f32 {
-                20.0
-            }
-            fn to_local(&self, p: Vec3) -> Vec3 {
-                p
-            }
-            fn to_world(&self, p: Vec3) -> Vec3 {
-                p
-            }
-            fn inside(&mut self, p: Vec3, _r: f32) -> bool {
-                p.length() < 20.0
-            }
-            fn push_out(&mut self, p: Vec3) -> Vec3 {
-                p.normalize_or(Vec3::Y) * 20.0
-            }
+    /// A ball of radius 20 cm at the origin, its frame `at` (a point's
+    /// frame is the world less `at`), its node bound a 30 cm box and sphere.
+    struct Ball {
+        at: Vec3,
+    }
+
+    impl BodyContact for Ball {
+        fn to_local(&self, p: Vec3) -> Vec3 {
+            p - self.at
         }
+        fn to_world(&self, p: Vec3) -> Vec3 {
+            p + self.at
+        }
+        fn bound(&self) -> (Vec3, Vec3, f32) {
+            (Vec3::ZERO, Vec3::splat(30.0), 30.0)
+        }
+        fn query(
+            &self,
+            sphere: &mut (Vec3, f32),
+            on_point: &mut dyn FnMut(&mut (Vec3, f32), Vec3),
+        ) -> bool {
+            // The ball's surface point toward the sphere, met within its
+            // radius.
+            let d = sphere.0.length();
+            if d >= 20.0 + sphere.1 {
+                return false;
+            }
+            on_point(sphere, sphere.0.normalize_or(Vec3::Y) * 20.0);
+            true
+        }
+    }
+
+    #[test]
+    fn the_body_pass_pushes_an_aged_particle_out_and_doses_the_part() {
         let mut e = torch();
+        e.params.dose = 0.25;
         e.first = 0;
-        e.next = 1;
+        e.next = 2;
+        let start = e.params.start_life;
+        // An aged particle 1 cm off the surface: its radius (its age times
+        // the growth rate) reaches the face, which pushes it out to the
+        // radius about the face's point.
         e.slots[0] = Slot {
-            p: Vec3::new(1.0, 0.0, 0.0),
+            p: Vec3::new(121.0, 0.0, 0.0),
             q: Vec3::ZERO,
-            life: 103,
+            life: start - 52,
             ..Slot::default()
         };
-        e.contact(&mut Ball, 0, 0);
-        assert!((e.slots[0].p.length() - 20.0).abs() < 1e-5);
-        assert_eq!(e.slots[0].life, 102);
-        assert!((e.take_dose(0.25) - 0.25).abs() < 1e-6);
+        // A newborn particle (radius 0) outside the ball meets nothing.
+        e.slots[1] = Slot {
+            p: Vec3::new(125.0, 0.0, 0.0),
+            q: Vec3::ZERO,
+            life: start,
+            ..Slot::default()
+        };
+        let rate = e.params.collision_growth / start as f32;
+        let radius = 52.0 * rate;
+        assert!(1.0 < radius && radius < 20.0, "{radius}");
+        let ball = Ball {
+            at: Vec3::new(100.0, 0.0, 0.0),
+        };
+        let dose = e.body_pass(&ball);
+        let x = 100.0 + 20.0 + radius;
+        assert!((e.slots[0].p.x - x).abs() < 1e-4, "{:?}", e.slots[0].p);
+        let pushed = 121.0 - e.slots[0].p.x;
+        assert!((e.slots[0].q.x - pushed * CONTACT_KEEP).abs() < 1e-5);
+        assert_eq!(e.slots[0].life, start - 53);
+        assert_eq!(e.slots[1].life, start);
+        assert_eq!(e.slots[1].p, Vec3::new(125.0, 0.0, 0.0));
+        assert_eq!(e.hits, 1);
+        assert_eq!(dose, 0.25);
+        // The next pass counts from 0 again.
+        let ball = Ball {
+            at: Vec3::new(1000.0, 0.0, 0.0),
+        };
+        assert_eq!(e.body_pass(&ball), 0.0);
         assert_eq!(e.hits, 0);
+    }
+
+    #[test]
+    fn a_wrapped_ring_is_walked_in_two_ranges() {
+        let mut e = torch();
+        e.params.dose = 1.0;
+        let cap = e.params.capacity;
+        let start = e.params.start_life;
+        let aged = Slot {
+            p: Vec3::new(121.0, 0.0, 0.0),
+            life: start - 52,
+            ..Slot::default()
+        };
+        // The ring runs from the last slot (the spare past the capacity)
+        // round to slot 0.
+        e.first = cap;
+        e.next = 1;
+        e.slots[cap] = aged;
+        e.slots[0] = aged;
+        // A slot outside the ring is not walked.
+        e.slots[1] = aged;
+        let ball = Ball {
+            at: Vec3::new(100.0, 0.0, 0.0),
+        };
+        assert_eq!(e.body_pass(&ball), 2.0);
+        assert_eq!(e.slots[1].p.x, 121.0);
+        // An empty ring meets nothing.
+        e.first = 3;
+        e.next = 3;
+        assert_eq!(e.body_pass(&ball), 0.0);
+    }
+
+    #[test]
+    fn the_push_out_keeps_the_originals_gates() {
+        // Inside: onto the sphere about the point.
+        let mut s = (Vec3::new(3.0, 0.0, 0.0), 5.0);
+        particle_push_out(&mut s, Vec3::ZERO);
+        assert_eq!(s.0, Vec3::new(5.0, 0.0, 0.0));
+        // At or past the radius, or at the point itself: left.
+        let mut s = (Vec3::new(5.0, 0.0, 0.0), 5.0);
+        particle_push_out(&mut s, Vec3::ZERO);
+        assert_eq!(s.0, Vec3::new(5.0, 0.0, 0.0));
+        let mut s = (Vec3::ZERO, 5.0);
+        particle_push_out(&mut s, Vec3::ZERO);
+        assert_eq!(s.0, Vec3::ZERO);
+        // A NaN distance goes on to the push.
+        let mut s = (Vec3::new(f32::NAN, 0.0, 0.0), 5.0);
+        particle_push_out(&mut s, Vec3::ZERO);
+        assert!(s.0.x.is_nan());
     }
 
     #[test]

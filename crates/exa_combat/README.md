@@ -793,7 +793,11 @@ the timer gains 0.03 of the strength (cap 20) or loses 0.1; yellow loses
 timer × 0.00004 and red (timer × 0.002)², yellow is scaled by red's new share
 of the red the tick began with (all of it is lost when that was near 0); a
 timer over 1 crackles once the clock is 800 ms past the last draw; yellow
-under 0 after the scaling collapses. `effects` holds a body's power ramp (its
+under 0 after the scaling collapses. Every fighter carries its `Burn`; a
+fire particle's dose reaches it through the part's dose slot after the
+solver (`take_particle_doses`: a part whose skin bone index, the bone less
+one, is above zero adds the dose to the strength; another body keeps
+nothing). `effects` holds a body's power ramp (its
 pulses, the callback's end) and the cast start (the callback's answer, the
 motion, the clinch end, condition 0x20).
 
