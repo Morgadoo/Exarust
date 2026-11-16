@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r251, 11-16) | target |
+| measure | start (r186, 11-10) | now (r252, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **55.38%** | **100%** |
+| **Ledger: bytes in a final state** | — | **55.43%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,891 | all |
+| Tests passing | 8,489 | 8,894 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -105,7 +105,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Characters, motion & animation | 8 | 8 | 234 | 107,087 |
 | AI & behaviour | 8 | 8 | 152 | 104,455 |
 | World, levels & terrain | 5 | 5 | 168 | 87,048 |
-| Game modes, arena & session | 7 | 7 | 194 | 79,884 |
+| Game modes, arena & session | 7 | 7 | 191 | 78,814 |
 | Items, materials & crafting | 5 | 5 | 141 | 65,038 |
 | Data, assets & I/O | 6 | 6 | 140 | 44,077 |
 | Runtime & platform | 5 | 5 | 70 | 20,869 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,215** | **1,119,657** |
+| **Total** | **90** | **90** | **2,212** | **1,118,587** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 252 | F415 closed: the save header holds the view camera's eye in centimetres and the current zoom; journal pages keep their ids; a door's arrival lands the player as the original's save landing does; the arena match's return reads the hub from the arena slot's saved section (saves3). Left: the between-round reload, the death CONTINUE's player rebuild, the menu scene. Scenes owed (GPU on hold). |
 | 2026-11-16 | 251 | F544 closed: every practice and arena staging sets the original's staging flag, under which the fighters stand in the idle stand for about 1.1 s while the transition screen fades in; Exarust holds the AI states for 92 ticks (aifreeze). Held for a picture check once the GPU is back: skinning and terrain (blank blocks not drawn past 44 m). Determinism runs owed (GPU on hold). |
 | 2026-11-16 | 248–250 | Force effects: the torrent stirs cloths, the watch list makes brains forget a gone effect, the torrent and barricade sounds, the wave's alert (forcefx). The door drive after the leaf's integration, the impact class from sounded sets (tetrarbd). The game main's session steps; a bug fixed where the HUD disappeared after every door, death or knock-out (gamemain). Scenes owed (GPU on hold). |
 | 2026-11-16 | 245–247 | The item GUI draws from the frame's engine generator, a cross-panel drop makes a local copy, the socket row answers its drag-over (itemgui2). The arena's won items are instances, the board's Choose button opens the event lineup, the in-game EXIT from the arena saves and leaves (arena2). The NPC search's executors, leader and comments follow the original, F378 fixed (aisearch). Stacked, the rounds needed four test setups updated for the shared generator. Scenes owed (GPU on hold). |

@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 715 | 180,824 | B1 wire (or prove unreachable) |
-| partial | 1,450 | 927,960 | B4 complete the port |
+| partial | 1,447 | 926,890 | B4 complete the port |
 | missing | 58 | 11,783 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -21,7 +21,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | characters | 89,749 | 15,241 | 2,097 |
 | ai | 99,815 | 4,612 | 28 |
 | world | 65,469 | 21,016 | 563 |
-| modes | 68,171 | 10,934 | 779 |
+| modes | 67,101 | 10,934 | 779 |
 | items | 55,764 | 8,673 | 601 |
 | data | 31,939 | 12,138 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
@@ -48,9 +48,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
 | TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
 | TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
-| XA_SaveGames (unit routines) | modes | 24 / 12,557 | 3 / 704 | 0 / 0 | 13,261 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
+| XA_SaveGames (unit routines) | modes | 21 / 11,487 | 3 / 704 | 0 / 0 | 12,191 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | TStaticTerrain | world | 12 / 10,617 | 3 / 522 | 0 / 0 | 11,139 |
 | TForceTorrentEffect | powers | 5 / 10,453 | 0 / 0 | 0 / 0 | 10,453 |

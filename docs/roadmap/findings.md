@@ -436,7 +436,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F412 | modes-03 | modes | The golem alarm state (armed flag, point, zone, alarm count) is never saved or restored: level_save always passes SettingsState::reset, and the reader hook has no live caller. | B4 |
 | F413 | modes-03 | modes | The journal is not saved or loaded from the live journal: the writer uses a fresh Session::story journal, and the loaded journal goes into LoadedStory, which nothing applies to GameScreens. | B4 |
 | F414 | modes-03 | modes | The per-locale indoor fog variants 1.8 and 1.4 and, chosen by XA_ExperienceSys are not applied. Every exanima level uses fog 2.0. | B4 |
-| F415 | modes-03 | modes | SaveCamera is never inserted live, so every save header carries camera origin and zoom 1. | B4 |
+| F415 | modes-03 | modes | SaveCamera is never inserted live, so every save header carries camera origin and zoom 1. (Fixed by saves3: the header holds the view camera's eye in centimetres and the current zoom, kept live from the chase camera.) | B4 |
 | F416 | modes-03 | modes | The story writer adds an Exarust-only chunk (EXARUST_CHUNK) to #playerdata with no DEC entry. | B4 |
 | F417 | modes-03 | modes | The 'Save delete index:' log line from is not written. | B4 |
 | F418 | modes-03 | modes | SceneContentLists (the scene node hook) is filled at every load but nothing reads it. | B4 |

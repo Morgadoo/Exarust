@@ -32,7 +32,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 62% | 60% | 1% | 0% | 36% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
-| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 60% | 57% | 2% | 0% | 35% | 6% |  |
+| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 60% | 58% | 2% | 0% | 34% | 6% |  |
 | UI | 959 | 312 | 63 | 86% | 0% | 53% | 43% | 1% | 9% | 31% | 16% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
@@ -461,7 +461,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TScriptActor | Script, dialogue & story | 0 | 80% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TScriptClass | Script, dialogue & story | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | XA_Arena | Game modes, arena & session | 71 | 96% | 74% | 72% | 2% | 0% | 23% | 3% |
-| XA_SaveGames | Game modes, arena & session | 27 | 96% | 51% | 48% | 3% | 0% | 46% | 3% |
+| XA_SaveGames | Game modes, arena & session | 27 | 96% | 55% | 52% | 3% | 0% | 42% | 3% |
 | SG_GameMain | Game modes, arena & session | 20 | 87% | 65% | 59% | 2% | 4% | 33% | 2% |
 | TMatchBoard | Game modes, arena & session | 17 | 90% | 63% | 62% | 1% | 0% | 37% | 0% |
 | SG_Character_Create | Game modes, arena & session | 17 | 86% | 34% | 31% | 3% | 0% | 40% | 26% |
