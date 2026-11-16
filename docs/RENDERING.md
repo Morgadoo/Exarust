@@ -4108,7 +4108,10 @@ the rain falls to 0.01 (`exa_world::scene_env`). While the amount is above
 - **Placement.** The box stands 450 cm ahead of the eye, turned 2° about
   its x axis and scaled by `√(fov / 70)` (the sense of the turn is a guess).
 - **Vertices.** A line list of the first `round(4096·intensity)` heads and
-  tails. The colour bytes are read unnormalised: grey 160, alpha 0 at the
+  tails. An odd count leaves a last head without its tail, which the
+  original's line draw ignores; Exarust leaves it out of every supersample
+  copy, which it draws from one buffer (kept, it shifted every later copy's
+  pairs and drew long lines across the box, F550). The colour bytes are read unnormalised: grey 160, alpha 0 at the
   head and 255 at the tail. The colour is `RainCol0.rgb × 160`; the alpha
   `RainCol0.a × (0 or 255) × (0.6 − 0.000667·d)⁴`, so along a streak it
   rises from 0 at the head to well above 1, where the target clamps it.
