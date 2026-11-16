@@ -9,7 +9,7 @@ Two numbers are published while the function ledger is being completed (see `doc
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - **Estimate 82.3% + 5.1% engine; ledger 57.2% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.2% closed**, of which 45.0% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.9% partial and 6.9% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.2% closed**, of which 45.0% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.8% partial and 6.9% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -484,7 +484,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TGUIDrawSkin | UI | 35 | 93% | 63% | 53% | 0% | 10% | 10% | 27% |
 | TGSLines | UI | 24 | 89% | 81% | 81% | 0% | 0% | 16% | 3% |
 | SG_GameGUI | UI | 22 | 90% | 67% | 50% | 1% | 16% | 30% | 2% |
-| TGUIForm | UI | 20 | 96% | 30% | 29% | 1% | 0% | 51% | 19% |
+| TGUIForm | UI | 20 | 96% | 32% | 31% | 1% | 0% | 49% | 19% |
 | TSkillUI | UI | 18 | 88% | 76% | 76% | 0% | 0% | 20% | 4% |
 | RF_GUI_Controls_Ex | UI | 16 | 87% | 75% | 12% | 1% | 62% | 25% | 0% |
 | RF_HW_Config | UI | 15 | 93% | 67% | 59% | 5% | 2% | 32% | 1% |
