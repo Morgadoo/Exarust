@@ -67,7 +67,13 @@
 
 use bevy::math::{Quat, Vec3};
 
-use super::engine::{Draws, dist_sq, dot_zyx, jitter, length, lerp, normalize, sign};
+use super::engine::{Draws, dist_sq, jitter, length, lerp, normalize, sign};
+
+/// A dot product in the original's order, `(x·x′ + y·y′) + z·z′` (the plane's
+/// offset and each point's height above it).
+fn dot_xyz(a: Vec3, b: Vec3) -> f32 {
+    (a.x * b.x + a.y * b.y) + a.z * b.z
+}
 
 /// The smallest scale, lift and life the setup and the fade keep.
 pub const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
@@ -342,20 +348,38 @@ pub struct ArcEmitter {
     pub extent: Vec3,
     pub radius: f32,
     pub mean: Vec3,
-    /// Where the points' frame sits (the hand the arcs ride with).
+    /// Where the drawn points' frame sits in the world (cm): the node's
+    /// place for arcs on a parent node (a weapon, a mace, a struck part),
+    /// whose points are the node's own; the hand's node offset point for
+    /// arcs held in a hand (their node stays unplaced, so this offset is
+    /// all the draw adds). Only the frame reads it.
     pub anchor: Option<Vec3>,
+    /// The hand the arcs come from (its part's place, cm): the bounds, the
+    /// mean, the level's test and the bodies' test take the points as
+    /// offsets from it. Arcs on a parent node have none: those tests read
+    /// their points as they are.
+    pub hand: Option<Vec3>,
     /// The plane the points stay above: its normal and a point on it.
     pub plane: Option<(Vec3, Vec3)>,
-    /// The spheres of the body the arcs come from, in the weapon's own frame.
-    /// A tendril starts from one whose local y is over 10 cm, turned by
-    /// [`ArcEmitter::frame`].
+    /// The spheres of the body the arcs come from, in its own frame, which
+    /// is the arcs' own: a tendril starts from one whose local y is over
+    /// 10 cm.
     pub source_spheres: Vec<Vec3>,
-    /// The weapon's rotation. Sphere picks are turned by it; identity leaves
-    /// them as stored.
+    /// The node's rotation in the world (the frame turns the points and
+    /// the camera with it); identity for arcs held in a hand.
     pub frame: Quat,
+    /// The record's collision bits (16–19): [`TESTS_LEVEL`] and
+    /// [`TESTS_BODIES`] ask the simulation for the level's and the bodies'
+    /// tests. Arcs made without a record have none.
+    pub tests: u32,
     /// Characters already shocked (with [`SHOCK_ONCE`]).
     pub shocked: Vec<u64>,
 }
+
+/// The record's bit asking for the level's test ([`ArcEmitter::clip_to_level`]).
+pub const TESTS_LEVEL: u32 = 0x1_0000;
+/// The record's bit asking for the bodies' test ([`ArcEmitter::strike_limb`]).
+pub const TESTS_BODIES: u32 = 0x2_0000;
 
 /// Up to this many light points.
 pub const LIGHT_POINTS: usize = 16;
@@ -411,9 +435,11 @@ impl ArcEmitter {
             radius: 0.0,
             mean: Vec3::ZERO,
             anchor: None,
+            hand: None,
             plane: None,
             source_spheres: Vec::new(),
             frame: Quat::IDENTITY,
+            tests: 0,
             shocked: Vec::new(),
         }
     }
@@ -421,6 +447,7 @@ impl ArcEmitter {
     /// An emitter from an arc record.
     pub fn new(params: &ArcParams, draws: &mut impl Draws) -> Self {
         let mut arc = Self::allocate(params.count, params.segments, params.size);
+        arc.tests = params.flags & 0xf_0000;
         arc.flags = params.flags & 0xff;
         arc.light_kind = ArcLight::of_flags(params.flags);
         if arc.light_kind == ArcLight::Voxel {
@@ -524,36 +551,37 @@ impl ArcEmitter {
     /// One tick of the arcs.
     pub fn tick(&mut self, draws: &mut impl Draws) {
         let plane = if self.flags & PLANE != 0 {
-            self.plane.map(|(n, p)| (n, dot_zyx(n, p)))
+            self.plane.map(|(n, p)| (n, dot_xyz(n, p)))
         } else {
             None
         };
         self.scroll[0] = self.scroll[1];
-        self.scroll[1] += 0.015;
+        self.scroll[1] = (f64::from(self.scroll[1]) + 0.015) as f32;
         if 2.0 < self.scroll[1] {
             self.scroll[0] -= 1.0;
             self.scroll[1] -= 1.0;
         }
         self.length += self.growth;
-        self.width += self.growth * 0.1;
-        let (limit, floor) = if 0.999 <= self.lift {
-            (10000.0, -10000.0)
-        } else {
-            (self.length * 0.3, 0.0)
-        };
+        self.width = (f64::from(self.growth) * 0.1 + f64::from(self.width)) as f32;
+        let (limit, floor) = self.limits();
         if self.respawns
             && draws.below(2) == 0
             && let Some(free) = self.free_record()
         {
             let timer = draws.below(self.respawn_life) + self.respawn_life;
+            // A source sphere is taken where it stands in its body's frame,
+            // the arcs' own; the draw repeats until one stands more than
+            // 10 cm up (an unordered height draws again, as the original's
+            // compare does).
+            let high = |s: &Vec3| 10.0 < s.y;
             let origin = if self.source_spheres.is_empty() {
                 Some(Origin::Source)
-            } else if self.source_spheres.iter().any(|s| 10.0 < s.y) {
+            } else if self.source_spheres.iter().any(high) {
                 let n = self.source_spheres.len() as i32;
                 loop {
                     let pick = self.source_spheres[draws.below(n).max(0) as usize];
-                    if 10.0 < pick.y {
-                        break Some(Origin::Fixed(self.frame * pick));
+                    if high(&pick) {
+                        break Some(Origin::Fixed(pick));
                     }
                 }
             } else {
@@ -566,7 +594,7 @@ impl ArcEmitter {
             }
         }
         for t in 0..self.tendrils.len() {
-            self.age_and_branch(t, draws);
+            self.age_and_branch(t, limit, draws);
         }
         for t in 0..self.tendrils.len() {
             self.move_points(t, limit, floor, plane, draws);
@@ -580,10 +608,22 @@ impl ArcEmitter {
         self.bounds();
     }
 
-    fn age_and_branch(&mut self, t: usize, draws: &mut impl Draws) {
+    /// The rise a step may take over its neighbours and the floor no point
+    /// goes below: none (±10000) with a lift of 0.999 or more (or not a
+    /// number), else 0.3 of a segment over a floor of 0. The lift and the
+    /// product are taken in double, as the original's compare and multiply.
+    fn limits(&self) -> (f32, f32) {
+        if f64::from(self.lift) < 0.999 {
+            ((f64::from(self.length) * 0.3) as f32, 0.0)
+        } else {
+            (10000.0, -10000.0)
+        }
+    }
+
+    fn age_and_branch(&mut self, t: usize, limit: f32, draws: &mut impl Draws) {
         let rec = &mut self.tendrils[t];
         if rec.timer == 0 {
-            rec.life -= 0.1;
+            rec.life = (f64::from(rec.life) - 0.1) as f32;
             if rec.life < EPSILON {
                 rec.life = 0.0;
             }
@@ -609,7 +649,8 @@ impl ArcEmitter {
         while i < i64::from(self.tendrils[cur].count) - 2 {
             i += 1;
             let iu = i as usize;
-            let share = (i64::from(keep) - i) as f32 / self.segments as f32;
+            // The share left past the point, divided in double.
+            let share = ((i64::from(keep) - i) as f64 / f64::from(self.segments)) as f32;
             match self.tendrils[cur].branches[iu] {
                 None => {
                     let live = self.length * self.tendrils[cur].life;
@@ -617,9 +658,13 @@ impl ArcEmitter {
                         self.tendrils[cur].points[iu + 1],
                         self.tendrils[cur].points[iu - 1],
                     );
-                    if live * 0.6 * live * 0.6 <= chord {
+                    // A fold drops the point when the live segment's 0.6,
+                    // squared in double, passes the chord; otherwise (or
+                    // unordered) a branch opens.
+                    let reach = f64::from(live) * 0.6;
+                    if !(f64::from(chord) < reach * reach) {
                         if let Some(b) = self.free_record() {
-                            self.open_branch(cur, iu, b, share, live, draws);
+                            self.open_branch(cur, iu, b, share, live, limit, draws);
                         }
                     } else {
                         let rec = &mut self.tendrils[cur];
@@ -657,6 +702,7 @@ impl ArcEmitter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_branch(
         &mut self,
         cur: usize,
@@ -664,6 +710,7 @@ impl ArcEmitter {
         b: usize,
         share: f32,
         live: f32,
+        limit: f32,
         draws: &mut impl Draws,
     ) {
         self.tendrils[b].timer = -1;
@@ -680,11 +727,6 @@ impl ArcEmitter {
         v *= live / length(v);
         let r = jitter(draws, self.lift);
         v += r * live;
-        let limit = if 0.999 <= self.lift {
-            10000.0
-        } else {
-            self.length * 0.3
-        };
         if limit < v.y.abs() {
             v.y = sign(v.y) * limit;
         }
@@ -787,7 +829,7 @@ impl ArcEmitter {
                 rec.previous[i].y = floor;
             }
             if let Some((n, d)) = plane {
-                let here = dot_zyx(rec.points[i], n);
+                let here = dot_xyz(rec.points[i], n);
                 if here < d {
                     rec.points[i] += n * (d - here);
                 }
@@ -818,10 +860,10 @@ impl ArcEmitter {
                     (rec.points[i + 1].y - below) * 0.5 + below
                 };
                 let mut v = rec.points[i] - rec.previous[i];
-                if 1.0 < (v.z * v.z + v.y * v.y) + v.x * v.x {
+                if 1.0 < (v.x * v.x + v.y * v.y) + v.z * v.z {
                     v = Vec3::ZERO;
                 }
-                v += r * (length_now * 0.02);
+                v += r * ((f64::from(length_now) * 0.02) as f32);
                 v *= 0.9;
                 rec.points[i] += v;
                 if i == last {
@@ -857,34 +899,34 @@ impl ArcEmitter {
         for t in &self.tendrils {
             total += t.count;
             for p in t.points.iter().take(t.count.max(0) as usize) {
+                // Below the low end it moves the low end; otherwise (or
+                // unordered) it may move the high end.
                 for axis in 0..3 {
-                    if lo[axis] <= p[axis] {
-                        if hi[axis] < p[axis] {
-                            hi[axis] = p[axis];
-                        }
-                    } else {
+                    if p[axis] < lo[axis] {
                         lo[axis] = p[axis];
+                    } else if hi[axis] < p[axis] {
+                        hi[axis] = p[axis];
                     }
                 }
                 sum += *p;
             }
         }
-        if let Some(anchor) = self.anchor {
-            lo += anchor;
-            hi += anchor;
+        if let Some(hand) = self.hand {
+            lo += hand;
+            hi += hand;
         }
         self.total = total;
         self.centre = lerp(lo, hi, 0.5);
         self.extent = hi - self.centre + Vec3::splat(5.0);
         let e = self.extent;
-        let r2 = (e.z * e.z + e.y * e.y) + e.x * e.x;
+        let r2 = (e.x * e.x + e.y * e.y) + e.z * e.z;
         self.radius = if 0.0 < r2 { r2.sqrt() } else { r2 };
         if total < 1 {
             self.mean = self.centre;
         } else {
             self.mean = sum * (1.0 / total as f32);
-            if let Some(anchor) = self.anchor {
-                self.mean += anchor;
+            if let Some(hand) = self.hand {
+                self.mean += hand;
             }
         }
     }
@@ -898,8 +940,10 @@ impl ArcEmitter {
         }
     }
 
+    /// A point as the level's and the bodies' tests take it: an offset from
+    /// the hand, or as it stands for arcs with no hand.
     fn world(&self, p: Vec3) -> Vec3 {
-        p + self.anchor.unwrap_or(Vec3::ZERO)
+        p + self.hand.unwrap_or(Vec3::ZERO)
     }
 
     /// The level's test: `ray(start, unit direction, length)` returns how
@@ -925,7 +969,7 @@ impl ArcEmitter {
                         self.kill_branch(t, k);
                     }
                     let at = start + dir * hit;
-                    self.tendrils[t].points[i + 1] = at - self.anchor.unwrap_or(Vec3::ZERO);
+                    self.tendrils[t].points[i + 1] = at - self.hand.unwrap_or(Vec3::ZERO);
                     self.tendrils[t].count = i as i32 + 2;
                     break;
                 }
@@ -1008,8 +1052,8 @@ impl ArcEmitter {
         self.tendrils[b].life = 1.0;
         let from = self.tendrils[t].points[index];
         let mut v = at - from;
-        if let Some(anchor) = self.anchor {
-            v -= anchor;
+        if let Some(hand) = self.hand {
+            v -= hand;
         }
         v *= (self.length * self.tendrils[t].life) / length(v);
         let phase = draws.unit() as f32;
@@ -1024,8 +1068,9 @@ impl ArcEmitter {
 
     /// One frame: the light, the hum, the ribbon and the light points.
     /// `alpha` is how far the next tick is, `eye` the camera's axis in the
-    /// emitter's frame, `fade` the node's fade, `to_world` the emitter's
-    /// frame placed in the world.
+    /// node's frame, `fade` the node's fade, `to_world` the node's frame
+    /// placed in the world (the light points are taken there). The ribbon
+    /// is in the node's frame.
     pub fn frame(
         &self,
         glow: &mut ArcGlow,
@@ -1041,9 +1086,10 @@ impl ArcEmitter {
                 ..ArcFrame::default()
             };
         }
-        let fill = (self.total as f32
-            / (i64::from(self.segments) * self.tendrils.len() as i64) as f32)
-            * 2.0;
+        // The share of points in use, divided and doubled in double.
+        let fill = (f64::from(self.total)
+            / (i64::from(self.segments) * self.tendrils.len() as i64) as f64
+            * 2.0) as f32;
         for light in &mut glow.lights {
             light.weight = 0.0;
             light.count = 1;
@@ -1057,7 +1103,7 @@ impl ArcEmitter {
             glow.light_flicker = ((draws.unit() - 0.5) * 0.5 + f64::from(f)) as f32;
             glow.light_flicker = glow.light_flicker.clamp(0.75, 1.2);
             out.light = if self.light_kind == ArcLight::Voxel {
-                (1.0 - fade) * self.light * fill * glow.light_flicker * 1.5
+                (1.0 - fade) * (self.light * fill * glow.light_flicker * 1.5)
             } else {
                 self.light * fill * glow.light_flicker
             };
@@ -1076,15 +1122,17 @@ impl ArcEmitter {
         let (ribbon, life_sum) = self.ribbon(glow, eye, &to_world);
         out.ribbon = ribbon;
         if self.light_kind == ArcLight::Points {
+            // A point under weight 1 leaves (the last takes its place);
+            // an unordered weight stays.
             let mut i = 0;
             while i < glow.lights.len() {
-                if 1.0 <= glow.lights[i].weight {
-                    i += 1;
-                } else {
+                if glow.lights[i].weight < 1.0 {
                     glow.lights.swap_remove(i);
+                } else {
+                    i += 1;
                 }
             }
-            out.light = (1.0 - fade) * life_sum * self.light;
+            out.light = (1.0 - fade) * (life_sum * self.light);
         }
         out
     }
@@ -1118,8 +1166,7 @@ impl ArcEmitter {
             indices: vec![0; capacity],
             ..ArcRibbon::default()
         };
-        let half = self.length * 0.2;
-        let offset = self.anchor.unwrap_or(Vec3::ZERO);
+        let half = (f64::from(self.length) * 0.2) as f32;
         let mut quads: i32 = 0;
         let mut life_sum = 0.0;
         for t in 0..self.tendrils.len() {
@@ -1137,7 +1184,7 @@ impl ArcEmitter {
             // The tendril's first point is drawn at its origin (the write
             // itself is [`Self::settle_origins`]).
             let origin = self.origin_point(self.tendrils[t].origin);
-            let root = origin + offset;
+            let root = origin;
             glow.light_point(to_world(root), 1.0);
             let mut b = Builder {
                 previous: root,
@@ -1153,25 +1200,32 @@ impl ArcEmitter {
             let mut narrow = rounded(life);
             quads += 2;
             b.half = narrow;
-            b.emit(hermite(&points, 1, 0.2) + offset, eye, &mut r, &mut quads);
+            b.emit(hermite(&points, 1, 0.2), eye, &mut r, &mut quads);
             r.clear_last_pair();
             quads -= 2;
-            b.u = (half / (narrow + self.width)) * 0.4 + self.tendrils[t].phase;
+            b.u = (f64::from(half / (narrow + self.width)) * 0.4
+                + f64::from(self.tendrils[t].phase)) as f32;
+            // The life narrowing the ribbon stops at 0 (an unordered one
+            // is kept).
+            let narrower = |life: f32| {
+                let life = life - step * 0.5;
+                if life < 0.0 { 0.0 } else { life }
+            };
             for i in 1..count {
-                life = (life - step * 0.5).max(0.0);
+                life = narrower(life);
                 narrow = rounded(life);
                 b.half = narrow;
-                b.emit(hermite(&points, i, 0.5) + offset, eye, &mut r, &mut quads);
+                b.emit(hermite(&points, i, 0.5), eye, &mut r, &mut quads);
                 b.u += half / (narrow + self.width);
-                life = (life - step * 0.5).max(0.0);
+                life = narrower(life);
                 narrow = rounded(life);
                 b.half = narrow;
-                let at = points[i] + offset;
+                let at = points[i];
                 b.emit(at, eye, &mut r, &mut quads);
                 glow.light_point(to_world(at), 1.0);
                 b.u += half / (narrow + self.width);
             }
-            b.emit(points[count - 1] + offset, eye, &mut r, &mut quads);
+            b.emit(points[count - 1], eye, &mut r, &mut quads);
             r.clear_last_pair();
             quads -= 2;
             let s = first_vertex;
@@ -1227,6 +1281,21 @@ pub const LOCAL_FRAME: u32 = 0x10;
 pub fn attach(node: &mut ArcNode) {
     node.flags |= HAS_CHILD;
     node.child = true;
+}
+
+impl ArcNode {
+    /// The node the electricity build makes for a new emitter, the emitter
+    /// attached to it ([`attach`], which the build calls on the emitter it
+    /// made). `parent_local_frame` when it will hang under a node that
+    /// keeps its own frame.
+    pub fn built(parent_local_frame: bool) -> Self {
+        let mut node = Self {
+            parent_local_frame,
+            ..Self::default()
+        };
+        attach(&mut node);
+        node
+    }
 }
 
 /// A node's 4×4 matrix as the scene stores it: three axis rows and the
@@ -1571,11 +1640,10 @@ mod tests {
     use super::super::engine::testing::Fixed;
     use super::*;
 
-    /// A sphere above 10 cm on the weapon starts a tendril there, turned by
-    /// the weapon's rotation. A quarter turn about vertical sends a point on
-    /// +z to +x.
+    /// A sphere above 10 cm on the weapon starts a tendril there, in the
+    /// weapon's frame: the weapon's rotation does not turn the start.
     #[test]
-    fn a_weapon_sphere_starts_turned_with_the_weapon() {
+    fn a_weapon_sphere_starts_in_the_weapons_frame() {
         use std::f32::consts::FRAC_PI_2;
 
         struct Still;
@@ -1596,9 +1664,10 @@ mod tests {
             .tendrils
             .iter()
             .find(|t| t.count == 2 && t.points[0].y > 10.0);
+        // The sphere stands in the weapon's body frame, the arcs' own: the
+        // tendril starts on it unturned and the frame turns it with the rest.
         let point = started.expect("a tendril").points[0];
-        let turned = arc.frame * Vec3::new(0.0, 20.0, 5.0);
-        assert!((point - turned).length() < 1e-4, "{point} {turned}");
+        assert_eq!(point, Vec3::new(0.0, 20.0, 5.0));
     }
 
     #[test]
@@ -1802,14 +1871,16 @@ mod tests {
     fn a_shock_points_from_the_world_mean_to_the_chest() {
         let mut draws = Fixed::new(&[0.5], &[1]);
         let mut arc = ArcEmitter::allocate(3, 5, 1.0);
-        arc.anchor = Some(Vec3::new(0.0, 0.0, 5.0));
+        arc.hand = Some(Vec3::new(0.0, 0.0, 5.0));
+        // Where the frame draws them does not move the tests.
+        arc.anchor = Some(Vec3::new(-15.0, -5.0, 5.0));
         let t = &mut arc.tendrils[0];
         t.count = 4;
         for k in 0..4 {
             t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
         }
         arc.bounds();
-        // The mean is in the world: the tendril's six, plus the anchor's z.
+        // The mean is in the world: the tendril's six, plus the hand's z.
         assert_eq!(arc.mean, Vec3::new(6.0, 0.0, 5.0));
         let limb = ArcLimb {
             character: 1,

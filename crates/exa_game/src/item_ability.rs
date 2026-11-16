@@ -567,6 +567,8 @@ pub(crate) fn ability_tick(
                                         weapon: None,
                                         caster: Some(character),
                                         keep: false,
+                                        node: crate::thaum::arcs::ArcNode::built(true),
+                                        offset: crate::thaum::arcs::HUM_ARCS_OFFSET,
                                     },
                                     ItemArcs {
                                         item: blade,
@@ -840,6 +842,8 @@ fn hit_hooks(
                         weapon: None,
                         caster: Some(blade.wielder),
                         keep: false,
+                        node: crate::thaum::arcs::ArcNode::built(true),
+                        offset: Vec3::ZERO,
                     },
                 ));
                 info!(

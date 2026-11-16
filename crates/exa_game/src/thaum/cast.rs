@@ -2920,6 +2920,8 @@ fn shock_weapon_hits(
                 weapon: None,
                 caster: Some(blade.wielder),
                 keep: false,
+                node: crate::thaum::arcs::ArcNode::built(true),
+                offset: Vec3::ZERO,
             },
         ));
     }
@@ -2948,6 +2950,8 @@ fn spawn_weapon_arcs(
                         weapon: Some(weapon.entity),
                         caster: Some(caster),
                         keep: false,
+                        node: crate::thaum::arcs::ArcNode::built(true),
+                        offset: Vec3::ZERO,
                     },
                 ))
                 .id()
@@ -2973,6 +2977,8 @@ fn spawn_hand_arcs(
                 weapon: None,
                 caster: Some(caster),
                 keep: false,
+                node: crate::thaum::arcs::ArcNode::built(false),
+                offset: Vec3::ZERO,
             },
         ))
         .id()
@@ -3359,6 +3365,8 @@ pub(crate) fn tick_casters(
                                     weapon: None,
                                     caster: Some(caster_entity),
                                     keep: false,
+                                    node: crate::thaum::arcs::ArcNode::built(false),
+                                    offset: Vec3::ZERO,
                                 },
                             ));
                             debug!("energy shock: the burst fires at the hand");
