@@ -121,6 +121,7 @@ pub mod object_click;
 pub mod option_forms;
 pub mod os_clipboard;
 pub mod os_pointer;
+pub mod pad_cursor;
 pub mod pad_menu;
 pub mod pair_trace;
 pub mod panel_live;

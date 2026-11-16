@@ -96,10 +96,12 @@ pub(crate) fn tick_player_practice(
         Option<&Animator>,
         Option<&mut CharacterData>,
         Option<&mut exa_ai::combatant::PlayerContacts>,
+        Option<&exa_combat::condition::StateFlags>,
     )>,
-    (mut story, mut frame): (
+    (mut story, mut frame, control): (
         Option<ResMut<crate::experience_live::StoryExperience>>,
         ResMut<exa_physics::sim_app::FrameCommands>,
+        Option<Res<crate::player_controls::PlayerControl>>,
     ),
     others: Query<
         (
@@ -114,8 +116,20 @@ pub(crate) fn tick_player_practice(
         Without<PlayerBody>,
     >,
 ) {
-    for (me, root, pb, mut kept, gt, (req, body), condition, swing, anim, mut record, shared) in
-        &mut players
+    for (
+        me,
+        root,
+        pb,
+        mut kept,
+        gt,
+        (req, body),
+        condition,
+        swing,
+        anim,
+        mut record,
+        shared,
+        flags,
+    ) in &mut players
     {
         let condition = condition.copied().unwrap_or_default();
         let at = gt.translation() * CM;
@@ -144,6 +158,11 @@ pub(crate) fn tick_player_practice(
                     )
                 })
                 .collect();
+        }
+        // The behaviour tick stops after its contacts while staggered or
+        // suspended: no practice.
+        if crate::player::behaviour_halted(control.as_deref(), flags) {
+            continue;
         }
         if let Some(mut swing) = swing {
             let clock = anim

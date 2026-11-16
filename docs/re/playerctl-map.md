@@ -176,3 +176,52 @@ aligns, and the snapshot at the end. Different:
 - The routine's answer (1 while it holds the mouse) makes the desk skip its
   own mouse-move processing (hover, drag start); Exarust's GUI reads the
   capture's pointer instead.
+
+## The playerbeh lane (roadmap B4): the behaviour's screen cursor, its gates
+
+Read in the assembly: the behaviour tick (4,192 B), its aim read
+(1,515 B), the aim point (1,478 B), the constructor, the look snap, the
+heading store, the death hook, the two frame-interpolation slots and the
+screen cursor's setter; the controls' mouse capture and the request's
+gates.
+
+| routine | bytes | before | after | evidence |
+|---|---|---|---|---|
+| Aim read, the pad's branch | part of 1,515 | partial: the world point eased | live: the screen cursor eased from the pointer by the AimSpeed factor toward the stick point's projection, the GUI's pointer the eased point rounded, the stick's let-go warp; during a capture the cursor let go and the stick latched (Cursor Look's follower turn by −0.04·x, the orbit's camera look) | `pad_cursor` tests |
+| Frame interpolation slots 19, 20 | 32 + 47 | uncalled | live: the step's post-step advances the pair, the frame draws it at the render fraction; the world cursor is drawn there | `pad_cursor` |
+| Screen cursor setter | 65 | n/a | live: the stick's first tick (the pointer) and the capture's release (the warp point) | `player` capture test |
+| Aim point | 1,478 | partial | partial: raise capped at the pelvis + 200 cm (the ledger's "ground" was wrong), the lock's root the target's pelvis part, its points the head part and the two foot-contact lower legs; the behaviour's cursor read takes it only during an Overhead Swing (action 12), the powers always | `player` tests |
+| Heading store (slot 23) | 64 | partial | live: the ground placement and the living placement call it; the follower rests at the placed raw cursor direction (the behaviour's stored direction is the raw cursor direction, not the heading) | `player` test |
+| Death hook (slot 25) | 52 | partial | live: the desk's GUI capture let go when the player dies | `player` test |
+| Constructor | 285 | partial | live: the team word's write is the arena match's `PLAYER_TEAM` for the player body; the follower vectors start at (0, 0, 1), Exarust's follower at the heading on the first read | — |
+| Behaviour tick | 4,192 | partial | partial: the shock-stagger (`0x100`) and disable-byte halt now stop the practice, steering, attack request and stance as the cast asks did; the ladder's dash and Head Pain inputs; the camera follow's capture and Interact gate | `player` tests |
+
+The capture: the pad's Look (`0x100000`) and camera-mode
+(`0x200000`) bits start and hold a capture like the keys; while the pad
+drives the screen cursor or its stick latched, a held capture saves the
+view and answers 1 without the mouse's work (Exarust's own "pad look ends
+the capture" branch, keyed on the camera stick, is gone); the release
+writes the screen cursor pair through the setter; the answer (1 while it
+holds, starts, releases or pins) makes the desk skip its mouse-move
+processing that frame (`gui_screens::screens_pointer` drops the move).
+The byte the aim read and the capture test is the binding table's first
+(the primary button's code), not a gamepad option. The global the
+gamepad reader and the aim read test is the capture's
+active flag: the reader's "raw-aim mode" is the capture (`read_pad`
+passes it).
+
+The request: Head Pain is action 45 (`0x2d`, the memory
+recall); the request is dropped (no key, after S's backwards flags) while
+it plays and while the hand's state is the GUI callback's (`0x40000`,
+which only the kinesis pick enters: `hand::Holding::Callback`, cleared by
+its release handler). The latch's start clock is read only by
+the request's own 700 ms compare, whose result is overwritten by the key
+segment test, and by the tick's dash branch, whose soft stop repeats the
+common one: no effect to port. A NaN cursor distance walks in the
+original (the unordered compare jumps to the walk), as Exarust does: the
+ledger's "the original runs" was wrong.
+
+Still open: the player's nearby gather and its room cell (TMotileAI's
+routines the tick calls); the tick's clear of a body word under the stagger
+(its reader is not traced); the head part's extent the aim lock adds; the
+AI tick's call of the look snap.

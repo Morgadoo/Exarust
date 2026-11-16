@@ -376,11 +376,12 @@ push word names (bit `0x8000` with the index in the low byte), directly.
 The player controls instead select the gameplay *layer*, which only
 becomes active while no form has the focus; popping the last form
 reselects that layer and primes its reader, rather than leaving the menus
-active (`gamepad::SetRegistry`, `gamepad::FocusStack`). While the
-camera stick looks (outside its dead zones), the mouse-look routine does
-not start, keep or end the mouse capture: the original's gamepad branch
-saves the view's basis and returns before the pointer code
-(`gamepad::look_takes_over`), and the chase camera takes the stick's turn.
+active (`gamepad::SetRegistry`, `gamepad::FocusStack`). The pad's `Look`
+and `CamMode` buttons start and hold the controls' mouse capture as the
+Cursor Look key and the orbit's button do. While the pad drives the
+screen cursor, or its aim stick moved during the capture, a held capture
+does none of the mouse's work: it saves the view's basis and answers
+that it took the mouse (`player::cursor_look`).
 
 | action | set | kind | default Bevy control |
 |---|---|---|---|
@@ -512,17 +513,24 @@ already down is not a press.
   tilts the camera steeper, the opposite of an upward mouse drag, and a
   full stick turns 0.075 rad of yaw a frame at 1920 pixels
   (`gamepad::look_turn`). AimSpeed plays no part.
-- **Aim.** `Aim`'s pair is turned into the camera's frame (in the
-  original's raw-aim mode it is stored as it is, and the player behaviour
-  then turns the camera with it by the same look rule). The player
-  behaviour takes the aim once its `z·z + x·x` is over 0.01: it puts the
-  cursor point `250·|aim| + 50` cm out along it and eases the screen
-  cursor there by `(0.4·AimSpeed + 0.1)²` a tick, the one place AimSpeed
-  acts. Exarust eases the world point by the same factor each behaviour
-  tick, starting from the mouse's point (`player::AimCursor`,
-  `player_behaviour::aim_factor`), and turns the combat aim to it; the
-  original eases the screen point and picks it on the aim plane, which
-  follows a slightly different path to the same point.
+- **Aim.** `Aim`'s pair is turned into the camera's frame, except while
+  the controls hold the mouse, when it is stored as it is. The player
+  behaviour's aim read (`pad_cursor`), each behaviour tick: outside a
+  capture, once the stick's `z·z + x·x` is over 0.01 it puts the cursor
+  point `250·|aim| + 50` cm out along it, 80 cm over the ground, and
+  eases a screen cursor toward that point's screen projection by
+  `(0.4·AimSpeed + 0.1)²` (double, then single) a tick, the one place
+  AimSpeed acts; the screen cursor starts from the pointer, and the GUI's
+  pointer is the eased point rounded, so the cursor's pick on the aim
+  plane reads it. A stick back under the engine's epsilon lets the screen
+  cursor go and warps the pointer to the eased point. Each step's
+  post-step moves the eased point into a previous/current pair and each
+  frame draws the pair at the render fraction: the world cursor is drawn
+  there. During a capture the screen cursor is let go (the pointer warped
+  to its drawn point) and a moving stick latches until the capture ends:
+  under Cursor Look it turns the cursor follower's target by `−0.04·x` a
+  tick and aligns the camera behind the raw cursor direction; under the
+  orbit the pair turns the camera by the camera stick's look rule.
 - **Zoom.** While `Zoom_In` is held the stepped camera takes ten zoom
   steps a frame, `Zoom_Out` minus ten, applied in that order and each held
   in the zoom range: a step is `(steps × 0.008333334) × stop`, the stop
@@ -575,9 +583,8 @@ the guard (or Cmbt - Idle) while no attack plays, as with the keyboard.
 `WepSwp` swaps the weapon sets. `Combat` (bit `0x1` of the command word)
 turns combat mode on and off, as the controls' per-frame pad routine does,
 with no gate of its own. Exarust's default puts it on R3, the button that
-shares nothing with the emulated left button; `Look` (Cursor Look, a held
-bit nothing reads on a pad) shares R3. The aim stick sets the combat
-aim, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` turns it.
+shares nothing with the emulated left button; `Look` (Cursor Look's
+capture) shares R3. The aim stick drives the screen cursor, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` turns it.
 `Select` outside a dialogue confirms the end-of-session menu's selected
 row while that menu shows, as the pad routine's call into the end menu
 does (its random-pitch click sound is not played: Exarust's end menu has
@@ -1327,15 +1334,19 @@ request), the rest are tested functions with no caller yet:
   (`width·scale·0.5·80 / depth`) the aim height is that point's, within
   twice it the two blend by `(d − r)/r`. Without a target
   the point the cursor's pick meets replaces it when it is above the
-  plane's point and under the ground plus 200 cm
+  plane's point and under the player's pelvis plus 200 cm
   (`aim_lock_bones`, `bone_screen`, `bone_lock_radius`, `aim_raised`).
   `player::cursor_ground` runs it each frame: the auto-target's opponent
-  gives the reference point (its chest) and three of its part origins —
-  the head, the belly and the pelvis, a stand-in for the original's own
-  three aim points — and the pixel radius uses the window's width and the
-  projection's x scale. The raised point comes from the level's fixed
-  colliders along the cursor's ray (the original's navigation pick also
-  admits marked non-solid nodes).
+  gives the reference point (its pelvis part) and, in order, its head
+  part and the two lower legs that carry its feet's contacts (the
+  original moves the head part's point up its axis by an extent of the
+  part; Exarust takes the part's origin), and the pixel radius uses the
+  window's width and the projection's x scale. The raised point comes
+  from the level's fixed colliders along the cursor's ray (the original's
+  navigation pick also admits marked non-solid nodes). The powers aim
+  with this point; the behaviour's own cursor read (the steering, the
+  combat facing) takes it only during an Overhead Swing, and otherwise
+  the plain plane point (`player::CursorPlane`).
 - **Contacts.** Every character within 12 m, rebuilt each tick: closeness
   `1 − d·0.00083333335` capped at 0.99, facing weight `0.75·(0.5 −
   0.5·facing·dir) + 0.25·(0.5 − 0.5·cursor·dir)²` (`dir` from the other
@@ -1384,17 +1395,31 @@ request), the rest are tested functions with no caller yet:
   from zero (so a zero, negative or NaN score never wins), the first on a
   tie; the target is dropped when it dies, and the stance picks 3
   (Defence) or 4 (Cmbt - Idle) from it (350 cm × the target's scale, or
-  3 s since the player's attack, and the energy within 0.05 of the most)
+  3 s since the player's attack, and the energy within 0.05 of the most;
+  in a parry's clinch the body's own stance is kept)
   (`auto_target`; the stance rule is `exa_combat::stance::player_stance`).
 - **Look.** Strictly over 30° (the single 30 times the single degree)
   between the look and the cursor's direction, the gap wrapped into ±π in
   double precision, the look snaps to the cursor's direction
   (`look_snaps`). When the camera follows the body, a camera yaw more than
   0.1π from the body's is put back to the body's yaw 0.1π on the camera's
-  side, wrapped into ±π; within it nothing changes (`camera_follow_yaw`). The cursor
+  side, wrapped into ±π; within it nothing changes (`camera_follow_yaw`).
+  The follow step waits while the controls hold the mouse and, in combat
+  mode, while Interact is held. The cursor
   follower itself is the same second-order one as the steering's
   (`steering::CursorFollower`: error clamped to ±π/2, speed
-  `(speed + 0.015708·error)·0.7`, a speed under 1e-5 still).
+  `(speed + 0.015708·error)·0.7`, a speed under 1e-5 still). A placement
+  of the body (on the ground, at a frame) calls the behaviour's heading
+  store: the follower rests at the placed cursor direction.
+- **Halts and drops.** While a shock staggers the body (state flag
+  `0x100`) or the block pair suspends the behaviour, its tick stops after
+  the contact list: no practice, steering, attack request or stance. The
+  movement request is dropped (read as no key, after the backwards flags)
+  while the body plays Head Pain (action 45, a memory's recall) and while
+  the kinesis pick holds the press (the hand's GUI callback drag); Head
+  Pain also keeps the combat mode under the right button, and walking
+  faster than 2 cm a tick takes the ladder's dash branch. The player's
+  death lets the desk's GUI capture go.
 - **On screen.** The living character whose point shows nearest the cursor.
 
 ## The combat stance

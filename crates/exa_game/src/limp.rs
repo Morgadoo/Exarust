@@ -686,6 +686,7 @@ fn place_on_ground(
         Option<&mut Locomotor>,
         Option<&exa_combat::Fighter>,
         Option<&mut Locomotion>,
+        Option<&mut crate::player::PlayerBody>,
     )>,
     mut stages: Option<ResMut<exa_physics::body::SolverStages>>,
 ) {
@@ -713,7 +714,7 @@ fn place_on_ground(
         let routing = states
             .get(root)
             .ok()
-            .map(|(c, m, f, _)| PlacementRouting::of(&body, c, m, f));
+            .map(|(c, m, f, ..)| PlacementRouting::of(&body, c, m, f));
         if let Some(r) = routing {
             info!(
                 "ground placement {root:?}: routed by femur posture {:?}, twist {:.1} deg, feral {:.2}",
@@ -740,13 +741,17 @@ fn place_on_ground(
         }
         // The placement's facing, from the frame's forward: the heading
         // normalised approximately and its yaw by the original's arc cosine.
-        if let Ok((_, Some(mut motor), _, Some(mut req))) = states.get_mut(root) {
+        if let Ok((_, Some(mut motor), _, Some(mut req), player)) = states.get_mut(root) {
             let was = motor.yaw;
             motor.face(&mut req, Vec3::from(floor.matrix3.z_axis));
             debug!(
                 "ground placement {root:?}: facing yaw {:.6} rad (was {was:.6})",
                 motor.yaw
             );
+            // The placement then calls the behaviour's heading store.
+            if let Some(mut player) = player {
+                player.placed(req.desired);
+            }
         }
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
         // The Height Query in its mesh mode, as a grid scene's is: the body
@@ -911,6 +916,7 @@ fn place_living(
         Option<&mut Locomotor>,
         Option<&exa_combat::Fighter>,
         Option<&mut Locomotion>,
+        Option<&mut crate::player::PlayerBody>,
     )>,
 ) {
     for (root, placement, mut body, parent) in &mut asked {
@@ -923,7 +929,7 @@ fn place_living(
         let routing = states
             .get(root)
             .ok()
-            .map(|(c, m, f, _)| PlacementRouting::of(&body, c, m, f));
+            .map(|(c, m, f, ..)| PlacementRouting::of(&body, c, m, f));
         let posed = posed_parts(
             root,
             entities.into_iter(),
@@ -963,8 +969,12 @@ fn place_living(
         if let Ok(mut model) = writes.get_mut(root) {
             model.rotation = turn_about.inverse() * turn;
         }
-        if let Ok((_, Some(mut motor), _, Some(mut req))) = states.get_mut(root) {
+        if let Ok((_, Some(mut motor), _, Some(mut req), player)) = states.get_mut(root) {
             motor.placed(&mut req, Vec3::from(frame.matrix3.z_axis));
+            // The placement then calls the behaviour's heading store.
+            if let Some(mut player) = player {
+                player.placed(req.desired);
+            }
         }
         if !body.place_living(frame, &posed, pelvis) {
             continue;
