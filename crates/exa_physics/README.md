@@ -64,7 +64,8 @@ simulation runs on its own thread as the original's does
 `step_driver` (more than four steps late drops the backlog), asleep 11 ms a
 pass while the frame's packets say it is held (`SimPause`: the loading
 screen, the menus, the splash, the creator, a paused game
-clock; the paused time stays out of its clock), the frame's packets
+clock, a staging's raise of the pause counter, which also holds the
+lockstep fixed loop; the paused time stays out of its clock), the frame's packets
 drained before each step (its changes, its writes and posted calls, Bevy's
 messages updated at most once a step) and a packet stamped with the step's
 tick and time (`FreeStamp`) sent after it. Its `Time` and `Time<Fixed>`
