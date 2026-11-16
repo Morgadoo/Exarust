@@ -67,8 +67,8 @@ use exa_formats::character_stats::BodyRules;
 use exa_formats::characters::Perk;
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{
-    BodyPostStep, BodyPreStep, BodySystems, BodyTicks, CharacterStage, CharacterTick, Fallen,
-    GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
+    BodyPostStep, BodyPreStep, BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE,
+    Ragdoll, Shove, daze_energy,
 };
 use exa_physics::part::{PART_SOUND_SPREAD_MS, part_sound_ready};
 use exa_world::PartBounds;
@@ -149,9 +149,11 @@ impl Plugin for CombatPlugin {
                         .after(swing::run_swings)
                         .run_if(condition::ticked_lives),
                     // The body tick's fade of the held voices on a tick
-                    // that is not an attack.
+                    // that is not an attack. Both write the voice cues:
+                    // the fade's come first in the queue.
                     swing_voice::fade_swing_voices
                         .in_set(CharacterStage::Attack)
+                        .before(swing::run_swings)
                         .run_if(condition::ticked_lives),
                 ),
             )
@@ -183,10 +185,15 @@ impl Plugin for CombatPlugin {
                 FixedUpdate,
                 (
                     track_blades
-                        .after(BodySystems)
+                        .in_set(exa_physics::body::AfterSolver::Strikes)
+                        .after(burn::take_particle_doses)
                         .before(block::strike_held)
                         .before(impact::strike_limbs),
-                    block::trace_held_weapons.after(track_blades),
+                    block::trace_held_weapons
+                        .in_set(exa_physics::body::AfterSolver::Strikes)
+                        .after(track_blades)
+                        .before(bite::log_broken_bites)
+                        .before(impact::strike_limbs),
                     (detect_hits, react_to_hits, bite::open_bites)
                         .chain()
                         .in_set(CombatSystems)
@@ -203,7 +210,8 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 FixedUpdate,
                 burn::take_particle_doses
-                    .after(BodySystems)
+                    .in_set(exa_physics::body::AfterSolver::Strikes)
+                    .before(bite::log_broken_bites)
                     .before(BodyPostStep),
             )
             .configure_sets(FixedUpdate, CombatSystems.in_set(BodyPostStep));
@@ -764,7 +772,7 @@ pub(crate) fn track_blades(
 }
 
 #[allow(clippy::type_complexity)]
-fn detect_hits(
+pub fn detect_hits(
     motions: Option<Res<Motions>>,
     blades: Query<(
         Entity,
@@ -993,7 +1001,7 @@ enum StrikerReaction {
 /// the striker's swing: a wound cleaves on or bogs down, a guard or a body
 /// that turns blows (state flag `StateFlags::TURNS_BLOWS`) recoils it.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn react_to_hits(
+pub fn react_to_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
     mut shoves: MessageWriter<Shove>,
