@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r244, 11-16) | target |
+| measure | start (r186, 11-10) | now (r247, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **54.31%** | **100%** |
+| **Ledger: bytes in a final state** | — | **55.13%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 312 of 2,818 (11%) | 100% |
+| Live rows with scene or retail evidence | — | 314 of 2,858 (10%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,840 | all |
+| Tests passing | 8,489 | 8,863 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -102,19 +102,19 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | UI | 12 | 12 | 380 | 150,606 |
 | Rendering & GPU | 10 | 10 | 293 | 149,713 |
 | Thaumaturgy & effects | 9 | 9 | 166 | 118,695 |
-| AI & behaviour | 8 | 8 | 161 | 108,266 |
-| Characters, motion & animation | 8 | 8 | 236 | 107,315 |
-| Game modes, arena & session | 7 | 7 | 212 | 88,970 |
+| Characters, motion & animation | 8 | 8 | 234 | 107,087 |
+| AI & behaviour | 8 | 8 | 152 | 104,455 |
 | World, levels & terrain | 5 | 5 | 168 | 87,048 |
-| Items, materials & crafting | 5 | 5 | 154 | 73,889 |
-| Data, assets & I/O | 6 | 6 | 142 | 44,244 |
+| Game modes, arena & session | 7 | 7 | 199 | 81,424 |
+| Items, materials & crafting | 5 | 5 | 141 | 65,038 |
+| Data, assets & I/O | 6 | 6 | 140 | 44,077 |
 | Runtime & platform | 5 | 5 | 70 | 20,869 |
-| Core, math & threading | 3 | 3 | 81 | 15,794 |
+| Core, math & threading | 3 | 3 | 80 | 15,688 |
 | Script, dialogue & story | 2 | 2 | 30 | 7,213 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,269** | **1,146,670** |
+| **Total** | **90** | **90** | **2,229** | **1,125,961** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 245–247 | The item GUI draws from the frame's engine generator, a cross-panel drop makes a local copy, the socket row answers its drag-over (itemgui2). The arena's won items are instances, the board's Choose button opens the event lineup, the in-game EXIT from the arena saves and leaves (arena2). The NPC search's executors, leader and comments follow the original, F378 fixed (aisearch). Stacked, the rounds needed four test setups updated for the shared generator. Scenes owed (GPU on hold). |
 | 2026-11-16 | 243–244 | The weapon switch is queued and the sets swap at the clip's 60% point for every body; the two hands are grouped each tick; the posture arms compared (a shock now ends) (motiledyn3). The combat state's down exit, the follower called back to its leader, the route's mode word and leader point, the flight's soft stop, the walking head's look (motileai2). F544 opened: the original's practice and arena staging may freeze the AI states. Scenes owed (GPU on hold). |
 | 2026-11-16 | 242 | The level's cloths run inside the bodies' tick at the original's points: the body takes its share of a cloth's push inside the solver, grabs are grab records, normal-mapped cloths rebuild their tangents, the cloth grid is the scene grid (clothbody); a follow-up brought the stage's CPU cost back to the base on the game's path. Scenes and an FPS check owed (GPU on hold). |
 | 2026-11-16 | 241 | The inventory character view's equipment side: a bound body's trust follows drags and drops (F278 fixed), script HasItem answers (it always answered no), the full shield take, the swap gate and the page buttons, the arsenal's keys (charview; F281, F282 fixed). Grid scenes owed (GPU on hold). |

@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 54.3% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 55.1% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **54.3% closed**, of which 42.5% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 37.8% partial and 7.9% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **55.1% closed**, of which 43.3% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 37.1% partial and 7.8% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -21,18 +21,18 @@ The first two percentages are the estimate; the next six come from the ledger (c
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 38% | 19% | 2% | 32% | 9% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 52% | 44% | 7% | 2% | 34% | 13% |  |
+| Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 53% | 44% | 7% | 2% | 34% | 13% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 56% | 39% | 15% | 2% | 36% | 8% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 51% | 45% | 4% | 3% | 37% | 12% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 32% | 31% | 1% | 0% | 58% | 10% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
-| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 48% | 45% | 2% | 1% | 44% | 7% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 49% | 46% | 1% | 2% | 49% | 2% |  |
+| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 55% | 51% | 2% | 1% | 39% | 6% | TArsenalContFrame |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 50% | 48% | 1% | 2% | 47% | 2% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 61% | 59% | 1% | 0% | 37% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 4% |  |
-| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 55% | 53% | 2% | 0% | 38% | 7% |  |
+| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 59% | 57% | 2% | 0% | 35% | 6% |  |
 | UI | 959 | 312 | 63 | 86% | 0% | 53% | 43% | 1% | 9% | 31% | 16% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
@@ -136,7 +136,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Program main (Exanima.lpr) | Runtime & platform | 1 | 37% | 35% | 0% | 35% | 0% | 57% | 8% |
 | FPC Math helpers (FPC SysUtils by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | Windows-unit global memory helpers (FPC RTL: exeinfo (module info for backtraces) by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| FLX_System | Core, math & threading | 12 | 79% | 55% | 17% | 38% | 0% | 20% | 25% |
+| FLX_System | Core, math & threading | 12 | 79% | 56% | 18% | 38% | 0% | 20% | 24% |
 | RFT_BoundSphere | Core, math & threading | 8 | 95% | 54% | 54% | 0% | 0% | 46% | 0% |
 | Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 97% | 38% | 32% | 6% | 0% | 59% | 3% |
 | Core string/number formatting utilities | Core, math & threading | 4 | 94% | 89% | 78% | 4% | 6% | 9% | 2% |
@@ -147,7 +147,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Bounding-sphere vector helpers (FLX_Entities by address) | Core, math & threading | 0 | 90% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TThread@FLX_System | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | TThread@RF_OS_Functions | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| SG_ObjectDB2 | Data, assets & I/O | 19 | 96% | 59% | 53% | 2% | 4% | 25% | 16% |
+| SG_ObjectDB2 | Data, assets & I/O | 19 | 96% | 60% | 54% | 2% | 4% | 25% | 15% |
 | RF_Import_RFC2 | Data, assets & I/O | 17 | 83% | 89% | 84% | 1% | 4% | 9% | 2% |
 | FLX_Content_Stream | Data, assets & I/O | 12 | 84% | 32% | 27% | 4% | 0% | 62% | 6% |
 | RFE_Export_RFC2 | Data, assets & I/O | 11 | 90% | 23% | 18% | 0% | 5% | 75% | 2% |
@@ -282,7 +282,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TMotilePart | Characters, motion & animation | 53 | 86% | 63% | 63% | 1% | 0% | 32% | 5% |
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | 20% | 18% | 2% | 0% | 68% | 12% |
 | RF_Skinning | Characters, motion & animation | 25 | 91% | 49% | 44% | 5% | 0% | 49% | 2% |
-| SG_Character_Data | Characters, motion & animation | 20 | 97% | 72% | 68% | 1% | 2% | 12% | 16% |
+| SG_Character_Data | Characters, motion & animation | 20 | 97% | 73% | 69% | 1% | 2% | 12% | 16% |
 | RF_Morphing | Characters, motion & animation | 16 | 80% | 51% | 18% | 0% | 33% | 43% | 6% |
 | FLX_Character_Textures | Characters, motion & animation | 8 | 83% | 17% | 14% | 3% | 0% | 81% | 2% |
 | TSkinController2 | Characters, motion & animation | 8 | 81% | 39% | 6% | 34% | 0% | 47% | 14% |
@@ -305,12 +305,12 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TWeaponBlood | Combat, weapons & damage | 2 | 85% | 20% | 20% | 0% | 0% | 80% | 0% |
 | RFE_Effects_Blood | Combat, weapons & damage | 1 | 80% | 41% | 32% | 9% | 0% | 59% | 0% |
 | TBloodSprays | Combat, weapons & damage | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 64% | 63% | 0% | 0% | 30% | 6% |
+| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 85% | 85% | 0% | 0% | 9% | 6% |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
-| Item description phrases | Items, materials & crafting | 16 | 86% | 70% | 64% | 2% | 3% | 29% | 1% |
-| SG_ItemGUI | Items, materials & crafting | 15 | 84% | 52% | 46% | 2% | 4% | 29% | 18% |
-| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 15% | 14% | 0% | 0% | 78% | 7% |
-| FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 19% | 17% | 2% | 0% | 53% | 28% |
+| Item description phrases | Items, materials & crafting | 16 | 86% | 71% | 65% | 2% | 3% | 29% | 0% |
+| SG_ItemGUI | Items, materials & crafting | 15 | 84% | 67% | 61% | 2% | 4% | 21% | 13% |
+| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 16% | 16% | 0% | 0% | 78% | 6% |
+| FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 26% | 25% | 2% | 0% | 46% | 28% |
 | TProcMaterial | Items, materials & crafting | 6 | 79% | 0% | 0% | 0% | 0% | 91% | 9% |
 | Item variant & condition randomisers (FLX_Character_Textures by address) | Items, materials & crafting | 5 | 84% | 55% | 54% | 1% | 0% | 45% | 0% |
 | TItemGUIManager | Items, materials & crafting | 4 | 62% | 26% | 15% | 7% | 4% | 48% | 27% |
@@ -350,7 +350,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TPathFinder | AI & behaviour | 32 | 91% | 49% | 49% | 0% | 0% | 48% | 3% |
 | TPlayerBehaviour | AI & behaviour | 17 | 99% | 55% | 52% | 3% | 0% | 45% | 0% |
 | TCombatant | AI & behaviour | 17 | 97% | 67% | 60% | 0% | 8% | 28% | 4% |
-| TAISearchActivity | AI & behaviour | 16 | 90% | 42% | 38% | 4% | 0% | 57% | 1% |
+| TAISearchActivity | AI & behaviour | 16 | 90% | 65% | 61% | 4% | 0% | 34% | 1% |
 | Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 39% | 36% | 3% | 0% | 55% | 5% |
 | SG_CharacterAI | AI & behaviour | 5 | 88% | 11% | 9% | 3% | 0% | 89% | 0% |
 | TCharViewBehaviour | AI & behaviour | 0 | 70% | 0% | 0% | 0% | 0% | 100% | 0% |
@@ -460,17 +460,17 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TJournal | Script, dialogue & story | 0 | 78% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TScriptActor | Script, dialogue & story | 0 | 80% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TScriptClass | Script, dialogue & story | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
-| XA_Arena | Game modes, arena & session | 71 | 96% | 70% | 68% | 2% | 0% | 26% | 4% |
+| XA_Arena | Game modes, arena & session | 71 | 96% | 74% | 72% | 2% | 0% | 23% | 3% |
 | XA_SaveGames | Game modes, arena & session | 27 | 96% | 51% | 48% | 3% | 0% | 46% | 3% |
 | SG_GameMain | Game modes, arena & session | 20 | 87% | 57% | 56% | 2% | 0% | 36% | 6% |
-| TMatchBoard | Game modes, arena & session | 17 | 90% | 45% | 44% | 1% | 0% | 55% | 0% |
+| TMatchBoard | Game modes, arena & session | 17 | 90% | 63% | 62% | 1% | 0% | 37% | 0% |
 | SG_Character_Create | Game modes, arena & session | 17 | 86% | 34% | 31% | 3% | 0% | 40% | 26% |
 | TLoadoutForm | Game modes, arena & session | 7 | 85% | 12% | 12% | 0% | 0% | 87% | 1% |
 | XA_ExperienceSys | Game modes, arena & session | 6 | 85% | 56% | 53% | 3% | 0% | 28% | 16% |
 | TDivCardForm | Game modes, arena & session | 5 | 91% | 25% | 25% | 0% | 0% | 74% | 2% |
 | SG_TradeSystem | Game modes, arena & session | 4 | 80% | 75% | 72% | 3% | 0% | 24% | 2% |
 | TCharCreation | Game modes, arena & session | 3 | 62% | 1% | 0% | 1% | 0% | 71% | 28% |
-| XA_Arena save and rank helpers (TMatchBoard by address) | Game modes, arena & session | 3 | 86% | 43% | 43% | 0% | 0% | 0% | 57% |
+| XA_Arena save and rank helpers (TMatchBoard by address) | Game modes, arena & session | 3 | 86% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TClassSelect | Game modes, arena & session | 3 | 80% | 28% | 28% | 0% | 0% | 72% | 0% |
 | TShopWindow | Game modes, arena & session | 2 | 95% | 96% | 96% | 0% | 0% | 4% | 0% |
 | SG_SaveWorld | Game modes, arena & session | 2 | 92% | 100% | 95% | 5% | 0% | 0% | 0% |
