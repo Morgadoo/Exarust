@@ -132,8 +132,9 @@ impl DeviceSound {
     }
 }
 
-/// An object was let go off this device's slot point (within
-/// [`teleporters::SLOT_RELEASE_SQUARED_CM`] of it), from the grab code.
+/// An item a lock held at this device's slot point (within
+/// [`teleporters::SLOT_RELEASE_SQUARED_CM`] of it) left it: the hand's
+/// drop scripts ([`crate::item_cursor::drop_scripts_at`]).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotReleased {
     pub device: Entity,
@@ -660,30 +661,45 @@ fn release_from_slots(
     let Some(items) = items.as_mut() else {
         return;
     };
-    if items.released_cm.is_empty() {
+    if items.script_points_cm.is_empty() {
         return;
     }
     // The points the hand queued, taken here and dropped from the frame's
     // own queue (which may have grown since) after the step.
-    let n = items.released_cm.len();
+    let n = items.script_points_cm.len();
     let points = frame.write_resource(items, move |items| {
         items
-            .released_cm
-            .drain(..n.min(items.released_cm.len()))
+            .script_points_cm
+            .drain(..n.min(items.script_points_cm.len()))
             .collect::<Vec<_>>()
     });
-    for device in &devices {
-        let Some(slot) = find_slot_entity(device, &children, &names) else {
-            continue;
-        };
-        let Ok(at) = transforms.get(slot) else {
-            continue;
-        };
-        let slot_cm = at.translation() * 100.0;
-        if points
-            .iter()
-            .any(|point| teleporters::released_from_slot(slot_cm, *point))
-        {
+    // The drop scripts: every object closer than 5 cm² to the point runs
+    // its scripts, in scene order; a device's is the power-down. The
+    // device's object stands at its slot point here.
+    let slots: Vec<(Entity, Vec3)> = devices
+        .iter()
+        .filter_map(|device| {
+            let slot = find_slot_entity(device, &children, &names)?;
+            let at = transforms.get(slot).ok()?;
+            Some((device, at.translation() * 100.0))
+        })
+        .collect();
+    let objects: Vec<crate::player_controls::ScriptObject> = slots
+        .iter()
+        .enumerate()
+        .map(|(i, &(_, at))| crate::player_controls::ScriptObject {
+            at,
+            object: i as u32 + 1,
+        })
+        .collect();
+    let mut hit = vec![false; slots.len()];
+    for point in points {
+        for object in crate::player_controls::nearby_scripts(point, objects.iter().copied()) {
+            hit[object as usize - 1] = true;
+        }
+    }
+    for (&(device, _), hit) in slots.iter().zip(hit) {
+        if hit {
             released.write(SlotReleased { device });
         }
     }
@@ -860,13 +876,140 @@ mod tests {
         app.world_mut().resource_mut::<Latch>().begin(1);
         app.world_mut()
             .resource_mut::<crate::item_cursor::ItemCursor>()
-            .released_cm
+            .script_points_cm
             .push(Vec3::new(100.0, 0.0, 0.0));
         app.update();
         assert_eq!(
             app.world().resource::<Latch>().phase,
             exa_world::teleporters::LatchPhase::Idle
         );
+    }
+
+    fn ball_body(at: Vec3) -> exa_physics::body::Ragdoll {
+        exa_physics::body::Ragdoll::rigid(&[exa_physics::body::RigidPart {
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::from_translation(at),
+            rest: [
+                Vec3::new(-0.2, 0.0, -0.2),
+                Vec3::new(0.2, 0.0, -0.2),
+                Vec3::new(0.0, 0.0, 0.2),
+                Vec3::new(0.0, 0.4, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: bevy::math::Affine3A::IDENTITY,
+            mobility: 1.0,
+            spheres: vec![(Vec3::ZERO, 0.2)],
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: None,
+            triangles: None,
+        }])
+    }
+
+    /// A cube of half side `h` about the origin, two triangles a face,
+
+    /// The live hand: an item the press took off the device's slot lock is
+    /// put down elsewhere; its release runs the drop scripts at the lock's
+    /// spot and the device there powers down. Put back on the same spot
+    /// (relocked within 5 cm²) it runs none.
+    #[test]
+    fn taking_the_crystal_off_the_slot_powers_the_device_down() {
+        use crate::control_nodes::Frame;
+        use crate::hand::{Hand, Holding};
+        use crate::item_cursor::{HeldItem, ItemCursor};
+        let run = |relock: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<ButtonInput<MouseButton>>()
+                .init_resource::<crate::bindings::Bindings>()
+                .init_resource::<Hand>()
+                .init_resource::<ItemCursor>()
+                .init_resource::<Time<Real>>()
+                .init_resource::<exa_ui::ScriptedPointer>()
+                .init_resource::<exa_physics::prop::StandIns>()
+                .init_resource::<exa_physics::ColliderNodes>()
+                .init_resource::<exa_physics::collision_share::FramePhysics>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .init_resource::<exa_physics::sim_app::FrameCommands>()
+                .init_resource::<Latch>()
+                .init_resource::<crate::flow::Flow>()
+                .add_message::<crate::hand::WorldClick>()
+                .add_message::<crate::object_click::ObjectClick>()
+                .add_message::<SlotReleased>()
+                .add_message::<DeviceSound>()
+                .add_systems(
+                    Update,
+                    (
+                        crate::hand::hold_hand,
+                        release_from_slots,
+                        power_down_devices,
+                    )
+                        .chain(),
+                );
+            let slot_at = Vec3::new(1.0, 0.5, 0.0);
+            let slot = app
+                .world_mut()
+                .spawn((
+                    Name::new("[slot"),
+                    Transform::from_translation(slot_at),
+                    GlobalTransform::from(Transform::from_translation(slot_at)),
+                ))
+                .id();
+            let device = app
+                .world_mut()
+                .spawn((
+                    TeleportDevice {
+                        kind: operative::RES_DEVICE,
+                        operative: operative(operative::RES_DEVICE),
+                    },
+                    Transform::default(),
+                    GlobalTransform::default(),
+                ))
+                .id();
+            app.world_mut().entity_mut(slot).insert(ChildOf(device));
+            app.world_mut().resource_mut::<Latch>().begin(1);
+            let put = if relock {
+                slot_at
+            } else {
+                Vec3::new(3.0, 0.5, 2.0)
+            };
+            let item = app.world_mut().spawn(ball_body(put)).id();
+            app.world_mut()
+                .resource_mut::<ItemCursor>()
+                .begin(HeldItem {
+                    body: item,
+                    part: 0,
+                    saved: vec![bevy::math::Affine3A::from_translation(slot_at)],
+                    saved_frame: Frame::new(slot_at, Mat3::IDENTITY),
+                    shown: Frame::new(put, Mat3::IDENTITY),
+                    centre: Vec3::ZERO,
+                    half: Vec3::splat(0.2),
+                    target: put,
+                    last: Some(Frame::new(put, Mat3::IDENTITY)),
+                    item: 0,
+                    model: 0,
+                    from_lock: Some(slot_at),
+                });
+            // Relocked: the cursor left it on the slot's lock marker.
+            if relock {
+                app.world_mut().resource_mut::<ItemCursor>().hover = crate::item_cursor::HOVER_LOCK;
+            }
+            app.world_mut().resource_mut::<Hand>().holding = Holding::Lift;
+            {
+                let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+                buttons.press(MouseButton::Left);
+                buttons.clear();
+                buttons.release(MouseButton::Left);
+            }
+            // A relock is a release out of reach onto the lock marker.
+            app.world_mut().resource_mut::<Hand>().out_of_reach = relock;
+            app.update();
+            assert_eq!(app.world().resource::<Hand>().holding, Holding::Nothing);
+            app.world().resource::<Latch>().phase
+        };
+        assert_eq!(run(false), exa_world::teleporters::LatchPhase::Idle);
+        assert_ne!(run(true), exa_world::teleporters::LatchPhase::Idle);
     }
 
     fn operative(kind: u8) -> Operative {

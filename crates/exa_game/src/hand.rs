@@ -1455,6 +1455,17 @@ fn lift(
     at: Vec3,
     ids: (u32, u32),
 ) -> Option<HeldItem> {
+    // A frozen object is one a lock holds: the press keeps where its node
+    // stood for the release's relock and drop scripts.
+    let from_lock = ragdoll
+        .frozen()
+        .then(|| {
+            ragdoll
+                .parts
+                .get(part)
+                .map(|p| Vec3::from(p.transform().translation))
+        })
+        .flatten();
     if ragdoll.frozen() {
         ragdoll.freeze(false);
     }
@@ -1499,6 +1510,7 @@ fn lift(
         last: Some(saved_frame),
         item: ids.0,
         model: ids.1,
+        from_lock,
     })
 }
 
@@ -2666,8 +2678,27 @@ fn end_lift(
         return;
     };
     // The lift cancel (the combat toggle's) puts the item back whatever
-    // the cursor's hover word says.
-    let outcome = outcome.unwrap_or(released);
+    // the cursor's hover word says, and neither relocks it nor runs the
+    // drop scripts. A release that puts back an item the press took off a
+    // lock locks it again there (the release's lock word).
+    let cancel = outcome.is_some();
+    let mut outcome = outcome.unwrap_or(released);
+    let relock_back = !cancel && held.from_lock.is_some() && outcome == Release::PutBack;
+    if !cancel {
+        let relocked = outcome == Release::Lock || relock_back;
+        let placed = if relock_back {
+            held.from_lock.unwrap_or(held.shown.position)
+        } else {
+            held.shown.position
+        };
+        if let Some(spot) = item_cursor::drop_scripts_at(held.from_lock, relocked, placed) {
+            info!("hand: the lifted item leaves its lock; drop scripts at {spot:.1?} cm");
+            items.script_points_cm.push(spot);
+        }
+    }
+    if relock_back {
+        outcome = Release::Lock;
+    }
     // The let-go queues the held node's box, at the frame the lift saved,
     // for the grid's refresh: the floor the item stood on is refreshed.
     if let Some(&at) = held.saved.get(held.part) {
@@ -2680,7 +2711,6 @@ fn end_lift(
     let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body) else {
         return;
     };
-    items.released_cm.push(held.shown.position * 100.0);
     info!(
         "hand: the lift ends ({outcome:?}) at {:.1?} cm",
         held.shown.position * 100.0
@@ -2689,6 +2719,10 @@ fn end_lift(
     let probe = saved.get(held.part).copied();
     fixed.write(held.body, &mut ragdoll, move |ragdoll| {
         ragdoll.release_grab();
+        if relock_back {
+            // The saved pose back, then the lock's freeze there.
+            ragdoll.place_at(&saved);
+        }
         match outcome {
             Release::Lock => {
                 // The original's lock: the node's locked flag, then the

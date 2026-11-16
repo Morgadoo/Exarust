@@ -1086,6 +1086,7 @@ mod tests {
                 last: Some(Frame::new(Vec3::new(3.0, 1.5, 0.0), Mat3::IDENTITY)),
                 item: 0,
                 model: 0,
+                from_lock: None,
             });
         app.world_mut().resource_mut::<Hand>().holding = Holding::Lift;
         app.world_mut()

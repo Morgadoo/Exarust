@@ -762,6 +762,10 @@ pub struct HeldItem {
     /// is named for (zero when the item carries no object id).
     pub item: u32,
     pub model: u32,
+    /// The press took the item off a lock (its body frozen there): where
+    /// its node stood (m). Its release then relocks it when cancelled and
+    /// runs the drop scripts around that spot when it leaves it.
+    pub from_lock: Option<Vec3>,
 }
 
 /// A GUI drop waiting to run: the inventory entry, whether the drag came
@@ -839,10 +843,34 @@ pub struct ItemCursor {
     /// grid's refresh at the frame their lift took them from (the original
     /// rings the held node's box there when it lets the item go).
     pub let_go: Vec<exa_world::nav::NavMoved>,
-    /// Where an item was let go, in centimetres. The device pass reads it
-    /// and powers down a reconstruction device whose slot the point left.
-    pub released_cm: Vec<Vec3>,
+    /// The drop scripts' points (cm): where a lifted item had been locked
+    /// when the press took it, queued when its release leaves that lock
+    /// (see [`drop_scripts_at`]). The device pass runs the scripts of the
+    /// objects there ([`crate::player_controls::nearby_scripts`]): a
+    /// reconstruction device whose slot the item left powers down.
+    pub script_points_cm: Vec<Vec3>,
 }
+
+/// Where a lifted item's release runs the drop scripts, in cm: around the
+/// lock the press took it from (`from_lock`, m), unless the release locks
+/// it again (`relocked`) at `placed` (m) within 5 cm² of that spot (a NaN
+/// distance runs none either). An item that was not locked runs none.
+pub fn drop_scripts_at(from_lock: Option<Vec3>, relocked: bool, placed: Vec3) -> Option<Vec3> {
+    let spot = from_lock? * 100.0;
+    if relocked {
+        let d = placed * 100.0 - spot;
+        let squared = (d.x * d.x + d.y * d.y) + d.z * d.z;
+        // `comiss d², 5; jbe skip` (unordered skips too).
+        if !(squared > DROP_SCRIPT_SQUARED_CM) {
+            return None;
+        }
+    }
+    Some(spot)
+}
+
+/// The drop scripts' reach, squared (cm²): the objects closer than this to
+/// the spot run their scripts, and a relock within it runs none.
+pub const DROP_SCRIPT_SQUARED_CM: f32 = 5.0;
 
 impl ItemCursor {
     /// Begins a lift with `held`.
@@ -1342,6 +1370,7 @@ mod tests {
             last: None,
             item: 0,
             model: 0,
+            from_lock: None,
         });
         assert!(cursor.held.is_some());
         // Before any placement holds, the lift frame is where a failed
