@@ -607,6 +607,27 @@ fn shipped_levels() {
         );
         assert_eq!(g.stats(), stats, "{name}");
         assert_eq!(r.len(), reached, "{name}");
+        // The level's nodes whose render word has 0x100 queue their boxes
+        // when they register, which the original does before the build (so
+        // nothing is kept); were they refreshed after it, the refresh from
+        // the bodies in their rooms would change exanima01's floors a
+        // little (lower 221 441, upper 2262, reach 46 230). It stays cheap.
+        let mut registered = g.clone();
+        let clock = std::time::Instant::now();
+        let changed = level.register(&mut registered);
+        let took = clock.elapsed();
+        let r_registered = reach(&registered, start);
+        eprintln!(
+            "{name}: {} nodes queue their box at registration: changed {changed}, {:?}, reach {}, {:?}",
+            level.queued.len(),
+            registered.stats(),
+            r_registered.len(),
+            took
+        );
+        assert!(
+            took < std::time::Duration::from_millis(250),
+            "{name}: {took:?}"
+        );
         let reaches = |p: Vec3| {
             let (x, z) = g.cell_at(p).unwrap();
             r.iter().any(|&(rx, rz, _)| (rx, rz) == (x, z))

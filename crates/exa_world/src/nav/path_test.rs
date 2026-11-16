@@ -316,3 +316,22 @@ fn searches_reuse_their_buffers() {
     );
     assert_eq!(find_path(&grid, from, to, 0), first);
 }
+
+/// The original reads the grid by an unchecked 32-bit index, so the
+/// window's column past the grid's east side reads the next row's first
+/// cell: two rows joined only through the first column, one row down,
+/// are a way from one to the other, and the path's points stand past
+/// the grid's edge (6 m).
+#[test]
+fn a_window_column_past_the_grid_reads_the_next_row() {
+    let grid = floors(|x, z| (z == 14 || z == 25) && x >= 25 || x == 0 && (15..=26).contains(&z));
+    let from = at(&grid, 26, 14, 10.0);
+    let to = at(&grid, 26, 25, 10.0);
+    let path = find_path(&grid, from, to, 0);
+    assert!(path.reached, "{path:?}");
+    assert!(path.points.iter().any(|p| p.x > 6.0), "{path:?}");
+    assert_eq!(cell_of(&grid, *path.points.last().unwrap()), (26, 25));
+    // Without the first column the rows do not meet.
+    let apart = floors(|x, z| (z == 14 || z == 25) && x >= 25);
+    assert!(!find_path(&apart, from, to, 0).reached);
+}

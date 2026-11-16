@@ -56,8 +56,8 @@ pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
 pub use stamp::{NavPatch, stamp_line, unstamp_line};
 pub use view::{
-    MovingMesh, NavMoved, NavMovers, NavOverlay, NavPlugin, NavRefreshMoved, NavRevision, NavState,
-    PendingNav, unload_level as unload_nav,
+    GRID_REFRESH_WORD, MovingMesh, NavMoved, NavMovers, NavOverlay, NavPlugin, NavRefreshMoved,
+    NavRevision, NavState, PendingNav, QueuesGridRefresh, unload_level as unload_nav,
 };
 pub use walkable::{cost_at, layer_at, nearest_walkable};
 
@@ -467,14 +467,13 @@ impl NavGrid {
 
     /// The grid's layers and cost bytes from its voxel columns.
     pub fn from_columns(columns: &Columns) -> Self {
-        Self::from_columns_raised(columns, std::iter::empty())
+        Self::from_columns_raised(columns, &[])
     }
 
     /// The grid's layers from its voxel columns, its floors raised by the
-    /// moving props' sample points (world, metres;
-    /// [`mover::raise_from_movers`]), then its cost bytes, in the
-    /// original's order.
-    pub fn from_columns_raised(columns: &Columns, movers: impl IntoIterator<Item = Vec3>) -> Self {
+    /// moving props' sample points ([`mover::raise_from_movers`]), then its
+    /// cost bytes, in the original's order.
+    pub fn from_columns_raised(columns: &Columns, movers: &[MoverPoints]) -> Self {
         let (w, d) = (columns.width, columns.depth);
         let mut grid = Self::empty(w, d, columns.base as f32);
         let mut spans_found = vec![0u8; w * d];
@@ -612,6 +611,31 @@ impl NavGrid {
             clearance: l.clearance[i],
             penalty: l.penalty[i],
         }
+    }
+
+    /// What the original's planner and flood read for cell (`x`, `z`):
+    /// they index the cell arrays without a bounds check, by `z·W + x`
+    /// worked out in 32 bits and taken unsigned. A column past either side
+    /// so reads the neighbouring row (x = −1 is the previous row's last
+    /// cell, x = W the next row's first). An index past the grid's cells (a
+    /// row outside it, or a negative index read as unsigned) reads memory
+    /// past the original's arrays; Exarust reads no floor there.
+    pub fn cell_unchecked(&self, x: i64, z: i64, layer: Layer) -> NavCell {
+        let i = (z as i32)
+            .wrapping_mul(self.width as i32)
+            .wrapping_add(x as i32) as u32 as usize;
+        if i >= self.width * self.depth {
+            return NavCell::default();
+        }
+        self.cell(i % self.width, i / self.width, layer)
+    }
+
+    /// Whether [`Self::cell_unchecked`] reads a cell of the grid.
+    pub fn holds_unchecked(&self, x: i64, z: i64) -> bool {
+        let i = (z as i32)
+            .wrapping_mul(self.width as i32)
+            .wrapping_add(x as i32) as u32 as usize;
+        i < self.width * self.depth
     }
 
     fn span(&self, i: usize, layer: Layer) -> Span {

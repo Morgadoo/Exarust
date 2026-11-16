@@ -1021,6 +1021,7 @@ fn spawn_placed_object(
         bodies::LevelGeometry::None
     };
     bodies::mark_moving_meshes(commands, model, &nodes, geometry);
+    bodies::mark_grid_queued(commands, model, &nodes);
     Some(PlacedSpawn::Placed {
         entity: e,
         lights: model.nodes.iter().filter(|n| n.light.is_some()).count(),
@@ -2215,6 +2216,7 @@ impl LevelLoad {
                     self.lights += own.nodes.iter().filter(|n| n.light.is_some()).count();
                     let (e, nodes) = spawn_model_nodes_at(commands, &own, None, self.daylight);
                     bodies::mark_moving_meshes(commands, &own, &nodes, bodies::LevelGeometry::None);
+                    bodies::mark_grid_queued(commands, &own, &nodes);
                     self.bodies.add(bodies::register_bodies(
                         commands,
                         &own,
@@ -2286,6 +2288,7 @@ impl LevelLoad {
                                 (bodies::Placement::Loose, bodies::LevelGeometry::None)
                             };
                             bodies::mark_moving_meshes(commands, model, &nodes, geometry);
+                            bodies::mark_grid_queued(commands, model, &nodes);
                             self.bodies
                                 .add(bodies::register_bodies(commands, model, &nodes, placement));
                             e

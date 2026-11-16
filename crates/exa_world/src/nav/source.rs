@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use bevy::math::{Affine3A, DVec3, Vec3, Vec3Swizzles};
 
-use super::{CELL, CELLS_PER_ROOM, Columns, DEFAULT_ROOMS, DEPTH, FLOOR_LIFT, NavGrid};
+use super::{
+    CELL, CELLS_PER_ROOM, Columns, DEFAULT_ROOMS, DEPTH, FLOOR_LIFT, MoverPoints, NavGrid,
+};
 
 /// Edge of a generated floor column, centimetres (the original's heightfield
 /// generator at its constant P = 20: half of P).
@@ -98,11 +100,16 @@ impl NavSource {
         for p in floor_points(self.floors.iter().flat_map(FloorMesh::triangles)) {
             columns.stamp(p, FLOOR_LIFT);
         }
-        let movers = self
+        let movers: Vec<MoverPoints> = self
             .movers
             .iter()
-            .flat_map(|(points, at)| points.iter().map(move |&p| at.transform_point3(p)));
-        NavGrid::from_columns_raised(&columns, movers)
+            .map(|(points, at)| MoverPoints {
+                at: *at,
+                points: points.as_slice(),
+                centre: Vec3::from(at.translation),
+            })
+            .collect();
+        NavGrid::from_columns_raised(&columns, &movers)
     }
 }
 
