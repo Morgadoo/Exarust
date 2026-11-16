@@ -936,7 +936,7 @@ fn stand_next_round(
         };
         if dress {
             redress(kits, level.as_deref_mut(), entity);
-            kept.push((entity, player));
+            kept.push((entity, player, body.company || player));
         }
     }
     if !fight.keeps_opponent {
@@ -951,17 +951,21 @@ fn stand_next_round(
             // not lost.
             if fighters.iter().all(|(body, ..)| body != entity) {
                 redress(kits, level.as_deref_mut(), entity);
-                kept.push((entity, true));
+                kept.push((entity, true, true));
             }
         }
     }
     // Whoever stays is reset for the next round: the kept opponent, then
     // the continuing fighter, as the original resets them in that order
-    // (the roll steps once per non-player).
-    kept.sort_by_key(|&(_, player)| player);
-    for (body, player) in kept {
+    // (the roll steps once per non-player). The kept opponent stands at the
+    // opponent's place; the continuing fighter at the company's, facing
+    // the opponent (the original's next-round template, which the match
+    // set-up points at the company's spot).
+    kept.sort_by_key(|&(_, player, _)| player);
+    for (body, player, ours_side) in kept {
         let reset = crate::match_layout::reset_kept(player, now, &mut scene.roll);
-        commands.write(SceneCommand::Reset { body, reset });
+        let place = if ours_side { ours } else { opponent };
+        commands.write(SceneCommand::Reset { body, reset, place });
     }
     if let Some(plan) = &fight.opponent {
         let body = opponent_plan(*plan, &opponent, HOSTILE, now, MATCH_ACT_GRACE_MS);
@@ -1048,13 +1052,9 @@ fn stand_bracket_round(
                 if let Some((entity, ..)) = fighters.iter().find(|(_, _, _, _, player)| *player) {
                     // A later round re-dresses the player who stays.
                     redress(kits, level.as_deref_mut(), entity);
-                    commands.write(SceneCommand::Place {
-                        body: entity,
-                        at: Vec3::from_array(place.position) / 100.0,
-                        yaw: place.forward[0].atan2(place.forward[2]),
-                    });
                     // The kept player is reset as a kept body is (no AI
-                    // clocks, so the roll does not step).
+                    // clocks, so the roll does not step) and stands at its
+                    // bracket place.
                     let reset = crate::match_layout::reset_kept(
                         true,
                         now_ms.wrapping_add(crate::arena_session::NEXT_ROUND_YIELD_MS),
@@ -1063,6 +1063,7 @@ fn stand_bracket_round(
                     commands.write(SceneCommand::Reset {
                         body: entity,
                         reset,
+                        place,
                     });
                 }
             }
@@ -1739,8 +1740,11 @@ mod tests {
             match message {
                 SceneCommand::Spawn(_) => spawned += 1,
                 SceneCommand::Despawn(entity) => killed.push(entity),
-                SceneCommand::Place { .. } => {}
-                SceneCommand::Reset { body, reset: kept } => reset.push((body, kept)),
+                SceneCommand::Reset {
+                    body,
+                    reset: kept,
+                    place,
+                } => reset.push((body, kept, place)),
             }
         }
         // The reserve entrant comes in against the opponent who won, which
@@ -1751,6 +1755,9 @@ mod tests {
         assert_eq!(reset.len(), 1);
         assert_eq!(reset[0].0, opponent);
         assert_eq!(reset[0].1.act_at_ms, Some(1_000 + 13 + 10_000));
+        // It is re-placed at the opponent's place.
+        let spawn = app.world().resource::<ArenaScene>().spawn_at;
+        assert_eq!(reset[0].2, opponent_place(spawn));
     }
 
     #[test]
@@ -1782,8 +1789,7 @@ mod tests {
             match message {
                 SceneCommand::Spawn(_) => spawned += 1,
                 SceneCommand::Despawn(entity) => killed.push(entity),
-                SceneCommand::Place { .. } => {}
-                SceneCommand::Reset { body, .. } => reset.push(body),
+                SceneCommand::Reset { body, place, .. } => reset.push((body, place)),
             }
         }
         // The fighter fights on and is reset; a fresh opponent replaces the
@@ -1791,7 +1797,9 @@ mod tests {
         assert_eq!(spawned, 1);
         assert_eq!(killed, vec![opponent]);
         assert!(!killed.contains(&company));
-        assert_eq!(reset, vec![company]);
+        // It is re-placed at the company's place, facing the opponent.
+        let spawn = app.world().resource::<ArenaScene>().spawn_at;
+        assert_eq!(reset, vec![(company, our_place(spawn))]);
     }
 
     #[test]
@@ -2161,15 +2169,17 @@ mod tests {
             match message {
                 SceneCommand::Spawn(plan) => spawned.push(*plan),
                 SceneCommand::Despawn(entity) => killed.push(entity),
-                SceneCommand::Place { body, .. } => placed.push(body),
-                SceneCommand::Reset { body, .. } => reset.push(body),
+                SceneCommand::Reset { body, place, .. } => {
+                    reset.push(body);
+                    placed.push(place);
+                }
             }
         }
         assert_eq!(spawned.len(), expected);
         assert_eq!(killed, vec![opponent]);
-        assert_eq!(placed, vec![player]);
-        // The kept player is reset too.
+        // The kept player is reset and placed at its bracket place.
         assert_eq!(reset, vec![player]);
+        assert_eq!(placed.len(), 1);
         // Every raised opponent is generated from its record and outfit.
         assert!(
             spawned

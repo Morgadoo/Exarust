@@ -1050,13 +1050,13 @@ pub enum SceneCommand {
     Spawn(Box<SceneBodyPlan>),
     /// Remove a body, capsule and subtree.
     Despawn(Entity),
-    /// Stand a body at a place.
-    Place { body: Entity, at: Vec3, yaw: f32 },
-    /// Reset a body the match keeps for its next round
-    /// ([`crate::match_layout::KeptReset`]; [`reset_kept_bodies`]).
+    /// Reset a body the match keeps for its next round and stand it at
+    /// its round place ([`crate::match_layout::KeptReset`];
+    /// [`reset_kept_bodies`]).
     Reset {
         body: Entity,
         reset: crate::match_layout::KeptReset,
+        place: Place,
     },
 }
 
@@ -1095,25 +1095,42 @@ impl Plugin for SceneBodiesPlugin {
     }
 }
 
+/// The motion a kept body starts for its next round (the original's
+/// clip 3), with no blend and no lead-in from the pose it held.
+pub const KEPT_MOTION: u32 = 3;
+
 /// A body the next round keeps, reset as the original's kept-body reset
 /// does: yellow health takes red, the shield arm is full, the condition is
 /// 0, and its scene marker takes the standby behaviour and, for a
-/// non-player, the AI's held clocks. Re-placing the living body on its
-/// round place is not done here (it stays where it stands).
+/// non-player, the AI's held clocks and no combat target. Its
+/// motion restarts at [`KEPT_MOTION`] with no blend and no capture (the
+/// original's current motion word −1 and capture key −1 around the start),
+/// and the body is put living at its round place
+/// ([`crate::limp::LivingPlacement`]): the pelvis at the freshly sampled
+/// pose's stand height (the original writes that word as the frame's
+/// height, over the world's origin), facing the place's forward, its held
+/// items put back in its hands.
+#[allow(clippy::type_complexity)]
 pub fn reset_kept_bodies(
+    mut commands: Commands,
     mut messages: MessageReader<SceneCommand>,
+    motions: Option<Res<exa_anim::Motions>>,
     mut bodies: Query<(
         &mut exa_combat::Fighter,
         &mut exa_combat::Condition,
         Option<&mut exa_combat::block::ShieldHold>,
         Option<&mut SceneFighter>,
+        Option<&mut exa_anim::Animator>,
+        Option<&mut exa_ai::combatant::Combatant>,
     )>,
 ) {
     for command in messages.read() {
-        let SceneCommand::Reset { body, reset } = command else {
+        let SceneCommand::Reset { body, reset, place } = command else {
             continue;
         };
-        let Ok((mut fighter, mut condition, hold, marker)) = bodies.get_mut(*body) else {
+        let Ok((mut fighter, mut condition, hold, marker, animator, combatant)) =
+            bodies.get_mut(*body)
+        else {
             continue;
         };
         fighter.health.yellow = fighter.health.red;
@@ -1130,7 +1147,34 @@ pub fn reset_kept_bodies(
                 marker.act_at_ms = act_at;
             }
         }
-        info!("scene body {body:?}: kept for the next round and reset");
+        // A non-player (the one with the AI's clocks) forgets its combat
+        // target too.
+        if reset.act_at_ms.is_some()
+            && let Some(mut combatant) = combatant
+        {
+            combatant.target = None;
+        }
+        if let (Some(mut anim), Some(motions)) = (animator, motions.as_deref()) {
+            motions.start_requested(&mut anim, KEPT_MOTION);
+            anim.pending = None;
+            anim.leading = false;
+            anim.capture = None;
+        }
+        let at = Vec3::new(place.position[0], 0.0, place.position[2]) / 100.0;
+        let yaw = place.forward[0].atan2(place.forward[2]);
+        commands
+            .entity(*body)
+            .insert(crate::limp::LivingPlacement::at(
+                at,
+                yaw,
+                crate::limp::FrameHeight::Stand,
+            ));
+        info!(
+            "scene body {body:?}: kept for the next round, reset and placed at ({:.0}, {:.0}) cm facing {:.1} deg",
+            place.position[0],
+            place.position[2],
+            yaw.to_degrees()
+        );
     }
 }
 
@@ -1258,13 +1302,6 @@ fn apply_scene_commands(
             }
             // A kept body's reset runs in its own system.
             SceneCommand::Reset { .. } => {}
-            SceneCommand::Place { body, at, yaw } => {
-                if bodies.get(*body).is_ok() {
-                    commands.entity(*body).insert(
-                        Transform::from_translation(*at).with_rotation(Quat::from_rotation_y(*yaw)),
-                    );
-                }
-            }
         }
     }
 }
@@ -1344,8 +1381,11 @@ mod tests {
             .id();
         let mut roll = 1;
         let reset = crate::match_layout::reset_kept(false, 5_000, &mut roll);
-        app.world_mut()
-            .write_message(SceneCommand::Reset { body, reset });
+        app.world_mut().write_message(SceneCommand::Reset {
+            body,
+            reset,
+            place: opponent_place([900.0, 0.0, 100.0]),
+        });
         app.update();
         let fighter = app.world().get::<exa_combat::Fighter>(body).unwrap();
         assert_eq!(fighter.health.yellow, 0.2);
@@ -1365,6 +1405,84 @@ mod tests {
         // The roll stepped once: 0x08088406, whose high share of 10000 is 313.
         assert_eq!(roll, 0x0808_8406);
         assert_eq!(marker.act_at_ms, 5_000 + 10_000 + 313);
+    }
+
+    /// The kept-body reset, run by its live system with the limp plugin's
+    /// placement in the fixed step after it: the body restarts the kept
+    /// motion with no capture, stands living at its round place (the
+    /// fixture's footless pose has a stand height of 0, so its pelvis sits
+    /// on the world's origin height), faces the place's forward, forgets
+    /// its combat target and is asked to put its held items back.
+    #[test]
+    fn a_kept_body_is_put_living_at_its_round_place() {
+        let mut app = crate::limp::tests::placement_app();
+        app.insert_resource(crate::limp::tests::motions_named(&[
+            "Idle", "Walk", "Run", "Kept",
+        ]))
+        .add_message::<SceneCommand>()
+        .add_systems(Update, reset_kept_bodies);
+        let world = app.world_mut();
+        let character = world
+            .spawn((
+                Transform::from_translation(Vec3::new(4.0, 0.0, -3.0)),
+                exa_physics::CharacterBody::default(),
+            ))
+            .id();
+        let body = crate::limp::tests::spawn_body(world, character);
+        let combatant = exa_ai::combatant::Combatant {
+            target: Some(character),
+            ..Default::default()
+        };
+        world.entity_mut(body).insert((
+            exa_combat::Fighter::default(),
+            exa_combat::Condition(0x300),
+            combatant,
+        ));
+        app.update();
+        let place = Place {
+            position: [300.0, 5.0, -200.0],
+            forward: [0.0, 0.0, -1.0],
+        };
+        let mut roll = 1;
+        let reset = crate::match_layout::reset_kept(false, 5_000, &mut roll);
+        app.world_mut()
+            .write_message(SceneCommand::Reset { body, reset, place });
+        app.update();
+        {
+            let anim = app.world().get::<exa_anim::Animator>(body).unwrap();
+            assert_eq!(anim.action, "Kept");
+        }
+        // The next update's fixed step places it.
+        app.update();
+        let world = app.world();
+        let ragdoll = world.get::<exa_physics::body::Ragdoll>(body).unwrap();
+        let pelvis = Vec3::from(ragdoll.parts[0].transform().translation);
+        assert!(
+            (pelvis.with_y(0.0) - Vec3::new(3.0, 0.0, -2.0)).length() < 1e-3
+                && pelvis.y.abs() < 0.02,
+            "{pelvis:?}"
+        );
+        let root = world.get::<Transform>(character).unwrap().translation;
+        assert!(
+            (root - Vec3::new(3.0, 0.0, -2.0)).length() < 0.02,
+            "{root:?}"
+        );
+        let turn = world.get::<Transform>(body).unwrap().rotation;
+        assert!(
+            turn.angle_between(Quat::from_rotation_y(std::f32::consts::PI)) < 1e-4,
+            "{turn:?}"
+        );
+        let combatant = world.get::<exa_ai::combatant::Combatant>(body).unwrap();
+        assert_eq!(combatant.target, None);
+        assert!(
+            !world
+                .entity(body)
+                .contains::<crate::limp::LivingPlacement>()
+        );
+        assert_eq!(
+            *world.get::<exa_combat::Condition>(body).unwrap(),
+            exa_combat::Condition::NORMAL
+        );
     }
 
     fn place() -> Place {

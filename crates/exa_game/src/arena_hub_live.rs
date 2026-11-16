@@ -262,13 +262,18 @@ fn manager_reading(reading: Option<(&Condition, &Fighter, Option<&Ragdoll>)>) ->
     }
 }
 
+/// The hub entry's frame height over the pelvis target (cm): the
+/// original's entry adds 5 to that word.
+pub const HUB_ENTRY_LIFT: f32 = 5.0;
+
 /// Enters the hub once when a play level named `arenahub` appears.
 ///
 /// The entry draws the music from [`HubRoll`] and the flow's alternative
 /// setting, writes the track through the audio crate's level-music
 /// resources, installs the hooks and places the manager at the hub's known
 /// start. The player root is moved to the manager's plan when it is there:
-/// the plan's floor lift is the original's +5 cm.
+/// the plan's floor lift is the original's +5 cm, and the player's body is
+/// put living there ([`crate::limp::LivingPlacement`]).
 #[allow(clippy::too_many_arguments)]
 fn enter_loaded_hub(
     mut commands: Commands,
@@ -278,6 +283,7 @@ fn enter_loaded_hub(
     flow: Option<Res<Flow>>,
     players: Query<&mut Transform, With<Player>>,
     bodies: Query<(&Condition, &Fighter, Option<&Ragdoll>), With<PlayerBody>>,
+    player_bodies: Query<Entity, With<PlayerBody>>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
 ) {
@@ -353,6 +359,20 @@ fn enter_loaded_hub(
         for mut transform in players {
             transform.translation = manager;
             placed = true;
+        }
+        // The entry puts the manager's living body at that spot, as the
+        // original's entry does with its frame: a half turn round, the
+        // pelvis at the pose's pelvis target plus 5 cm over the hub's floor
+        // (the frame's height is that word plus 5, over the origin), its
+        // held items put back in its hands.
+        for body in &player_bodies {
+            commands
+                .entity(body)
+                .insert(crate::limp::LivingPlacement::at(
+                    Vec3::new(manager.x, 0.0, manager.z),
+                    std::f32::consts::PI,
+                    crate::limp::FrameHeight::Target(HUB_ENTRY_LIFT),
+                ));
         }
         if placed {
             info!("arena hub: the manager stands at {manager}");
@@ -3085,10 +3105,26 @@ mod tests {
         // The player spawns after the level's collision: it is placed when
         // it appears, not only on the entry frame.
         let player = app.world_mut().spawn((Player, Transform::default())).id();
+        let body = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), Condition(0), Fighter::default()))
+            .id();
         app.update();
         let at = app.world().get::<Transform>(player).unwrap().translation;
         assert_eq!(at, Vec3::new(0.0, 0.05, 3.0));
         assert!(app.world().resource::<ArenaHub>().manager_placed);
+        // The body is put living there, facing a half turn round, its
+        // pelvis 5 cm over the pose's target over the floor.
+        assert_eq!(
+            app.world()
+                .get::<crate::limp::LivingPlacement>(body)
+                .copied(),
+            Some(crate::limp::LivingPlacement::at(
+                Vec3::new(0.0, 0.0, 3.0),
+                std::f32::consts::PI,
+                crate::limp::FrameHeight::Target(5.0)
+            ))
+        );
     }
 
     #[test]

@@ -27,8 +27,10 @@
 //! [`super::Ragdoll::placement_target`]); the player's third behaviour
 //! tick runs the placement on the ground
 //! ([`super::Ragdoll::place_on_ground`]: [`placed_parts`] and
-//! [`ground_foot_anchor`] after the leg snap). The matrix placement's foot
-//! anchors and pins and [`mean_point`] are tested but not called.
+//! [`ground_foot_anchor`] after the leg snap); the living placement at a
+//! matrix ([`super::Ragdoll::place_living`]) takes [`placed_parts`],
+//! [`matrix_foot_anchor`] and [`mean_point`]. [`matrix_pin`] is tested but
+//! not called: Exarust's support pins are taken from the pose each pass.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;

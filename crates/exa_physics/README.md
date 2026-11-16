@@ -1054,6 +1054,18 @@ needs muscles, never runs for it) or one of two words that nothing in the
 executable writes is set. So no body samples with these rules in 0.9.5,
 whatever knocks it out: the knock-out writes the condition and the wake
 nibble, never the muscles (traced for C8).
+The living placement at a matrix (`Ragdoll::place_living`, run by
+`exa_game::limp::LivingPlacement`) resets the body's words (tone and
+energy 1, no carry, no step under way and the standing position taken
+anew, the radius base 60 cm, the legs' IK corrections the identity),
+puts every part at the fresh pose lowered by the pelvis's posed height
+onto the frame at rest, anchors each foot (its anchor, step target,
+previous anchor and ground) at its posed contact on the frame less the
+clip root plus the sole less 8 cm (`placement::matrix_foot_anchor`),
+clears the foot states, takes the feet centre as the anchors' mean and
+restarts the chest; it leaves the sleep countdown alone, as the
+original's. `Ragdoll::placement_heights` gives the fresh pose's stand
+height and not-walking pelvis target, which its callers' frames read.
 The placement on the ground (`Ragdoll::place_on_ground`, run by the
 player behaviour's third tick from the nearest walkable floor) runs the
 leg snap, takes its frame height as the frame's, puts every part at the
