@@ -1575,7 +1575,11 @@ field or combo box takes the keys through its own handler
 Home, End, Shift selections, Ctrl+C/X/V through the system clipboard, a
 press or drag placing the caret; Enter submits (the emblem name's `klean`
 preset, a picture number's selection, the merchant's options re-stored, the
-loadout fighter list's row). A swatch dragged past the pointer's threshold
+loadout fighter list's row). Tab is the form's key, not the field's: the
+base form's key slot (`exa_ui::form::form_key`) moves the focus to the next
+enabled tab stop (Shift: the previous), the emblem form cycling its name
+and picture numbers, and the focus waits for the pointer to move before it
+follows it again. A swatch dragged past the pointer's threshold
 carries its colour under the pointer and an emblem swatch it is dropped on
 takes it.
 The message box stands on the stack too (`HubForms::open_message`, built by
