@@ -442,13 +442,19 @@ pub(crate) fn press(
 
 /// Ends a drag on a destination panel through the item container's own
 /// rules: the destination's accept test, the drop, then the source's drag
-/// end. A drop on the same panel only repositions the entry. Returns the
-/// moved item's (destination, id, flags, cell) when the item changed panels;
-/// `None` for a reposition or a refusal.
+/// end. A drop on the same panel only repositions the entry. A drop from
+/// another panel first makes a local copy of a base record marked for it
+/// ([`instance_dropped`], with the live database and the catalogue), and
+/// the copy is what the destination takes. Returns the moved item's
+/// (destination, id, flags, cell) when the item changed panels, the id
+/// being the copy's when one was made; `None` for a reposition or a
+/// refusal.
+#[allow(clippy::too_many_arguments)]
 pub fn drop_on_panel(
     screens: &mut GameScreens,
-    icons: &PanelIcons,
-    catalogue: Option<&ItemCatalogue>,
+    icons: &mut PanelIcons,
+    mut catalogue: Option<&mut ItemCatalogue>,
+    objects: Option<&mut exa_assets::live_objects::LiveObjects>,
     drag: PanelDrag,
     destination: Panel,
     local: Cell,
@@ -507,7 +513,7 @@ pub fn drop_on_panel(
                 objflags: flags,
                 icon: icon as u32,
                 bulk: bulk.clamp(0, 255) as u8,
-                model_found: model_found(id, catalogue),
+                model_found: model_found(id, catalogue.as_deref()),
             },
             destination.number(),
         )
@@ -528,6 +534,11 @@ pub fn drop_on_panel(
     if !held {
         return None;
     }
+    // The drop's instancing: a base record marked for it becomes a copy in
+    // the local tier, with an icon of its own.
+    let (placed, placed_icon) = objects
+        .and_then(|objects| instance_dropped(objects, catalogue.as_deref_mut(), icons, id, flags))
+        .unwrap_or((id, icon));
     let mut destination_container = container_mut(screens, destination)
         .map(std::mem::take)
         .unwrap_or_default();
@@ -535,8 +546,8 @@ pub fn drop_on_panel(
         DropDrag {
             same_panel: false,
             linked: false,
-            id,
-            icon,
+            id: placed,
+            icon: placed_icon,
             flags,
             bulk,
         },
@@ -554,6 +565,9 @@ pub fn drop_on_panel(
         *container = destination_container;
     }
     let Some(cell) = cell else {
+        if placed_icon != icon {
+            icons.release(placed_icon);
+        }
         if let Some(container) = container_mut(screens, source) {
             container.finish_drag(destination.number(), true, true, 0, bulk);
         }
@@ -567,7 +581,43 @@ pub fn drop_on_panel(
     if !moved {
         return None;
     }
-    Some((destination, id, flags, cell))
+    // The source's entry left with the base record's icon; the copy shows
+    // its own. [Exarust guard: the old slot's reference goes with it.]
+    if placed_icon != icon {
+        icons.release(icon);
+    }
+    Some((destination, placed, flags, cell))
+}
+
+/// The item container drop's instancing: a drop from a panel other than
+/// the linked one hands the dragged id to the object database's instancer
+/// with the local tier, so an untagged base record whose header word has
+/// bit 0 is cloned there ([`exa_formats::objdb::ObjectDb::instance_of`]).
+/// When the id changed, the catalogue learns the local tier's records and
+/// the copy's icon is acquired with the payload's flags below the top four
+/// bits. Answers the copy's id and icon, `None` when no copy was made.
+pub fn instance_dropped(
+    objects: &mut exa_assets::live_objects::LiveObjects,
+    mut catalogue: Option<&mut ItemCatalogue>,
+    icons: &mut PanelIcons,
+    id: u32,
+    flags: u32,
+) -> Option<(u32, usize)> {
+    use exa_formats::objdb::Tier;
+    // A read first: only a marked base record is written.
+    if !objects.db().instances(id) {
+        return None;
+    }
+    let copy = objects.db_mut().instance_of(id, Tier::Local);
+    if copy == id {
+        return None;
+    }
+    if let Some(catalogue) = catalogue.as_deref_mut() {
+        gui_screens::register_tier(objects, catalogue, Tier::Local);
+    }
+    let (icon, _) = icons.reserve(copy, flags & 0x0fff_ffff, catalogue.as_deref());
+    info!("item panel: the drop makes {id} a local copy {copy:#x}");
+    Some((copy, icon))
 }
 
 /// Ends the drag: a drop on another panel moves the item, a drop on the same
@@ -580,7 +630,7 @@ pub(crate) fn release(
     mut screens: ResMut<GameScreens>,
     mut drag: ResMut<PanelDrag>,
     mut icons: ResMut<PanelIcons>,
-    catalogue: Option<Res<ItemCatalogue>>,
+    mut catalogue: Option<ResMut<ItemCatalogue>>,
     mut commands: Commands,
     mut bodies: Query<(Entity, &mut Possessions)>,
     records: Query<&exa_character::record::CharacterData>,
@@ -799,8 +849,9 @@ pub(crate) fn release(
     .map(|e| e.cell);
     let dropped = drop_on_panel(
         &mut screens,
-        &icons,
-        catalogue.as_deref(),
+        &mut icons,
+        catalogue.as_deref_mut(),
+        objects.as_deref_mut(),
         *drag,
         destination,
         local,
@@ -839,9 +890,8 @@ pub(crate) fn release(
             &mut commands,
             &mut bodies,
             player,
-            source,
-            destination,
-            id,
+            (source, drag.id),
+            (destination, id),
             flags,
             cell,
             unit,
@@ -861,21 +911,22 @@ pub(crate) fn release(
 /// window's entity. A container popup's side has no possession list: its
 /// panel entries are the container's contents (saved into its record when
 /// the popup closes), so taking from it hands on the dragged entry's
-/// `flags` and giving to it leaves the possessions alone.
+/// `flags` and giving to it leaves the possessions alone. The source
+/// gives up the dragged id; the destination takes the dropped one (the
+/// drop's local copy when it made one).
 #[allow(clippy::too_many_arguments)]
 fn move_item(
     commands: &mut Commands,
     bodies: &mut Query<(Entity, &mut Possessions)>,
     player: Option<Entity>,
-    source: Panel,
-    destination: Panel,
-    id: u32,
+    (source, taken): (Panel, u32),
+    (destination, id): (Panel, u32),
     flags: u32,
     cell: Cell,
     unit: i32,
     vscale: f32,
 ) {
-    let Some(flags) = take_from_source(bodies, player, source, id, flags) else {
+    let Some(flags) = take_from_source(bodies, player, source, taken, flags) else {
         return;
     };
     match destination {
@@ -1182,10 +1233,11 @@ mod tests {
             flags: 0,
             bulk: 0,
         };
-        let icons = crate::item_panel_draw::PanelIcons::default();
+        let mut icons = crate::item_panel_draw::PanelIcons::default();
         let moved = drop_on_panel(
             &mut screens,
-            &icons,
+            &mut icons,
+            None,
             None,
             drag,
             Panel::BodyPack(7),
@@ -1219,7 +1271,8 @@ mod tests {
         };
         let refused = drop_on_panel(
             &mut screens,
-            &icons,
+            &mut icons,
+            None,
             None,
             drag,
             Panel::BodyEquipment(7),
@@ -1249,7 +1302,8 @@ mod tests {
         };
         let accepted = drop_on_panel(
             &mut screens,
-            &icons,
+            &mut icons,
+            None,
             None,
             drag,
             Panel::BodyEquipment(7),
@@ -1278,7 +1332,8 @@ mod tests {
         assert!(
             drop_on_panel(
                 &mut screens,
-                &icons,
+                &mut icons,
+                None,
                 None,
                 drag,
                 Panel::BodyEquipment(7),
@@ -1308,7 +1363,8 @@ mod tests {
         assert_eq!(
             drop_on_panel(
                 &mut screens,
-                &icons,
+                &mut icons,
+                None,
                 None,
                 drag,
                 Panel::BodyEquipment(7),
@@ -1704,6 +1760,101 @@ mod tests {
                 .sources,
             vec![Source::Container(id)]
         );
+    }
+
+    /// A marked base record dragged from the pack into a container popup:
+    /// the drop makes it a local copy, which the container takes with an
+    /// icon of its own; the pack gives up the base id and its icon slot.
+    /// An unmarked record moves as it is.
+    #[test]
+    fn a_marked_base_item_dropped_into_a_container_becomes_a_local_copy() {
+        use crate::item_container::ContainerRecord;
+        use exa_formats::objdb::{INSTANCE_ON_USE, LOCAL, ObjectDb, Tier};
+        use exa_items::possession::Carried;
+        let carried = vec![
+            Carried {
+                id: 9,
+                flags: 0x10,
+                x: 0,
+                y: 0,
+            },
+            Carried {
+                id: 12,
+                flags: 0,
+                x: 400,
+                y: 400,
+            },
+        ];
+        let (mut app, player) = live_app(carried);
+        let mut db = ObjectDb::default();
+        for (id, word) in [(9u32, INSTANCE_ON_USE), (12, 0)] {
+            let (_, at) = db.base.insert(id);
+            let mut payload = vec![0u8; 0x20];
+            payload[0x18..0x1c].copy_from_slice(&word.to_le_bytes());
+            db.base.store(at, &payload);
+        }
+        app.insert_resource(exa_assets::live_objects::LiveObjects::of(db));
+        let record = ContainerRecord {
+            size: (50, 30),
+            capacity: 400,
+            max_item: 60,
+            children: Vec::new(),
+        };
+        let object = app.world_mut().spawn_empty().id();
+        let chest = LOCAL | 40;
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .open_container_popup(object, chest, &record, (1100, 200), 4, 0, 70, |_, _| {
+                Some((0, 0))
+            });
+        let popup = {
+            let screens = app.world().resource::<GameScreens>();
+            open_panels(screens)
+                .into_iter()
+                .find(|(panel, _)| *panel == Panel::Container(chest))
+                .unwrap()
+                .1
+        };
+        let client = pack_client(&app);
+        let old_icon = app.world().resource::<GameScreens>().pack.entries[0].icon;
+        let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+        let from = IVec2::new(client.left + cell.x + 20, client.top + cell.y + 20);
+        drag_between(&mut app, from, IVec2::new(popup.left + 40, popup.top + 40));
+        let copy = LOCAL | 1;
+        let screens = app.world().resource::<GameScreens>();
+        let entry = *screens
+            .popup(chest)
+            .unwrap()
+            .panel
+            .entries
+            .last()
+            .unwrap();
+        assert_eq!((entry.id, entry.flags), (copy, 0x10));
+        assert_ne!(entry.icon, old_icon);
+        assert!(screens.pack.entries.iter().all(|e| e.id != 9));
+        let live = app.world().resource::<exa_assets::live_objects::LiveObjects>();
+        assert!(live.db().find(copy).is_some());
+        assert_eq!(live.db().store(Tier::Local).len(), 1);
+        let icons = app.world().resource::<PanelIcons>();
+        assert!(icons.half(entry.icon).is_some());
+        let carried = &app.world().get::<Possessions>(player).unwrap().carried;
+        assert_eq!(carried.iter().map(|c| c.id).collect::<Vec<_>>(), vec![12]);
+        // The unmarked record keeps its id.
+        let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+        let from = IVec2::new(client.left + cell.x + 20, client.top + cell.y + 20);
+        drag_between(&mut app, from, IVec2::new(popup.left + 60, popup.top + 40));
+        let screens = app.world().resource::<GameScreens>();
+        let ids: Vec<u32> = screens
+            .popup(chest)
+            .unwrap()
+            .panel
+            .entries
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(ids, vec![copy, 12]);
+        let live = app.world().resource::<exa_assets::live_objects::LiveObjects>();
+        assert_eq!(live.db().store(Tier::Local).len(), 1);
     }
 
     /// Crystals dragged from the pack onto a shipped weapon's first socket:
