@@ -733,6 +733,7 @@ pub(crate) fn stand_first_round(
     clock: Option<Res<crate::effects::EffectClock>>,
     mut commands: MessageWriter<SceneCommand>,
     ((mut fixed, mut freeze), flow): (FreezeQueue<'_>, Option<Res<crate::flow::Flow>>),
+    env: Option<Res<exa_world::environment::SceneEnvRuntime>>,
 ) {
     let Some(mut scene) = scene else {
         return;
@@ -755,6 +756,14 @@ pub(crate) fn stand_first_round(
         return;
     }
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
+    // The match start's map load, with the outdoor wind over 0.1, wakes the
+    // level's cloths before anyone stands.
+    if let Some(wind) = env.as_ref().map(|env| env.env.wind)
+        && wakes_cloths(wind)
+    {
+        wake_cloths(fixed.as_deref_mut(), MATCH_WIND_WAKE);
+        info!("arena match: wind {wind:.3} wakes the level's cloths to {MATCH_WIND_WAKE}");
+    }
     if let Some(mut arena) = arena {
         // A physician on the company's books saves a fall that would have
         // killed (the fall rule's widened line).
@@ -786,6 +795,39 @@ pub(crate) fn stand_first_round(
         exa_ai::freeze::stage_held(fixed.as_deref_mut(), freeze.as_deref_mut());
     } else {
         exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
+    }
+}
+
+/// The wake the match start gives the level's cloths in the wind: the
+/// sweep's argument word, 32 (the cloth's wake slot raises its countdown
+/// to it).
+pub const MATCH_WIND_WAKE: i32 = 0x20;
+
+/// Whether the match start's wind wakes the cloths: the environment's wind
+/// widened to double over 0.1 (a not-a-number does not).
+#[must_use]
+pub fn wakes_cloths(wind: f32) -> bool {
+    f64::from(wind) > 0.1
+}
+
+/// The match start's sweep over the simulation's first sector: each
+/// object's wake slot with `count`, posted to the next fixed step (cloths
+/// are simulation data). A cloth raises its countdown to `count`; the base
+/// slot of the other objects (clearing two state bits) has no Exarust
+/// state, and every cloth is taken as the first sector's [guess: an arena
+/// is one sector].
+pub fn wake_cloths(fixed: Option<&mut exa_physics::sim_app::FixedCommands>, count: i32) {
+    let wake = move |world: &mut World| {
+        let mut query = world.query::<&mut exa_world::cloth::ClothInstance>();
+        let mut woken = 0;
+        for mut instance in query.iter_mut(world) {
+            instance.cloth.wake_to(count);
+            woken += 1;
+        }
+        debug!("arena match: {woken} cloths woken to {count}");
+    };
+    if let Some(fixed) = fixed {
+        fixed.post(wake);
     }
 }
 
@@ -1725,6 +1767,58 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    /// The match start in the wind wakes every cloth of the level to 32 at
+    /// the next fixed step; a calmer wind, or a not-a-number, wakes none.
+    /// The single 0.1 widened to double is just over the double 0.1, so it
+    /// wakes them.
+    #[test]
+    fn a_windy_match_start_wakes_the_levels_cloths() {
+        assert!(wakes_cloths(0.1) && !wakes_cloths(0.099_999) && !wakes_cloths(f32::NAN));
+        let run = |wind: f32| {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_message::<SceneCommand>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .init_resource::<exa_ai::freeze::StagingFreeze>()
+                .add_systems(Update, stand_first_round);
+            app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
+            app.insert_resource(scene());
+            let mut env = exa_world::scene_env::SceneEnvironment::new(
+                5,
+            );
+            env.wind = wind;
+            app.insert_resource(exa_world::environment::SceneEnvRuntime::new(env, 1));
+            app.world_mut().spawn(exa_world::LevelRoot {
+                name: "arena1.rfc".into(),
+            });
+            app.world_mut()
+                .spawn((crate::player::Player, Transform::default()));
+            let mut cloth = exa_physics::cloth::Cloth::from_mesh(
+                &[Vec3::ZERO, Vec3::X, Vec3::Y],
+                &[[0, 1, 2]],
+                &[0],
+            );
+            cloth.sleep = 3;
+            let cloth = app
+                .world_mut()
+                .spawn(exa_world::cloth::ClothInstance::new(
+                    cloth,
+                    Handle::default(),
+                    vec![0, 1, 2],
+                ))
+                .id();
+            app.update();
+            exa_physics::sim_app::run_fixed_commands(app.world_mut());
+            app.world()
+                .get::<exa_world::cloth::ClothInstance>(cloth)
+                .unwrap()
+                .cloth
+                .sleep
+        };
+        assert_eq!(run(0.5), MATCH_WIND_WAKE);
+        assert_eq!(run(0.05), 3);
     }
 
     #[test]

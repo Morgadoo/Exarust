@@ -268,6 +268,9 @@ fn manager_reading(reading: Option<(&Condition, &Fighter, Option<&Ragdoll>)>) ->
 /// original's entry adds 5 to that word.
 pub const HUB_ENTRY_LIFT: f32 = 5.0;
 
+/// The motion the hub entry starts on the manager before it places him.
+pub const HUB_ENTRY_MOTION: u32 = 0x13;
+
 /// Enters the hub once when a play level named `arenahub` appears.
 ///
 /// The entry draws the music from [`HubRoll`] and the flow's alternative
@@ -288,6 +291,10 @@ fn enter_loaded_hub(
     player_bodies: Query<Entity, With<PlayerBody>>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
+    (mut animators, motions): (
+        Query<&mut exa_anim::Animator, With<PlayerBody>>,
+        Option<Res<exa_anim::Motions>>,
+    ),
 ) {
     let loaded = levels.iter().any(|root| is_hub_level(&root.name));
     if !loaded {
@@ -366,7 +373,18 @@ fn enter_loaded_hub(
         // original's entry does with its frame: a half turn round, the
         // pelvis at the pose's pelvis target plus 5 cm over the hub's floor
         // (the frame's height is that word plus 5, over the origin), its
-        // held items put back in its hands.
+        // held items put back in its hands. Before it the entry starts the
+        // manager's motion 0x13 with no blend and no capture, so the
+        // placement samples that clip.
+        if let Some(motions) = motions.as_deref() {
+            for mut anim in &mut animators {
+                if motions.start_requested(&mut anim, HUB_ENTRY_MOTION).is_some() {
+                    anim.pending = None;
+                    anim.leading = false;
+                    anim.capture = None;
+                }
+            }
+        }
         for body in &player_bodies {
             commands
                 .entity(body)
@@ -1994,9 +2012,10 @@ fn hub_clicks(
     mut windows: ResMut<HubWindows>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut shop: HubShop,
-    (mut launches, mut saves): (
+    (mut launches, mut saves, mut cards): (
         MessageWriter<ArenaMatchLaunch>,
         MessageWriter<crate::save_live::SaveStep>,
+        MessageWriter<crate::item_card::WorldCard>,
     ),
     (mut last, mut rematch): (ResMut<LastHubClick>, ResMut<ArenaRematch>),
 ) {
@@ -2091,6 +2110,16 @@ fn hub_clicks(
                                 // The weapon pane's Choose opens the event's
                                 // lineup on the loadout form.
                                 windows.open_lineup(&mut career);
+                            } else if let exa_ui::match_board::BoardAction::ShowItem(item) = action
+                            {
+                                // An item slot's callback opens the item's
+                                // card at once, with no flags.
+                                info!("arena board: item slot shows the card of {item:#x}");
+                                cards.write(crate::item_card::WorldCard {
+                                    item,
+                                    flags: 0,
+                                    delayed: false,
+                                });
                             } else if action == exa_ui::match_board::BoardAction::Forfeit {
                                 // The tournament's Forfeit asks first; its
                                 // Yes forfeits every undecided event.
@@ -3087,6 +3116,61 @@ mod tests {
             .spawn((PlayerBody::new(0.0), Condition(condition), fighter));
     }
 
+    /// A click on a season reward slot of the open board asks for the
+    /// item's card at once (flags 0), through the hub's click; an empty slot
+    /// asks for nothing.
+    #[test]
+    fn a_board_item_slot_click_opens_the_items_card() {
+        use exa_ui::match_board::BoardTab;
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        spawn_hub_level(&mut app);
+        app.update();
+        let (career, stores) = board_career();
+        app.insert_resource(stores);
+        let mut windows = HubWindows::default();
+        windows.open_board(&career);
+        {
+            let board = windows.board.as_mut().unwrap();
+            board.switch_tab(BoardTab::Season);
+            board.season_items = [Some(0x51), None, Some(0x53), None];
+        }
+        app.insert_resource(career);
+        app.insert_resource(windows);
+        let click = |app: &mut App, slot: usize| {
+            let windows = app.world().resource::<HubWindows>();
+            let bounds = windows.bounds().unwrap();
+            let border = windows.board_form.as_ref().map_or(0, |f| f.geometry.border);
+            let rect = windows.board.as_ref().unwrap().layout().reward_slots[slot];
+            let pointer = IVec2::new(
+                bounds.left + border + rect.x + rect.w / 2,
+                bounds.top + border + rect.y + rect.h / 2,
+            );
+            app.world_mut().write_message(WorldClick {
+                hit: Hit::Level,
+                pointer,
+                double: false,
+            });
+            app.update();
+            app.world_mut()
+                .resource_mut::<Messages<crate::item_card::WorldCard>>()
+                .drain()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            click(&mut app, 2),
+            vec![crate::item_card::WorldCard {
+                item: 0x53,
+                flags: 0,
+                delayed: false
+            }]
+        );
+        assert!(click(&mut app, 1).is_empty());
+    }
+
     /// The weapon pane's Choose, through the hub's click and the form
     /// input: on a weapon event with an entrant the loadout form opens on
     /// its event page at the entrant's row and the event's rank, the view's
@@ -3467,6 +3551,38 @@ mod tests {
                 crate::limp::FrameHeight::Target(5.0)
             ))
         );
+    }
+
+    /// Before the hub entry places the manager it starts his motion 0x13
+    /// with no blend and no capture, so the placement samples that clip.
+    #[test]
+    fn the_hub_entry_starts_the_managers_motion_before_placing_him() {
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        let mut names: Vec<String> = (0..=HUB_ENTRY_MOTION).map(|i| format!("Motion {i}")).collect();
+        names[0] = "Idle".into();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        app.insert_resource(crate::limp::tests::motions_named(&names));
+        spawn_hub_level(&mut app);
+        app.update();
+        app.world_mut().spawn((Player, Transform::default()));
+        let mut anim = exa_anim::Animator::new("Default", "Idle");
+        anim.capture = Some(exa_anim::ClipPose {
+            rotations: Vec::new(),
+            root: Vec3::ZERO,
+        });
+        let body = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), Condition(0), Fighter::default(), anim))
+            .id();
+        app.update();
+        let anim = app.world().get::<exa_anim::Animator>(body).unwrap();
+        assert_eq!(anim.action, format!("Motion {HUB_ENTRY_MOTION}"));
+        assert!(anim.capture.is_none() && anim.pending.is_none());
+        assert!(app.world().get::<crate::limp::LivingPlacement>(body).is_some());
     }
 
     #[test]

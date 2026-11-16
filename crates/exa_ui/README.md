@@ -356,7 +356,9 @@ itself is not built yet.
 and destroy. A board holds the four tabs, the six standard matches, the rank
 and tier lists, the six daily events (match, rank, tier and packed coin
 entry and prize columns), six tournament winner rows and the season's four
-weekly winners. Each tab copies a `MatchRecord` into `Board::selected`,
+weekly winners. A click on an item slot holding an item (the tournament
+prize, a season reward) answers `BoardAction::ShowItem` with its item
+(`Board::item_at`), whose card the hub opens. Each tab copies a `MatchRecord` into `Board::selected`,
 whose lowest rank, side size, kind and flags drive the lineup: the rank is
 the six skill levels halved and capped at Master; a fighter joins when its
 rank reaches the floor, the Captain event (type 9) lets teammates be two
