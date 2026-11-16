@@ -3181,6 +3181,62 @@ mod tests {
         eprintln!("exanima05 respawn portal: object {index} at {at:?} cm, rotation {rotation:?}");
     }
 
+    /// What the session's arrival words can name on a load that is no
+    /// transition (a new game, a plain save load: the word the session last
+    /// left, all ones, 0 or the session-start word, with no previous
+    /// level): no shipped transition marker names "no previous level", so
+    /// only an operative of the session-start word's kind (18, the
+    /// reconstruction device) can, and only in the levels that hold one
+    /// (skipped without the game).
+    #[test]
+    fn shipped_levels_name_a_player_object_on_a_plain_load_by_the_device_only() {
+        use exa_assets::content_stream::{
+            NO_PREVIOUS_LEVEL, OBJECT_OPERATIVE, SESSION_START_PLAYER_KIND,
+        };
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let items = exa_formats::objdb::items(&db);
+        let (mut fresh_markers, mut devices) = (Vec::new(), Vec::new());
+        for entry in resource.entries() {
+            if !entry.name.ends_with(".rfc") {
+                continue;
+            }
+            let Ok(scene) = Scene::parse(resource.bytes(entry)) else {
+                continue;
+            };
+            for marker in player_markers(&scene, &items) {
+                if marker.previous_level == NO_PREVIOUS_LEVEL {
+                    fresh_markers.push((entry.name.clone(), marker.entrance));
+                }
+            }
+            for object in &scene.placed_objects {
+                let pool: &[Item] = if object.is_local() {
+                    &scene.local_items
+                } else {
+                    &items
+                };
+                let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+                let Some(item) = pool.iter().find(|item| item.id == id) else {
+                    continue;
+                };
+                if db_objects::node_kind(item) == OBJECT_OPERATIVE
+                    && item.operative.map(|o| u32::from(o.kind)) == Some(SESSION_START_PLAYER_KIND)
+                {
+                    devices.push(entry.name.clone());
+                }
+            }
+        }
+        eprintln!(
+            "markers naming no previous level: {fresh_markers:?}; kind-18 devices: {devices:?}"
+        );
+        assert_eq!(fresh_markers, Vec::<(String, u32)>::new());
+        assert!(devices.iter().any(|name| name == "exanima05.rfc"));
+    }
+
     /// `exanima02` has the arrival marker for the way in from `exanima01`
     /// (locale id 2) at entrance 0, near its exit back (skipped without the
     /// game).
@@ -3357,6 +3413,40 @@ mod tests {
             }
         }
         assert!(found > 0, "exanima01 places a model-less volume");
+    }
+
+    /// A story level's load keeps the level-enter hook's fog variant in its
+    /// live scene environment: the flooded `exanima04` loads at 1.4 (skipped
+    /// without the game).
+    #[test]
+    fn a_story_level_load_keeps_its_fog_variant() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: true,
+        };
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            spawn_level(&mut commands, &mut loader, "exanima04").expect("exanima04 loads");
+        }
+        queue.apply(&mut world);
+        let runtime = world
+            .get_resource::<environment::SceneEnvRuntime>()
+            .expect("the load keeps its scene environment");
+        assert_eq!(runtime.env.fog.distance, 1.4);
     }
 
     /// What spawning `name` produced: the level's info, the names spawned

@@ -49,7 +49,9 @@ impl Plugin for ViewerPlugin {
             .add_systems(
                 Update,
                 (
-                    apply_level_change.after(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+                    apply_level_change
+                        .after(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                        .after(exa_game::save_live::SaveLiveSystems::SavedSection),
                     continue_level.run_if(resource_exists::<PendingLevel>),
                     finish_collision.run_if(resource_exists::<PendingCollision>),
                     finish_dressing.run_if(resource_exists::<PendingDressing>),
@@ -477,6 +479,14 @@ struct PendingLevel {
     started: std::time::Instant,
 }
 
+/// The session state a level change reads and keeps: the world character
+/// store, the session's arrival words and the flow (its mode).
+type ChangeSession<'w> = (
+    Option<ResMut<'w, exa_game::world_characters::WorldCharacters>>,
+    Option<ResMut<'w, exa_game::level_change::SessionArrival>>,
+    Option<Res<'w, exa_game::flow::Flow>>,
+);
+
 /// Starts the level a [`exa_world::level_lifecycle::LevelChangeReady`] names,
 /// after the lifecycle has torn the old level down. A request with no level
 /// only tears down (a session leave). A load already in flight is dropped and
@@ -500,7 +510,7 @@ fn apply_level_change(
         Option<Res<exa_game::level_change::PortalArrival>>,
     ),
     travelling: Option<Res<exa_game::follower_travel::TravellingFollowers>>,
-    mut world: Option<ResMut<exa_game::world_characters::WorldCharacters>>,
+    (mut world, mut session_arrival, flow): ChangeSession,
     last: Option<Res<LastLevel>>,
 ) {
     let Some(ready) = ready else {
@@ -508,6 +518,13 @@ fn apply_level_change(
     };
     let level = ready.level.clone();
     let spawn = ready.spawn;
+    // A transition is the story's: the practice's next fight reloads its
+    // arena without a world reset too, but through the combatant load,
+    // which names no previous level.
+    let door = ready.door
+        && flow
+            .as_deref()
+            .is_none_or(|flow| flow.mode == exa_game::flow::Mode::Story);
     commands.remove_resource::<exa_world::level_lifecycle::LevelChangeReady>();
     // A level that was still building is abandoned with its state.
     commands.remove_resource::<PendingLevel>();
@@ -540,18 +557,37 @@ fn apply_level_change(
                 .and_then(|b| exa_formats::roles::locale_id(b, &last.0))
         })
         .unwrap_or(exa_assets::content_stream::NO_PREVIOUS_LEVEL);
-    // A respawn's load (the story respawn, a pending respawn's save) takes
-    // the session-start word, as the original sets the session's arrival
-    // word before the load (its story save reader does it on every load):
-    // the level's reconstruction device (operative kind 18) names the
-    // player. The original leaves the previous level as it was; Exarust
-    // passes none, which only a marker whose entrance word is the
-    // session-start word could tell apart (none in exanima05, checked).
-    let arrival_words = portal.is_some().then_some((
-        exa_assets::content_stream::SESSION_START_WORD,
-        exa_assets::content_stream::NO_PREVIOUS_LEVEL,
-    ));
-    let (entrance, previous_level) = arrival_words.unwrap_or((spawn, previous_level));
+    // The session's arrival words the load names its player object by
+    // ([`exa_game::level_change::SessionArrival`]): a door's entrance and
+    // the level it leaves; the session-start word for a respawn's load
+    // (the story respawn, a pending respawn's save), so the level's
+    // reconstruction device (operative kind 18) names the player; for any
+    // other load the word the session last left, with no previous level.
+    use exa_game::level_change::ArrivalLoad;
+    let load_kind = match portal.as_deref() {
+        Some(portal) if portal.without.is_some() => ArrivalLoad::Respawn,
+        Some(_) => ArrivalLoad::PendingRespawn,
+        None if door => ArrivalLoad::Door {
+            entrance: spawn,
+            previous_level,
+        },
+        None => ArrivalLoad::Other,
+    };
+    let arrival_words = Some(match session_arrival.as_mut() {
+        Some(session) => session.load_words(load_kind),
+        None => exa_game::level_change::SessionArrival::default().load_words(load_kind),
+    });
+    debug!("level change: {load_kind:?} reads the arrival words {arrival_words:x?}");
+    // The arrival placement's words: the respawn's, else the change's
+    // entrance and the level it leaves.
+    let (entrance, previous_level) = if portal.is_some() {
+        (
+            exa_assets::content_stream::SESSION_START_WORD,
+            exa_assets::content_stream::NO_PREVIOUS_LEVEL,
+        )
+    } else {
+        (spawn, previous_level)
+    };
     commands.insert_resource(exa_game::level_change::LevelArrival {
         entrance,
         previous_level,
@@ -595,6 +631,7 @@ fn apply_level_change(
     // The live world character database's records other than the
     // player's slot (the player is spawned on its own).
     let world_characters = world.as_mut().map(|w| w.others()).unwrap_or_default();
+    let from_save = section.is_some();
     let found = begin_level(
         &mut commands,
         &mut loader,
@@ -607,9 +644,10 @@ fn apply_level_change(
     // The save unit's transition flow around the change: which copy the
     // destination comes from, the spawn matrix and the abort when the
     // archive lacks the level. Kept for the save path's disable flag.
-    let transition = exa_game::level_transition::live_transition(
+    let transition = exa_game::level_transition::live_transition_from(
         &level,
         spawn,
+        from_save,
         found,
         travelling.map_or(0, |t| t.travellers.len()),
     );

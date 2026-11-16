@@ -82,6 +82,11 @@ pub struct LevelChangeReady {
     pub spawn: u32,
     /// The change's serial, from [`LevelChangeState::changes`].
     pub changes: u64,
+    /// A door's change: a level asked for with no [`WorldReset`] in the
+    /// same frame (the original's transition, not a session start, a save
+    /// load, a respawn or an arena round), the same rule the
+    /// [`BeforeDoorTeardown`] hooks follow.
+    pub door: bool,
 }
 
 /// One-shot systems a door's change runs just before its teardown despawns
@@ -173,6 +178,7 @@ fn apply_requests(
             level: request.level.clone(),
             spawn: request.spawn,
             changes: state.changes,
+            door: request.level.is_some() && !reset,
         });
     }
 }
@@ -286,26 +292,28 @@ mod tests {
             app.world_mut().spawn((LevelEntity, Transform::default()));
             messages(app.world_mut());
             app.update();
-            app.world().resource::<Seen>().0.clone()
+            let door = app.world().resource::<LevelChangeReady>().door;
+            (app.world().resource::<Seen>().0.clone(), door)
         };
+        // The ready change says it is a door's when the hooks ran.
         assert_eq!(
             run(&|w| {
                 w.write_message(LevelChangeRequest::change("exanima02", 0));
             }),
-            vec![1]
+            (vec![1], true)
         );
-        assert!(
+        assert_eq!(
             run(&|w| {
                 w.write_message(WorldReset);
                 w.write_message(LevelChangeRequest::change("exanima02", 0));
-            })
-            .is_empty()
+            }),
+            (vec![], false)
         );
-        assert!(
+        assert_eq!(
             run(&|w| {
                 w.write_message(LevelChangeRequest::teardown());
-            })
-            .is_empty()
+            }),
+            (vec![], false)
         );
     }
 
