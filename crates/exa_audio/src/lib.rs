@@ -18,6 +18,7 @@
 mod ambience;
 mod bank;
 mod bodies;
+mod cloth_rustle;
 pub mod efx;
 mod efx_bus;
 mod environment;
@@ -77,6 +78,7 @@ impl Plugin for AudioPlugin {
             .add_message::<exa_combat::sounds::LayerSounded>()
             .add_message::<exa_combat::block::ShieldRung>()
             .add_message::<exa_combat::swing_voice::SwingVoiceCue>()
+            .add_message::<exa_physics::cloth::ClothRustled>()
             .add_systems(
                 Update,
                 (
@@ -102,6 +104,12 @@ impl Plugin for AudioPlugin {
                     efx_bus::drive_reverb_bus,
                 )
                     .chain(),
+            )
+            .add_systems(
+                Update,
+                cloth_rustle::cloth_rustles
+                    .after(sounds::swing_voices)
+                    .before(playback::advance_audio_environment),
             )
             .init_resource::<bodies::FrameBodySounds>()
             .add_systems(

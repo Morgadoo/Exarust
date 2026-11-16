@@ -856,6 +856,18 @@ impl Mesh {
         Ok(())
     }
 
+    /// The mesh's incidence as the load leaves it: every position
+    /// element's corners, faces last first and each face's corners last
+    /// first, then split into smoothing-key runs in place
+    /// ([`element_rings`]). Returns the prefix bounds (`corners[starts[e]..
+    /// starts[e + 1]]` are element `e`'s) and the `(face, corner)` list.
+    /// The cloth's link walk visits each element's faces in this order.
+    pub fn element_incidence(&self) -> (Vec<u32>, Vec<(u32, u8)>) {
+        let (starts, corners, _) =
+            element_rings(&self.indices, &self.position_ids, &self.smoothing);
+        (starts, corners)
+    }
+
     /// Works the normals out again from the positions, as at load: the
     /// angle-weighted face normals summed over the vertices sharing a
     /// smoothing key. A morphed mesh takes its normals from its new shape.
@@ -2577,6 +2589,27 @@ fn face_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
 /// unweighted sum of its faces' unit normals, walked in the incidence order
 /// (the first face's normal sets it and the rest are added), normalised. A
 /// group no face reaches keeps +Y (a labelled safety deviation).
+/// The cloth pass's normals of a drawn mesh ([`flat_face_normals`]): each
+/// vertex's smoothing key `keys[v]` gets the unweighted sum of the unit
+/// normals of the faces about its element `elements[v]`, walked in the
+/// incidence order, normalised. A triangle naming a missing vertex is
+/// left out.
+pub fn cloth_normals(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    keys: &[u32],
+    elements: &[u32],
+) -> Vec<[f32; 3]> {
+    let n = positions.len();
+    let mut kept = Vec::with_capacity(indices.len());
+    for t in indices.as_chunks::<3>().0 {
+        if t.iter().all(|&i| (i as usize) < n) {
+            kept.extend_from_slice(t);
+        }
+    }
+    flat_face_normals(positions, &kept, keys, elements)
+}
+
 fn flat_face_normals(
     positions: &[[f32; 3]],
     indices: &[u32],

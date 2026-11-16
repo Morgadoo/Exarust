@@ -212,7 +212,10 @@ cloth is built from (`ModelNode::cloth_mesh`, `ClothMesh`): the mesh's
 position elements, its triangles over them with their face flags (sub-chunk
 `0x3DC3`, whose top bits mark the pinned faces) and, for each drawn part,
 the element of each of its vertices, so the cloth makes one particle per
-element as the original does (a seam does not split it).
+element as the original does (a seam does not split it), each vertex's
+smoothing key (for the draw's normal rebuild), and the cloth's links: the
+set-up's walk out from the pins over the whole mesh's incidence, from each
+element's position in centimetres (`exa_physics::cloth::walk_links`).
 
 Object libraries: `ModelLoader::object_pack` searches the project's object
 libraries in their order and `object_model` loads the first match, as the

@@ -261,6 +261,15 @@ pub struct ClothMesh {
     /// For each drawn part of the node, in [`ModelNode::parts`] order, the
     /// position element of each of its vertices.
     pub part_elements: Vec<Vec<u32>>,
+    /// For each drawn part, the smoothing key of each of its vertices (in
+    /// the same order): the cloth's normal rebuild shares a normal between
+    /// the vertices of one key.
+    pub part_keys: Vec<Vec<u32>>,
+    /// The cloth's links over the elements, in the order its edge pass
+    /// visits them: the original's walk out from the pins over the mesh's
+    /// incidence ([`exa_physics::cloth::walk_links`]), from each element's
+    /// position in centimetres.
+    pub links: Vec<(u32, u32)>,
 }
 
 impl ClothMesh {
@@ -279,7 +288,13 @@ impl ClothMesh {
             .triangle_flags
             .clone()
             .unwrap_or_else(|| vec![0; faces.len()]);
-        let part_elements = groups
+        let key = |i: u32| {
+            mesh.smoothing
+                .get(i as usize)
+                .copied()
+                .unwrap_or_else(|| element(i))
+        };
+        let part_vertices: Vec<Vec<u32>> = groups
             .iter()
             .map(|&g| {
                 let group = &mesh.groups[g];
@@ -293,17 +308,58 @@ impl ClothMesh {
                 let mut seen = std::collections::HashSet::with_capacity(indices.len());
                 indices
                     .iter()
-                    .filter(|&&i| seen.insert(i))
-                    .map(|&i| element(i))
+                    .copied()
+                    .filter(|&i| seen.insert(i))
                     .collect()
             })
             .collect();
+        let part_elements = part_vertices
+            .iter()
+            .map(|part| part.iter().map(|&i| element(i)).collect())
+            .collect();
+        let part_keys = part_vertices
+            .iter()
+            .map(|part| part.iter().map(|&i| key(i)).collect())
+            .collect();
+        let links = Self::walk(mesh, &faces, &face_flags);
         Self {
             elements: mesh.position_count,
             faces,
             face_flags,
             part_elements,
+            part_keys,
+            links,
         }
+    }
+
+    /// The link walk over the whole mesh, as the original's cloth set-up
+    /// runs it: every element at its first vertex's position (centimetres),
+    /// the pins its face flags give, the faces and their incidence as the
+    /// load leaves it.
+    fn walk(mesh: &RfcMesh, faces: &[[u32; 3]], face_flags: &[u32]) -> Vec<(u32, u32)> {
+        let count = mesh.position_count;
+        let mut positions = vec![bevy::math::Vec3::ZERO; count];
+        let mut placed = vec![false; count];
+        for (vertex, &element) in mesh.position_ids.iter().enumerate() {
+            let element = element as usize;
+            if element < count && !placed[element] {
+                placed[element] = true;
+                let p = mesh.positions.get(vertex).copied().unwrap_or_default();
+                positions[element] = bevy::math::Vec3::from_array(p) * 100.0;
+            }
+        }
+        let faces: Vec<[usize; 3]> = faces.iter().map(|f| f.map(|e| e as usize)).collect();
+        let element_faces: Vec<[u32; 3]> = faces.iter().map(|f| f.map(|e| e as u32)).collect();
+        let pins: Vec<usize> =
+            exa_physics::cloth::face_flag_pins(count, &element_faces, face_flags)
+                .into_iter()
+                .map(|(element, _)| element)
+                .collect();
+        let (starts, fans) = mesh.element_incidence();
+        exa_physics::cloth::walk_links(&positions, &faces, &starts, &fans, &pins)
+            .into_iter()
+            .map(|(a, b)| (a as u32, b as u32))
+            .collect()
     }
 }
 
@@ -5513,6 +5569,93 @@ mod tests {
             ..mesh
         };
         assert_eq!(ClothMesh::of(&bare, &[0]).face_flags, vec![0, 0]);
+    }
+
+    /// The link walk over every installed cloth mesh (skipped without the
+    /// game): the long hair, the four banners and the wraith's robe. Every
+    /// element is linked, no link joins an element to itself, and each
+    /// face's two shorter edges are links. Logs each mesh's counts (with
+    /// the pairs linked twice).
+    #[test]
+    fn the_shipped_cloths_walk_their_links() {
+        use exa_rpk::PackKind;
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let mut meshes = 0;
+        for kind in [PackKind::CharExt, PackKind::Objlib, PackKind::Resource] {
+            let pack = game.pack(kind).unwrap();
+            for entry in pack.entries() {
+                let bytes = pack.bytes(entry);
+                if exa_formats::FileKind::detect(bytes) != exa_formats::FileKind::ChunkTree {
+                    continue;
+                }
+                let Ok(scene) = Scene::parse(bytes) else {
+                    continue;
+                };
+                for node in scene.nodes.iter().filter(|n| n.cloth_marker) {
+                    let NodeBody::Mesh(mesh) = &node.body else {
+                        continue;
+                    };
+                    let groups: Vec<usize> = (0..mesh.groups.len()).collect();
+                    let cloth = ClothMesh::of(mesh, &groups);
+                    meshes += 1;
+                    let mut pairs = std::collections::HashMap::new();
+                    let mut linked = vec![false; cloth.elements];
+                    let mut twice = Vec::new();
+                    for (index, &(a, b)) in cloth.links.iter().enumerate() {
+                        assert_ne!(a, b, "{}: a self link", entry.name);
+                        if let Some(first) = pairs.insert((a.min(b), a.max(b)), index) {
+                            twice.push((first, index, a, b));
+                        }
+                        linked[a as usize] = true;
+                        linked[b as usize] = true;
+                    }
+                    // Some pairs come twice (the walk's link and a neighbour
+                    // pair, or two neighbour pairs, around triangle fans):
+                    // the original's lists keep them, so they are counted,
+                    // not refused.
+                    let used: std::collections::HashSet<u32> =
+                        cloth.faces.iter().flatten().copied().collect();
+                    let unlinked = used.iter().filter(|&&e| !linked[e as usize]).count();
+                    // Each face's two shorter edges are links.
+                    let at = |e: u32| {
+                        let v = mesh.position_ids.iter().position(|&id| id == e).unwrap();
+                        bevy::math::Vec3::from_array(mesh.positions[v])
+                    };
+                    let mut missing = 0;
+                    for face in &cloth.faces {
+                        let mut edges: Vec<(f32, u32, u32)> = (0..3)
+                            .map(|k| {
+                                let (a, b) = (face[k], face[(k + 1) % 3]);
+                                (at(a).distance_squared(at(b)), a.min(b), a.max(b))
+                            })
+                            .collect();
+                        edges.sort_by(|x, y| x.0.total_cmp(&y.0));
+                        for &(_, a, b) in &edges[..2] {
+                            if !pairs.contains_key(&(a, b)) {
+                                missing += 1;
+                            }
+                        }
+                    }
+                    eprintln!(
+                        "{} {}: {} elements, {} faces, {} links ({} pairs twice), {} unlinked, {} short edges missing",
+                        entry.name,
+                        node.name,
+                        used.len(),
+                        cloth.faces.len(),
+                        cloth.links.len(),
+                        twice.len(),
+                        unlinked,
+                        missing
+                    );
+                    assert_eq!(unlinked, 0, "{}: elements without a link", entry.name);
+                    assert!(cloth.links.len() >= used.len(), "{}", entry.name);
+                }
+            }
+        }
+        assert!(meshes >= 6, "{meshes} cloth meshes");
     }
 
     /// A built part turns back into the merge's streams: its positions,
