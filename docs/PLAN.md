@@ -1509,6 +1509,10 @@ the live solver takes the scene's own grid from the level's grid chunk: parts ar
 
 the base form's task rules run in the live window manager: forms are inserted at their layer's place and drawn in tree order, the tag search and the active test make the I and J toggles act on the window on top, a press activates through the child raise rule, the focus routine remembers the form it leaves and the window's focus loss parks the focus on the root, a close cascades through child forms and sweeps the GUI's references (the journal's box closes with the journal), the record release always carries its landing bit, and the open screens rescale on a GUI unit change. Grid scenes owed while the GPU is on hold.
 
+the player controls' switches follow the assembly: Spirit Form holds the controls (powers keys only, no world clicks), the drag reach limit follows the block pairs, a lifted item's turn is re-orthonormalised, combat entry puts a lifted item back, a locked item leaving its lock runs the drop scripts, a "not now" power is held and retried, death, knock-out, level exit and a loose weapon release a held GUI button, an object use starts its tracks, the idle double click runs with the controls off, the lift warps the pointer onto the item, and the reach waits for the walk latch. Two defects fixed: a used object was deleted, and the device power-down had the wrong trigger. Scenes and determinism runs owed while the GPU is on hold.
+
+the step reach follows the assembly's order; golem and skeleton part sounds and the golem layer class come from the race word and the golem suit; the gauntlets' weightless share reaches the holding pass; the golem alarm-return and revive placements re-place held items; the attach and the three drops write the item's own body by kind (strike flags, friction, the base contact mobility restored). Left: the living re-place of a body (the arena's kept bodies, golems). Determinism runs and scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
