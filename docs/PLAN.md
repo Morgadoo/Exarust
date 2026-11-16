@@ -1543,6 +1543,8 @@ the game main unit's session steps follow the original: the HUD is no longer hid
 
 F544 closed: every practice and arena staging (practice start, next fight, the arena's first round, next round and bracket round) sets the original's staging flag, under which the AI tick runs the idle stand (a soft stop, then the out-of-combat turn) instead of its state, while the target pass still enters combat; the flag clears when the transition screen's fade-in ends, about 1.1 s later. Exarust holds the AI states for 92 simulation ticks from each staging. Arena and practice traces change in the first 1.1 s of each fight; determinism runs owed while the GPU is on hold.
 
+the save header's camera pair is the view camera's eye in centimetres and the controller's current zoom, kept live from the chase camera (F415 closed); journal pages carry their id word; a door's arrival runs the original's save landing (the stance restarted, full tone, condition and flags cleared, the pelvis at the landing word plus 13 or 5 cm over the probed floor); the arena match's return reads the hub from the arena slot's saved section. Left: the between-round reload, the death CONTINUE's player rebuild, the menu scene. Story traces through a door change; scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
