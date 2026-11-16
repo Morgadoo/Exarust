@@ -483,7 +483,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TManageForm | Game modes, arena & session | 0 | 60% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TGUIDrawSkin | UI | 35 | 93% | 63% | 53% | 0% | 10% | 10% | 27% |
 | TGSLines | UI | 24 | 89% | 81% | 81% | 0% | 0% | 16% | 3% |
-| SG_GameGUI | UI | 22 | 90% | 67% | 50% | 1% | 16% | 30% | 2% |
+| SG_GameGUI | UI | 22 | 90% | 69% | 52% | 1% | 16% | 31% | 0% |
 | TGUIForm | UI | 20 | 96% | 32% | 31% | 1% | 0% | 49% | 19% |
 | TSkillUI | UI | 18 | 88% | 76% | 76% | 0% | 0% | 20% | 4% |
 | RF_GUI_Controls_Ex | UI | 16 | 87% | 75% | 12% | 1% | 62% | 25% | 0% |

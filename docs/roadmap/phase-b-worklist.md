@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 611 | 151,653 | B1 wire (or prove unreachable) |
-| partial | 1,404 | 886,235 | B4 complete the port |
+| uncalled | 605 | 151,104 | B1 wire (or prove unreachable) |
+| partial | 1,405 | 886,256 | B4 complete the port |
 | missing | 52 | 10,114 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -16,7 +16,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 143,795 | 18,075 | 276 |
 | render | 122,907 | 22,392 | 3,232 |
-| ui | 87,251 | 41,368 | 288 |
+| ui | 87,272 | 40,819 | 288 |
 | powers | 105,027 | 2,271 | 2,321 |
 | characters | 88,686 | 14,220 | 1,943 |
 | ai | 89,630 | 1,725 | 28 |
@@ -66,12 +66,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceBarricadeEffect | powers | 4 / 7,984 | 0 / 0 | 0 / 0 | 7,984 |
 | TVCCloth | physics | 11 / 6,317 | 6 / 1,514 | 0 / 0 | 7,831 |
 | TRBDDoor | world | 3 / 7,666 | 0 / 0 | 0 / 0 | 7,666 |
-| SG_GameGUI (unit routines) | ui | 12 / 6,906 | 6 / 549 | 0 / 0 | 7,455 |
 | TCharacterView | ui | 14 / 6,327 | 1 / 866 | 0 / 0 | 7,193 |
 | RF_Morphing (unit routines) | characters | 6 / 7,170 | 0 / 0 | 0 / 0 | 7,170 |
 | RF_SceneNodes (unit routines) | world | 5 / 6,798 | 2 / 333 | 0 / 0 | 7,131 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
 | RF_Navigation (unit routines) | render | 7 / 4,895 | 9 / 2,080 | 0 / 0 | 6,975 |
+| SG_GameGUI (unit routines) | ui | 13 / 6,927 | 0 / 0 | 0 / 0 | 6,927 |
 | TRenderer | render | 15 / 6,335 | 1 / 526 | 1 / 10 | 6,871 |
 | Steam Input action bindings | runtime | 10 / 6,237 | 2 / 166 | 3 / 393 | 6,796 |
 | RFE_GridEnvs (unit routines) | world | 7 / 6,790 | 0 / 0 | 0 / 0 | 6,790 |
