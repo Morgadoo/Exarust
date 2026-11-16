@@ -162,6 +162,7 @@ fn the_journal_entries() {
     assert_eq!(
         journal.entries,
         vec![JournalEntry {
+            id: 0,
             title: NEW_ENTRY.into(),
             text: String::new()
         }]

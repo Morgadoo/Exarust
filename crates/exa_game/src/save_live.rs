@@ -67,12 +67,13 @@ use crate::staff::Staff;
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct SaveFolder(pub PathBuf);
 
-/// The view's camera target and zoom a save stamps into its header. The
-/// original's writers copy the scene view's target (centimetres) and its
-/// zoom word into both headers; both readers read the pair into scratch and
-/// drop it, so a load never moves the view. The host may set this from its
-/// camera; nothing in the running game does yet (Exarust's chase camera
-/// has no traced mapping onto the original's view fields), so a save writes
+/// The view's camera place and zoom a save stamps into its header. The
+/// original's writers copy twelve bytes of the viewport's camera node (the
+/// translation row of its matrix: where the eye stands, centimetres) and
+/// the camera controller's current zoom word into both headers; both
+/// readers read the pair into scratch and drop it, so a load never moves
+/// the view. The running game keeps it from the chase camera every frame
+/// ([`follow_the_view`]); without a camera (a headless run) a save writes
 /// the header's defaults (the origin, zoom 1).
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct SaveCamera {
@@ -96,6 +97,32 @@ impl SaveCamera {
     pub fn stamp(&self, session: &mut Session) {
         session.camera = self.target_cm;
         session.zoom = self.zoom;
+    }
+
+    /// The pair of a chase camera whose eye stands at `eye` (m): the eye in
+    /// the engine's centimetres (Exarust's world is the original's axes in
+    /// metres) and the camera's shown zoom.
+    pub fn of_view(eye: Vec3, camera: &crate::player::ChaseCamera) -> Self {
+        Self {
+            target_cm: (eye * 100.0).to_array(),
+            zoom: camera.shown_zoom(),
+        }
+    }
+}
+
+/// Keeps [`SaveCamera`] on the chase camera, as the original's writers read
+/// the live view when they run: the eye of the first chase camera and its
+/// shown zoom. A run without a chase camera keeps what it had.
+pub fn follow_the_view(
+    cameras: Query<(&crate::player::ChaseCamera, &Transform)>,
+    mut camera: ResMut<SaveCamera>,
+) {
+    let Some((chase, transform)) = cameras.iter().next() else {
+        return;
+    };
+    let now = SaveCamera::of_view(transform.translation, chase);
+    if *camera != now {
+        *camera = now;
     }
 }
 
@@ -396,6 +423,7 @@ impl Plugin for SaveLivePlugin {
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::world_clock::RestoreWorldClock>()
             .init_resource::<ArenaStores>()
+            .init_resource::<SaveCamera>()
             .init_resource::<SaveReport>()
             .init_resource::<QuitAutosave>()
             .add_message::<AppExit>()
@@ -408,6 +436,7 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 (
                     make_slot_lists,
+                    follow_the_view,
                     report_saves,
                     scripted_saves,
                     run_checkpoint_scripts,
@@ -1707,6 +1736,7 @@ pub fn stamp_journal(session: &mut Session, screens: Option<&crate::gui_screens:
         .entries
         .iter()
         .map(|entry| exa_script::story::Entry {
+            id: entry.id,
             title: entry.title.clone(),
             text: entry.text.clone(),
         })
@@ -1727,6 +1757,7 @@ pub fn apply_loaded_journal(journal: &mut exa_ui::game_gui::Journal, session: &S
         .entries()
         .iter()
         .map(|entry| exa_ui::game_gui::JournalEntry {
+            id: entry.id,
             title: entry.title.clone(),
             text: entry.text.clone(),
         })
@@ -2513,12 +2544,16 @@ fn load_arena_slot(
 /// `<locale>.rfc` ([`exa_world::SavedLevelSection`], used once by the host's
 /// load). A save without the section (a level not visited yet, a new
 /// story's fresh slot) leaves the archive's; a section a save load already
-/// handed is left alone. The arena's loads are the arena unit's.
+/// handed is left alone. In the arena only the settled match's return to
+/// the hub does the same, from the current arena slot's `arenahub` section
+/// (the arena's saves export the scene they leave under its locale); its
+/// other loads are the arena unit's.
 ///
 /// Evidence (REA, Exanima.exe, the assembly): the transition opens the save
 /// package when none is open, looks the destination's section up by name
 /// and imports it, the archive's file only when that failed; the respawn's
-/// level load (the save-or-archive loader) the same.
+/// level load (the save-or-archive loader) the same, and the match return
+/// loads the hub through that loader with its save flag set.
 pub fn prefer_saved_section(
     mut commands: Commands,
     ready: Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
@@ -2526,6 +2561,7 @@ pub fn prefer_saved_section(
     flow: Option<Res<crate::flow::Flow>>,
     lists: Option<Res<SlotLists>>,
     saved: Option<Res<exa_world::SavedLevelSection>>,
+    hub: Option<Res<crate::arena_hub_live::ArenaHub>>,
 ) {
     let Some(ready) = ready else {
         return;
@@ -2537,7 +2573,17 @@ pub fn prefer_saved_section(
     let Some(level) = ready.level.as_deref() else {
         return;
     };
-    if flow.is_some_and(|flow| flow.mode != crate::flow::Mode::Story) {
+    let arena = flow
+        .as_ref()
+        .is_some_and(|flow| flow.mode == crate::flow::Mode::Arena);
+    if arena {
+        // The settled match's return: the hub, with the return placement
+        // the settle wrote.
+        let returning = hub.as_ref().is_some_and(|hub| hub.returned.is_some());
+        if !(returning && crate::arena_hub_live::is_hub_level(level)) {
+            return;
+        }
+    } else if flow.is_some_and(|flow| flow.mode != crate::flow::Mode::Story) {
         return;
     }
     if saved.is_some_and(|saved| saved.is_for(level)) {
@@ -2546,7 +2592,8 @@ pub fn prefer_saved_section(
     let Some(lists) = lists else {
         return;
     };
-    let Some(section) = saved_level_section(&lists.story, level) else {
+    let list = if arena { &lists.arena } else { &lists.story };
+    let Some(section) = saved_level_section(list, level) else {
         debug!("level change: the save holds no {level} section; the archive's is read");
         return;
     };
@@ -3757,6 +3804,47 @@ mod tests {
     }
 
     #[test]
+    fn a_live_save_stamps_the_chase_cameras_eye_and_shown_zoom() {
+        // The writers copy the viewport camera node's translation (the eye,
+        // centimetres) and the controller's current zoom word into the
+        // header: the running game takes them from the chase camera.
+        let dir = folder("live-camera");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        let chase = crate::player::ChaseCamera::default();
+        let zoom = chase.shown_zoom();
+        assert_eq!(zoom, 1300.0);
+        app.world_mut()
+            .spawn((chase, Transform::from_xyz(69.8125, 15.75, 32.5)));
+        app.update();
+        assert_eq!(
+            *app.world().resource::<SaveCamera>(),
+            SaveCamera {
+                target_cm: [6981.25, 1575.0, 3250.0],
+                zoom,
+            }
+        );
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        let bytes = std::fs::read(Slots::story(&dir).file(number, SlotKind::Save)).unwrap();
+        let package = save_package::PackageImage::read(&bytes).unwrap();
+        let data = save_package::PlayerData::parse(
+            package.section(save_package::PLAYER_DATA).unwrap(),
+            save_package::Flavour::Story,
+        )
+        .unwrap();
+        let save_package::PlayerHeader::Story(header) = data.header else {
+            panic!("story")
+        };
+        assert_eq!(header.camera, [6981.25, 1575.0, 3250.0]);
+        assert_eq!(header.zoom, 1300.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_checkpoint_step_saves_first_then_copies_and_leaves_an_existing_one() {
         let dir = folder("checkpoint-step");
         let mut app = App::new();
@@ -4308,6 +4396,56 @@ mod tests {
         app
     }
 
+    /// The settled match's return to the hub reads the hub from the current
+    /// arena slot's saved `arenahub` section, as the original's match
+    /// return loads it through the save-or-archive loader with its save
+    /// flag set; any other arena hub load leaves the archive's.
+    #[test]
+    fn the_hub_return_reads_the_arena_slots_saved_hub() {
+        let dir = folder("hub-return");
+        let mut app = new_game_app(&dir, crate::flow::Mode::Arena, "Boss");
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        let current = app.world().resource::<SlotLists>().arena.current();
+        assert!(current > 0);
+        // The arena's save at the match's begin exported the hub it left.
+        let file = Slots::arena(&dir).file(current as u32, SlotKind::Save);
+        let mut package = std::fs::read(&file)
+            .ok()
+            .and_then(|bytes| save_package::PackageImage::read(&bytes).ok())
+            .unwrap_or_default();
+        package.put_section(&save_package::name("arenahub"), b"the saved hub");
+        std::fs::write(&file, package.to_bytes()).unwrap();
+        // A hub load that is not the match's return: the archive's.
+        app.insert_resource(crate::arena_hub_live::ArenaHub::default());
+        app.insert_resource(exa_world::level_lifecycle::LevelChangeReady {
+            level: Some("arenahub".into()),
+            spawn: 0,
+            changes: 1,
+            door: false,
+        });
+        app.update();
+        assert!(
+            !app.world()
+                .contains_resource::<exa_world::SavedLevelSection>()
+        );
+        // The return: the slot's own section.
+        app.world_mut()
+            .resource_mut::<crate::arena_hub_live::ArenaHub>()
+            .returned = Some(crate::arena_session::RETURN_PLACEMENT);
+        app.insert_resource(exa_world::level_lifecycle::LevelChangeReady {
+            level: Some("arenahub".into()),
+            spawn: 0,
+            changes: 2,
+            door: false,
+        });
+        app.update();
+        let section = app.world().resource::<exa_world::SavedLevelSection>();
+        assert_eq!(section.locale, "arenahub");
+        assert_eq!(&section.bytes[..], b"the saved hub");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A new story makes its slot at the start (named after the created
     /// character, current at once), so the story's first save lands in it
     /// without a continue from the saves screen.
@@ -4586,10 +4724,12 @@ mod tests {
         let mut screens = crate::gui_screens::GameScreens::default();
         screens.journal.entries = vec![
             exa_ui::game_gui::JournalEntry {
+                id: 0,
                 title: "Gate".to_string(),
                 text: "The gate is shut.".to_string(),
             },
             exa_ui::game_gui::JournalEntry {
+                id: 0x51,
                 title: "Key".to_string(),
                 text: "A key in the well.".to_string(),
             },
@@ -4605,26 +4745,36 @@ mod tests {
         assert!(list.any());
         list.select(0);
         let loaded = list.load_current(false).unwrap();
-        let pages: Vec<(String, String)> = loaded
+        // Each page's id word is written as the page carries it (the
+        // original's writer writes the word its reader put back; the game's
+        // own pages carry 0).
+        let pages: Vec<(i32, String, String)> = loaded
             .data
             .journal_or_default()
             .unwrap()
             .into_iter()
-            .map(|record| (record.title, record.text))
+            .map(|record| (record.id, record.title, record.text))
             .collect();
         assert_eq!(
             pages,
             vec![
-                ("Gate".to_string(), "The gate is shut.".to_string()),
-                ("Key".to_string(), "A key in the well.".to_string()),
+                (0, "Gate".to_string(), "The gate is shut.".to_string()),
+                (0x51, "Key".to_string(), "A key in the well.".to_string()),
             ]
         );
         // The load: the in-game journal (here back to its first page)
-        // takes the loaded session's pages.
-        let mut session = Session::story();
-        session.story.journal_mut().write("Gate");
-        session.story.journal_mut().add("Key");
-        session.story.journal_mut().write("A key in the well.");
+        // takes the loaded session's pages with their id words.
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        let mut reread = SlotList::new(Slots::story(&dir));
+        let session = restore_story(&mut reread, number, false).unwrap().session;
+        let ids: Vec<i32> = session
+            .story
+            .journal()
+            .entries()
+            .iter()
+            .map(|page| page.id)
+            .collect();
+        assert_eq!(ids, [0, 0x51]);
         app.world_mut()
             .resource_mut::<crate::gui_screens::GameScreens>()
             .journal = exa_ui::game_gui::Journal::default();
@@ -4637,6 +4787,7 @@ mod tests {
         assert_eq!(journal.entries.len(), 2);
         assert_eq!(journal.entries[1].title, "Key");
         assert_eq!(journal.entries[1].text, "A key in the well.");
+        assert_eq!(journal.entries[1].id, 0x51);
         assert_eq!(journal.current, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }

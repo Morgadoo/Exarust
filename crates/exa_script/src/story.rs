@@ -23,8 +23,12 @@ pub const CAMPAIGN: [&str; 8] = [
 ];
 
 /// One page of the journal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Entry {
+    /// The page's id word: 0 for every page the game makes (the opening
+    /// page, an added one, the reset of the last); a save's reader puts
+    /// back each page's saved word and the writer writes it again.
+    pub id: i32,
     pub title: String,
     pub text: String,
 }
@@ -41,6 +45,7 @@ impl Journal {
     pub fn new() -> Self {
         Self {
             entries: vec![Entry {
+                id: 0,
                 title: "New Entry".to_string(),
                 text: String::new(),
             }],
@@ -60,6 +65,7 @@ impl Journal {
     /// Open a new titled page.
     pub fn add(&mut self, title: &str) {
         self.entries.push(Entry {
+            id: 0,
             title: title.to_string(),
             text: String::new(),
         });
