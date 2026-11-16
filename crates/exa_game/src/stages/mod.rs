@@ -257,9 +257,10 @@ fn push_striking_fists(
 }
 
 /// Every living physical body (one with muscles whose clips its ticks
-/// advance), ticked in the original's order ([`player_last`]), each with
-/// its character: the controller above it, if any. Nothing ticks before the
-/// motion set is loaded.
+/// advance), ticked in the original's order: the simulation's character
+/// list ([`CharacterList`]) from its last entry to its first, the player.
+/// Each runs with its character: the controller above it, if any. Nothing
+/// ticks before the motion set is loaded.
 #[allow(clippy::type_complexity)]
 fn tick_characters(
     world: &mut World,
@@ -267,30 +268,92 @@ fn tick_characters(
         (Entity, &Ragdoll, Has<PlayerBody>),
         (With<Animator>, With<TickedClips>, Without<OutOfScene>),
     >,
-    mut order: Local<Vec<(bool, Entity)>>,
+    mut list: Local<CharacterList>,
+    mut living: Local<Vec<(Entity, bool)>>,
 ) {
     if !world.contains_resource::<exa_anim::Motions>() {
         return;
     }
-    order.clear();
-    order.extend(
+    living.clear();
+    living.extend(
         bodies
             .iter(world)
             .filter(|(_, body, _)| body.drive.is_some())
-            .map(|(e, _, player)| (player, e)),
+            .map(|(e, _, player)| (e, player)),
     );
-    // In entity order before the player goes last, whichever world's
-    // tables the query walked.
-    order.sort_unstable_by_key(|&(_, e)| e);
-    player_last(&mut order);
-    let ticks: Vec<TickedCharacter> = order
-        .iter()
-        .map(|&(_, body)| TickedCharacter {
+    // Bodies that came in since the last step join in entity order (their
+    // spawn order), whichever world's tables the query walked.
+    living.sort_unstable_by_key(|&(e, _)| e);
+    list.update(&living);
+    let ticks: Vec<TickedCharacter> = list
+        .tick_order()
+        .map(|body| TickedCharacter {
             body,
             character: character_of(world, body),
         })
         .collect();
     run_character_ticks(world, ticks);
+}
+
+/// The simulation's character list as the original keeps it (its
+/// registration appends a body, the player instead taking the front entry,
+/// whose body moves to the end; its removals, at a hide or the body's end,
+/// put the last entry in the leaver's place), walked by the sector step
+/// from the last entry down to the first: the player ticks last, the most
+/// recently registered first. A body hidden (out of the scene) or no longer
+/// living leaves it and joins again at the end when it comes back.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CharacterList(Vec<Entity>);
+
+impl CharacterList {
+    /// The original's registration: appended, or, for the player, put at
+    /// the front with the front entry's body moved to the end.
+    pub fn join(&mut self, body: Entity, player: bool) {
+        match self.0.first().copied() {
+            Some(front) if player => {
+                self.0.push(front);
+                self.0[0] = body;
+            }
+            _ => self.0.push(body),
+        }
+    }
+
+    /// The original's removal: the last entry takes the leaver's place.
+    pub fn leave(&mut self, body: Entity) {
+        if let Some(i) = self.0.iter().position(|&b| b == body) {
+            self.0.swap_remove(i);
+        }
+    }
+
+    /// Brings the list to the `living` bodies (with whether each is the
+    /// player), in their order: bodies gone leave first, in list order,
+    /// then the new ones join.
+    pub fn update(&mut self, living: &[(Entity, bool)]) {
+        let gone: Vec<Entity> = self
+            .0
+            .iter()
+            .copied()
+            .filter(|b| !living.iter().any(|(e, _)| e == b))
+            .collect();
+        for body in gone {
+            self.leave(body);
+        }
+        for &(body, player) in living {
+            if !self.0.contains(&body) {
+                self.join(body, player);
+            }
+        }
+    }
+
+    /// The entries, first to last.
+    pub fn entries(&self) -> &[Entity] {
+        &self.0
+    }
+
+    /// The sector step's order: the last entry first, the first last.
+    pub fn tick_order(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.0.iter().rev().copied()
+    }
 }
 
 /// The nearest ancestor of `body` with a character controller.
@@ -303,13 +366,6 @@ fn character_of(world: &World, body: Entity) -> Option<Entity> {
         node = world.get::<ChildOf>(n).map(ChildOf::parent);
     }
     None
-}
-
-/// Puts the player's body (flagged `true`) after every other, which keep
-/// their order: the original ticks its characters from the last registered
-/// to the first, the player.
-fn player_last(order: &mut [(bool, Entity)]) {
-    order.sort_by_key(|&(player, _)| player);
 }
 
 #[cfg(test)]
@@ -530,12 +586,68 @@ mod tests {
         }
     }
 
+    /// The character list keeps the original's registration and removal:
+    /// bodies append, the player takes the front (the front's body goes to
+    /// the end), a leaver's place takes the last entry, and the step ticks
+    /// from the last entry down to the player.
     #[test]
-    fn the_player_is_ticked_last() {
+    fn the_character_list_ticks_the_latest_first_and_the_player_last() {
         let e = |i: u32| Entity::from_raw_u32(i).unwrap();
-        let mut order = vec![(false, e(3)), (true, e(1)), (false, e(7)), (false, e(2))];
-        player_last(&mut order);
-        let ticked: Vec<Entity> = order.iter().map(|&(_, x)| x).collect();
-        assert_eq!(ticked, [e(3), e(7), e(2), e(1)]);
+        let mut list = CharacterList::default();
+        list.update(&[(e(1), false), (e(2), false), (e(3), true), (e(4), false)]);
+        assert_eq!(list.entries(), [e(3), e(2), e(1), e(4)]);
+        let ticked: Vec<Entity> = list.tick_order().collect();
+        assert_eq!(ticked, [e(4), e(1), e(2), e(3)]);
+        // e(2) leaves: the last entry takes its place.
+        list.update(&[(e(1), false), (e(3), true), (e(4), false)]);
+        assert_eq!(list.entries(), [e(3), e(4), e(1)]);
+        // A newcomer joins at the end and ticks first; one coming back
+        // joins after it.
+        list.update(&[(e(1), false), (e(3), true), (e(4), false), (e(9), false)]);
+        list.update(&[
+            (e(1), false),
+            (e(2), false),
+            (e(3), true),
+            (e(4), false),
+            (e(9), false),
+        ]);
+        let ticked: Vec<Entity> = list.tick_order().collect();
+        assert_eq!(ticked, [e(2), e(9), e(1), e(4), e(3)]);
+        // The player alone, and a player joining an empty list.
+        let mut alone = CharacterList::default();
+        alone.join(e(5), true);
+        assert_eq!(alone.entries(), [e(5)]);
+    }
+
+    /// Through the live driver: three bodies spawned in one step tick from
+    /// the last registered down to the player (registered first), and a
+    /// body spawned later ticks before them all.
+    #[test]
+    fn the_driver_ticks_the_list_from_its_last_entry() {
+        let mut app = App::new();
+        app.add_plugins(BodyPlugin)
+            .insert_resource(exa_physics::Physics::default())
+            .insert_resource(crate::limp::tests::motions())
+            .init_resource::<Ticked>()
+            .add_systems(FixedUpdate, tick_characters.in_set(CharacterTicks))
+            .add_systems(CharacterTick, note.in_set(CharacterStage::Upkeep));
+        let world = app.world_mut();
+        let clips = || (Animator::new("Default", "Idle"), TickedClips);
+        let player = world
+            .spawn((body(true), clips(), PlayerBody::new(0.0)))
+            .id();
+        let first = world.spawn((body(true), clips())).id();
+        let second = world.spawn((body(true), clips())).id();
+        world.run_schedule(FixedUpdate);
+        let later = world.spawn((body(true), clips())).id();
+        world.resource_mut::<Ticked>().0.clear();
+        world.run_schedule(FixedUpdate);
+        let ticked: Vec<Entity> = world
+            .resource::<Ticked>()
+            .0
+            .iter()
+            .map(|t| t.body)
+            .collect();
+        assert_eq!(ticked, [later, second, first, player]);
     }
 }

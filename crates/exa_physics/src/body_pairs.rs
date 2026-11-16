@@ -69,9 +69,6 @@ pub(crate) const SWEEP_TRAVEL2: f32 = 0.1;
 /// reported (not clamped, as the original's clamp is dead).
 const MIN_PUSH2: f32 = 1e-5;
 const EXCESSIVE_PUSH2: f32 = 25_600.0;
-/// A contact's weights on the sphere side's particles that reach past this
-/// (a point far outside its tetrahedron) give way to its sphere centre's.
-const MAX_WEIGHT: f32 = 1.0;
 /// Points a pair keeps.
 const POINTS: usize = 4;
 /// Depth (cm) a pair's point may keep before the pair pass corrects it:
@@ -537,7 +534,8 @@ pub(super) fn push_apart(a: &mut Part, b: &mut Part, wa: [f32; 4], wb: [f32; 4],
     let (Some((na, phi_a)), Some((nb, phi_b))) = (spread(wa), spread(wb)) else {
         return;
     };
-    let f = 2.0 * phi_a / (phi_a + phi_b);
+    // The original's order: 2 / (φ_A + φ_B) first, then times φ_A.
+    let f = phi_a * (2.0 / (phi_a + phi_b));
     let (sa, sb) = shares(a.pairing.mobility, b.pairing.mobility);
     shove(a, &na, delta * (sa * (2.0 - f)));
     shove(b, &nb, delta * (-sb * f));
@@ -1806,6 +1804,17 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
     }
 }
 
+/// The weights on A's current particles of the sphere's deepest point
+/// (world), or of its centre `c` (A's space) over the rest particles when
+/// that point lies far outside A: the largest weight's magnitude over 1, by
+/// the original's maximum chain (so a NaN weight can pass, as there).
+fn deepest_weights(pa: &Part, deepest: Vec3, c: Vec3) -> [f32; 4] {
+    match pa.weights_exact(deepest) {
+        Some(w) if !sector::far_outside(w) => w,
+        _ => weights(pa, c),
+    }
+}
+
 /// A hit of A's sphere centred at `c` (A's space) on B at `q` (B's space),
 /// with the push `delta` (B's space) that takes the sphere off: the point
 /// is offered to the pair (its weights on A's particles where the sphere is
@@ -1833,15 +1842,12 @@ fn on_hit(
     let point = b_now.transform_point3(q);
     let push = b_now.transform_vector3(delta);
     let deepest = point - push;
-    let wa = pa
-        .weights_now(deepest)
-        .filter(|w| w.iter().all(|x| x.abs() <= MAX_WEIGHT))
-        .unwrap_or_else(|| weights(pa, c));
-    let wb = weights(pb, q);
+    let wa = deepest_weights(pa, deepest, c);
+    let wb = pb.rest_weights_exact(q);
     pair.offer(Point {
         a: wa,
         b: wb,
-        normal: push.normalize(),
+        normal: crate::engine_math::normalize_exact(push),
     });
     touch.met = true;
     touch.hits += 1;
@@ -1887,15 +1893,12 @@ fn on_placed_hit(
     let point = b_now.transform_point3(q);
     let push = b_now.transform_vector3(delta);
     let deepest = point - push;
-    let wa = pa
-        .weights_now(deepest)
-        .filter(|w| w.iter().all(|x| x.abs() <= MAX_WEIGHT))
-        .unwrap_or_else(|| weights(pa, c));
-    let wb = weights(pb, q);
+    let wa = deepest_weights(pa, deepest, c);
+    let wb = pb.rest_weights_exact(q);
     pair.offer(Point {
         a: wa,
         b: wb,
-        normal: push.normalize(),
+        normal: crate::engine_math::normalize_exact(push),
     });
     touch.met = true;
     let (placed, weights, move_by) = if a_placed {
@@ -2102,6 +2105,10 @@ fn bodies_mut<'a>(
 }
 
 impl SolverStage for Pairs {
+    fn all_pairs_sector(&self) -> bool {
+        self.phase == BroadPhase::AllPairs
+    }
+
     fn pair_pass(&mut self, bodies: &mut [&mut Ragdoll], iteration: usize) {
         if iteration == 1 {
             self.resolve(bodies);

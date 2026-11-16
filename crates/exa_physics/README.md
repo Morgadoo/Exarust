@@ -191,8 +191,8 @@ change, the collision world, the navigation grid, the cloths and the
 solver's stages are lent. The game runs its fixed step this way by default
 (`--no-sim-bridge` keeps it in the frame's world). The solver and the
 sector lists walk their bodies in the original's sector-list order (below),
-the character tick in entity order, so neither world's table layout
-decides it. A body's
+the character tick its character list (bodies join in entity order), so
+neither world's table layout decides it. A body's
 every pose is the same bit for bit behind the bridge, inline and on the
 thread (`body_floor_test`), and a scripted run logs the same changes,
 removals, spawns, children and messages on both sides as one world
@@ -524,7 +524,10 @@ the AI's brains, `exa_ai::BrainTick`; the grips, the mechanisms'
 registration and the held weapons' sync are ordered after it), moves the
 characters to their bodies' frames (`CharacterControllers`), then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
-each living character, player last, runs the nine stages of the
+each living character, from the character list's last entry down to the
+player (`exa_game` `stages::CharacterList`: the original's registration
+appends, the player taking the front, a leaver's place taken by the last
+entry), runs the nine stages of the
 `body::CharacterTick` schedule, `body::CharacterStage`, before the next one
 starts; `exa_game` fills them: clips sampled and targets set), the body
 solver over every awake body (`body::BodySystems`) and the per-character
@@ -577,8 +580,20 @@ flat neighbour offsets, so an x past an edge wraps a row), and the bounds
 pass (`SolverStage::bounds`, after the inverted-tetra repair) puts a part
 whose cell lies in the grid's first or last row back where the tick
 before last left it and parks it in cell `columns + 1` ("Object position
-overflow", logged once); a scene without a grid takes the all-pairs walk,
-and with none given (tests, tools) the cells are unbounded. The static
+overflow", logged once); a scene without a grid takes the all-pairs walk
+(whose step meets the level before the sim objects' contacts,
+`SolverStage::all_pairs_sector`), and with none given (tests, tools) the
+cells are unbounded. The level and pair hit callbacks take the original's
+arithmetic: the deepest point's weights by the exact barycentric routine
+(`Part::weights_exact`; the touched side's over its rest particles,
+`Part::rest_weights_exact`), the centre's when the maximum chain over
+their magnitudes passes 1 (a NaN does not), the exact normalisation
+(`engine_math::normalize_exact`), the level plane 0.1 cm under the point
+in double (cm), the push spread by sum then by the largest weight, the
+paired smoothed travel, and the immediate push's split φ_A·(2/(φ_A + φ_B));
+the level friction pass works in cm with its doubles and strict compare,
+and a part's slip is the weighted point now less the one where the last
+tick left it, each summed term by term. The static
 collider grid takes the same shape (`shape_static_grid`; its stand-in is
 4096 cells square around the world origin). The model grid
 (`dynamics::Grid`) takes its bias, offsets and cells from `GridShape`. The

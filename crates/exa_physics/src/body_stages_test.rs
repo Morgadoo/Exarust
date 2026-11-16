@@ -215,6 +215,47 @@ fn the_solver_runs_its_stages_in_the_originals_order() {
     assert_eq!(at("post_step", 0).ticks, ticks + 1);
 }
 
+/// A stage marking an all-pairs sector.
+struct AllPairsSector;
+
+impl SolverStage for AllPairsSector {
+    fn all_pairs_sector(&self) -> bool {
+        true
+    }
+}
+
+/// In an all-pairs sector (the pair stage's [`crate::body::pairs::BroadPhase::AllPairs`])
+/// the sim objects' contacts come after the level detection, as the
+/// original's all-pairs step runs them: the ball's level contacts are
+/// already found when they run; in the grid step they are not yet.
+#[test]
+fn the_all_pairs_sector_meets_the_level_before_the_sim_objects() {
+    use crate::body::Pairs;
+    assert!(Pairs::all_pairs().all_pairs_sector());
+    assert!(!Pairs::default().all_pairs_sector());
+    let ground = floor_quad(0.0, 5.0);
+    let mut resting = ball(0.05);
+    for _ in 0..64 {
+        resting.tick(ground.as_slice());
+    }
+    let mut stages: Vec<Box<dyn SolverStage>> =
+        vec![Box::new(Record::default()), Box::new(AllPairsSector)];
+    solve_with(&mut [&mut resting], ground.as_slice(), &mut stages);
+    let record = (&*stages[0] as &dyn std::any::Any)
+        .downcast_ref::<Record>()
+        .unwrap();
+    let stages_run = record.stages();
+    let at = |name: &str| stages_run.iter().position(|(s, _)| *s == name).unwrap();
+    assert!(at("detect") < at("sim_object_contacts"));
+    assert!(at("sim_object_contacts") < at("friction"));
+    let contacts = record
+        .0
+        .iter()
+        .find(|c| c.stage == "sim_object_contacts")
+        .unwrap();
+    assert!(contacts.touching, "the level was met first");
+}
+
 /// A stage with no work leaves the tick exactly as the solver without
 /// stages leaves it.
 #[test]
