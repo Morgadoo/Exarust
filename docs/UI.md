@@ -1966,7 +1966,10 @@ Encumbrance label (class 5, y 0x62 in design units, at client (4, 386)),
 its rating-dots record (class 0xac01, at client (100, 386), 12 × 28) and
 its two page buttons in radio group 1 (the constructor passes the table's
 last index, 3): Primary (108 × 24 at (4, 416), stored lit) and Secondary
-(following it on its row by four, at (116, 416)); and the journal's New
+(following it on its row by four, at (116, 416)); the fill lights the one
+of the set the shown body has out, and a swap of that body's sets while
+the window is open lights the other and loads the pack again from the
+record (`gui_screens::inventory_follows_the_set`); and the journal's New
 (4, 20) and Erase (120, 20), 104 × 24 each, with the entry list, a combo
 box 220 wide on the row below them whose caption is the selected entry's
 title (its drop list does not open on the journal yet). New stores the
@@ -3109,9 +3112,10 @@ popup and the character view still wait for their hosts.
   design pixels: the arrows and the six-entry row whose last entry is the
   inventory toggle) draw through the GUI draw path with the pack's style
   and attribute words, the controls' pictures stood in by captions;
-  Escape, the inventory key and the scroll arrows run the window's rules.
-  Nothing in the running game opens it yet and no arena store fills its
-  columns.
+  Escape, the inventory key (the player's bound one) and a right release
+  over the form reach the open window (`arsenal_view::arsenal_input`), the
+  scroll arrows run the window's rules. The hub's Arsenal row opens it; no
+  arena store fills its columns yet, so its close writes none back.
 - **Popups** (`exa_ui::popups`): the item card fades in and out on a 256-unit
   squared curve; once its shown clock is reached (or the fade-in ends
   first) the GUI's pointer test is re-run with the force flag, once, and
@@ -3519,8 +3523,34 @@ hand never asked for, the class word guessed from the main hand's grip) and
 a shield into the off hand, the player's hands and held weapon following
 the record. The pack is linked to the view, so its drag ends without
 losing the item's bulk; an item from another pack charges the pack its
-bulk (apparel) or is added to it marked held (a weapon or shield). The
-mind-cost checks are off for the player's own inventory.
+bulk (apparel) or is added to it marked held (a weapon or shield). A
+shield is taken by the shield take (`exa_items::doll::take_shield`): the
+off hand's item out first, then the record's off hand with all the
+shield's flags; its weapon-part clear (a class word without weapon bits)
+is the world body's return to empty-hand words, which the hands refresh
+writes after the change.
+
+**The mind cost** (`exa_game::view_trust`). The inventory's mind window is
+set when the shown body carries a Loyalty or possession marker. With it,
+every equipment change on the figure moves the body's trust:
+- the drag start lowers it by the item's cost (twice a weapon's
+  desirability, else the apparel's protection value, 0 for anything else,
+  even where the press picked nothing) and keeps the cost;
+- a cancelled drag, or a drop back on the view, raises it by the kept cost;
+- a drop raises it by the apparel's wear room, or by twice the weapon's
+  desirability less what its take-in displaces from the hands (each
+  displaced item weighed by its weapon desirability, else its shield
+  value, read as the original's caller reads that routine's double answer:
+  its low half as a single, 0 for every exact product).
+
+Each Loyalty or possession marker in turn adds the change to its trust and
+holds while a tenth of the negated relation (the body's last attitude
+toward the marker's caster), ten more with the body's learnt bit
+`0x10000`, stays below the trust. The first that fails ends; the inventory
+then closes and the drag or drop does nothing. The change is a write to the
+body's mind, made on the frame's copy and again at the next step (the pack
+drag's binding end is written the same way). The relation is read without
+making a missing one (the original's read makes it, answering 0 as well).
 
 **Taking items off the running figure** (`exa_game::figure_pick`).
 
@@ -3533,8 +3563,8 @@ The pick runs on the figure's own meshes:
   slot. Any other mesh (the hair) answers no item.
 
 A left press over the view starts a drag of the picked item through the
-drag-start plan. The player's view is not frozen or locked, and it charges
-no mind cost. The grab is half the icon size. The drag is a panel drag from
+drag-start plan. The inventory's view is not frozen or locked; its mind
+cost runs only with the mind window set (above). The grab is half the icon size. The drag is a panel drag from
 the figure.
 
 A release on a pack panel (the player's, a body's or a container's) runs
