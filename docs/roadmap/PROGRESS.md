@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r295, 11-16) | target |
+| measure | start (r186, 11-10) | now (r296, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 296 | The frame's Update and PostUpdate are fully ordered in named phases following the original's frame order, and the schedule test now holds every schedule to zero unordered conflicting pairs (seven documented pairs with private engine systems allowed); ordering the frame fixed a GUI bug: paints that ran before the game screens' per-frame clear were wiped every frame, so the story death's tip banner now shows (ambiguity2) |
 | 2026-11-16 | 295 | The function oracle covers 110 original functions bit for bit over 5000 cases each: the callers now take the original's exact normaliser and lerp, the swing time on non-finite input matches, and about fifteen small port defects it found are fixed (NaN and negative-zero handling, a denormal sine, reciprocal-first weights, a bearing in double, a wrapped tick count); the simulation changes in the last bit from the first tick; F569 opened (oracle2) |
 | 2026-11-16 | 294 | The motile body and balance lane from the port queue: the golem-suit leg halving has the original's writers; a balance step's end stamps the stand-still clock; the servo and step-approach factors; the off-balance arms only from the posture block's test; the get-up turned from the body's heading; the femur posture in the engine's quaternion order (it had been reversed); held items sleep and wake with their holder; the AI's soft stop on a jolt; round 285's Height Query questions settled as the original's (bodybal) |
 | 2026-11-16 | 293 | F560's cause found with a new headless trace tool (the armour pass's head height was unordered in the fixed step, now first); F566 fixed (the hand's pick names sliding leaves by their door record, so a portcullis can be pulled); F563 closed as the original's (the placed portcullises stand open in their arches); F568 opened (a locked portcullis can be dragged aside) (physfix) |
