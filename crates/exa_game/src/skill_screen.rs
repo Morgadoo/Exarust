@@ -12,6 +12,8 @@
 //! skills key reaches the screen's own key method instead: on the ring,
 //! unlocked, past the reveal's first 100 ms and not hiding, any key calls
 //! the open routine's toggle and closes the screen ([`leave_skill_ui`]).
+//! The keys are the window procedure's ([`crate::gui_keys::GuiKeyFrame`]):
+//! a key-down, its repeats and the character it typed all count.
 //! The right button closes it at once, as the screen's pointer method
 //! calls the same toggle, and a request while the screen is up closes it
 //! (the open routine's own toggle branch). Closing refreshes the body's
@@ -179,6 +181,7 @@ pub struct SkillScreenPlugin;
 
 impl Plugin for SkillScreenPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<SkillUi>()
             .add_message::<OpenSkills>()
             .add_systems(
@@ -386,6 +389,7 @@ pub fn key_closes(screen: &SkillScreen, now: i32) -> bool {
 fn pointer(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
+    gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
@@ -398,8 +402,14 @@ fn pointer(
 ) {
     let now = clock(&time);
     // A key goes to the screen's key method, which with the player's
-    // controls off is the only one that hears it.
-    if keys.is_some_and(|keys| keys.get_just_pressed().next().is_some())
+    // controls off is the only one that hears it: every key the window
+    // procedure sends (a key-down, a repeat, a typed character; the slot
+    // reads neither the key nor its word) and passes nothing up.
+    let keyed = match gui_keys.as_deref() {
+        Some(frame) => !frame.keys.is_empty(),
+        None => keys.is_some_and(|keys| keys.get_just_pressed().next().is_some()),
+    };
+    if keyed
         && ui
             .screen
             .as_ref()
@@ -1381,6 +1391,39 @@ mod tests {
         assert!(app.world().resource::<SkillUi>().screen.is_none());
         assert!(!app.world().resource::<PlayerControl>().off);
         assert!(app.world().get::<TechniqueWord>(player).is_some());
+    }
+
+    /// Every key the window procedure sends reaches the screen's key slot:
+    /// the opening key held down past the reveal's first 100 ms repeats,
+    /// and its repeat closes the ring (the slot reads neither the key nor
+    /// its word).
+    #[test]
+    fn a_held_keys_repeat_closes_the_ring() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+        let (mut app, _) = open_screen_app();
+        let repeat = |app: &mut App, ms: u64, repeat: bool| {
+            let mut time = app.world_mut().resource_mut::<Time>();
+            let elapsed = time.elapsed();
+            time.advance_by(std::time::Duration::from_millis(ms) - elapsed);
+            app.world_mut().write_message(KeyboardInput {
+                key_code: KeyCode::KeyK,
+                logical_key: Key::Character("k".into()),
+                state: ButtonState::Pressed,
+                text: None,
+                repeat,
+                window: Entity::PLACEHOLDER,
+            });
+            app.update();
+        };
+        repeat(&mut app, 50, false);
+        assert!(app.world().resource::<SkillUi>().screen.is_some());
+        let frame = app.world().resource::<crate::gui_keys::GuiKeyFrame>();
+        assert_eq!(frame.keys[0].flags, 0);
+        repeat(&mut app, 150, true);
+        let frame = app.world().resource::<crate::gui_keys::GuiKeyFrame>();
+        assert_eq!(frame.keys[0].flags & exa_ui::gui_keys::REPEAT, 1);
+        assert!(app.world().resource::<SkillUi>().screen.is_none());
     }
 
     /// A hiding screen or a page ignores keys; the reveal's bound is the
