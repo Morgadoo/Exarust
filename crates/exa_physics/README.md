@@ -1693,7 +1693,8 @@ axis and the stop's tied point in the parent node's frame; the handle 150
 cm from the hinge at the node box's centre height; the placement's stored
 word; a sibling leaf as the partner, both with pair layer bits `0x3000`)
 and, each awake tick after the solver, the door's step: the handle's
-motion smoothed by half as the creak energy, the stop's measured length as
+motion smoothed halfway (`s + (v − s)·½`), its squared length summed
+(x² + y²) + z² as the creak energy, the stop's measured length as
 the knock travel, the stop's heading in the door frame as the angle, and
 the drive angle moving the stop point onto the stop's radius by its
 weights. The drive's push is measured after the solver and made right
@@ -1729,13 +1730,19 @@ axle and across the arm; the clamp `body::lever_body::swing_clamp`) and
 the mechanism environment and runs `plate_step` on its slider links'
 fractions (smoothing 0.1 each tick); `PlateBody::push` is the
 interaction's and a class 5 signal's press. A sliding door's leaf
-(`body::PendingSlide`, `body::SlideBody`, `src/body_slide.rs`) runs the
-door's sliding step on its travel link's fraction, writing a command's
-fraction into the link; it registers only when asked
-(`exa_world::bodies::MechanismBodies::sliding`, `--sliding-doors`): the
-shipped leaves creep up to 2 cm in two seconds at rest along their level
-rails and the slider law rewrites a command's fraction every pass, so a
-plain open only shoves the leaf (see the module notes). Each body's tick
+(`body::PendingSlide`, `body::SlideBody`, `src/body_slide.rs`) registers
+by default (`exa_world::bodies::MechanismBodies::sliding`; the game's
+`--static-sliding-doors` keeps it static) and runs the door's sliding step
+on its travel link's fraction right after its integration, before the
+link passes (`body::slide_body::SlideStage`, the solver's `integrated`
+stage), as the original's door step integrates a slider first; a
+command's fraction is written into the link first, and an open command
+wakes the body to 256 each tick it runs. exanima01's 37 portcullises lie
+at the open end of level rails (slid into their walls, fraction 0) and
+shut 170 cm along them; a woken leaf at rest creeps under 2 cm and sleeps.
+The hand's drag of a sliding leaf is `SlideBody::take_hold`, `pull_to`
+(the cursor's offset along the leaf's x axis) and `let_go`; each tick the
+step keeps the link's anchor within 60 cm of its point. Each body's tick
 sends its sounds as requests (`mechanism_sound::MechanismSounded`): the
 door's creak voice (`door?_hng`), knock, slam (`slm`) and unlatch (`opn`),
 the lever's creak (`leverb_mov`) and return tick loop (`leverb_tck01`), the

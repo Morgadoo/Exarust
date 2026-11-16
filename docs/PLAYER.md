@@ -809,9 +809,8 @@ there:
   pass, with or without Ctrl.
 - A door, a wheel or a sim object (cloth) start their own drags in the
   original. A hinged door's leaf and a lever's arm (the wheel) are bodies
-  under the hand in Exarust (The door, below); a sliding door is static
-  level geometry (unless `--sliding-doors`), so a press on one only records
-  the drag until the release; meanwhile, as in the original, the keys and
+  under the hand in Exarust (The door, below); a sliding door's leaf takes
+  the same link at the hit and is dragged along its rail; meanwhile, as in the original, the keys and
   the right button keep the movement request and the idle camera waits.
 - **Anything else** (a person, the level, a heavy prop) is refused until the
   release: the cursor shows the cross and the frame's movement request is
@@ -975,9 +974,7 @@ pull's unlatch; the unlock plays its `LkO` and a latched door rattles its
 the nearest lever through these steps.
 
 Not in Exarust: the navigation passage report (the grid still treats every door as standing where the
-level saved it), sliding doors (static unless `--sliding-doors`, their drag
-recorded: the cursor's offset projected on the slide; see Levers, push
-surfaces and sliding doors below), and the last-pusher stamp (the original's
+level saved it) and the last-pusher stamp (the original's
 door drag stamps the dragged body with the player as its last pusher for
 2000 ms, which impacts read; that is not the hold's end).
 
@@ -1062,12 +1059,13 @@ are 4 cm deep). A signal goes to the placed object it names: a door order
 wakes the door bodies under it, a latched or motorised leaf waiting 120
 ticks before it opens; a class 5 push its surface; relays and deferred
 fire and light jobs are not run yet. exanima01's levers mostly name its
-portcullises, which are sliding doors: static by default, so pulling such a
-lever signals but nothing moves. With `--sliding-doors` the 37 sliding
-leaves become bodies running the door's sliding rules, but they creep up to
-2 cm in two seconds at rest along their level rails, and the slider law
-rewrites a command's fraction every pass, so a plain open only shoves the
-leaf a little; how the original moves them that far was not traced.
+portcullises, which are sliding doors: the 37 leaves are bodies running
+the door's sliding rules right after their integration. Each lies slid
+into its wall at the open end of a level rail and shuts 170 cm along it
+into its frame: a close drives it there and latches it, a motorised open
+crawls it back, a plain open unlatches it and shoves it (the hand drags it
+along its rail). A woken leaf at rest creeps under 2 cm and sleeps
+(`--static-sliding-doors` keeps them static level geometry).
 Mechanism sounds (creaks, the lever's tick loop, a plate's grind and
 click) play from the steps.
 

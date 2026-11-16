@@ -1120,8 +1120,9 @@ pub fn shape(rest: &[Vec3; 4], links: &[Link]) -> Shape {
     // with its own direction, normalised: the first pin point farther than
     // 1 cm from the body's origin, then any later one that is not below it
     // (y ≥ 0). There is no hemisphere step; a later pin pointing the other
-    // way flips the axis. (The original normalises with the fast reciprocal
-    // square root, so its axis is unit only to about twelve bits.)
+    // way flips the axis. The original normalises with the engine's fast
+    // normaliser (the reciprocal square root estimate, a zero vector
+    // giving zero), so its axis is unit only to about twelve bits.
     let mut axis = Vec3::Y;
     let mut pinned = false;
     let mut stop = None;
@@ -1134,12 +1135,7 @@ pub fn shape(rest: &[Vec3; 4], links: &[Link]) -> Shape {
             // The squared length is summed z, y, x, as the original does.
             let squared = (point.z * point.z + point.y * point.y) + point.x * point.x;
             if squared > 1.0 && (!pinned || point.y >= 0.0) {
-                let length = point.length();
-                axis = if length > 0.0 {
-                    point / length
-                } else {
-                    Vec3::ZERO
-                };
+                axis = crate::engine_math::normalize_approx(point);
                 pinned = true;
             }
         } else {
@@ -1998,6 +1994,24 @@ mod tests {
             sign: 1.0,
             angle: 0.0,
         }
+    }
+
+    /// The toggle's and the open's compares take the arrived branch when
+    /// unordered (a NaN angle), and a zero range gives an infinite plain
+    /// step, which arrives.
+    #[test]
+    fn a_motor_arrives_on_an_unordered_error_or_a_zero_range() {
+        for mode in [MotorMode::Toggle, MotorMode::Open] {
+            let mut lost = motor(mode);
+            lost.angle = f32::NAN;
+            assert!(motor_step(&mut lost).is_some_and(|d| d == 1.0), "{mode:?}");
+            assert_eq!(lost.mode, MotorMode::Idle, "{mode:?}");
+        }
+        let mut flat = motor(MotorMode::Toggle);
+        flat.range = 0.0;
+        flat.closed = 0.5;
+        assert_eq!(motor_step(&mut flat), Some(0.5));
+        assert_eq!(flat.mode, MotorMode::Idle);
     }
 
     #[test]

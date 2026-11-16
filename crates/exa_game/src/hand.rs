@@ -40,8 +40,13 @@
 //!   across the arm at 30 cm), clamped to the swing; out of reach the lever
 //!   is let go and woken; the lever's own step turns its arm 0.02 rad a tick
 //!   toward that angle; the release lets go;
-//! - a sliding door: the drag is recorded until the release (sliding doors
-//!   are static level geometry unless `--sliding-doors`); a
+//! - a sliding door's leaf (`exa_physics::body::SlideBody`): the press adds
+//!   the same link at the hit (a latched leaf rattles and still drags);
+//!   each frame, while the hip is within 350 cm, the drag target is the
+//!   link's point moved by the cursor's offset (on the plane at the grip's
+//!   height) along the leaf's own x axis, its rail, and the leaf's step
+//!   keeps the link's anchor within 60 cm of it; out of reach the link is
+//!   disabled; the release removes it; a
 //!   scene object's mesh that is a cloth takes the vertex within 10 cm of
 //!   the point [a stand-in for the mesh element the original's pick hit],
 //!   and each frame the vertex is pulled to the cursor's point on the cloth
@@ -93,7 +98,7 @@ use exa_combat::Condition;
 use exa_physics::ColliderNodes;
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
-use exa_physics::body::{DoorBody, LeverBody, PlateBody, Ragdoll, WAKE_COUNT};
+use exa_physics::body::{DoorBody, LeverBody, PlateBody, Ragdoll, SlideBody, WAKE_COUNT};
 use exa_physics::mechanism_sound::{self, MechanismSounded};
 use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
@@ -1113,9 +1118,15 @@ fn let_go_of_doors(hand: Res<Hand>, mut fixed: ResMut<exa_physics::sim_app::Fixe
 /// Releases every held leaf but `pulled` (run at the start of a fixed step).
 fn release_doors(
     In(pulled): In<Option<Entity>>,
-    mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>,
+    mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll), Without<SlideBody>>,
+    mut slides: Query<(Entity, &mut SlideBody, &mut Ragdoll), Without<DoorBody>>,
 ) {
     for (e, mut glue, mut ragdoll) in &mut doors {
+        if glue.door.held && Some(e) != pulled {
+            glue.let_go(&mut ragdoll);
+        }
+    }
+    for (e, mut glue, mut ragdoll) in &mut slides {
         if glue.door.held && Some(e) != pulled {
             glue.let_go(&mut ragdoll);
         }
@@ -1230,7 +1241,10 @@ pub(crate) type OtherBodies = (
 type PressMechanisms<'w, 's> = (
     Option<Res<'w, crate::panel_live::PointerOverGui>>,
     Query<'w, 's, ObjectIds>,
-    Query<'w, 's, &'static mut DoorBody>,
+    (
+        Query<'w, 's, &'static mut DoorBody>,
+        Query<'w, 's, &'static mut SlideBody>,
+    ),
     Query<'w, 's, &'static mut LeverBody>,
     Option<Res<'w, player_controls::UseCursor>>,
     Option<ResMut<'w, Messages<MechanismSounded>>>,
@@ -1600,7 +1614,7 @@ fn press_hand(
     (
         over_gui,
         objects,
-        mut doors,
+        (mut doors, mut slides),
         mut levers,
         use_cursor,
         mut mechanism_sounds,
@@ -1775,6 +1789,60 @@ fn press_hand(
                 }
                 return;
             }
+            // A sliding leaf takes the hand's link at the hit: a latched one
+            // rattles (its `LkT` at the handle) and still drags.
+            if pick == Pick::Hinge
+                && let Some(Picked {
+                    at,
+                    hit: Hit::Prop { body, .. },
+                }) = picked
+                && let Ok(mut glue) = slides.get_mut(body)
+                && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body)
+            {
+                let state = MechanismState {
+                    latched: glue.latched(),
+                    forcing: glue.forcing(),
+                    sliding: true,
+                    has_body: true,
+                };
+                let origin = Vec3::from(ragdoll.parts[0].transform().translation);
+                let grip = match mechanism_press(Pick::Hinge, origin, at, state, || 0.5) {
+                    MechanismPress::Door(grip) => Some(grip),
+                    MechanismPress::Rattle { .. } => {
+                        if let Some(messages) = mechanism_sounds.as_deref_mut() {
+                            messages.write(mechanism_sound::lock_cue(
+                                &glue.door.record,
+                                mechanism_sound::LOCKED,
+                                glue.handle_point(),
+                                mechanism_sound::RATTLE,
+                            ));
+                        }
+                        info!("hand: the latched sliding door rattles");
+                        Some(DoorGrip {
+                            origin: Vec3::new(origin.x, at.y, origin.z),
+                            point: at,
+                            sliding: true,
+                            latched: true,
+                        })
+                    }
+                    _ => None,
+                };
+                match grip {
+                    Some(grip) => {
+                        let point = grip.point;
+                        fixed.write_pair(body, &mut glue, &mut ragdoll, move |g, r| {
+                            g.take_hold(r, point);
+                        });
+                        info!(
+                            "hand: sliding door pulled at ({:.2}, {:.2}, {:.2})",
+                            point.x, point.y, point.z
+                        );
+                        hand.holding = Holding::Door { body, grip };
+                    }
+                    None => hand.holding = Holding::Refused,
+                }
+                return;
+            }
             // A lever's arm takes the wheel's hold: the angle between the
             // arm and the cursor's point on the plane across its axle.
             if pick == Pick::Wheel
@@ -1912,10 +1980,10 @@ pub(crate) fn hold_hand(
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    (mut hand, mut items, mut doors, mut levers, mut plates, mut fixed): (
+    (mut hand, mut items, (mut doors, mut slides), mut levers, mut plates, mut fixed): (
         ResMut<Hand>,
         ResMut<ItemCursor>,
-        Query<&mut DoorBody>,
+        (Query<&mut DoorBody>, Query<&mut SlideBody>),
         Query<&mut LeverBody>,
         Query<&mut PlateBody>,
         ResMut<exa_physics::sim_app::FixedCommands>,
@@ -2198,6 +2266,36 @@ pub(crate) fn hold_hand(
                     g.turn_to(r, first, second, grip, grabbed)
                 });
             }
+        }
+        Holding::Door { body, grip } if grip.sliding => {
+            let (Ok(mut glue), Ok((_, mut ragdoll, ..))) =
+                (slides.get_mut(body), bodies.get_mut(body))
+            else {
+                hand.holding = Holding::Nothing;
+                return;
+            };
+            if released {
+                fixed.write_pair(body, &mut glue, &mut ragdoll, |g, r| g.let_go(r));
+                hand.holding = Holding::Nothing;
+                return;
+            }
+            // The request suppresses the pull while the hip is farther than
+            // 350 cm from the door; else the cursor's point on the plane at
+            // the grip's height drags the link's point along the leaf's rail.
+            let hip = player.and_then(|(feet, child)| {
+                player_bodies
+                    .get(child)
+                    .ok()
+                    .map(|(_, own, ..)| hip_of(feet, own))
+            });
+            let origin = Vec3::from(ragdoll.parts[0].transform().translation);
+            let far = hip.is_some_and(|hip| ((hip - origin) * CM).length_squared() > DOOR_REACH2);
+            let cursor = cursor_ray(&scripted, &windows, &cameras)
+                .and_then(|ray| plane_pick(ray.origin, *ray.direction, grip.origin.y))
+                .filter(|_| !far);
+            fixed.write_pair(body, &mut glue, &mut ragdoll, move |g, r| {
+                g.pull_to(r, cursor)
+            });
         }
         Holding::Door { body, grip } => {
             let (Ok(mut glue), Ok((_, mut ragdoll, ..))) =
