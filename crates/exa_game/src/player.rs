@@ -107,9 +107,22 @@ impl CursorLook {
     pub(crate) fn capture(&self) -> crate::steering::Capture {
         crate::steering::Capture {
             held: self.active,
+            turns: self.active && self.turns,
             look: self.target.filter(|_| self.active && self.turns),
         }
     }
+}
+
+/// The behaviour tick stops after its contact list while the body is
+/// shock-staggered (state flag 0x100) or the behaviour is suspended (the
+/// block pair's disable byte): no practice, key poll, cast asks, steering,
+/// attack request or stance that tick.
+pub(crate) fn behaviour_halted(
+    control: Option<&crate::player_controls::PlayerControl>,
+    flags: Option<&exa_combat::condition::StateFlags>,
+) -> bool {
+    crate::player_controls::PlayerControl::behaviour_suspended(control)
+        || flags.is_some_and(|f| f.has(exa_combat::condition::StateFlags::SHOCK_STAGGER))
 }
 
 /// The controls' capture as the simulation's behaviour tick reads it,
@@ -150,6 +163,9 @@ const GRID_CELL: f32 = 0.3;
 /// The cursor's point lies on the plane this far above the player's ground
 /// (m): the original's aim plane, 80 cm.
 pub(crate) const AIM_HEIGHT: f32 = 0.8;
+/// Walking faster than this (cm a tick), the combat ladder's dash branch
+/// leaves the mode idle and the button word clear.
+const DASH_SPEED: f32 = 2.0;
 /// A press this soon (ms of the game clock) after the one before is a
 /// double click.
 const DOUBLE_CLICK_MS: u64 = 300;
@@ -332,6 +348,28 @@ impl PlayerBody {
         self.steering.raw
     }
 
+    /// The cursor follower's target yaw, once the follower started.
+    pub(crate) fn follower_target(&self) -> Option<f32> {
+        self.steering.follower.map(|f| f.target())
+    }
+
+    /// The cursor's distance (m) as the pad's aim read writes it, its
+    /// direction `yaw` when none was read yet.
+    pub(crate) fn set_cursor_distance(&mut self, yaw: f32, distance: f32) {
+        let yaw = self.steering.raw.map_or(yaw, |(y, _)| y);
+        self.steering.raw = Some((yaw, distance));
+    }
+
+    /// The behaviour's heading store (its class slot 23), which the body's
+    /// placements call once they have written the facing: the raw cursor
+    /// yaw is the placed cursor direction `yaw` (its distance kept) and the
+    /// cursor follower rests there, its speed zero.
+    pub(crate) fn placed(&mut self, yaw: f32) {
+        let distance = self.steering.raw.map_or(0.0, |(_, d)| d);
+        self.steering.raw = Some((yaw, distance));
+        self.steering.follower = Some(crate::steering::CursorFollower::at(yaw));
+    }
+
     /// The left button starts or stops holding an object
     /// ([`crate::hand`]): while it holds one, the standing quarter turns
     /// wait.
@@ -485,25 +523,54 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
     turn_between(yaw, cursor) > beyond
 }
 
-/// The point under the cursor on the player's aim plane, for the right
-/// mouse button, combat facing and the world cursor.
+/// The behaviour's aim point (its class slot 32): the point under the
+/// cursor on the player's aim plane, its height locked onto the
+/// auto-target or raised onto a picked surface. The powers aim with it,
+/// and the behaviour's cursor read takes it during an Overhead Swing.
 #[derive(Resource, Default, Debug, Clone)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
+
+/// The cursor's plain point on the player's aim plane (no lock, no raise):
+/// what the behaviour's cursor read takes for the steering, the combat
+/// facing and the world cursor outside an Overhead Swing.
+#[derive(Resource, Default, Debug, Clone)]
+pub(crate) struct CursorPlane(pub(crate) Option<Vec3>);
+
+/// The body action whose cursor read takes the aim point: Overhead Swing.
+const OVERHEAD_ACTION: u32 = 12;
+
+/// The cursor point the behaviour's read takes for a body playing
+/// `action`: the aim point during an Overhead Swing, else the plain plane
+/// point.
+fn behaviour_cursor(
+    motions: Option<&Motions>,
+    action: &str,
+    plane: Option<&CursorPlane>,
+    aim: &CursorGround,
+) -> Option<Vec3> {
+    let overhead = motions.is_some_and(|m| m.action_index(action) == Some(OVERHEAD_ACTION));
+    match plane {
+        Some(plane) if !overhead => plane.0,
+        _ => aim.0,
+    }
+}
 
 /// The cursor's aim pick reaches this far along its ray (m), as the
 /// navigation pick does.
 const AIM_PICK_RANGE: f32 = 40.0;
 
-/// The skeleton's bone numbers the aim point's bone lock reads: the head,
-/// the belly and the pelvis, three points away from the chest it locks
-/// from. [guess: the original reads the target's head record's own points;
-/// Exarust stands these three part origins in for them.]
-const AIM_BONES: [usize; 3] = [10, 8, 1];
+/// The skeleton's bone numbers the aim point's bone lock reads, in the
+/// original's order: the head, then the two lower legs that carry the
+/// feet's contacts (their nodes' points, the knees). [inf: the original
+/// takes the head part's point moved along its up axis by an extent of the
+/// part; Exarust takes the head part's origin.]
+const AIM_BONES: [usize; 3] = [10, 3, 6];
 
-/// The aim point with a locked target: the target's chest as the lock's
-/// root and three of its bones, projected to the window, with the pixel
-/// radius 80 cm makes at the root's depth. Returns the locked height when a
-/// bone lies within twice the radius of the cursor.
+/// The aim point with a locked target: the target's pelvis part (the body
+/// itself, its part list's first) as the lock's root and three of its
+/// parts, projected to the window, with the pixel radius 80 cm makes at
+/// the root's depth. Returns the locked height when a bone lies within
+/// twice the radius of the cursor.
 fn aim_locked_height(
     plane: f32,
     cursor: Vec2,
@@ -514,7 +581,10 @@ fn aim_locked_height(
     target: (&GlobalTransform, &Ragdoll),
 ) -> Option<f32> {
     let (gt, ragdoll) = target;
-    let root = stance::chest_point(gt, Some(ragdoll));
+    let root = ragdoll
+        .parts
+        .first()
+        .map_or(gt.translation(), |p| Vec3::from(p.transform().translation));
     let root_screen = window_point(camera, eye, window, root)?;
     let Projection::Perspective(perspective) = projection else {
         return None;
@@ -558,14 +628,15 @@ fn aim_locked_height(
 /// player's ground, its height locked onto the auto-target's bones when one
 /// shows within twice the pixel radius 80 cm makes at the target's depth,
 /// else raised onto the surface the cursor's pick meets when that lies
-/// above the plane's point and under the player's ground plus 200 cm.
+/// above the plane's point and under the player's pelvis plus 200 cm. The
+/// plain plane point is kept too ([`CursorPlane`]).
 ///
 /// The aim plane's normal is the world's up, as the original's; the pick is
 /// the level's fixed geometry (the original's navigation pick also admits
 /// non-solid nodes; Exarust's fixed colliders stand in).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cursor_ground(
-    mut ground: ResMut<CursorGround>,
+    (mut ground, mut plain): (ResMut<CursorGround>, ResMut<CursorPlane>),
     scripted: Res<exa_ui::ScriptedPointer>,
     look: Res<CursorLook>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -574,17 +645,25 @@ pub(crate) fn cursor_ground(
     bodies: Query<&PlayerBody>,
     targets: Query<(&GlobalTransform, Option<&Ragdoll>)>,
     physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
+    pad: Option<Res<crate::pad_cursor::PadCursor>>,
 ) {
     ground.0 = None;
+    plain.0 = None;
     let (Ok(window), Ok((camera, eye, projection)), Some((player, children))) =
         (windows.single(), cameras.single(), players.iter().next())
     else {
         return;
     };
-    let body = children.and_then(|c| c.iter().find_map(|child| bodies.get(child).ok()));
+    let body_entity = children.and_then(|c| c.iter().find(|child| bodies.contains(*child)));
+    let body = body_entity.and_then(|e| bodies.get(e).ok());
     // While the controls hold the mouse the GUI's pointer is the aim
-    // point's screen point (`cursor_look`), not the re-centred one.
-    let pointer = look.pointer.filter(|_| look.active);
+    // point's screen point (`cursor_look`), not the re-centred one; while
+    // the pad drives the screen cursor it is the eased point
+    // (`pad_cursor`).
+    let pointer = look.pointer.filter(|_| look.active).or_else(|| {
+        pad.as_deref()
+            .and_then(crate::pad_cursor::PadCursor::pointer)
+    });
     let Some(cursor) = pointer.or_else(|| scripted.position(window)) else {
         return;
     };
@@ -603,6 +682,7 @@ pub(crate) fn cursor_ground(
     let Some(plane_point) = at(plane) else {
         return;
     };
+    plain.0 = Some(plane_point);
     let locked = body.and_then(|pb| {
         let target = pb.aim_target()?;
         let (gt, ragdoll) = targets.get(target).ok()?;
@@ -626,23 +706,20 @@ pub(crate) fn cursor_ground(
         .filter(|distance| *distance > 0.0)
         .map(|distance| ray.origin + *ray.direction * distance);
     // The raise rule's 200 cm is in centimetres: the points go to the
-    // rule's own units and back.
+    // rule's own units and back. Its cap is over the player's pelvis (the
+    // body's frame height), the feet without a body.
     const PER_M: f32 = 100.0;
+    let pelvis = body_entity
+        .and_then(|e| targets.get(e).ok())
+        .and_then(|(_, ragdoll)| ragdoll?.parts.first())
+        .map_or(ground_y, |p| p.transform().translation.y);
     let raised = crate::player_behaviour::aim_raised(
         plane_point * PER_M,
         hit.map(|at| at * PER_M),
-        ground_y * PER_M,
+        pelvis * PER_M,
     );
     ground.0 = Some(raised / PER_M);
 }
-
-/// The gamepad aim's eased cursor point in the world (m): the stick's
-/// direction places the point `250·|aim| + 50` cm out, and it eases toward
-/// it by `(0.4·AimSpeed + 0.1)²` a behaviour tick (the original eases the
-/// screen cursor and picks its point on the aim plane; Exarust eases the
-/// world point by the same factor).
-#[derive(Resource, Default, Debug, Clone)]
-pub(crate) struct AimCursor(pub(crate) Option<Vec3>);
 
 pub struct PlayerPlugin;
 
@@ -651,13 +728,16 @@ impl Plugin for PlayerPlugin {
         exa_physics::sim_app::add_frame_commands(app);
         bridge_player_types(app);
         app.init_resource::<CursorGround>()
+            .init_resource::<CursorPlane>()
             .init_resource::<AttackButton>()
             .init_resource::<Bindings>()
             .init_resource::<CursorLook>()
             .init_resource::<LookCapture>()
             .init_resource::<crate::gamepad::PlayPad>()
             .init_resource::<crate::gamepad::PadStatus>()
-            .init_resource::<AimCursor>()
+            .init_resource::<crate::pad_cursor::PadCursor>()
+            .init_resource::<crate::pad_cursor::PadView>()
+            .init_resource::<CaptureAnswer>()
             .init_resource::<CameraKickRng>()
             .init_resource::<crate::player_controls::PlaySession>()
             // The controls unit's mode records (Character and Spectate),
@@ -677,6 +757,11 @@ impl Plugin for PlayerPlugin {
                     .in_set(exa_physics::body::BodyPostStep)
                     .after(exa_ai::struck::HitReactions),
             )
+            // The body's post-step calls the behaviour's slot 19.
+            .add_systems(
+                FixedUpdate,
+                crate::pad_cursor::advance_pad_cursor.in_set(exa_physics::body::BodyPostStep),
+            )
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -688,7 +773,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(
                 FixedPreUpdate,
                 (
-                    pad_aim_cursor,
+                    crate::pad_cursor::aim_cursor,
                     crate::player_practice::tick_player_practice,
                     request_attacks,
                     steer_player,
@@ -699,7 +784,10 @@ impl Plugin for PlayerPlugin {
                     .after(exa_combat::parry::aim_foe_parries),
             )
             .add_systems(FixedPreUpdate, (follow_activation_centre, follow_body_camera))
-            .add_systems(Update, (begin_play_session, end_play_session))
+            .add_systems(
+                Update,
+                (begin_play_session, end_play_session, release_on_death),
+            )
             .add_systems(
                 Update,
                 (
@@ -712,8 +800,17 @@ impl Plugin for PlayerPlugin {
                         .after(begin_play_session)
                         .after(end_play_session),
                     chase_camera,
+                    crate::pad_cursor::take_pad_view,
                 )
                     .chain(),
+            )
+            // The render interpolation calls the behaviour's slot 20 before
+            // the world cursor is drawn.
+            .add_systems(
+                Update,
+                crate::pad_cursor::show_pad_cursor
+                    .before(cursor_ground)
+                    .before(crate::cursor::pick_cursor),
             );
     }
 }
@@ -735,7 +832,9 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy_in_resource::<crate::hw_config::HardwareConfig>()
         .bridge_copy_in_resource::<crate::idle_orbit::IdleWatch>()
         .bridge_copy_in_resource::<crate::player::LookCapture>()
-        .bridge_snapshot_resource::<crate::player::AimCursor>()
+        .bridge_copy_in_resource::<crate::player::CursorPlane>()
+        .bridge_snapshot_resource::<crate::pad_cursor::PadCursor>()
+        .bridge_copy_in_resource::<crate::pad_cursor::PadView>()
         .bridge_copy_in_resource::<crate::spectate::SpectateSession>()
         .bridge_snapshot_resource::<crate::player::AttackButton>()
         .bridge_copy_in::<crate::player::ChaseCamera>()
@@ -899,7 +998,12 @@ pub(crate) fn window_point(
 }
 
 /// [`window_point`] for a projection matrix and a window size.
-fn project_to_window(clip: Mat4, eye: &GlobalTransform, size: Vec2, point: Vec3) -> Option<Vec2> {
+pub(crate) fn project_to_window(
+    clip: Mat4,
+    eye: &GlobalTransform,
+    size: Vec2,
+    point: Vec3,
+) -> Option<Vec2> {
     let projection = (clip.x_axis.x, clip.y_axis.y);
     if projection == (0.0, 0.0) {
         return None;
@@ -959,15 +1063,20 @@ fn player_aim(players: &LookPlayers, bodies: &LookBodies) -> Option<(Vec3, f32, 
 ///   alignment: the pointer is moved so it stays over the same flat offset
 ///   from the player as on the view of the frame before.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn cursor_look(
+pub(crate) fn cursor_look(
     mut look: ResMut<CursorLook>,
     mut sim_capture: ResMut<LookCapture>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     motion: Res<AccumulatedMouseMotion>,
-    pad: Option<Res<crate::gamepad::PlayPad>>,
-    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    (pad, pad_status, mut pad_cursor, mut fixed, mut answer): (
+        Option<Res<crate::gamepad::PlayPad>>,
+        Option<Res<crate::gamepad::PadStatus>>,
+        Option<ResMut<crate::pad_cursor::PadCursor>>,
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+        Option<ResMut<CaptureAnswer>>,
+    ),
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     (players, bodies): (LookPlayers, LookBodies),
     mut cameras: LookCamera,
@@ -981,30 +1090,12 @@ fn cursor_look(
 ) {
     look.began = false;
     look.ended = false;
+    // Whether the routine took the frame's mouse (its answer): the desk
+    // then skips its own mouse-move processing (`gui_screens`).
+    let mut took = false;
     let Ok((mut window, mut options)) = windows.single_mut() else {
         return;
     };
-    // The pad's camera look takes the frame: the mouse capture is not
-    // started or kept while the stick looks, and the pad's own branch saves
-    // the view's basis and returns (the stick turns the camera in
-    // `chase_camera`).
-    let pad_look = pad_status.as_ref().is_some_and(|s| s.active())
-        && pad
-            .as_ref()
-            .is_some_and(|p| crate::gamepad::look_takes_over(true, p.frame().look));
-    if pad_look {
-        if look.active {
-            look.active = false;
-            options.grab_mode = CursorGrabMode::None;
-            options.visible = true;
-            if let Some(saved) = look.saved.take() {
-                window.set_cursor_position(Some(saved));
-            }
-        }
-        capture.0 = false;
-        sim_capture.set_if_neq(LookCapture(look.capture()));
-        return;
-    }
     // The original drops the capture without a release while its GUI's
     // focus is off the game view; Exarust's nearest is the window's focus.
     // The controls off, their mouse hook is dropped with its capture (the
@@ -1020,13 +1111,30 @@ fn cursor_look(
         }
         capture.0 = false;
         sim_capture.set_if_neq(LookCapture(look.capture()));
+        if let Some(answer) = answer.as_deref_mut()
+            && answer.0
+        {
+            answer.0 = false;
+        }
         return;
     }
     let spectating = spectate.as_deref().filter(|s| s.active);
-    let look_key = bindings.pressed(&keys, Action::CursorLook);
-    let orbit_key =
-        bindings.mouse_pressed(&buttons, Action::Orbit) || bindings.pressed(&keys, Action::Orbit);
+    // The pad's Look and camera-mode buttons count as the keys.
+    let pad_frame = pad
+        .as_deref()
+        .filter(|_| pad_status.as_ref().is_some_and(|s| s.active()))
+        .map(|p| *p.frame());
+    let look_key =
+        bindings.pressed(&keys, Action::CursorLook) || pad_frame.is_some_and(|f| f.look_held);
+    let orbit_key = bindings.mouse_pressed(&buttons, Action::Orbit)
+        || bindings.pressed(&keys, Action::Orbit)
+        || pad_frame.is_some_and(|f| f.camera_mode_held);
     let held = look_key || orbit_key;
+    // While the pad drives the screen cursor, or its aim stick moved
+    // during the capture, a held capture starts or stays without the
+    // mouse's work: the view is saved and the frame is taken.
+    let pad_holds = bindings.key(Action::Primary) & 0xff != 0
+        && pad_cursor.as_deref().is_some_and(|c| c.active || c.latched);
     let camera = cameras.single_mut().ok();
     let (mut cam, view_camera, view) = match camera {
         Some((cam, camera, view)) => (Some(cam), Some(camera), Some(*view)),
@@ -1053,7 +1161,17 @@ fn cursor_look(
             }
         }
     };
-    if held {
+    if held && pad_holds {
+        if !look.active {
+            look.active = true;
+            look.began = true;
+            look.turns = look_key;
+            look.target = None;
+            look.spectate = None;
+        }
+        took = true;
+    } else if held {
+        took = true;
         if !look.active {
             look.active = true;
             look.began = true;
@@ -1116,6 +1234,7 @@ fn cursor_look(
                 .or(look.saved)
         };
     } else if look.active {
+        took = true;
         look.active = false;
         look.ended = true;
         look.target = None;
@@ -1142,6 +1261,16 @@ fn cursor_look(
                 Some(warp) => warp.warp(&mut window, to),
                 None => window.set_cursor_position(Some(to)),
             }
+            // With a player and not spectating, the behaviour's screen
+            // cursor takes the warp point too (its setter).
+            if aim.is_some()
+                && spectating.is_none()
+                && let Some(cursor) = pad_cursor.as_mut()
+            {
+                exa_physics::sim_app::write_resource(fixed.as_deref_mut(), cursor, move |c| {
+                    c.set(to)
+                });
+            }
         }
     } else if cam.as_ref().is_some_and(|c| c.aligning)
         && !wayland()
@@ -1161,11 +1290,47 @@ fn cursor_look(
         // The camera still swings to the alignment Cursor Look left: the
         // pointer keeps its flat offset from the player.
         window.set_cursor_position(Some(to));
+        took = true;
     }
     look.last = view.zip(reference);
     capture.0 = look.active;
     sim_capture.set_if_neq(LookCapture(look.capture()));
+    if let Some(answer) = answer.as_deref_mut()
+        && answer.0 != took
+    {
+        answer.0 = took;
+    }
 }
+
+/// The behaviour's death hook (its class slot 25, which the body's death
+/// routine calls as its condition becomes dead): the desk's GUI capture is
+/// let go (a form dragged under the pointer gets its release). The hook
+/// also frees the pointer's confinement, which Exarust never sets, and
+/// sets the behaviour's state word that stops its footwork, which a dead
+/// body's condition stops in Exarust.
+pub(crate) fn release_on_death(
+    bodies: Query<&Condition, With<PlayerBody>>,
+    mut was_dead: Local<bool>,
+    screens: Option<ResMut<crate::gui_screens::GameScreens>>,
+) {
+    let dead = bodies.iter().next().is_some_and(|c| c.is_dead());
+    if dead
+        && !*was_dead
+        && let Some(mut screens) = screens
+        && screens.task.pointer.capture.is_some()
+    {
+        info!("player death: the desk's capture is let go");
+        screens.task.set_capture(None);
+    }
+    *was_dead = dead;
+}
+
+/// The controls' mouse capture answered that it took the frame's mouse:
+/// held, started, let go, or pinning the pointer while the camera aligns.
+/// The desk then skips its own mouse-move processing (the hover and a
+/// drag's start) that frame.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureAnswer(pub bool);
 
 /// The player's behaviour's release of a held knock-out: while the
 /// player's state flags hold the wake (0x40, which the story's revive
@@ -1261,16 +1426,27 @@ pub(crate) fn steer_player(
         Option<&Fighter>,
         Option<&mut Ragdoll>,
         Has<Attacking>,
+        Option<&exa_combat::condition::StateFlags>,
     )>,
-    (targets, spectate, look, control): (
+    (targets, spectate, look, control, pad_cursor, plane): (
         Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
         Option<Res<crate::spectate::SpectateSession>>,
         Option<Res<LookCapture>>,
         Option<Res<crate::player_controls::PlayerControl>>,
+        Option<Res<crate::pad_cursor::PadCursor>>,
+        Option<Res<CursorPlane>>,
     ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
-    let capture = look.map_or_else(Default::default, |l| l.0);
+    let mut capture: crate::steering::Capture = look.map_or_else(Default::default, |l| l.0);
+    // The pad's latched stick turns Cursor Look's target this tick, over
+    // the frame's (whose mouse work the capture then skips).
+    if let Some(turned) = pad_cursor.as_deref().and_then(|c| c.turned)
+        && capture.held
+        && capture.turns
+    {
+        capture.look = Some(turned);
+    }
     // Spectating, the controls' frame does nothing: no key steers.
     let spectating = crate::spectate::SpectateSession::spectating(spectate.as_deref());
     // The controls off, a form has the keyboard and the mouse: the movement
@@ -1312,6 +1488,7 @@ pub(crate) fn steer_player(
                 fighter,
                 mut body_mut,
                 swinging,
+                flags,
             )) = bodies.get_mut(child)
             else {
                 continue;
@@ -1393,9 +1570,10 @@ pub(crate) fn steer_player(
                 body.moving(),
                 down,
             );
-            // The block pair suspends the behaviour: its tick stops after
-            // its head, before any steering.
-            if suspended {
+            // The block pair suspends the behaviour, and a shock's stagger
+            // stops it too: its tick stops after its head, before any
+            // steering.
+            if suspended || behaviour_halted(None, flags) {
                 continue;
             }
             // Not steered while it falls (Exarust's own) or its condition is
@@ -1406,10 +1584,15 @@ pub(crate) fn steer_player(
             }
             let line = |from: Vec3, to: Vec3| line_walk(nav.as_deref(), &physics, from, to);
             // While the idle camera turns the cursor is not read.
-            let to_cursor = cursor
-                .0
-                .filter(|_| idle.as_ref().is_none_or(|i| i.follows_cursor))
-                .map(|c| c - standing);
+            let to_cursor =
+                behaviour_cursor(motions.as_deref(), &anim.action, plane.as_deref(), &cursor)
+                    .filter(|_| idle.as_ref().is_none_or(|i| i.follows_cursor))
+                    .map(|c| c - standing);
+            // Head Pain (action 45, the memory recall a story event plays)
+            // drops the movement request and keeps the combat mode.
+            let plays_head_pain = motions.as_deref().is_some_and(|m| {
+                m.action_index(&anim.action) == Some(crate::game_event::MEMORY_ACTION)
+            });
             let mut steering = pb.steering;
             steering.capture = capture;
             steering.body_stepping = ragdoll.is_some_and(Ragdoll::stepping);
@@ -1513,6 +1696,9 @@ pub(crate) fn steer_player(
                         right: input.mouse,
                         left: bindings.mouse_pressed(&buttons, Action::Primary),
                         swinging,
+                        // Walking with its speed over 2 cm a tick.
+                        dashing: req.moving && DASH_SPEED < body.speed,
+                        keeps_mode: plays_head_pain,
                         ..Default::default()
                     },
                 );
@@ -1567,7 +1753,10 @@ pub(crate) fn steer_player(
                 .as_deref()
                 .filter(|_| GAITS.contains(&anim.action.as_str()))
                 .and_then(|m| key_segment(&anim, m));
-            // A refused press or a lift leaves the request as it was.
+            // A refused press or a lift leaves the request as it was; the
+            // kinesis pick's drag and Head Pain drop it.
+            steering.dropped =
+                plays_head_pain || hand.as_ref().is_some_and(|h| h.drops_the_request());
             if !hand.as_ref().is_some_and(|h| h.keeps_the_request()) {
                 steering.request(&mut req, body, &input, segment, state);
             }
@@ -1981,6 +2170,7 @@ pub(crate) fn pick_player_target(
 fn take_player_stance(
     time: Res<Time>,
     physics: Option<Res<Physics>>,
+    control: Option<Res<crate::player_controls::PlayerControl>>,
     mut bodies: Query<(
         Entity,
         &mut PlayerBody,
@@ -1991,6 +2181,7 @@ fn take_player_stance(
         &GlobalTransform,
         Option<&Ragdoll>,
         Has<Attacking>,
+        Option<&exa_combat::condition::StateFlags>,
     )>,
     others: Query<
         (
@@ -2004,8 +2195,10 @@ fn take_player_stance(
     >,
 ) {
     let now = time.elapsed_secs();
-    for (me, mut pb, mut stance, mut anim, fighter, condition, gt, body, attacking) in &mut bodies {
-        if condition.dying() {
+    for (me, mut pb, mut stance, mut anim, fighter, condition, gt, body, attacking, flags) in
+        &mut bodies
+    {
+        if condition.dying() || behaviour_halted(control.as_deref(), flags) {
             continue;
         }
         if attacking {
@@ -2037,13 +2230,19 @@ fn take_player_stance(
         let dazed = body
             .and_then(|b| b.drive.as_ref())
             .is_some_and(|d| d.dazed());
-        let chosen = stance::player_stance(
-            true,
-            fighter.health.yellow,
-            dazed,
-            target,
-            pb.last_attack.map(|t| now - t),
-        );
+        // In a parry's clinch the stance helper answers the body's own
+        // stance: it is kept.
+        let chosen = if fighter.parry.active {
+            *stance
+        } else {
+            stance::player_stance(
+                true,
+                fighter.health.yellow,
+                dazed,
+                target,
+                pb.last_attack.map(|t| now - t),
+            )
+        };
         // In combat mode the stance is written as it is: the body tick
         // switches the clip.
         if stance.set_if_neq(chosen) {
@@ -2057,61 +2256,29 @@ fn take_player_stance(
     }
 }
 
-/// The gamepad aim's eased cursor, each behaviour tick while a stick asks
-/// for it (its `z·z + x·x` over 0.01): its direction and magnitude place a
-/// point `250·|aim| + 50` cm out from the player, which the cursor eases
-/// toward by the AimSpeed factor. With no stick the resource is cleared and
-/// the mouse's point is used.
-fn pad_aim_cursor(
-    config: Option<Res<crate::hw_config::HardwareConfig>>,
-    pad: Option<Res<crate::gamepad::PlayPad>>,
-    status: Option<Res<crate::gamepad::PadStatus>>,
-    ground: Res<CursorGround>,
-    players: Query<&GlobalTransform, With<Player>>,
-    mut aim: ResMut<AimCursor>,
-) {
-    let active = status.as_ref().is_some_and(|s| s.active()) && pad.is_some();
-    let Some(player) = players.iter().next() else {
-        aim.0 = None;
-        return;
-    };
-    let stick = active
-        .then(|| pad.as_deref().map(|p| p.frame().aim_world))
-        .flatten()
-        .filter(|aim| crate::gamepad::aim_engaged(*aim));
-    let Some(stick) = stick else {
-        aim.0 = None;
-        return;
-    };
-    let magnitude = (stick.x * stick.x + stick.z * stick.z).sqrt();
-    let want = player.translation()
-        + stick.with_y(0.0)
-            * (crate::player_behaviour::aim_distance(magnitude) / magnitude / 100.0);
-    let speed = config.map_or(0.29, |c| c.live.aim_speed);
-    // The first tick starts the ease from the mouse's point, as the
-    // original starts its screen cursor from the pointer.
-    let current = aim.0.or(ground.0).unwrap_or(want);
-    aim.0 = Some(crate::player_behaviour::aim_point_step(
-        current, want, speed,
-    ));
-}
-
 /// When the camera-follow option is set, a yaw more than a tenth of a
 /// turn from the body's is put back to the body's yaw, that tenth toward
 /// the camera's own side. The option starts clear, so the orbit is left
-/// alone.
+/// alone. The step waits while the controls hold the mouse (the orbit or
+/// Cursor Look) and, in combat mode, while Interact is held.
 fn follow_body_camera(
     config: Option<Res<crate::hw_config::HardwareConfig>>,
+    capture: Option<Res<LookCapture>>,
+    (keys, bindings): (Res<ButtonInput<KeyCode>>, Res<Bindings>),
     mut cameras: Query<(Entity, &mut ChaseCamera)>,
-    bodies: Query<&Locomotor, With<PlayerBody>>,
+    bodies: Query<(&Locomotor, &PlayerBody)>,
     mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
 ) {
     if !config.is_some_and(|config| config.live.cam_follow) {
         return;
     }
-    let Some(body) = bodies.iter().next() else {
+    let Some((body, pb)) = bodies.iter().next() else {
         return;
     };
+    if capture.is_some_and(|c| c.0.held) || (pb.combat && bindings.pressed(&keys, Action::Interact))
+    {
+        return;
+    }
     let Ok((entity, mut camera)) = cameras.single_mut() else {
         return;
     };
@@ -2126,10 +2293,9 @@ fn follow_body_camera(
 /// while an attack is requested.
 #[allow(clippy::type_complexity)]
 pub(crate) fn player_combat(
-    cursor: Res<CursorGround>,
-    aim_cursor: Res<AimCursor>,
+    (cursor, plane): (Res<CursorGround>, Option<Res<CursorPlane>>),
     look: Res<CursorLook>,
-    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    motions: Option<Res<Motions>>,
     players: Query<&GlobalTransform, With<Player>>,
     mut bodies: Query<(
         Entity,
@@ -2137,38 +2303,34 @@ pub(crate) fn player_combat(
         &mut Locomotion,
         Option<&Condition>,
         Has<Fallen>,
+        Option<&Animator>,
     )>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
     };
-    let pad_active = pad_status.as_ref().is_some_and(|s| s.active());
     // While the controls hold the mouse the cursor's point is not read:
     // Cursor Look's target is the cursor's direction, the orbit leaves the
     // aim as it was.
-    let captured = look.active && !pad_active;
+    let captured = look.active;
     let look_aim = look.capture().look;
     if captured && look_aim.is_none() {
         return;
     }
-    for (entity, mut pb, mut req, condition, fallen) in &mut bodies {
+    for (entity, mut pb, mut req, condition, fallen, anim) in &mut bodies {
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
-        // The eased aim cursor's direction, once a stick asks for it; the
-        // mouse's point under the cursor otherwise.
+        // The behaviour's cursor point (the pad's screen cursor's while the
+        // stick drives it, `pad_cursor`): the plain plane point, the aim
+        // point during an Overhead Swing.
+        let action = anim.map_or("", |a| a.action.as_str());
         let aim = if captured {
             look_aim
         } else {
-            aim_cursor
-                .0
+            behaviour_cursor(motions.as_deref(), action, plane.as_deref(), &cursor)
                 .and_then(|point| aim_from(player.translation(), point))
-                .or_else(|| {
-                    cursor
-                        .0
-                        .and_then(|point| aim_from(player.translation(), point))
-                })
         };
         if let Some(aim) = aim {
             // The aim is input the step reads: it lands on the
@@ -2230,7 +2392,11 @@ fn request_attacks(
         Option<&mut Condition>,
         Option<&Ragdoll>,
         Option<&Attacking>,
-        (Has<Fallen>, Option<&exa_combat::AttackHook>),
+        (
+            Has<Fallen>,
+            Option<&exa_combat::AttackHook>,
+            Option<&exa_combat::condition::StateFlags>,
+        ),
     )>,
     (mut asked, control): (
         MessageWriter<exa_combat::AttackAskedHook>,
@@ -2258,9 +2424,12 @@ fn request_attacks(
         mut condition,
         body,
         attacking,
-        (fallen, hook),
+        (fallen, hook, flags),
     ) in &mut bodies
     {
+        if behaviour_halted(control.as_deref(), flags) {
+            continue;
+        }
         let state_now = condition.as_deref().copied().unwrap_or_default();
         // A helpless condition engages no attack (the original's 0xAC0), and
         // a casting one hands the buttons to the cast hook instead.
@@ -2878,6 +3047,20 @@ impl ChaseCamera {
     /// The original's camera alignment: the target yaw becomes `yaw`,
     /// kept within half a turn of the shown yaw, and the camera is marked
     /// aligning.
+    /// A look of `input` ([`crate::gamepad::look_input`]) on a window
+    /// `width` pixels wide: the navigation unit's relative orbit drag by
+    /// the orbit's rate ([`crate::gamepad::look_turn`]).
+    pub(crate) fn look_turn(&mut self, input: Vec2, width: f32) {
+        (self.yaw, self.user_pitch) = crate::gamepad::look_turn(
+            self.yaw,
+            self.user_pitch,
+            pitch_floor(self.shown_zoom),
+            MAX_PITCH,
+            input,
+            orbit_per_pixel(width),
+        );
+    }
+
     pub(crate) fn align(&mut self, yaw: f32) {
         self.yaw = align_behind(yaw, self.shown_yaw);
         self.aligning = true;
@@ -3091,8 +3274,10 @@ pub(crate) fn chase_camera(
     fixed: Res<Time<Fixed>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    pad: Option<Res<crate::gamepad::PlayPad>>,
-    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    (pad, pad_status): (
+        Option<Res<crate::gamepad::PlayPad>>,
+        Option<Res<crate::gamepad::PadStatus>>,
+    ),
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
@@ -3225,14 +3410,7 @@ pub(crate) fn chase_camera(
         {
             let frame = pad.frame();
             if let Some(look) = frame.look {
-                (cam.yaw, cam.user_pitch) = crate::gamepad::look_turn(
-                    cam.yaw,
-                    cam.user_pitch,
-                    pitch_floor(cam.shown_zoom),
-                    MAX_PITCH,
-                    look,
-                    orbit_per_pixel(width),
-                );
+                cam.look_turn(look, width);
             }
             for (held, steps) in [
                 (frame.zoom_in, crate::gamepad::ZOOM_IN_STEPS),
@@ -3475,6 +3653,30 @@ mod tests {
     fn place(app: &mut App, foe: Entity, at: Vec3) {
         *app.world_mut().get_mut::<GlobalTransform>(foe).unwrap() =
             GlobalTransform::from_translation(at);
+    }
+
+    /// In a parry's clinch the stance helper answers the body's own
+    /// stance: an opponent coming close does not change it.
+    #[test]
+    fn a_parrying_player_keeps_its_stance() {
+        let (mut app, player, foe) = stance_app(4.0);
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+        app.world_mut()
+            .get_mut::<Fighter>(player)
+            .unwrap()
+            .parry
+            .active = true;
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 3.4));
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+        app.world_mut()
+            .get_mut::<Fighter>(player)
+            .unwrap()
+            .parry
+            .active = false;
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::CombatIdle);
     }
 
     /// In combat mode the player guards with its opponent 4 m ahead, takes
@@ -3970,7 +4172,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Bindings>()
             .init_resource::<CursorGround>()
-            .init_resource::<AimCursor>()
+            .init_resource::<crate::pad_cursor::PadCursor>()
             .init_resource::<CameraKickRng>()
             .init_resource::<crate::player_controls::PlaySession>()
             .init_resource::<Physics>()
@@ -4005,6 +4207,144 @@ mod tests {
             character: Some(root),
         });
         (app, body)
+    }
+
+    /// A motion set whose action 45 is Head Pain (the memory recall), with
+    /// Walk, Overhead Swing (12) and Idle before it.
+    fn head_pain_motions() -> Motions {
+        use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
+        let clip = Clip {
+            mode: 0,
+            keys: vec![Key {
+                time: 0.0,
+                root: [0.0; 3],
+                rotations: Vec::new(),
+                flags: Vec::new(),
+            }],
+        };
+        let mut names: Vec<String> = (0..45).map(|i| format!("Action {i}")).collect();
+        names[0] = "Walk".into();
+        names[12] = "Overhead Swing".into();
+        names[21] = "Idle".into();
+        names.push("Head Pain".into());
+        let set = MotionSet {
+            bone_count: 0,
+            actions: names
+                .iter()
+                .map(|n| Action {
+                    name: n.clone(),
+                    params: [0; 2],
+                })
+                .collect(),
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![Some(clip); names.len()],
+            }],
+        };
+        Motions::new(std::sync::Arc::new(set), std::sync::Arc::default(), 0.0)
+    }
+
+    /// Exploring, W asks the walk; while the body plays Head Pain (action
+    /// 45) the request is dropped, and while a shock staggers the body the
+    /// behaviour stops before its steering.
+    #[test]
+    fn head_pain_and_a_stagger_drop_the_walk_request() {
+        let requested = |action: &str, flags: u32| {
+            let (mut app, body) = steered_app(action, Stance::Idle);
+            app.insert_resource(head_pain_motions());
+            {
+                let mut entity = app.world_mut().entity_mut(body);
+                entity.get_mut::<PlayerBody>().unwrap().set_combat(false);
+                entity.insert(exa_combat::StateFlags(flags));
+            }
+            set_key(&mut app, KeyCode::KeyW, true);
+            behaviour_tick(&mut app);
+            app.world()
+                .get::<PlayerBody>(body)
+                .unwrap()
+                .steering
+                .requested
+        };
+        assert!(requested("Idle", 0));
+        assert!(!requested("Head Pain", 0));
+        assert!(!requested(
+            "Idle",
+            exa_combat::condition::StateFlags::SHOCK_STAGGER
+        ));
+    }
+
+    /// The behaviour's cursor read takes the plain plane point, and the aim
+    /// point (the bone lock's and the raise's) only during an Overhead
+    /// Swing.
+    #[test]
+    fn the_cursor_read_takes_the_aim_point_only_in_an_overhead_swing() {
+        let raw = |action: &str| {
+            let (mut app, body) = steered_app(action, Stance::Idle);
+            app.insert_resource(head_pain_motions())
+                .insert_resource(CursorPlane(Some(Vec3::new(2.0, 0.8, 0.0))))
+                .insert_resource(CursorGround(Some(Vec3::new(0.0, 1.5, 2.0))));
+            app.world_mut()
+                .get_mut::<PlayerBody>(body)
+                .unwrap()
+                .set_combat(false);
+            behaviour_tick(&mut app);
+            app.world()
+                .get::<PlayerBody>(body)
+                .unwrap()
+                .cursor()
+                .unwrap()
+        };
+        let (yaw, distance) = raw("Idle");
+        assert!((yaw - yaw_of(Vec3::X)).abs() < 1e-5 && (distance - 2.0).abs() < 1e-5);
+        let (yaw, _) = raw("Overhead Swing");
+        assert!((yaw - yaw_of(Vec3::Z)).abs() < 1e-5, "{yaw}");
+    }
+
+    /// The player's death lets the desk's GUI capture go, once.
+    #[test]
+    fn the_players_death_lets_the_desks_capture_go() {
+        let mut app = App::new();
+        app.init_resource::<crate::gui_screens::GameScreens>()
+            .add_systems(Update, release_on_death);
+        let body = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), Condition::NORMAL))
+            .id();
+        let form: exa_ui::gui_core::FormId = 3;
+        app.world_mut()
+            .resource_mut::<crate::gui_screens::GameScreens>()
+            .task
+            .pointer
+            .capture = Some(form);
+        app.update();
+        let held = |app: &App| {
+            app.world()
+                .resource::<crate::gui_screens::GameScreens>()
+                .task
+                .pointer
+                .capture
+        };
+        assert_eq!(held(&app), Some(form));
+        *app.world_mut().get_mut::<Condition>(body).unwrap() = Condition::DEAD;
+        app.update();
+        assert_eq!(held(&app), None);
+    }
+
+    /// The placements' call of the behaviour's heading store rests the
+    /// cursor follower at the placed direction, the cursor's distance kept.
+    #[test]
+    fn a_placement_rests_the_cursor_follower() {
+        let mut pb = PlayerBody::new(0.0);
+        pb.steering.raw = Some((0.3, 2.5));
+        let mut follower = crate::steering::CursorFollower::at(0.0);
+        follower.follow(1.0);
+        follower.tick();
+        pb.steering.follower = Some(follower);
+        pb.placed(-1.2);
+        assert_eq!(pb.cursor(), Some((-1.2, 2.5)));
+        let rested = pb.steering.follower.unwrap();
+        assert_eq!((rested.yaw(), rested.target()), (-1.2, -1.2));
     }
 
     /// The behaviour runs the head tracker only while the body plays the
@@ -4806,9 +5146,26 @@ mod tests {
     /// with no configuration, the orbit yaw is left alone.
     #[test]
     fn the_camera_follows_the_body_only_when_asked() {
-        let run = |follow: bool| {
+        let run = |follow: bool| run_follow(follow, false);
+        assert_eq!(run(false), 1.0);
+        let expect = crate::player_behaviour::camera_follow_yaw(1.0, 0.0).unwrap();
+        assert!((run(true) - expect).abs() < 1e-5);
+        // The controls holding the mouse keep the camera where it is.
+        assert_eq!(run_follow(true, true), 1.0);
+    }
+
+    /// One frame of the camera's follow step, with the option `follow` and
+    /// the controls' capture `held`; the camera's yaw after it.
+    fn run_follow(follow: bool, held: bool) -> f32 {
+        {
             let mut app = App::new();
             app.add_systems(Update, follow_body_camera)
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Bindings>()
+                .insert_resource(LookCapture(crate::steering::Capture {
+                    held,
+                    ..Default::default()
+                }))
                 .init_resource::<exa_physics::sim_app::FrameCommands>();
             let body = Locomotor {
                 yaw: 0.0,
@@ -4830,10 +5187,7 @@ mod tests {
             }
             app.update();
             app.world().get::<ChaseCamera>(camera).unwrap().yaw
-        };
-        assert_eq!(run(false), 1.0);
-        let expect = crate::player_behaviour::camera_follow_yaw(1.0, 0.0).unwrap();
-        assert!((run(true) - expect).abs() < 1e-5);
+        }
     }
 
     #[test]
@@ -5452,6 +5806,7 @@ mod tests {
             app.world().resource::<LookCapture>().0,
             crate::steering::Capture {
                 held: true,
+                turns: true,
                 look: Some(0.0)
             }
         );
@@ -5483,8 +5838,101 @@ mod tests {
             app.world().resource::<LookCapture>().0,
             crate::steering::Capture {
                 held: true,
+                turns: false,
                 look: None
             }
         );
+    }
+
+    /// The pad's Look button starts Cursor Look's capture like the key, and
+    /// the routine answers that it took the mouse (the desk skips its
+    /// mouse-move processing). While the pad drives the screen cursor a held
+    /// capture does none of the mouse's work (no centring, no turn) and is
+    /// kept; the release warps the pointer to where it was and the
+    /// behaviour's screen cursor takes the warp point.
+    #[test]
+    fn the_pads_look_button_captures_and_a_driven_cursor_keeps_it() {
+        let mut app = App::new();
+        app.init_resource::<CursorLook>()
+            .init_resource::<LookCapture>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<CursorCapture>()
+            .init_resource::<CaptureAnswer>()
+            .init_resource::<crate::pad_cursor::PadCursor>()
+            .init_resource::<crate::gamepad::PlayPad>()
+            .insert_resource(crate::gamepad::PadStatus {
+                connected: true,
+                controller: true,
+                auto: false,
+            })
+            .init_resource::<crate::panel_live::PointerOverGui>()
+            .add_systems(Update, cursor_look);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(800, 600),
+                    focused: true,
+                    ..default()
+                },
+                CursorOptions::default(),
+                PrimaryWindow,
+            ))
+            .id();
+        app.world_mut()
+            .entity_mut(window)
+            .get_mut::<Window>()
+            .unwrap()
+            .set_cursor_position(Some(Vec2::new(100.0, 50.0)));
+        let body = app.world_mut().spawn(PlayerBody::new(0.0)).id();
+        app.world_mut()
+            .spawn((Player, GlobalTransform::default()))
+            .add_child(body);
+        let look_button = |app: &mut App, held: bool| {
+            let frame = crate::gamepad::PlayFrame {
+                look_held: held,
+                ..Default::default()
+            };
+            app.world_mut()
+                .resource_mut::<crate::gamepad::PlayPad>()
+                .set_frame(frame);
+            app.update();
+        };
+        look_button(&mut app, true);
+        let look = app.world().resource::<CursorLook>();
+        assert!(look.active && look.turns && look.began);
+        assert!(app.world().resource::<CaptureAnswer>().0);
+        // The pad drives the screen cursor: the next held frame keeps the
+        // capture without re-centring the pointer.
+        {
+            let mut window = app.world_mut().get_mut::<Window>(window).unwrap();
+            window.set_cursor_position(Some(Vec2::new(300.0, 200.0)));
+        }
+        app.world_mut()
+            .resource_mut::<crate::pad_cursor::PadCursor>()
+            .active = true;
+        look_button(&mut app, true);
+        assert!(app.world().resource::<CursorLook>().active);
+        assert!(app.world().resource::<CaptureAnswer>().0);
+        let at = app.world().get::<Window>(window).unwrap().cursor_position();
+        assert_eq!(at, Some(Vec2::new(300.0, 200.0)), "not re-centred");
+        // Let go: the pointer goes back where it was and the screen cursor
+        // takes that point.
+        app.world_mut()
+            .resource_mut::<crate::pad_cursor::PadCursor>()
+            .active = false;
+        look_button(&mut app, false);
+        let look = app.world().resource::<CursorLook>();
+        assert!(!look.active && look.ended);
+        assert!(app.world().resource::<CaptureAnswer>().0);
+        let cursor = app.world().resource::<crate::pad_cursor::PadCursor>();
+        assert_eq!(cursor.target, Vec2::new(100.0, 50.0));
+        assert_eq!(cursor.pair.shown, Vec2::new(100.0, 50.0));
+        // Nothing held and nothing to pin: the desk keeps the mouse.
+        look_button(&mut app, false);
+        assert!(!app.world().resource::<CaptureAnswer>().0);
     }
 }

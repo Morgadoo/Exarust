@@ -2078,6 +2078,7 @@ impl Plugin for GameScreensPlugin {
                 screens_pointer
                     .after(open_requested_screens)
                     .after(close_on_right_release)
+                    .after(crate::player::cursor_look)
                     .before(draw_screens),
             )
             .add_systems(
@@ -2905,6 +2906,7 @@ fn screens_pointer(
     hint: Res<DebugRecordHint>,
     mut screens: ResMut<GameScreens>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
+    taken: Option<Res<crate::player::CaptureAnswer>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     if screens.open.is_empty() || menu.is_some_and(|menu| menu.open) {
@@ -2925,7 +2927,13 @@ fn screens_pointer(
         primary.hint = text.as_bytes().to_vec();
     }
     let now = time.elapsed().as_millis() as u32;
-    let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
+    let mut frame =
+        crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
+    // The controls' mouse capture took the frame's mouse: the desk skips
+    // its mouse-move processing (the hover and a drag's start).
+    if taken.is_some_and(|t| t.0) {
+        frame.at = None;
+    }
     let screens = &mut *screens;
     screens.sync_journal_box();
     let tick = crate::form_input::drive(&mut screens.task, &frame, timers.as_deref_mut());

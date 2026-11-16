@@ -23,7 +23,7 @@ form built from one record array, laid out, rescaled,
 placed and answering the pointer through the control messages
 (`record_form`), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
-its shape), the window's own pointer (`system_cursor`: the original's twelve-slot
+its shape and, while the gamepad drives it, where it is drawn), the window's own pointer (`system_cursor`: the original's twelve-slot
 pointer table and show rule, and the menu cursor from `menucursor.rfi`
 resampled to the screen-height size, sharpened and set as the window's
 custom pointer), the health and focus bars with their fade and the stamina gauge

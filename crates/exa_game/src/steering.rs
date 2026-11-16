@@ -415,9 +415,11 @@ impl CursorFollower {
 /// orbit or Cursor Look holds the mouse (`held`) the cursor's point is not
 /// read, and while Cursor Look turns (`look`, its target yaw) the cursor
 /// follower follows that target and the raw cursor direction is it.
+/// `turns`: the capture is Cursor Look's (else the orbit's).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Capture {
     pub(crate) held: bool,
+    pub(crate) turns: bool,
     pub(crate) look: Option<f32>,
 }
 
@@ -501,6 +503,10 @@ pub(crate) struct Steering {
     /// The body's step episode runs (any kind), as the behaviour tick
     /// reads it: a walk casts its look-ahead only while no step runs.
     pub(crate) body_stepping: bool,
+    /// The request is dropped this tick, after the keys' backwards flags:
+    /// while the hand holds a GUI callback's drag (the kinesis pick) or
+    /// the body plays Head Pain (action 45, the memory recall).
+    pub(crate) dropped: bool,
 }
 
 impl Steering {
@@ -545,7 +551,11 @@ impl Steering {
     /// the body moves, the request holds (heading-driven) until the walk's
     /// key segment `segment` is 0 or 4 (or no walk plays), which also
     /// clears backwards. Then the cursor's mode: the mouse's request walks
-    /// to a cursor within 3 m and runs beyond.
+    /// to a cursor within 3 m and runs beyond (a NaN distance walks: the
+    /// original's unordered compare takes the walk).
+    ///
+    /// A dropped request ([`Steering::dropped`]) is taken as no key and no
+    /// button once the backwards flags are set: the release's latch runs.
     pub(crate) fn request(
         &mut self,
         req: &mut Locomotion,
@@ -570,6 +580,9 @@ impl Steering {
             }
         } else if wanted {
             req.flags &= !(BACK | TURN_ABOUT);
+        }
+        if self.dropped {
+            wanted = false;
         }
         if wanted {
             if keys.mouse {
@@ -600,7 +613,7 @@ impl Steering {
     /// distance once 50 cm or more away, which the follower takes as its
     /// target; the follower ticks, and its yaw is the request's smoothed
     /// cursor direction. Down (`down`), the raw direction and the look are
-    /// the heading.
+    /// the heading, and the distance is the point's however near.
     ///
     /// While the controls hold the mouse (the orbit or Cursor Look,
     /// [`Capture`]) the cursor's point is not read and its distance is
@@ -613,7 +626,13 @@ impl Steering {
             .follower
             .get_or_insert_with(|| CursorFollower::at(req.heading));
         if down {
-            self.raw = Some((req.heading, self.raw.map_or(0.0, |(_, d)| d)));
+            // Down, the raw direction is the heading and the distance the
+            // point's, however near (kept without a point).
+            let distance = to
+                .map(|t| t.with_y(0.0).length())
+                .or(self.raw.map(|(_, d)| d))
+                .unwrap_or(0.0);
+            self.raw = Some((req.heading, distance));
             req.look = req.heading;
             follower.follow(req.heading);
         } else if !self.capture.held

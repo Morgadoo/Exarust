@@ -1349,10 +1349,11 @@ pub struct PlayContext {
     pub variant: Variant,
     /// The step modes.
     pub modes: StepModes,
-    /// The game's raw-aim mode: the aim stick's pair is stored as it is
+    /// The controls hold the mouse (the orbit or Cursor Look,
+    /// `player::CursorLook`): the aim stick's pair is stored as it is
     /// instead of being turned into the camera's frame (the player
-    /// behaviour then turns the camera with it through [`look_input`]). Its
-    /// owner is outside this component; Exarust leaves it off.
+    /// behaviour then turns the look or the camera with it,
+    /// `pad_cursor::aim_cursor`).
     pub raw_aim: bool,
     /// The camera's world right axis.
     pub camera_right: Vec3,
@@ -1464,6 +1465,12 @@ impl PlayPad {
     /// The current frame.
     pub fn frame(&self) -> &PlayFrame {
         &self.frame
+    }
+
+    /// Sets the frame's result, for tests of its readers.
+    #[cfg(test)]
+    pub(crate) fn set_frame(&mut self, frame: PlayFrame) {
+        self.frame = frame;
     }
 
     /// The player command word.
@@ -1716,8 +1723,8 @@ pub(crate) fn pad_keys(
 /// compared in double) is over 0.01, about a tenth of a full stick, and
 /// otherwise leaves the cursor to the mouse. (It then places the cursor
 /// `250·|aim| + 50` cm out and eases the screen cursor there by
-/// `(0.4·AimSpeed + 0.1)²` a tick, the one use of AimSpeed; Exarust turns
-/// its combat aim to the stick's yaw directly.)
+/// `(0.4·AimSpeed + 0.1)²` a tick, the one use of AimSpeed:
+/// `pad_cursor::aim_cursor`.)
 pub fn aim_engaged(aim: Vec3) -> bool {
     f64::from(aim.z * aim.z + aim.x * aim.x) > 0.01
 }
@@ -1823,6 +1830,7 @@ fn read_pad(
     mut status: ResMut<PadStatus>,
     scripted: Option<ResMut<ScriptedPad>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    look: Option<Res<crate::player::CursorLook>>,
 ) {
     let now = time.elapsed().as_millis() as i64;
     let scripted_sample = scripted
@@ -1907,9 +1915,9 @@ fn read_pad(
                 .as_deref()
                 .is_some_and(|c| c.engine.panel.open),
         },
+        raw_aim: look.is_some_and(|l| l.active),
         camera_right: right,
         camera_forward: forward,
-        ..PlayContext::default()
     };
     play.update(now, &sample.for_set(active), ctx);
 }
