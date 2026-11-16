@@ -557,8 +557,26 @@ immediate
 push by mobility shares and φ; up to four points per pair are solved in
 the next tick's
 iterations before the links (0.01 cm slop, the reversed pair friction,
-dropped once satisfied) and rub in the friction passes; a contact
-equalises the two bodies' sleep countdowns (`body::equalise_sleep`). The
+dropped once satisfied; worked in centimetres with the original's double
+slop compare, friction limit and slide factor, a NaN limit taking the
+slide branch, each push the share times the clamped weight first) and rub
+in the friction passes; a contact equalises the two bodies' sleep
+countdowns (`body::equalise_sleep`). A part's sphere is put in the other
+part's frame by `sector::relative_frame`, the other frame's transpose as
+its inverse, as the original's pair contact does. The scene's grid
+(`SceneGrid`, set by `exa_world`'s level load from its grid chunk, every
+level has one; reset at teardown) reaches the pair stage each step
+(`Pairs::set_scene`): with it parts are bucketed by the original's flat
+cell index (`sector::GridShape`: half the grid's size as the bias, the
+flat neighbour offsets, so an x past an edge wraps a row), and the bounds
+pass (`SolverStage::bounds`, after the inverted-tetra repair) puts a part
+whose cell lies in the grid's first or last row back where the tick
+before last left it and parks it in cell `columns + 1` ("Object position
+overflow", logged once); a scene without a grid takes the all-pairs walk,
+and with none given (tests, tools) the cells are unbounded. The static
+collider grid takes the same shape (`shape_static_grid`; its stand-in is
+4096 cells square around the world origin). The model grid
+(`dynamics::Grid`) takes its bias, offsets and cells from `GridShape`. The
 sector's bookkeeping (`src/sector.rs`) holds the original's 600 cm grid
 (cells by round-down of × 1/600 in single precision), the static span
 rounded half to even with one cell of margin all round, the body and
