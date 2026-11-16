@@ -2285,6 +2285,13 @@ pub struct Drive {
     pub race: RaceMuscles,
     /// What the body takes from its own character's stats.
     pub stats: BodyStats,
+    /// Its golem suit is powered, which halves the standing thigh factor
+    /// and quarters the leg limit ([`Bearing::golem_powered`] each tick).
+    /// The character init sets it for a golem race; the armour pass's
+    /// golem-suit registration sets it from the suit's charge, and the
+    /// suit's worn tick turns it on while the charge still rises and off
+    /// once it does not.
+    pub golem_powered: bool,
     /// What the character tick knows of the body's character this tick.
     pub bearing: Bearing,
     /// Stance factor s: the share of its tone the body uses (T = tone·s).
@@ -2491,6 +2498,7 @@ impl Drive {
             race,
             stance: race.stance,
             stats,
+            golem_powered: race.golem,
             ..Self::default()
         }
     }
@@ -2512,6 +2520,7 @@ impl Default for Drive {
             supported: true,
             race: RaceMuscles::HUMAN,
             stats: BodyStats::HUMAN,
+            golem_powered: false,
             bearing: Bearing::default(),
             stance: RaceMuscles::HUMAN.stance,
             arm: 0.0,
@@ -3416,9 +3425,18 @@ impl Ragdoll {
         self.drive.as_ref().is_some_and(|d| d.step_told_ai())
     }
 
-    /// This tick's jolt told the body's behaviour (it locomoted).
+    /// This tick's jolt told the body's behaviour (it locomoted): the AI's
+    /// soft stop reads it (`exa_ai::route_walk::soft_stop_jolted_routes`).
     pub fn jolt_told(&self) -> bool {
         self.drive.as_ref().is_some_and(|d| d.steps.jolt_told)
+    }
+
+    /// Marks this tick's jolt as told, as the balance tick's jolt does for
+    /// a locomoting body (for a caller standing in for that tick).
+    pub fn tell_jolt(&mut self) {
+        if let Some(d) = self.drive.as_mut() {
+            d.steps.jolt_told = true;
+        }
     }
 
     /// The legs whose feet planted this tick (the walk's gait plants), in
@@ -3615,6 +3633,8 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.race = race;
             d.stance = race.stance;
+            // The init's golem branch powers the body's golem suit.
+            d.golem_powered = race.golem;
         }
         if race.golem {
             self.smooth_golem_links();
@@ -4466,6 +4486,35 @@ impl Ragdoll {
                 p.drawn_particles = (p.positions, p.positions);
             }
         }
+    }
+
+    /// Puts the body to sleep as its post-step does once its countdown is
+    /// down: countdown 0, its first sleeping tick next (which takes its
+    /// velocity away), and the three displacement records emptied (the
+    /// motion, the placed body's contact offsets and the smoothed motion).
+    fn fall_asleep(&mut self) {
+        self.countdown = 0;
+        self.sleep = Sleep::Asleep;
+        self.clear_placed_offsets();
+        for p in &mut self.parts {
+            p.moved = [Vec3::ZERO; 4];
+            p.smoothed = [Vec3::ZERO; 4];
+        }
+    }
+
+    /// A held item's share of its holder's sleep, as the original's body
+    /// tree shares one countdown from its root: the item takes `countdown`
+    /// (the larger of the two, so a moving item has already woken its
+    /// holder), sleeps once its holder sleeps and wakes with it.
+    pub fn follow_holder(&mut self, countdown: i32, holder_asleep: bool) {
+        if holder_asleep {
+            if !self.asleep() {
+                self.fall_asleep();
+            }
+            return;
+        }
+        self.wake_to(countdown);
+        self.countdown = countdown;
     }
 
     /// Takes `ticks` off the body's sleep countdown, never under one, as the
@@ -5412,16 +5461,7 @@ impl Ragdoll {
             p.two_ticks_ago = p.start;
         }
         if self.countdown <= SLEEP_COUNT {
-            self.countdown = 0;
-            self.sleep = Sleep::Asleep;
-            // The original's post-step empties its three displacement
-            // records: the motion, the placed body's contact offsets and
-            // the smoothed motion.
-            self.clear_placed_offsets();
-            for p in &mut self.parts {
-                p.moved = [Vec3::ZERO; 4];
-                p.smoothed = [Vec3::ZERO; 4];
-            }
+            self.fall_asleep();
         }
         if let Some(&root) = self.outward.first()
             && self.parts[root].positions[0].y < FALL_OUT_HEIGHT
