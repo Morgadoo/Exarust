@@ -1497,6 +1497,10 @@ the planner plans with the caller's goal record (size class, the alert count as 
 
 a hard hit's turn stall now holds the body's turn (written by the impact, one off a tick), the arms read the turn error a tick late as the original does, a turning body lowers its support adapter, an interrupted swing stands still (the strength and stall rate were swapped), and a struck body is knocked back along the striker's unnormalised slot vector, so heavy blows take a whole step. A hovering player looks ahead by the straight walk. Fight traces change; determinism runs and duel scenes owed while the GPU is on hold.
 
+the live scene registers every level light as an omni light node in its room's sector; each activation takes the light flood's cells, runs the room cell hook into the rooms' sectors and drops the aliases no cell stamped, as the original's flood ends, and the link pass gates mesh lighting by those aliases (equal to the old room lists on exanima01, 02 and 06). The weight sort orders a mesh's bucket list, where the original keeps it. Next: the alias link methods as the scene's link test (picture change, needs the GPU). Grid scenes owed while the GPU is on hold.
+
+the arena's company bookkeeping: deaths in a match, departures before one, dismissals and hires reach the roster, the entries, the log and the arsenal through one removal and one stores pass; the day board, the hire list and the continue fixups survive a save and load; End Day clears the log; kept bodies are reset between rounds; entrant health is bit-exact; won prizes and season rewards go into the arsenal; the points line follows the dragged rank. Left: the kept body's living re-place, the board's Choose button, item instances. Grid scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
