@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 53.6% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 53.8% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.6% closed**, of which 41.8% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.2% partial and 8.2% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.8% closed**, of which 42.0% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.1% partial and 8.1% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -27,13 +27,13 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 27% | 26% | 1% | 0% | 62% | 10% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
-| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 47% | 44% | 2% | 1% | 44% | 8% | TArsenalContFrame |
+| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 48% | 45% | 2% | 1% | 44% | 8% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 48% | 45% | 1% | 2% | 49% | 3% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 61% | 59% | 1% | 0% | 37% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 4% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 56% | 54% | 2% | 0% | 37% | 7% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 52% | 42% | 1% | 9% | 31% | 17% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 53% | 43% | 1% | 9% | 31% | 17% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -305,7 +305,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TWeaponBlood | Combat, weapons & damage | 2 | 85% | 20% | 20% | 0% | 0% | 80% | 0% |
 | RFE_Effects_Blood | Combat, weapons & damage | 1 | 80% | 41% | 32% | 9% | 0% | 59% | 0% |
 | TBloodSprays | Combat, weapons & damage | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 63% | 62% | 0% | 0% | 31% | 6% |
+| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 64% | 63% | 0% | 0% | 30% | 6% |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
 | Item description phrases | Items, materials & crafting | 16 | 86% | 69% | 64% | 2% | 3% | 29% | 2% |
 | SG_ItemGUI | Items, materials & crafting | 15 | 84% | 52% | 46% | 2% | 4% | 29% | 18% |
@@ -315,7 +315,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Item variant & condition randomisers (FLX_Character_Textures by address) | Items, materials & crafting | 5 | 84% | 55% | 54% | 1% | 0% | 45% | 0% |
 | TItemGUIManager | Items, materials & crafting | 4 | 62% | 26% | 15% | 7% | 4% | 48% | 27% |
 | TArsenalView | Items, materials & crafting | 3 | 80% | 37% | 37% | 0% | 0% | 32% | 31% |
-| TInventory | Items, materials & crafting | 3 | 80% | 18% | 18% | 0% | 0% | 79% | 4% |
+| TInventory | Items, materials & crafting | 3 | 80% | 21% | 21% | 0% | 0% | 75% | 4% |
 | TCharLoot | Items, materials & crafting | 1 | 65% | 78% | 78% | 0% | 0% | 22% | 0% |
 | TItemRenderer | Items, materials & crafting | 1 | 50% | 100% | 0% | 100% | 0% | 0% | 0% |
 | TPopUpDesc | Items, materials & crafting | 1 | 85% | 68% | 68% | 0% | 0% | 32% | 0% |
@@ -483,8 +483,8 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TManageForm | Game modes, arena & session | 0 | 60% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TGUIDrawSkin | UI | 35 | 93% | 55% | 45% | 0% | 10% | 13% | 31% |
 | TGSLines | UI | 24 | 89% | 23% | 23% | 0% | 0% | 59% | 18% |
-| SG_GameGUI | UI | 22 | 90% | 51% | 33% | 1% | 16% | 42% | 8% |
-| TGUIForm | UI | 20 | 96% | 17% | 17% | 1% | 0% | 49% | 33% |
+| SG_GameGUI | UI | 22 | 90% | 67% | 50% | 1% | 16% | 30% | 2% |
+| TGUIForm | UI | 20 | 96% | 18% | 17% | 1% | 0% | 49% | 33% |
 | TSkillUI | UI | 18 | 88% | 76% | 76% | 0% | 0% | 20% | 4% |
 | RF_GUI_Controls_Ex | UI | 16 | 87% | 75% | 12% | 1% | 62% | 25% | 0% |
 | RF_HW_Config | UI | 15 | 93% | 67% | 59% | 5% | 2% | 32% | 1% |
