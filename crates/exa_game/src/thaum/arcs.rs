@@ -33,7 +33,9 @@
 //!   one behind the last). The main tendril's end sits on the target.
 //! - **The level** ([`ArcEmitter::clip_to_level`]): a segment that meets
 //!   the level ends the tendril at the hit, losing its branches past the
-//!   cut.
+//!   cut. The simulation runs this test, and the characters', only for an
+//!   emitter whose record asks for it ([`TESTS_LEVEL`], [`TESTS_BODIES`]);
+//!   both take the points as offsets from the hand ([`ArcEmitter::hand`]).
 //! - **Characters** ([`ArcEmitter::strike_limb`]): each segment but the
 //!   last, taken into the limb's frame, is the limb mesh's swept query: a
 //!   sphere of 20 cm swept from the segment's start to its end, whose hit
@@ -59,7 +61,10 @@
 //!   local-frame bit when its parent has it, and starts a named hum looping
 //!   at the node; leaving frees the light and stops the hum.
 //!   [`follow_parent`] is the node's update under a local-frame parent: the
-//!   parent's matrix with the node's own offset carried through it.
+//!   parent's matrix with the node's own offset carried through it. The
+//!   points are the node's own; the frame draws them through it.
+//! - **The records** ([`Tendril`], [`ArcEmitter::record`]) share one buffer
+//!   of `(segments + 1)·count` points, a segment count apart.
 //!
 //! Evidence: the emitter's constructor, setup, tick, level and character
 //! tests, branch and respawn helpers, bounds and frame, read from
@@ -67,7 +72,13 @@
 
 use bevy::math::{Quat, Vec3};
 
-use super::engine::{Draws, dist_sq, dot_zyx, jitter, length, lerp, normalize, sign};
+use super::engine::{Draws, dist_sq, jitter, length, lerp, normalize, sign};
+
+/// A dot product in the original's order, `(x·x′ + y·y′) + z·z′` (the plane's
+/// offset and each point's height above it).
+fn dot_xyz(a: Vec3, b: Vec3) -> f32 {
+    (a.x * b.x + a.y * b.y) + a.z * b.z
+}
 
 /// The smallest scale, lift and life the setup and the fade keep.
 pub const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
@@ -206,16 +217,22 @@ pub enum Origin {
     Point { tendril: usize, index: usize },
 }
 
-/// One tendril record.
+/// One tendril record. Its points, previous points and branches live in
+/// the emitter's shared arrays ([`ArcEmitter::record`]): the records sit
+/// `segments` apart in one buffer of `(segments + 1)·count` points, as the
+/// original's do, so a record that holds more than `segments` points (a
+/// tail trade can leave one so for a tick) runs into the next record's
+/// first slots.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tendril {
     pub origin: Origin,
     /// Points in use; 0 is a free record.
     pub count: i32,
-    pub points: Vec<Vec3>,
-    pub previous: Vec<Vec3>,
-    /// The branch at each point.
-    pub branches: Vec<Option<usize>>,
+    /// Its first point's slot in the shared point arrays.
+    pub base: usize,
+    /// Its first branch's slot in the shared branch array (the original's
+    /// branch pointers, 8 bytes each, sit `12·segments` bytes apart).
+    pub branch_base: usize,
     pub life: f32,
     /// The ribbon's texture phase.
     pub phase: f32,
@@ -224,26 +241,35 @@ pub struct Tendril {
 }
 
 impl Tendril {
-    fn new(capacity: usize) -> Self {
+    fn at(base: usize, branch_base: usize) -> Self {
         Self {
             origin: Origin::Source,
             count: 0,
-            points: vec![Vec3::ZERO; capacity],
-            previous: vec![Vec3::ZERO; capacity],
-            branches: vec![None; capacity],
+            base,
+            branch_base,
             life: 0.0,
             phase: 0.0,
             timer: 0,
         }
     }
+}
 
-    fn fit(&mut self, len: usize) {
-        if self.points.len() < len {
-            self.points.resize(len, Vec3::ZERO);
-            self.previous.resize(len, Vec3::ZERO);
-            self.branches.resize(len, None);
-        }
-    }
+/// A record's views into the emitter's shared arrays, from its first slot
+/// to the arrays' end ([`ArcEmitter::record`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Record<'a> {
+    pub points: &'a [Vec3],
+    pub previous: &'a [Vec3],
+    pub branches: &'a [Option<usize>],
+}
+
+/// A record's mutable views ([`ArcEmitter::record_mut`]).
+#[derive(Debug)]
+pub struct RecordMut<'a> {
+    pub tendril: &'a mut Tendril,
+    pub points: &'a mut [Vec3],
+    pub previous: &'a mut [Vec3],
+    pub branches: &'a mut [Option<usize>],
 }
 
 /// One of the arcs' light points.
@@ -308,6 +334,12 @@ impl ArcGlow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArcEmitter {
     pub tendrils: Vec<Tendril>,
+    /// The records' points, shared ([`Tendril`]).
+    pub points: Vec<Vec3>,
+    /// The records' previous points, shared.
+    pub previous: Vec<Vec3>,
+    /// The records' branches, shared.
+    pub branches: Vec<Option<usize>>,
     pub segments: i32,
     pub step: f32,
     pub branch_floor: f32,
@@ -342,20 +374,38 @@ pub struct ArcEmitter {
     pub extent: Vec3,
     pub radius: f32,
     pub mean: Vec3,
-    /// Where the points' frame sits (the hand the arcs ride with).
+    /// Where the drawn points' frame sits in the world (cm): the node's
+    /// place for arcs on a parent node (a weapon, a mace, a struck part),
+    /// whose points are the node's own; the hand's node offset point for
+    /// arcs held in a hand (their node stays unplaced, so this offset is
+    /// all the draw adds). Only the frame reads it.
     pub anchor: Option<Vec3>,
+    /// The hand the arcs come from (its part's place, cm): the bounds, the
+    /// mean, the level's test and the bodies' test take the points as
+    /// offsets from it. Arcs on a parent node have none: those tests read
+    /// their points as they are.
+    pub hand: Option<Vec3>,
     /// The plane the points stay above: its normal and a point on it.
     pub plane: Option<(Vec3, Vec3)>,
-    /// The spheres of the body the arcs come from, in the weapon's own frame.
-    /// A tendril starts from one whose local y is over 10 cm, turned by
-    /// [`ArcEmitter::frame`].
+    /// The spheres of the body the arcs come from, in its own frame, which
+    /// is the arcs' own: a tendril starts from one whose local y is over
+    /// 10 cm.
     pub source_spheres: Vec<Vec3>,
-    /// The weapon's rotation. Sphere picks are turned by it; identity leaves
-    /// them as stored.
+    /// The node's rotation in the world (the frame turns the points and
+    /// the camera with it); identity for arcs held in a hand.
     pub frame: Quat,
+    /// The record's collision bits (16–19): [`TESTS_LEVEL`] and
+    /// [`TESTS_BODIES`] ask the simulation for the level's and the bodies'
+    /// tests. Arcs made without a record have none.
+    pub tests: u32,
     /// Characters already shocked (with [`SHOCK_ONCE`]).
     pub shocked: Vec<u64>,
 }
+
+/// The record's bit asking for the level's test ([`ArcEmitter::clip_to_level`]).
+pub const TESTS_LEVEL: u32 = 0x1_0000;
+/// The record's bit asking for the bodies' test ([`ArcEmitter::strike_limb`]).
+pub const TESTS_BODIES: u32 = 0x2_0000;
 
 /// Up to this many light points.
 pub const LIGHT_POINTS: usize = 16;
@@ -366,22 +416,30 @@ impl ArcEmitter {
     pub fn allocate(count: i32, segments: i32, size: f32) -> Self {
         let count = count.max(1);
         let segments = segments.max(2);
-        let capacity = segments as usize + 1;
+        let slots = (segments as usize + 1) * count as usize;
         let length = size * 4.0;
-        let mut tendrils = vec![Tendril::new(capacity); count as usize];
+        let stride = segments as usize;
+        let mut tendrils: Vec<Tendril> = (0..count as usize)
+            .map(|t| Tendril::at(t * stride, t * stride * 12 / 8))
+            .collect();
+        let mut points = vec![Vec3::ZERO; slots];
+        let mut previous = vec![Vec3::ZERO; slots];
         let source = Vec3::ZERO;
         let target = Vec3::new(segments as f32 * length + source.x, source.y, source.z);
         let first = &mut tendrils[0];
         first.count = 2;
         first.origin = Origin::Source;
-        first.points[0] = source;
-        first.points[1] = Vec3::new(first.points[0].x + length, first.points[0].y, 0.0);
-        first.previous[0] = first.points[0];
-        first.previous[1] = first.points[1];
+        points[0] = source;
+        points[1] = Vec3::new(points[0].x + length, points[0].y, 0.0);
+        previous[0] = points[0];
+        previous[1] = points[1];
         first.life = 1.0;
         first.timer = -1;
         Self {
             tendrils,
+            points,
+            previous,
+            branches: vec![None; slots * 12 / 8],
             segments,
             step: 1.0 / (segments as f32 - 1.0),
             branch_floor: 1.5 / segments as f32,
@@ -411,9 +469,11 @@ impl ArcEmitter {
             radius: 0.0,
             mean: Vec3::ZERO,
             anchor: None,
+            hand: None,
             plane: None,
             source_spheres: Vec::new(),
             frame: Quat::IDENTITY,
+            tests: 0,
             shocked: Vec::new(),
         }
     }
@@ -421,6 +481,7 @@ impl ArcEmitter {
     /// An emitter from an arc record.
     pub fn new(params: &ArcParams, draws: &mut impl Draws) -> Self {
         let mut arc = Self::allocate(params.count, params.segments, params.size);
+        arc.tests = params.flags & 0xf_0000;
         arc.flags = params.flags & 0xff;
         arc.light_kind = ArcLight::of_flags(params.flags);
         if arc.light_kind == ArcLight::Voxel {
@@ -430,7 +491,7 @@ impl ArcEmitter {
             arc.length *= params.scale;
         }
         if params.flags & RESPAWNS == 0 {
-            arc.tendrils[0].points[1] = params.direction * arc.length;
+            arc.points[1] = params.direction * arc.length;
             arc.tendrils[0].timer = params.life;
             arc.ending = true;
             arc.total = 1;
@@ -450,7 +511,7 @@ impl ArcEmitter {
             arc.volume = params.volume;
         }
         arc.source += params.offset;
-        arc.tendrils[0].points[1] += params.offset;
+        arc.points[1] += params.offset;
         arc
     }
 
@@ -459,23 +520,70 @@ impl ArcEmitter {
         self.tendrils.iter().position(|t| t.count == 0)
     }
 
+    /// Record `t`'s views into the shared arrays.
+    pub fn record(&self, t: usize) -> Record<'_> {
+        let rec = &self.tendrils[t];
+        Record {
+            points: &self.points[rec.base.min(self.points.len())..],
+            previous: &self.previous[rec.base.min(self.previous.len())..],
+            branches: &self.branches[rec.branch_base.min(self.branches.len())..],
+        }
+    }
+
+    /// Record `t`'s mutable views, the shared arrays first grown to hold
+    /// `len` of its slots when they do not (a spill past the last record's
+    /// end, beyond the original's buffer).
+    pub fn record_mut(&mut self, t: usize, len: usize) -> RecordMut<'_> {
+        let (base, branch_base) = (self.tendrils[t].base, self.tendrils[t].branch_base);
+        if self.points.len() < base + len {
+            self.points.resize(base + len, Vec3::ZERO);
+            self.previous.resize(base + len, Vec3::ZERO);
+        }
+        if self.branches.len() < branch_base + len {
+            self.branches.resize(branch_base + len, None);
+        }
+        RecordMut {
+            tendril: &mut self.tendrils[t],
+            points: &mut self.points[base..],
+            previous: &mut self.previous[base..],
+            branches: &mut self.branches[branch_base..],
+        }
+    }
+
+    /// Point `i` of record `t`.
+    pub fn point(&self, t: usize, i: usize) -> Vec3 {
+        self.record(t).points.get(i).copied().unwrap_or(Vec3::ZERO)
+    }
+
+    fn branch(&self, t: usize, i: usize) -> Option<usize> {
+        self.record(t).branches.get(i).copied().flatten()
+    }
+
+    fn set_branch(&mut self, t: usize, i: usize, b: Option<usize>) {
+        self.record_mut(t, i + 1).branches[i] = b;
+    }
+
+    fn set_point(&mut self, t: usize, i: usize, p: Vec3) {
+        self.record_mut(t, i + 1).points[i] = p;
+    }
+
     /// Clears a record and, first, its branches'.
     pub fn kill(&mut self, record: usize) {
         self.tendrils[record].life = 0.0;
         let count = self.tendrils[record].count;
         for k in 0..count.max(0) as usize {
-            if let Some(branch) = self.tendrils[record].branches.get(k).copied().flatten() {
+            if let Some(branch) = self.branch(record, k) {
                 self.kill(branch);
-                self.tendrils[record].branches[k] = None;
+                self.set_branch(record, k, None);
             }
         }
         self.tendrils[record].count = 0;
     }
 
     fn kill_branch(&mut self, record: usize, index: usize) {
-        if let Some(branch) = self.tendrils[record].branches.get(index).copied().flatten() {
+        if let Some(branch) = self.branch(record, index) {
             self.kill(branch);
-            self.tendrils[record].branches[index] = None;
+            self.set_branch(record, index, None);
         }
     }
 
@@ -483,12 +591,17 @@ impl ArcEmitter {
         match origin {
             Origin::Source => self.source,
             Origin::Fixed(at) => at,
-            Origin::Point { tendril, index } => self
-                .tendrils
-                .get(tendril)
-                .and_then(|t| t.points.get(index))
-                .copied()
-                .unwrap_or(self.source),
+            Origin::Point { tendril, index } => {
+                if tendril < self.tendrils.len() {
+                    self.record(tendril)
+                        .points
+                        .get(index)
+                        .copied()
+                        .unwrap_or(self.source)
+                } else {
+                    self.source
+                }
+            }
         }
     }
 
@@ -510,50 +623,51 @@ impl ArcEmitter {
         let from = self.origin_point(origin);
         let dir = jitter(draws, self.lift);
         let scale = self.length / length(dir);
-        let t = &mut self.tendrils[record];
-        t.timer = timer;
-        t.origin = origin;
-        t.points[0] = from;
-        t.points[1] = t.points[0] + dir * scale;
-        t.previous[0] = t.points[0];
-        t.previous[1] = t.points[1];
-        t.life = 1.0;
-        t.count = 2;
+        let rec = self.record_mut(record, 2);
+        rec.tendril.timer = timer;
+        rec.tendril.origin = origin;
+        rec.points[0] = from;
+        rec.points[1] = rec.points[0] + dir * scale;
+        rec.previous[0] = rec.points[0];
+        rec.previous[1] = rec.points[1];
+        rec.tendril.life = 1.0;
+        rec.tendril.count = 2;
     }
 
     /// One tick of the arcs.
     pub fn tick(&mut self, draws: &mut impl Draws) {
         let plane = if self.flags & PLANE != 0 {
-            self.plane.map(|(n, p)| (n, dot_zyx(n, p)))
+            self.plane.map(|(n, p)| (n, dot_xyz(n, p)))
         } else {
             None
         };
         self.scroll[0] = self.scroll[1];
-        self.scroll[1] += 0.015;
+        self.scroll[1] = (f64::from(self.scroll[1]) + 0.015) as f32;
         if 2.0 < self.scroll[1] {
             self.scroll[0] -= 1.0;
             self.scroll[1] -= 1.0;
         }
         self.length += self.growth;
-        self.width += self.growth * 0.1;
-        let (limit, floor) = if 0.999 <= self.lift {
-            (10000.0, -10000.0)
-        } else {
-            (self.length * 0.3, 0.0)
-        };
+        self.width = (f64::from(self.growth) * 0.1 + f64::from(self.width)) as f32;
+        let (limit, floor) = self.limits();
         if self.respawns
             && draws.below(2) == 0
             && let Some(free) = self.free_record()
         {
             let timer = draws.below(self.respawn_life) + self.respawn_life;
+            // A source sphere is taken where it stands in its body's frame,
+            // the arcs' own; the draw repeats until one stands more than
+            // 10 cm up (an unordered height draws again, as the original's
+            // compare does).
+            let high = |s: &Vec3| 10.0 < s.y;
             let origin = if self.source_spheres.is_empty() {
                 Some(Origin::Source)
-            } else if self.source_spheres.iter().any(|s| 10.0 < s.y) {
+            } else if self.source_spheres.iter().any(high) {
                 let n = self.source_spheres.len() as i32;
                 loop {
                     let pick = self.source_spheres[draws.below(n).max(0) as usize];
-                    if 10.0 < pick.y {
-                        break Some(Origin::Fixed(self.frame * pick));
+                    if high(&pick) {
+                        break Some(Origin::Fixed(pick));
                     }
                 }
             } else {
@@ -566,7 +680,7 @@ impl ArcEmitter {
             }
         }
         for t in 0..self.tendrils.len() {
-            self.age_and_branch(t, draws);
+            self.age_and_branch(t, limit, draws);
         }
         for t in 0..self.tendrils.len() {
             self.move_points(t, limit, floor, plane, draws);
@@ -574,16 +688,28 @@ impl ArcEmitter {
         if let Some(main) = self.main {
             let last = self.tendrils[main].count - 1;
             if 2 < last {
-                self.tendrils[main].points[last as usize] = self.target;
+                self.set_point(main, last as usize, self.target);
             }
         }
         self.bounds();
     }
 
-    fn age_and_branch(&mut self, t: usize, draws: &mut impl Draws) {
+    /// The rise a step may take over its neighbours and the floor no point
+    /// goes below: none (±10000) with a lift of 0.999 or more (or not a
+    /// number), else 0.3 of a segment over a floor of 0. The lift and the
+    /// product are taken in double, as the original's compare and multiply.
+    fn limits(&self) -> (f32, f32) {
+        if f64::from(self.lift) < 0.999 {
+            ((f64::from(self.length) * 0.3) as f32, 0.0)
+        } else {
+            (10000.0, -10000.0)
+        }
+    }
+
+    fn age_and_branch(&mut self, t: usize, limit: f32, draws: &mut impl Draws) {
         let rec = &mut self.tendrils[t];
         if rec.timer == 0 {
-            rec.life -= 0.1;
+            rec.life = (f64::from(rec.life) - 0.1) as f32;
             if rec.life < EPSILON {
                 rec.life = 0.0;
             }
@@ -609,28 +735,32 @@ impl ArcEmitter {
         while i < i64::from(self.tendrils[cur].count) - 2 {
             i += 1;
             let iu = i as usize;
-            let share = (i64::from(keep) - i) as f32 / self.segments as f32;
-            match self.tendrils[cur].branches[iu] {
+            // The share left past the point, divided in double.
+            let share = ((i64::from(keep) - i) as f64 / f64::from(self.segments)) as f32;
+            match self.branch(cur, iu) {
                 None => {
                     let live = self.length * self.tendrils[cur].life;
-                    let chord = dist_sq(
-                        self.tendrils[cur].points[iu + 1],
-                        self.tendrils[cur].points[iu - 1],
-                    );
-                    if live * 0.6 * live * 0.6 <= chord {
+                    let chord = dist_sq(self.point(cur, iu + 1), self.point(cur, iu - 1));
+                    // A fold drops the point when the live segment's 0.6,
+                    // squared in double, passes the chord; otherwise (or
+                    // unordered) a branch opens.
+                    let reach = f64::from(live) * 0.6;
+                    let folds = f64::from(chord) < reach * reach;
+                    if !folds {
                         if let Some(b) = self.free_record() {
-                            self.open_branch(cur, iu, b, share, live, draws);
+                            self.open_branch(cur, iu, b, share, live, limit, draws);
                         }
                     } else {
-                        let rec = &mut self.tendrils[cur];
-                        rec.count = (rec.count - 1).max(0);
-                        let end = rec.count - 1;
+                        let len = self.tendrils[cur].count.max(1) as usize;
+                        let rec = self.record_mut(cur, len);
+                        rec.tendril.count = (rec.tendril.count - 1).max(0);
+                        let end = rec.tendril.count - 1;
                         if iu as i32 <= end {
                             for k in iu..=end as usize {
                                 rec.points[k] = rec.points[k + 1];
                             }
                         }
-                        let at = rec.count as usize;
+                        let at = rec.tendril.count as usize;
                         self.kill_branch(cur, at);
                         i -= 1;
                     }
@@ -641,7 +771,7 @@ impl ArcEmitter {
                     let branch = &self.tendrils[b];
                     if branch.life < self.branch_floor || branch.count < 2 {
                         self.kill(b);
-                        self.tendrils[cur].branches[iu] = None;
+                        self.set_branch(cur, iu, None);
                     } else if share < branch.life {
                         if self.main == Some(cur) {
                             self.tendrils[b].life = share;
@@ -657,6 +787,7 @@ impl ArcEmitter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_branch(
         &mut self,
         cur: usize,
@@ -664,10 +795,11 @@ impl ArcEmitter {
         b: usize,
         share: f32,
         live: f32,
+        limit: f32,
         draws: &mut impl Draws,
     ) {
         self.tendrils[b].timer = -1;
-        self.tendrils[cur].branches[i] = Some(b);
+        self.set_branch(cur, i, Some(b));
         self.tendrils[b].origin = Origin::Point {
             tendril: cur,
             index: i,
@@ -675,62 +807,65 @@ impl ArcEmitter {
         let floor = self.branch_floor;
         let life = (draws.unit() * f64::from(share - floor) * 0.5 + f64::from(floor)) as f32;
         self.tendrils[b].life = if 1.0 < life { 1.0 } else { life };
-        let from = self.tendrils[cur].points[i];
-        let mut v = from - self.tendrils[cur].points[i - 1];
+        let from = self.point(cur, i);
+        let mut v = from - self.point(cur, i - 1);
         v *= live / length(v);
         let r = jitter(draws, self.lift);
         v += r * live;
-        let limit = if 0.999 <= self.lift {
-            10000.0
-        } else {
-            self.length * 0.3
-        };
         if limit < v.y.abs() {
             v.y = sign(v.y) * limit;
         }
         let phase = draws.unit() as f32;
-        let rec = &mut self.tendrils[b];
+        let rec = self.record_mut(b, 2);
         rec.points[0] = from;
         rec.points[1] = from + v;
         rec.previous[0] = rec.points[0];
         rec.previous[1] = rec.points[1];
-        rec.phase = phase;
-        rec.count = 2;
+        rec.tendril.phase = phase;
+        rec.tendril.count = 2;
     }
 
     /// The branch `b` at point `i` of `cur` takes the rest of `cur` past the
     /// point, and `cur` takes the branch's.
     fn trade(&mut self, cur: usize, i: usize, b: usize) {
+        // Three moves through a scratch, on the shared arrays: the tail of
+        // `cur` past the point, `b`'s points past its first, and back.
         let from = i + 1;
         let cur_count = self.tendrils[cur].count as usize;
         let b_count = self.tendrils[b].count as usize;
         let tail = cur_count.saturating_sub(from);
         let head = b_count.saturating_sub(1);
-        self.tendrils[cur].fit(from + head + 1);
-        self.tendrils[b].fit(1 + tail + 1);
-        let cur_points: Vec<Vec3> = self.tendrils[cur].points[from..from + tail].to_vec();
-        let cur_previous: Vec<Vec3> = self.tendrils[cur].previous[from..from + tail].to_vec();
-        let cur_branches: Vec<Option<usize>> =
-            self.tendrils[cur].branches[from..from + tail].to_vec();
-        let b_points: Vec<Vec3> = self.tendrils[b].points[1..1 + head].to_vec();
-        let b_previous: Vec<Vec3> = self.tendrils[b].previous[1..1 + head].to_vec();
-        let b_branches: Vec<Option<usize>> = self.tendrils[b].branches[1..1 + head].to_vec();
-        self.tendrils[cur].points[from..from + head].copy_from_slice(&b_points);
-        self.tendrils[cur].previous[from..from + head].copy_from_slice(&b_previous);
-        self.tendrils[cur].branches[from..from + head].copy_from_slice(&b_branches);
-        self.tendrils[b].points[1..1 + tail].copy_from_slice(&cur_points);
-        self.tendrils[b].previous[1..1 + tail].copy_from_slice(&cur_previous);
-        self.tendrils[b].branches[1..1 + tail].copy_from_slice(&cur_branches);
+        let (cb, bb) = (self.tendrils[cur].base, self.tendrils[b].base);
+        let (cbr, bbr) = (self.tendrils[cur].branch_base, self.tendrils[b].branch_base);
+        let need = (cb + from + head.max(tail) + 1).max(bb + 1 + head.max(tail) + 1);
+        if self.points.len() < need {
+            self.points.resize(need, Vec3::ZERO);
+            self.previous.resize(need, Vec3::ZERO);
+        }
+        let need = (cbr + from + head.max(tail) + 1).max(bbr + 1 + head.max(tail) + 1);
+        if self.branches.len() < need {
+            self.branches.resize(need, None);
+        }
+        fn swap<T: Copy>(v: &mut [T], a: usize, alen: usize, b: usize, blen: usize) {
+            let scratch: Vec<T> = v[a..a + alen].to_vec();
+            v.copy_within(b..b + blen, a);
+            v[b..b + alen].copy_from_slice(&scratch);
+        }
+        swap(&mut self.points, cb + from, tail, bb + 1, head);
+        swap(&mut self.previous, cb + from, tail, bb + 1, head);
+        swap(&mut self.branches, cbr + from, tail, bbr + 1, head);
         self.tendrils[cur].count = (b_count + i) as i32;
         self.tendrils[b].count = cur_count as i32 - i as i32;
         self.tendrils[b].origin = Origin::Point {
             tendril: cur,
             index: i,
         };
-        self.tendrils[b].previous[0] = self.tendrils[b].points[0];
-        self.tendrils[cur].previous[i] = self.tendrils[cur].points[i];
+        let rec = self.record_mut(b, 1);
+        rec.previous[0] = rec.points[0];
+        let rec = self.record_mut(cur, i + 1);
+        rec.previous[i] = rec.points[i];
         for k in i..self.tendrils[cur].count.max(0) as usize {
-            if let Some(child) = self.tendrils[cur].branches[k] {
+            if let Some(child) = self.branch(cur, k) {
                 self.tendrils[child].origin = Origin::Point {
                     tendril: cur,
                     index: k,
@@ -738,7 +873,7 @@ impl ArcEmitter {
             }
         }
         for k in 0..self.tendrils[b].count.max(0) as usize {
-            if let Some(child) = self.tendrils[b].branches[k] {
+            if let Some(child) = self.branch(b, k) {
                 self.tendrils[child].origin = Origin::Point {
                     tendril: b,
                     index: k,
@@ -763,11 +898,11 @@ impl ArcEmitter {
         let origin = self.origin_point(self.tendrils[t].origin);
         let length_now = self.length;
         let lift = self.lift;
-        let rec = &mut self.tendrils[t];
+        let len = (self.tendrils[t].count.max(keep) + 1) as usize;
+        let rec = self.record_mut(t, len);
         rec.points[0] = origin;
-        if rec.count < keep {
-            let count = rec.count as usize;
-            rec.fit(count + 1);
+        if rec.tendril.count < keep {
+            let count = rec.tendril.count as usize;
             let mut v = rec.points[count - 1] - rec.points[0];
             v *= live / length(v);
             let r = jitter(draws, lift);
@@ -778,16 +913,16 @@ impl ArcEmitter {
             rec.points[count] = rec.points[count - 1] + v;
             rec.previous[count] = rec.points[count];
             rec.branches[count] = None;
-            rec.count += 1;
+            rec.tendril.count += 1;
         }
-        let last = rec.count as usize - 1;
+        let last = rec.tendril.count as usize - 1;
         for i in 1..=last {
             if rec.points[i].y < floor {
                 rec.points[i].y = floor;
                 rec.previous[i].y = floor;
             }
             if let Some((n, d)) = plane {
-                let here = dot_zyx(rec.points[i], n);
+                let here = dot_xyz(rec.points[i], n);
                 if here < d {
                     rec.points[i] += n * (d - here);
                 }
@@ -818,10 +953,10 @@ impl ArcEmitter {
                     (rec.points[i + 1].y - below) * 0.5 + below
                 };
                 let mut v = rec.points[i] - rec.previous[i];
-                if 1.0 < (v.z * v.z + v.y * v.y) + v.x * v.x {
+                if 1.0 < (v.x * v.x + v.y * v.y) + v.z * v.z {
                     v = Vec3::ZERO;
                 }
-                v += r * (length_now * 0.02);
+                v += r * ((f64::from(length_now) * 0.02) as f32);
                 v *= 0.9;
                 rec.points[i] += v;
                 if i == last {
@@ -854,37 +989,37 @@ impl ArcEmitter {
         let mut hi = self.source;
         let mut total = 0;
         let mut sum = Vec3::ZERO;
-        for t in &self.tendrils {
+        for (k, t) in self.tendrils.iter().enumerate() {
             total += t.count;
-            for p in t.points.iter().take(t.count.max(0) as usize) {
+            for p in self.record(k).points.iter().take(t.count.max(0) as usize) {
+                // Below the low end it moves the low end; otherwise (or
+                // unordered) it may move the high end.
                 for axis in 0..3 {
-                    if lo[axis] <= p[axis] {
-                        if hi[axis] < p[axis] {
-                            hi[axis] = p[axis];
-                        }
-                    } else {
+                    if p[axis] < lo[axis] {
                         lo[axis] = p[axis];
+                    } else if hi[axis] < p[axis] {
+                        hi[axis] = p[axis];
                     }
                 }
                 sum += *p;
             }
         }
-        if let Some(anchor) = self.anchor {
-            lo += anchor;
-            hi += anchor;
+        if let Some(hand) = self.hand {
+            lo += hand;
+            hi += hand;
         }
         self.total = total;
         self.centre = lerp(lo, hi, 0.5);
         self.extent = hi - self.centre + Vec3::splat(5.0);
         let e = self.extent;
-        let r2 = (e.z * e.z + e.y * e.y) + e.x * e.x;
+        let r2 = (e.x * e.x + e.y * e.y) + e.z * e.z;
         self.radius = if 0.0 < r2 { r2.sqrt() } else { r2 };
         if total < 1 {
             self.mean = self.centre;
         } else {
             self.mean = sum * (1.0 / total as f32);
-            if let Some(anchor) = self.anchor {
-                self.mean += anchor;
+            if let Some(hand) = self.hand {
+                self.mean += hand;
             }
         }
     }
@@ -893,13 +1028,15 @@ impl ArcEmitter {
     /// distance ([`FOLLOW`]).
     pub fn follow_axis(&mut self, axis: Vec3) {
         if self.flags & FOLLOW != 0 {
-            let first = self.tendrils[0].points[0];
+            let first = self.point(0, 0);
             self.target = first + axis * self.follow;
         }
     }
 
+    /// A point as the level's and the bodies' tests take it: an offset from
+    /// the hand, or as it stands for arcs with no hand.
     fn world(&self, p: Vec3) -> Vec3 {
-        p + self.anchor.unwrap_or(Vec3::ZERO)
+        p + self.hand.unwrap_or(Vec3::ZERO)
     }
 
     /// The level's test: `ray(start, unit direction, length)` returns how
@@ -912,10 +1049,10 @@ impl ArcEmitter {
             if self.tendrils[t].count < 2 {
                 continue;
             }
-            let mut start = self.world(self.tendrils[t].points[0]);
+            let mut start = self.world(self.point(t, 0));
             let mut i = 0usize;
             while (i as i32) < self.tendrils[t].count - 1 {
-                let end = self.world(self.tendrils[t].points[i + 1]);
+                let end = self.world(self.point(t, i + 1));
                 let d = end - start;
                 let len = length(d);
                 let dir = d * (1.0 / len);
@@ -925,7 +1062,7 @@ impl ArcEmitter {
                         self.kill_branch(t, k);
                     }
                     let at = start + dir * hit;
-                    self.tendrils[t].points[i + 1] = at - self.anchor.unwrap_or(Vec3::ZERO);
+                    self.set_point(t, i + 1, at - self.hand.unwrap_or(Vec3::ZERO));
                     self.tendrils[t].count = i as i32 + 2;
                     break;
                 }
@@ -959,11 +1096,11 @@ impl ArcEmitter {
             if upto < 1 {
                 continue;
             }
-            let mut start = self.world(self.tendrils[t].points[0]);
+            let mut start = self.world(self.point(t, 0));
             let mut k = 0i32;
             while k < upto {
                 k += 1;
-                let end = self.world(self.tendrils[t].points[k as usize]);
+                let end = self.world(self.point(t, k as usize));
                 let d = end - start;
                 let len = length(d);
                 let probe = ArcProbe {
@@ -1003,29 +1140,30 @@ impl ArcEmitter {
             return;
         };
         self.tendrils[b].timer = -1;
-        self.tendrils[t].branches[index] = Some(b);
+        self.set_branch(t, index, Some(b));
         self.tendrils[b].origin = Origin::Point { tendril: t, index };
         self.tendrils[b].life = 1.0;
-        let from = self.tendrils[t].points[index];
+        let from = self.point(t, index);
         let mut v = at - from;
-        if let Some(anchor) = self.anchor {
-            v -= anchor;
+        if let Some(hand) = self.hand {
+            v -= hand;
         }
         v *= (self.length * self.tendrils[t].life) / length(v);
         let phase = draws.unit() as f32;
-        let rec = &mut self.tendrils[b];
+        let rec = self.record_mut(b, 2);
         rec.points[0] = from;
         rec.points[1] = from + v;
         rec.previous[0] = rec.points[0];
         rec.previous[1] = rec.points[1];
-        rec.phase = phase;
-        rec.count = 2;
+        rec.tendril.phase = phase;
+        rec.tendril.count = 2;
     }
 
     /// One frame: the light, the hum, the ribbon and the light points.
     /// `alpha` is how far the next tick is, `eye` the camera's axis in the
-    /// emitter's frame, `fade` the node's fade, `to_world` the emitter's
-    /// frame placed in the world.
+    /// node's frame, `fade` the node's fade, `to_world` the node's frame
+    /// placed in the world (the light points are taken there). The ribbon
+    /// is in the node's frame.
     pub fn frame(
         &self,
         glow: &mut ArcGlow,
@@ -1041,9 +1179,10 @@ impl ArcEmitter {
                 ..ArcFrame::default()
             };
         }
-        let fill = (self.total as f32
-            / (i64::from(self.segments) * self.tendrils.len() as i64) as f32)
-            * 2.0;
+        // The share of points in use, divided and doubled in double.
+        let fill = (f64::from(self.total)
+            / (i64::from(self.segments) * self.tendrils.len() as i64) as f64
+            * 2.0) as f32;
         for light in &mut glow.lights {
             light.weight = 0.0;
             light.count = 1;
@@ -1057,7 +1196,7 @@ impl ArcEmitter {
             glow.light_flicker = ((draws.unit() - 0.5) * 0.5 + f64::from(f)) as f32;
             glow.light_flicker = glow.light_flicker.clamp(0.75, 1.2);
             out.light = if self.light_kind == ArcLight::Voxel {
-                (1.0 - fade) * self.light * fill * glow.light_flicker * 1.5
+                (1.0 - fade) * (self.light * fill * glow.light_flicker * 1.5)
             } else {
                 self.light * fill * glow.light_flicker
             };
@@ -1076,15 +1215,17 @@ impl ArcEmitter {
         let (ribbon, life_sum) = self.ribbon(glow, eye, &to_world);
         out.ribbon = ribbon;
         if self.light_kind == ArcLight::Points {
+            // A point under weight 1 leaves (the last takes its place);
+            // an unordered weight stays.
             let mut i = 0;
             while i < glow.lights.len() {
-                if 1.0 <= glow.lights[i].weight {
-                    i += 1;
-                } else {
+                if glow.lights[i].weight < 1.0 {
                     glow.lights.swap_remove(i);
+                } else {
+                    i += 1;
                 }
             }
-            out.light = (1.0 - fade) * life_sum * self.light;
+            out.light = (1.0 - fade) * (life_sum * self.light);
         }
         out
     }
@@ -1103,7 +1244,7 @@ impl ArcEmitter {
                 continue;
             }
             let origin = self.origin_point(self.tendrils[t].origin);
-            self.tendrils[t].points[0] = origin;
+            self.set_point(t, 0, origin);
         }
     }
 
@@ -1118,8 +1259,7 @@ impl ArcEmitter {
             indices: vec![0; capacity],
             ..ArcRibbon::default()
         };
-        let half = self.length * 0.2;
-        let offset = self.anchor.unwrap_or(Vec3::ZERO);
+        let half = (f64::from(self.length) * 0.2) as f32;
         let mut quads: i32 = 0;
         let mut life_sum = 0.0;
         for t in 0..self.tendrils.len() {
@@ -1137,7 +1277,7 @@ impl ArcEmitter {
             // The tendril's first point is drawn at its origin (the write
             // itself is [`Self::settle_origins`]).
             let origin = self.origin_point(self.tendrils[t].origin);
-            let root = origin + offset;
+            let root = origin;
             glow.light_point(to_world(root), 1.0);
             let mut b = Builder {
                 previous: root,
@@ -1146,32 +1286,39 @@ impl ArcEmitter {
                 half: 0.0,
             };
             let count = self.tendrils[t].count as usize;
-            let mut points = self.tendrils[t].points[..count].to_vec();
+            let mut points = self.record(t).points[..count].to_vec();
             points[0] = origin;
             let width = self.width;
             let rounded = move |life: f32| (1.0 - (1.0 - life) * (1.0 - life)) * width;
             let mut narrow = rounded(life);
             quads += 2;
             b.half = narrow;
-            b.emit(hermite(&points, 1, 0.2) + offset, eye, &mut r, &mut quads);
+            b.emit(hermite(&points, 1, 0.2), eye, &mut r, &mut quads);
             r.clear_last_pair();
             quads -= 2;
-            b.u = (half / (narrow + self.width)) * 0.4 + self.tendrils[t].phase;
+            b.u = (f64::from(half / (narrow + self.width)) * 0.4
+                + f64::from(self.tendrils[t].phase)) as f32;
+            // The life narrowing the ribbon stops at 0 (an unordered one
+            // is kept).
+            let narrower = |life: f32| {
+                let life = life - step * 0.5;
+                if life < 0.0 { 0.0 } else { life }
+            };
             for i in 1..count {
-                life = (life - step * 0.5).max(0.0);
+                life = narrower(life);
                 narrow = rounded(life);
                 b.half = narrow;
-                b.emit(hermite(&points, i, 0.5) + offset, eye, &mut r, &mut quads);
+                b.emit(hermite(&points, i, 0.5), eye, &mut r, &mut quads);
                 b.u += half / (narrow + self.width);
-                life = (life - step * 0.5).max(0.0);
+                life = narrower(life);
                 narrow = rounded(life);
                 b.half = narrow;
-                let at = points[i] + offset;
+                let at = points[i];
                 b.emit(at, eye, &mut r, &mut quads);
                 glow.light_point(to_world(at), 1.0);
                 b.u += half / (narrow + self.width);
             }
-            b.emit(points[count - 1] + offset, eye, &mut r, &mut quads);
+            b.emit(points[count - 1], eye, &mut r, &mut quads);
             r.clear_last_pair();
             quads -= 2;
             let s = first_vertex;
@@ -1227,6 +1374,21 @@ pub const LOCAL_FRAME: u32 = 0x10;
 pub fn attach(node: &mut ArcNode) {
     node.flags |= HAS_CHILD;
     node.child = true;
+}
+
+impl ArcNode {
+    /// The node the electricity build makes for a new emitter, the emitter
+    /// attached to it ([`attach`], which the build calls on the emitter it
+    /// made). `parent_local_frame` when it will hang under a node that
+    /// keeps its own frame.
+    pub fn built(parent_local_frame: bool) -> Self {
+        let mut node = Self {
+            parent_local_frame,
+            ..Self::default()
+        };
+        attach(&mut node);
+        node
+    }
 }
 
 /// A node's 4×4 matrix as the scene stores it: three axis rows and the
@@ -1571,11 +1733,10 @@ mod tests {
     use super::super::engine::testing::Fixed;
     use super::*;
 
-    /// A sphere above 10 cm on the weapon starts a tendril there, turned by
-    /// the weapon's rotation. A quarter turn about vertical sends a point on
-    /// +z to +x.
+    /// A sphere above 10 cm on the weapon starts a tendril there, in the
+    /// weapon's frame: the weapon's rotation does not turn the start.
     #[test]
-    fn a_weapon_sphere_starts_turned_with_the_weapon() {
+    fn a_weapon_sphere_starts_in_the_weapons_frame() {
         use std::f32::consts::FRAC_PI_2;
 
         struct Still;
@@ -1592,13 +1753,12 @@ mod tests {
         arc.source_spheres = vec![Vec3::new(0.0, 20.0, 5.0)];
         arc.frame = Quat::from_rotation_y(FRAC_PI_2);
         arc.tick(&mut Still);
-        let started = arc
-            .tendrils
-            .iter()
-            .find(|t| t.count == 2 && t.points[0].y > 10.0);
-        let point = started.expect("a tendril").points[0];
-        let turned = arc.frame * Vec3::new(0.0, 20.0, 5.0);
-        assert!((point - turned).length() < 1e-4, "{point} {turned}");
+        let started = (0..arc.tendrils.len())
+            .find(|&k| arc.tendrils[k].count == 2 && arc.point(k, 0).y > 10.0);
+        // The sphere stands in the weapon's body frame, the arcs' own: the
+        // tendril starts on it unturned and the frame turns it with the rest.
+        let point = arc.point(started.expect("a tendril"), 0);
+        assert_eq!(point, Vec3::new(0.0, 20.0, 5.0));
     }
 
     #[test]
@@ -1612,7 +1772,10 @@ mod tests {
         assert_eq!(arc.target, Vec3::new(40.0, 0.0, 0.0));
         let first = &arc.tendrils[0];
         assert_eq!(first.count, 2);
-        assert_eq!(first.points[1], Vec3::new(8.0, 0.0, 0.0));
+        assert_eq!(arc.point(0, 1), Vec3::new(8.0, 0.0, 0.0));
+        // The records share one buffer, a segment count apart.
+        assert_eq!(arc.points.len(), 18);
+        assert_eq!((arc.tendrils[1].base, arc.tendrils[2].base), (5, 10));
         assert_eq!((first.life, first.timer), (1.0, -1));
         assert_eq!(arc.lift, 1.0);
         assert_eq!(arc.respawn_life, 10);
@@ -1628,9 +1791,10 @@ mod tests {
         let t = &arc.tendrils[1];
         assert_eq!(t.timer, 13);
         assert_eq!(t.count, 2);
-        assert_eq!(t.points[0], Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(t.points[1], Vec3::new(9.0, 2.0, 3.0));
-        assert_eq!(t.previous[1], t.points[1]);
+        let r = arc.record(1);
+        assert_eq!(r.points[0], Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(r.points[1], Vec3::new(9.0, 2.0, 3.0));
+        assert_eq!(r.previous[1], r.points[1]);
         assert_eq!(t.life, 1.0);
     }
 
@@ -1700,8 +1864,33 @@ mod tests {
         arc.tick(&mut draws);
         assert_eq!(arc.tendrils[0].count, 4);
         // A still jitter: each new point a segment on along the line.
-        assert!((arc.tendrils[0].points[1].x - 4.0).abs() < 1e-4);
+        assert!((arc.point(0, 1).x - 4.0).abs() < 1e-4);
         assert_eq!(arc.total, 4);
+    }
+
+    /// A tail trade that leaves a record holding more than its segment
+    /// count of points runs into the next record's first slots, as the
+    /// original's shared buffer does.
+    #[test]
+    fn a_long_trade_spills_into_the_next_record() {
+        let mut arc = ArcEmitter::allocate(3, 4, 1.0);
+        let at = |k: usize| Vec3::new(k as f32, 0.0, 0.0);
+        let off = |k: usize| Vec3::new(0.0, k as f32, 0.0);
+        arc.tendrils[0].count = 4;
+        arc.tendrils[2].count = 4;
+        for k in 0..4 {
+            arc.points[k] = at(k);
+            arc.points[arc.tendrils[2].base + k] = off(k);
+        }
+        arc.trade(0, 1, 2);
+        // The record keeps its first two points and takes the branch's
+        // three past its first: five points, the last in record 1's slot 0.
+        assert_eq!(arc.tendrils[0].count, 5);
+        assert_eq!(arc.point(0, 4), off(3));
+        assert_eq!(arc.point(1, 0), off(3));
+        // The branch takes the rest of the record past the point.
+        assert_eq!(arc.tendrils[2].count, 3);
+        assert_eq!((arc.point(2, 1), arc.point(2, 2)), (at(2), at(3)));
     }
 
     #[test]
@@ -1720,14 +1909,14 @@ mod tests {
         let mut arc = ArcEmitter::allocate(1, 4, 1.0);
         arc.lift = 0.5;
         arc.tendrils[0].timer = 100;
-        arc.tendrils[0].points[1] = Vec3::new(4.0, -3.0, 0.0);
-        arc.tendrils[0].previous[1] = Vec3::new(4.0, -3.0, 0.0);
+        arc.points[1] = Vec3::new(4.0, -3.0, 0.0);
+        arc.previous[1] = Vec3::new(4.0, -3.0, 0.0);
         arc.tick(&mut draws);
         // Floored before it moves: its previous place stays on the floor.
-        assert_eq!(arc.tendrils[0].previous[1].y, 0.0);
-        assert_eq!(arc.tendrils[0].previous[2].y, 0.0);
+        assert_eq!(arc.previous[1].y, 0.0);
+        assert_eq!(arc.previous[2].y, 0.0);
         // A step rises at most 0.3 of a segment (1.2) over its neighbours.
-        let p = &arc.tendrils[0].points;
+        let p = &arc.points;
         let reference = (p[2].y - p[0].y) * 0.5 + p[0].y;
         assert!((p[1].y - reference).abs() <= 1.2 + 1e-5);
     }
@@ -1735,10 +1924,9 @@ mod tests {
     #[test]
     fn the_level_ends_a_tendril() {
         let mut arc = ArcEmitter::allocate(1, 5, 1.0);
-        let t = &mut arc.tendrils[0];
-        t.count = 4;
+        arc.tendrils[0].count = 4;
         for k in 0..4 {
-            t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+            arc.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
         }
         arc.clip_to_level(|start, dir, len| {
             let end = start + dir * len;
@@ -1746,7 +1934,7 @@ mod tests {
         });
         // The tendril ends at the hit on the segment that met the level.
         assert_eq!(arc.tendrils[0].count, 3);
-        assert_eq!(arc.tendrils[0].points[2], Vec3::new(6.0, 0.0, 0.0));
+        assert_eq!(arc.point(0, 2), Vec3::new(6.0, 0.0, 0.0));
     }
 
     #[test]
@@ -1755,10 +1943,9 @@ mod tests {
         let mut arc = ArcEmitter::allocate(3, 5, 1.0);
         arc.flags = SHOCK_ONCE;
         arc.strength = 0.25;
-        let t = &mut arc.tendrils[0];
-        t.count = 4;
+        arc.tendrils[0].count = 4;
         for k in 0..4 {
-            t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+            arc.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
         }
         arc.bounds();
         let limb = ArcLimb {
@@ -1783,9 +1970,9 @@ mod tests {
         assert_eq!(shock.strength, 0.25);
         assert!((shock.direction - Vec3::Y).length() < 1e-3);
         // The tendril reaches for the limb from its first point.
-        let b = arc.tendrils[0].branches[1].expect("a branch at point 1");
+        let b = arc.record(0).branches[1].expect("a branch at point 1");
         assert_eq!(arc.tendrils[b].count, 2);
-        assert_eq!(arc.tendrils[b].points[1], Vec3::new(4.0, 4.0, 0.0));
+        assert_eq!(arc.point(b, 1), Vec3::new(4.0, 4.0, 0.0));
         assert!(
             arc.strike_limb(&limb, |_| true, &mut draws).is_none(),
             "once only"
@@ -1802,14 +1989,15 @@ mod tests {
     fn a_shock_points_from_the_world_mean_to_the_chest() {
         let mut draws = Fixed::new(&[0.5], &[1]);
         let mut arc = ArcEmitter::allocate(3, 5, 1.0);
-        arc.anchor = Some(Vec3::new(0.0, 0.0, 5.0));
-        let t = &mut arc.tendrils[0];
-        t.count = 4;
+        arc.hand = Some(Vec3::new(0.0, 0.0, 5.0));
+        // Where the frame draws them does not move the tests.
+        arc.anchor = Some(Vec3::new(-15.0, -5.0, 5.0));
+        arc.tendrils[0].count = 4;
         for k in 0..4 {
-            t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+            arc.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
         }
         arc.bounds();
-        // The mean is in the world: the tendril's six, plus the anchor's z.
+        // The mean is in the world: the tendril's six, plus the hand's z.
         assert_eq!(arc.mean, Vec3::new(6.0, 0.0, 5.0));
         let limb = ArcLimb {
             character: 1,
@@ -1921,10 +2109,9 @@ mod tests {
     fn a_ribbon_pairs_every_point_and_midpoint() {
         let mut draws = Fixed::new(&[0.5], &[1]);
         let mut arc = ArcEmitter::allocate(1, 4, 1.0);
-        let t = &mut arc.tendrils[0];
-        t.count = 3;
+        arc.tendrils[0].count = 3;
         for k in 0..3 {
-            t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+            arc.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
         }
         arc.total = 3;
         let mut glow = ArcGlow::default();
@@ -1952,10 +2139,9 @@ mod tests {
         let mut draws = Fixed::new(&[0.5], &[1]);
         let mut arc = ArcEmitter::allocate(1, 4, 1.0);
         arc.source = Vec3::new(1.0, 2.0, 3.0);
-        let t = &mut arc.tendrils[0];
-        t.count = 3;
+        arc.tendrils[0].count = 3;
         for k in 0..3 {
-            t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+            arc.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
         }
         arc.total = 3;
         let before = arc.clone();
@@ -1969,8 +2155,8 @@ mod tests {
         );
         assert_eq!(arc, before);
         arc.settle_origins();
-        assert_eq!(arc.tendrils[0].points[0], Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(arc.tendrils[0].points[1], before.tendrils[0].points[1]);
+        assert_eq!(arc.point(0, 0), Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(arc.point(0, 1), before.point(0, 1));
     }
 
     #[test]
@@ -2013,7 +2199,7 @@ mod tests {
         assert!(emitter.ending);
         assert_eq!((emitter.light, emitter.strength), (1.0, 0.05));
         assert_eq!((emitter.growth, emitter.lift), (0.25, 0.5));
-        assert_eq!(emitter.tendrils[0].points[1], Vec3::Z * emitter.length);
+        assert_eq!(emitter.point(0, 1), Vec3::Z * emitter.length);
         assert_eq!(emitter.sound, None);
     }
 

@@ -160,6 +160,27 @@ entry at packaging, adaptive vsync as the nearest wgpu present mode.
 
 **Blocks:** six `missing` rows of RF_OS_Functions and RF_Main.
 
+### DEC-11. The tendrils' reads past their data
+**Question:** reproduce two reads of the tendril effects that run past the
+data they mean, or keep Exarust's stand-ins as deviations?
+
+| item | the original | Exarust |
+|---|---|---|
+| Wisp strip past a lit last point | when a strand's oldest ring node is lit, the strip is one point longer than the strand: that point and its attributes come from the strip's scratch buffer as an earlier strand or frame left it (the world origin before any), and at ten points its copy lands on the smoothed strip's first slot | the last point stands in for the missing one |
+| Arc respawn with no high sphere | the respawn draws source spheres until one stands more than 10 cm up in its body's frame; with none it never returns | the respawn starts nothing |
+
+**Facts:** found by the `tendrils` lane (2026-11-16). The first is reachable
+whenever a body's wisps move fast enough that a ring node is still lit when
+it becomes the oldest; what it draws depends on draw order (a faint strip
+end toward another strand's tail, or toward the origin). The second needs a
+shock weapon whose spheres all sit at or below 10 cm; no shipped weapon's
+spheres were dumped to check.
+
+**Recommendation:** keep both as deviations: the first reproduces a stale
+buffer whose content depends on draw order, the second a hang.
+
+**Blocks:** one `partial` row (the wisps' strip draw).
+
 ## Taken
 
 | date | decision |

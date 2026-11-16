@@ -286,9 +286,9 @@ impl Wisps {
     /// One tick. `world` places a strand's point in the world.
     pub fn tick(&mut self, world: impl Fn(&Strand) -> Vec3, roll: &mut Roll) {
         self.scroll[1] = self.scroll[0];
-        self.scroll[0] += 0.00075;
+        self.scroll[0] = (f64::from(self.scroll[0]) + 0.00075) as f32;
         if self.state == state::FADING_OUT {
-            self.fade += 0.02;
+            self.fade = (f64::from(self.fade) + 0.02) as f32;
             if 1.0 <= self.fade {
                 self.fade = 1.0;
                 self.state = state::DONE;
@@ -298,7 +298,10 @@ impl Wisps {
             }
         }
         if 0.5 < self.step {
-            self.step = (self.step - 0.01).max(0.5);
+            // The step less 0.01 (in double), held at 0.5 by the engine's
+            // max, which keeps an unordered step.
+            let step = (f64::from(self.step) - 0.01) as f32;
+            self.step = if 0.5 > step { 0.5 } else { step };
         }
         if self.state < 1 {
             self.fade_in(&world);
@@ -321,7 +324,7 @@ impl Wisps {
             for j in (1..=s.head).rev() {
                 let n = &mut s.nodes[j];
                 n.previous = n.at;
-                n.at = point + up * (((s.head - j) as f32) + 1.0) * 15.0;
+                n.at = point + up * (((s.head - j + 1) as f32) * 15.0);
             }
         }
         if self.state < 0 {
@@ -339,7 +342,12 @@ impl Wisps {
                 for s in self.strands.iter_mut().take(self.fading) {
                     let head = s.head;
                     s.nodes[head].at = s.nodes[head].previous + up * step;
-                    // The node behind a head of 0 lies outside the ring.
+                    // The original writes the node behind the head too; behind
+                    // a head of 0 that is outside the ring. Unreachable in
+                    // 0.9.5: a set is only ever ticked after its add-to-world
+                    // ([`Wisps::place`]), which leaves it running, and nothing
+                    // sets the state below 1 again, so no strand ends a
+                    // fade-in.
                     if let Some(behind) = head.checked_sub(1) {
                         s.nodes[behind].at = s.nodes[behind].previous + up * step;
                     }
@@ -370,7 +378,7 @@ impl Wisps {
         if s.flags & flag::STOPPED == 0 {
             s.since += 1;
             let d = s.nodes[s.head].at - s.anchor;
-            if spacing * spacing < (d.z * d.z + d.y * d.y) + d.x * d.x {
+            if spacing * spacing < (d.x * d.x + d.y * d.y) + d.z * d.z {
                 let old = s.head;
                 let new = if old + 1 > RING - 1 { 0 } else { old + 1 };
                 s.head = new;
@@ -385,7 +393,7 @@ impl Wisps {
                 } else if fading_out {
                     ((1.0 - fade) * s.budget as f32).round_ties_even() as i32
                 } else if s.since < ramp && !instant {
-                    let q = s.since as f32 / ramp as f32;
+                    let q = (f64::from(s.since) / f64::from(ramp)) as f32;
                     let q = (2.0 - q) * q;
                     (s.budget as f32 * q).round_ties_even() as i32
                 } else {
@@ -397,7 +405,8 @@ impl Wisps {
                 }
                 s.nodes[new].size = size;
                 let gap = length(s.nodes[new].at - s.nodes[old].at);
-                s.nodes[new].along = gap * 0.003 + s.nodes[old].along;
+                s.nodes[new].along =
+                    (f64::from(gap) * 0.003 + f64::from(s.nodes[old].along)) as f32;
                 s.since = 0;
             }
         }
@@ -416,7 +425,8 @@ impl Wisps {
         }
         let d2 = dist_sq(s.anchor, s.nodes[s.head].at);
         if super::arcs::EPSILON < d2 {
-            s.anchor_along = d2.sqrt() * 0.003 + s.nodes[s.head].along;
+            s.anchor_along =
+                (f64::from(d2.sqrt()) * 0.003 + f64::from(s.nodes[s.head].along)) as f32;
         }
     }
 
@@ -431,14 +441,14 @@ impl Wisps {
             first.nodes[first.head].at
         };
         let (mut lo, mut hi) = (start, start);
+        // Below the low end it moves the low end; otherwise (or unordered)
+        // it may move the high end.
         let mut grow = |p: Vec3| {
             for axis in 0..3 {
-                if lo[axis] <= p[axis] {
-                    if hi[axis] < p[axis] {
-                        hi[axis] = p[axis];
-                    }
-                } else {
+                if p[axis] < lo[axis] {
                     lo[axis] = p[axis];
+                } else if hi[axis] < p[axis] {
+                    hi[axis] = p[axis];
                 }
             }
         };
@@ -453,9 +463,9 @@ impl Wisps {
             }
         }
         self.centre = lerp(lo, hi, 0.5);
-        self.extent = hi - self.centre + Vec3::splat(40.0 + self.margin);
+        self.extent = (hi - self.centre + Vec3::splat(40.0)) + Vec3::splat(self.margin);
         let e = self.extent;
-        let r2 = (e.z * e.z + e.y * e.y) + e.x * e.x;
+        let r2 = (e.x * e.x + e.y * e.y) + e.z * e.z;
         self.radius = if 0.0 < r2 { r2.sqrt() } else { r2 };
     }
 
@@ -468,7 +478,7 @@ impl Wisps {
         };
         let eased = (2.0 - self.alpha) * self.alpha;
         let width = if self.state & state::FADING_OUT != 0 {
-            self.fade * 0.15 + 0.04
+            (f64::from(self.fade) * 0.15 + 0.04) as f32
         } else {
             0.04
         };
@@ -504,7 +514,8 @@ impl Wisps {
             for k in 0..=STRIP_POINTS - 2 {
                 let n = &s.nodes[idx];
                 points.push(lerp(n.previous, n.at, alpha));
-                attrs.push([n.along, n.light as f32 / self.budget as f32, n.size, 0.0]);
+                let lit = (f64::from(n.light) / f64::from(self.budget)) as f32;
+                attrs.push([n.along, lit, n.size, 0.0]);
                 if 0 < n.light {
                     last_lit = points.len();
                 }
@@ -518,8 +529,13 @@ impl Wisps {
                 continue;
             }
             let end = (last_lit + 2).min(points.len());
-            // A lit last point leaves the original reading its scratch past
-            // the strand; the last point stands in for it here.
+            // A lit last point (the ring's oldest node) makes the strip one
+            // point longer than the strand: the original reads that point
+            // and its attributes from its strip scratch, left by an earlier
+            // strand or frame (the world origin before any), and at ten
+            // points its copy lands on the smoothed strip's first slot. The
+            // last point stands in for it here; kept for the owner
+            // (docs/roadmap/DECISIONS.md, DEC-11).
             while points.len() < count {
                 points.push(points[points.len() - 1]);
                 attrs.push(attrs[attrs.len() - 1]);
@@ -586,7 +602,10 @@ fn smooth_strip(
     let attr = |k: usize| a.get(k).copied().unwrap_or(a[a.len() - 1]);
     let mut s = vec![p[0]];
     let mut t_attr = vec![a[0]];
-    let t = ((length(get(1) - p[0]) / spacing) * 0.6).min(0.5);
+    // A little out along the first span: 0.6 of it over the spacing (in
+    // double), at most 0.5 (an unordered share is kept).
+    let t = (f64::from(length(get(1) - p[0]) / spacing) * 0.6) as f32;
+    let t = if 0.5 < t { 0.5 } else { t };
     let cube = t * t * t;
     let mut h = p[0] * ((cube * 2.0 - t * t * 3.0) + 1.0);
     h += get(1) * (t * t * 3.0 + cube * -2.0);
@@ -681,12 +700,23 @@ pub const WISP_TEXTURE: &str = "FlameletsA3.rfi";
 /// A set from a blow spends this much of its budget a node.
 pub const BLOW_SPEND: i32 = 50;
 
-/// A set from a blow: one strand at `local` of `body`, lit at once.
-pub fn blow_wisps(local: Vec3, body: usize, world: impl Fn(&Strand) -> Vec3) -> Wisps {
-    let mut wisps = Wisps::new(vec![Strand::new(local, Some(body))], 12.0, world, || 0.5);
+/// A set from a blow: one strand at `local` of `body`, lit at once and
+/// spending [`BLOW_SPEND`] a node. Its creator adds it to the scene, so the
+/// geometry setup gives the strand its two colour channels (`unit`, the
+/// engine generator's draws) and the add-to-world places it at a tick of
+/// `tick_ms` ([`Wisps::place`]: running, its head one node up, lit).
+pub fn blow_wisps(
+    local: Vec3,
+    body: usize,
+    world: impl Fn(&Strand) -> Vec3,
+    unit: impl FnMut() -> f32,
+    tick_ms: u32,
+    roll: &mut Roll,
+) -> Wisps {
+    let mut wisps = Wisps::new(vec![Strand::new(local, Some(body))], 12.0, &world, unit);
     wisps.instant = true;
     wisps.spend = BLOW_SPEND;
-    wisps.alpha = 1.0;
+    wisps.place(tick_ms, &world, roll);
     wisps
 }
 
@@ -784,9 +814,20 @@ mod tests {
 
     #[test]
     fn a_blow_set_spends_its_budget() {
-        let mut w = blow_wisps(Vec3::ZERO, 0, at_origin);
         let mut roll = Roll(3);
-        w.place(12, at_origin, &mut roll);
+        let mut draws = [0.25, 0.75].into_iter();
+        let mut w = blow_wisps(
+            Vec3::ZERO,
+            0,
+            at_origin,
+            || draws.next().unwrap_or(0.0),
+            12,
+            &mut roll,
+        );
+        // Placed as it enters the world: running, one node up, lit, its
+        // colour from the setup's two draws.
+        assert_eq!(w.state, state::RUNNING);
+        assert_eq!(w.strands[0].colour, [0.25, 0.75]);
         assert_eq!(w.strands[0].head, 1);
         assert_eq!(w.alpha, 1.0);
         let mut x = 0.0;

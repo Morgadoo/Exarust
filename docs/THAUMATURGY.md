@@ -1059,13 +1059,36 @@ is taken into the limb's frame and handed to the limb mesh's swept query
 as a sphere of 20 cm radius swept from its start to its end, with a
 callback that only notes the hit (`exa_physics::body::pairs::swept_touches`:
 the part's kd-tree or triangles, its spheres when it has no mesh). The
-emitter also enters and leaves the world on its node (its hum and its
-light), and a node under a local-frame parent takes the parent's matrix
-with its own offset carried through it. Each frame the
+simulation runs the level's test only for an emitter whose record has bit
+0x10000 and the characters' test only with 0x20000: the Shock's burst
+(record 0x30310) has both, the hand arcs (0x201), the shock weapons' arcs
+(0x301), the lightning mace's hum arcs and the sparks neither, so only the
+burst ends at walls and shocks. Those tests, the bounds and the mean take
+the points as offsets from the hand part's place (none for arcs with no
+hand: their points are tested as they stand).
+
+The points are the node's own. The electricity node build attaches the
+emitter to its node; its first step enters it into the world (a named hum
+starts silent at pitch 1 at the node, the node takes the local-frame bit
+from its parent), and the frame's removal or a despawn takes it out (the
+hum stops, the light goes). Arcs held in a hand have their own unplaced
+node and are drawn from the hand's node offset point (−15, −5, 0 in the
+hand's frame); arcs under a weapon's body, a held item (the mace's, 53 cm
+along it) or a struck part hang under a parent that keeps a local frame,
+so each frame their node takes the parent's drawn matrix with its own
+offset carried through it, and their points (a weapon's spheres, in its
+frame, unturned) turn with it. The records share one buffer of
+`(segments + 1)·count` points a segment count apart, so a tail trade that
+leaves a record with more points than segments runs into the next record's
+first slots until the next tick trims it. Each frame the
 light flickers within 0.75–1.2,
-the hum's gain and pitch follow the share of points in use, and a
-camera-facing ribbon runs through Hermite midpoints, its ends transparent,
-its points feeding up to 16 light points merged within 40 cm.
+the hum's gain and pitch follow the share of points in use and it sits at
+the node's mean, and a camera-facing ribbon (the camera taken into the
+node's frame) runs through Hermite midpoints, its ends transparent, its
+points feeding up to 16 light points merged within 40 cm. No fade reaches
+an electricity node (only the cut-away writes a node's fade, for level
+meshes), so the voxel light's and the light points' fade term is 0. The
+level device's follow slot has no caller; the device sets its end once.
 
 ## The barricade
 
@@ -1187,7 +1210,12 @@ the noise picture is a guess.
 `exa_game::thaum::wisps`. Rings of eight nodes per strand, 40 cm apart,
 rising from anchors on a phased body (per bone) or from a blow's contact;
 each node darkens with age, grows 0.1 a tick and drifts on; the strands are
-drawn as smoothed camera-facing strips.
+drawn as smoothed camera-facing strips. A blow's one-strand set is placed
+as it enters the world, as a body set is: its colour from the engine
+generator, running, its head a node up and lit at once. A set is ticked
+only after it is placed, so the fade-in branch never runs. When a strand's
+oldest node is still lit the original's strip reads one point past the
+strand from its scratch; Exarust repeats the last point (DEC-11).
 
 ## In the game
 
