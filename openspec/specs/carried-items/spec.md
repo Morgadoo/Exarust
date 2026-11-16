@@ -185,3 +185,10 @@ While a body plays the switch clip, the posture SHALL write the switching word u
 #### Scenario: Once a switch
 - **WHEN** a body's switch clip is at 59 %, then 61 %, then 70 %
 - **THEN** the sets stay, then swap, then stay swapped
+
+### Requirement: Head height first in the fixed step
+The armour pass's head height SHALL move a held weapon's arm link first in the fixed step, before the tick deals its blows and before the grip builder, so every stage of the tick reads the same arm link whatever other systems the schedule holds.
+
+#### Scenario: The game's fixed step
+- **WHEN** the game's App is built
+- **THEN** its fixed step orders the head height before the blows, the character ticks, the grip builder and the solver

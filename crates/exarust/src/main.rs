@@ -346,6 +346,8 @@ mod column;
 mod draw_trace;
 mod frame_loop;
 mod grid;
+#[cfg(test)]
+mod headless_trace_test;
 mod map_panel;
 mod message_box;
 mod offscreen;

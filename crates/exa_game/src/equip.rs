@@ -710,7 +710,13 @@ impl Plugin for EquipPlugin {
             .add_systems(
                 FixedUpdate,
                 // After the bodies' impact class, before the shoves and the
-                // behaviour: the first writes of the tick to the bodies.
+                // behaviour: the first writes of the tick to the bodies. The
+                // original measures the head height when the character is
+                // dressed, before any tick reads the grips, so every stage of
+                // the tick sees the raised arm link. Ordered only before the
+                // grip builder, the schedule's layout decided it: round 280's
+                // fire systems moved it and changed the armed characters'
+                // bodies from the first tick (F560).
                 apply_head_height
                     .after(exa_audio::ImpactClassSystems)
                     .before(exa_physics::body::deal_shoves)
