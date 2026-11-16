@@ -728,17 +728,19 @@ impl HubWindows {
         }
     }
 
-    /// Tab on the focused hub form: the base form's key slot
+    /// Tab on the focused hub form, with the key-down's mask word
+    /// (`flags`, [`exa_ui::gui_keys`]): the base form's key slot
     /// ([`exa_ui::form::form_key`]) moves the form's focus from its focused
     /// record (the key focus, the picker's typing spinner, else the record
-    /// under the pointer) to the
-    /// next enabled tab stop (Shift: the previous one), wrapping to the
-    /// first (last) tab stop the other side; a Tab with nowhere to go ends
-    /// at the form. The focus taken this way selects a text field's or
+    /// under the pointer) to the next enabled tab stop, wrapping to the
+    /// first tab stop before it; with the word's 0x10 it goes to the
+    /// previous one, wrapping to the last. Shift held gives a key-down the
+    /// word 0x20, so Shift with Tab steps forward too. A Tab with nowhere
+    /// to go ends at the form. The focus taken this way selects a text field's or
     /// combo box's whole text and waits for the pointer to move before it
     /// follows the pointer again; a picker spinner it lands on takes the
     /// typing. Answers whether a form took the key.
-    pub(crate) fn form_tab(&mut self, backward: bool) -> bool {
+    pub(crate) fn form_tab(&mut self, flags: u32) -> bool {
         use exa_ui::form::{ControlTab, FormKey, record_state, record_style};
         let focus = match self.forms.options.key_focus.or(self.forms.options.focus) {
             Some((window, record)) => self.forms.find(window).map(|i| (i, record)),
@@ -761,7 +763,6 @@ impl HubWindows {
                 disabled: c.state & record_state::DISABLED != 0,
             })
             .collect();
-        let flags = if backward { 0x10 } else { 0 };
         let next = match exa_ui::form::form_key(9, flags, record as i32 + 1, &tabs, |_| 0) {
             FormKey::Focus(next) => next,
             FormKey::Nothing | FormKey::Taken(_) => return true,
@@ -1779,6 +1780,7 @@ pub fn hub_form_typing(
     mut career: ResMut<ArenaCareer>,
     textures: Option<Res<exa_ui::gui_draw::GuiTextures>>,
     clipboard: Option<ResMut<crate::os_clipboard::SystemClipboard>>,
+    gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
 ) {
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
     if let Some(textures) = textures.as_deref() {
@@ -1789,19 +1791,30 @@ pub fn hub_form_typing(
         return;
     }
     // Tab is the form's key (its key slot moves the focus among the tab
-    // stops); the fields never hear it.
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    let tabs = events
-        .iter()
-        .filter(|e| e.state.is_pressed() && e.key_code == KeyCode::Tab)
-        .count();
-    let tabs = if tabs == 0 && keys.just_pressed(KeyCode::Tab) {
-        1
-    } else {
-        tabs
+    // stops), with the key-down's mask word; the fields never hear it.
+    let tabs: Vec<u32> = match gui_keys.as_deref() {
+        Some(frame) => frame
+            .key_downs()
+            .filter(|k| k.key == 9)
+            .map(|k| k.flags)
+            .collect(),
+        None => {
+            let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+            let word = if shift { exa_ui::gui_keys::SHIFT } else { 0 };
+            let tabs = events
+                .iter()
+                .filter(|e| e.state.is_pressed() && e.key_code == KeyCode::Tab)
+                .count();
+            let tabs = if tabs == 0 && keys.just_pressed(KeyCode::Tab) {
+                1
+            } else {
+                tabs
+            };
+            vec![word; tabs]
+        }
     };
-    for _ in 0..tabs {
-        windows.form_tab(shift);
+    for flags in tabs {
+        windows.form_tab(flags);
     }
     let mut clipboard = clipboard;
     if windows.forms.options.key_focus.is_some() {
@@ -1965,9 +1978,11 @@ mod tests {
     }
 
     /// Tab moves the emblem form's focus among its tab stops (the name and
-    /// the two picture numbers) through the base form's key slot, Shift
-    /// backward, wrapping; the focus it sets stays until the pointer moves.
-    /// Driven through the live typing system with a key message.
+    /// the two picture numbers) through the base form's key slot, wrapping;
+    /// Shift with Tab sends the word 0x20 and steps forward too (only the
+    /// word 0x10 steps back); the focus it sets stays until the pointer
+    /// moves. Driven through the live key reader and typing system with key
+    /// messages.
     #[test]
     fn tab_moves_the_emblem_forms_focus_among_its_tab_stops() {
         use bevy::input::ButtonState;
@@ -1975,7 +1990,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ArenaCareer>()
-            .add_message::<KeyboardInput>()
+            .add_plugins(crate::gui_keys::GuiKeysPlugin)
             .add_systems(Update, hub_form_typing);
         let mut hub = windows();
         hub.open_company();
@@ -1986,21 +2001,30 @@ mod tests {
         hover(&mut hub, name);
         app.insert_resource(hub);
         let window = app.world_mut().spawn_empty().id();
-        let tab = |app: &mut App, shift: bool| {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            if shift {
-                keys.press(KeyCode::ShiftLeft);
-            } else {
-                keys.release(KeyCode::ShiftLeft);
-            }
+        let send = |app: &mut App, key_code: KeyCode, logical_key: Key, pressed: bool| {
             app.world_mut().write_message(KeyboardInput {
-                key_code: KeyCode::Tab,
-                logical_key: Key::Tab,
-                state: ButtonState::Pressed,
+                key_code,
+                logical_key,
+                state: if pressed {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                },
                 text: None,
                 repeat: false,
                 window,
             });
+        };
+        let tab = |app: &mut App, shift: bool| {
+            if shift {
+                send(app, KeyCode::ShiftLeft, Key::Shift, true);
+            }
+            send(app, KeyCode::Tab, Key::Tab, true);
+            app.update();
+            send(app, KeyCode::Tab, Key::Tab, false);
+            if shift {
+                send(app, KeyCode::ShiftLeft, Key::Shift, false);
+            }
             app.update();
             app.world().resource::<HubWindows>().forms.options.key_focus
         };
@@ -2011,10 +2035,21 @@ mod tests {
         );
         assert_eq!(tab(&mut app, false), emblem(emblem_records::DESIGN_NUMBER));
         assert_eq!(tab(&mut app, false), emblem(emblem_records::NAME));
-        assert_eq!(tab(&mut app, true), emblem(emblem_records::DESIGN_NUMBER));
+        assert_eq!(
+            tab(&mut app, true),
+            emblem(emblem_records::BACKGROUND_NUMBER)
+        );
+        let mut hub = app.world_mut().resource_mut::<HubWindows>();
+        // The word 0x10 steps back, wrapping to the last stop.
+        hub.form_tab(0x10);
+        assert_eq!(hub.forms.options.key_focus, emblem(emblem_records::NAME));
+        hub.form_tab(0x10);
+        assert_eq!(
+            hub.forms.options.key_focus,
+            emblem(emblem_records::DESIGN_NUMBER)
+        );
         // The pointer still on the name does not take the focus back; a
         // move does.
-        let mut hub = app.world_mut().resource_mut::<HubWindows>();
         hover(&mut hub, name);
         assert_eq!(
             hub.forms.options.key_focus,
@@ -2025,7 +2060,7 @@ mod tests {
         // The focus Tab gave selects the field's text: a typed byte
         // replaces the picture number.
         let mut career = ArenaCareer::default();
-        hub.form_tab(false);
+        hub.form_tab(0);
         type_text(&mut hub, &mut career, "7");
         let form = hub.forms.get(FormWindow::Emblem).unwrap();
         assert_eq!(

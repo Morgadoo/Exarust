@@ -208,7 +208,12 @@ fn an_added_window_takes_its_layers_place_and_the_tag_search_finds_it() {
     task.activate(a);
     assert_eq!(task.draw_order(), vec![root, low, b, a, held, top]);
     assert!(task.is_active(a));
-    assert_eq!(task.active, Some(a));
+    // The activation with the control 0 leaves the key focus alone; a
+    // nonzero control focuses the form with it.
+    assert_eq!(task.active, None);
+    task.activate_with(b, 2);
+    assert_eq!((task.active, task.active_control), (Some(b), 2));
+    assert!(task.is_active(b));
     task.form_mut(a).unwrap().base_mut().unwrap().visible = false;
     assert_eq!(task.find_by_tag(0xce1c_2030), None);
 }
@@ -293,6 +298,7 @@ fn closing_a_window_closes_its_children_and_sweeps_the_slots() {
     other.parent = Some(root);
     let other = task.add(Box::new(other));
     task.focus_set(Some(child), 0);
+    (task.pointer.x, task.pointer.y) = (700, 500);
     task.tooltip.form = Some(child);
     task.drop.source = Some(a);
     task.drop.kind = 3;
@@ -303,8 +309,10 @@ fn closing_a_window_closes_its_children_and_sweeps_the_slots() {
     assert_eq!(task.tooltip.form, None);
     assert_eq!(task.drop.kind, 0);
     assert_eq!(task.modal, None);
-    // The focus went up the tree to the root (the parents were visible).
-    assert_eq!((task.active, task.active_control), (Some(root), -1));
+    // The sweep hands the focus up the tree, and each hide ends with the
+    // forced pointer update: the focus is the form under the pointer, the
+    // root.
+    assert_eq!(task.active, Some(root));
     assert_eq!(task.draw_order(), vec![root, other]);
 }
 
@@ -444,4 +452,112 @@ fn a_base_form_hits_its_children_inside_their_edges_and_only_when_they_answer() 
         f.style |= crate::form::style::NO_HIT;
     }
     assert_eq!(task.hit(70, 60).0, Some(outer));
+}
+
+/// A window with three buttons in a row, the first and the last tab stops.
+fn tab_window() -> BaseForm {
+    let mut w = window();
+    for i in 0..3 {
+        let mut button = Control::new(1, 120 + i * 50, 120, 40, 24);
+        if i != 1 {
+            button.style |= form::record_style::TAB_STOP;
+        }
+        w.records.push(button);
+    }
+    w
+}
+
+#[test]
+fn the_key_slot_tabs_among_the_tab_stops_with_the_key_masks_shift() {
+    use crate::gui_core::KeyRoute;
+    use crate::gui_keys::KeyMask;
+    let (mut task, id) = task_with(tab_window());
+    task.update(false, (130, 130));
+    assert_eq!(task.active, Some(id));
+    assert_eq!(base(&task, id).hover & 0xffff, 1);
+    let mut keys = KeyMask::default();
+    let tab = keys.key_down(9);
+    assert_eq!(task.key(tab.key, tab.flags), KeyRoute::Focus(id, 2));
+    assert_eq!(base(&task, id).hover, 3);
+    assert_eq!(task.active_control, 3);
+    keys.key_up(9);
+    // Shift with Tab: the key-down's mask has Shift as 0x20, and the base
+    // form steps back only on 0x10, so it wraps forward to the first stop.
+    keys.key_down(0x10);
+    let shift_tab = keys.key_down(9);
+    assert_eq!(shift_tab.flags, 0x20);
+    assert_eq!(
+        task.key(shift_tab.key, shift_tab.flags),
+        KeyRoute::Focus(id, 0)
+    );
+    // The word 0x10 (a repeat after a key-up with Shift held) steps back.
+    assert_eq!(task.key(9, 0x10), KeyRoute::Focus(id, 2));
+}
+
+#[test]
+fn a_key_no_record_takes_climbs_to_the_task_unless_it_repeats_or_was_typed() {
+    use crate::gui_core::KeyRoute;
+    let (mut task, id) = task_with(tab_window());
+    task.update(false, (130, 130));
+    // A button answers the key message with 0: the key goes to the parent,
+    // the task.
+    assert_eq!(task.key(0x41, 0), KeyRoute::Task);
+    assert_eq!(task.key(0x41, 1), KeyRoute::Ended(id));
+    assert_eq!(task.key(0x61, 2), KeyRoute::Ended(id));
+    // Off every record (focus code -1): no Tab, the key goes up.
+    task.update(false, (280, 300));
+    assert_eq!(task.active, Some(id));
+    assert_eq!(task.key(9, 0), KeyRoute::Task);
+    // Off the window the root has the focus: the key is the root's own.
+    task.update(false, (10, 10));
+    assert_eq!(task.key(9, 0), KeyRoute::Root);
+}
+
+#[test]
+fn a_child_forms_key_goes_to_its_parents_key_slot() {
+    use crate::gui_core::KeyRoute;
+    let (mut task, id) = task_with(tab_window());
+    let mut child = BaseForm::new(
+        GuiRect::new(150, 200, 60, 60),
+        4,
+        (0, 0x3_0000, 0),
+        ClientRect {
+            left: 0,
+            top: 0,
+            right: 60,
+            bottom: 60,
+        },
+    );
+    child.parent = Some(id);
+    let child = task.add(Box::new(child));
+    task.focus_form(Some(child), 0);
+    // The child has no record: Tab goes to the window's key slot, whose
+    // focused record (selected here) steps to the next stop.
+    task.form_mut(id).unwrap().select(1);
+    assert_eq!(task.key(9, 0), KeyRoute::Focus(id, 2));
+    assert_eq!(task.active, Some(id));
+}
+
+/// The record classes the base form's key message reaches answer it 0:
+/// none of the button, check box, image button, trackbar, label, icon
+/// button or picture handlers has an arm for 0xa0.
+#[test]
+fn the_base_record_classes_answer_the_key_message_0() {
+    for class in 1..=7u16 {
+        let mut records = vec![Control::new(class, 0, 0, 40, 20)];
+        let mut events = Vec::new();
+        let answer = gui_controls::dispatch(
+            &mut records,
+            0,
+            Message {
+                message: message::KEY_DOWN,
+                param: 0x41,
+                ..Message::default()
+            },
+            4,
+            &mut events,
+        );
+        assert_eq!(answer, 0, "class {class}");
+        assert!(events.is_empty());
+    }
 }
