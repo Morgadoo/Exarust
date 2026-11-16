@@ -1480,7 +1480,6 @@ fn the_living_placement_puts_the_pose_on_the_frame() {
     );
     let mean = (body.legs[0].anchor + body.legs[1].anchor) * (1.0 / 2.0);
     assert!((b.feet_centre() - mean).length() < 1e-6);
-    assert!(!body.asleep());
     // A pose that does not fit the body leaves it alone.
     assert!(!body.place_living(frame, &posed[..2], 0));
 }

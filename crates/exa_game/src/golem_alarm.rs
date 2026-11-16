@@ -82,7 +82,6 @@
 //! lists come from each character's current position ([guess: without a
 //! level room grid every character is offered]).
 
-use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_ai::brain::{Npc, RatedPlayer};
 use exa_ai::combatant::{Combatant, Contact};
@@ -599,66 +598,53 @@ pub struct Reset {
     pub angle: f32,
 }
 
-/// The body-root move a reset makes: from the root at `from` (m) facing
-/// `from_angle` to the root at `to` (m) facing `angle`, applied to every
-/// part so the body keeps its pose about the root.
-pub fn reset_move(from: Vec3, from_angle: f32, to: Vec3, angle: f32) -> Affine3A {
-    Affine3A::from_rotation_translation(Quat::from_rotation_y(angle), to)
-        * Affine3A::from_quat(Quat::from_rotation_y(from_angle).inverse())
-        * Affine3A::from_translation(-from)
-}
-
-/// The pose reset's move of one character: its root goes to the reset's
-/// place at its own height, its model faces the reset's angle, every part
-/// of its body moves with it and the body is woken for
-/// [`golem::POSE_TICKS`] ticks. A standing body is carried with its root
-/// by its next aim ([`Ragdoll::carried`]: its parts, feet, targets and
-/// frame); any other (a fallen or limp body) is placed at once. Returns
-/// the root's new place (m). The body's move is a write to simulation
-/// data, posted for the next step
-/// ([`exa_physics::sim_app::FixedCommands::write`]).
+/// The pose reset's move of one character, as the original's pose reset
+/// runs it: its root goes to the reset's place at its own height and its
+/// model faces the reset's angle (the frame's view until the step), and the
+/// body is put living there ([`crate::limp::LivingPlacement`]): the current
+/// clip sampled by the pose-only sampler, the pelvis at the reset's place
+/// at the pose's pelvis target (the original's frame takes that word as its
+/// height, over the world's origin), facing the angle, the held items put
+/// back in its hands. The body is woken for [`golem::POSE_TICKS`] ticks.
+/// Returns the root's new place (m). The body's writes are posted for the
+/// next step ([`exa_physics::sim_app::FixedCommands`]).
 fn reset_character(
     reset: Reset,
-    model: &GlobalTransform,
     transform: &mut Transform,
     parent: Option<&ChildOf>,
     roots: &mut ReturnRoots,
     fixed: &mut FixedCommands,
     body: Option<(Entity, &mut Mut<Ragdoll>)>,
 ) -> Vec3 {
-    let from_angle = exa_physics::body::locomotion::heading_of(model.rotation() * Vec3::Z);
     let root = parent.and_then(|p| roots.get_mut(p.parent()).ok());
-    let (from, to, parent_turn) = match root {
+    let (to, parent_turn) = match root {
         Some(mut root) => {
             let from = root.translation;
             let to = Vec3::new(reset.at.x / 100.0, from.y, reset.at.z / 100.0);
             root.translation = to;
-            (from, to, root.rotation)
+            (to, root.rotation)
         }
         None => {
             let from = transform.translation;
             let to = Vec3::new(reset.at.x / 100.0, from.y, reset.at.z / 100.0);
             transform.translation = to;
-            (from, to, Quat::IDENTITY)
+            (to, Quat::IDENTITY)
         }
     };
     transform.rotation = parent_turn.inverse() * Quat::from_rotation_y(reset.angle);
     if let Some((entity, body)) = body {
-        let moved = reset_move(from, from_angle, to, reset.angle);
-        fixed.write(entity, body, move |body| {
-            if !body.carried() {
-                let worlds: Vec<Affine3A> =
-                    body.parts.iter().map(|p| moved * p.transform()).collect();
-                body.place_at(&worlds);
-            }
-            body.wake_to(golem::POSE_TICKS as i32);
-        });
-        // The pose reset then puts the body's held items back in its hands
-        // where the placement left them.
+        let placement = crate::limp::LivingPlacement::at(
+            Vec3::new(reset.at.x / 100.0, 0.0, reset.at.z / 100.0),
+            reset.angle,
+            crate::limp::FrameHeight::Target(0.0),
+        );
         fixed.post(move |world| {
             if let Ok(mut e) = world.get_entity_mut(entity) {
-                e.insert(exa_physics::grip::ReplaceHeld);
+                e.insert(placement);
             }
+        });
+        fixed.write(entity, body, move |body| {
+            body.wake_to(golem::POSE_TICKS as i32);
         });
     }
     to
@@ -785,8 +771,7 @@ pub fn return_from_alarm(
         return;
     };
     let post = returned.post;
-    for (entity, gt, mut transform, parent, body, condition, locomotion, player_body) in
-        &mut players
+    for (entity, _, mut transform, parent, body, condition, locomotion, player_body) in &mut players
     {
         let mut body = body;
         let to = reset_character(
@@ -794,7 +779,6 @@ pub fn return_from_alarm(
                 at: post.at,
                 angle: post.angle,
             },
-            gt,
             &mut transform,
             parent,
             &mut roots,
@@ -899,7 +883,6 @@ fn send_guardian_home(
     };
     let to = reset_character(
         reset,
-        gt,
         &mut transform,
         parent,
         roots,
@@ -1377,11 +1360,13 @@ mod tests {
         assert!(w.resource::<GolemAlarm>().armed.armed);
     }
 
-    /// The pose reset puts a golem's held items back in its hands where
-    /// the reset placed it (the re-place request posted after its move);
-    /// a golem left awake asks for none.
+    /// The pose reset asks the living placement of a golem it sends home,
+    /// as the original's reset builds its frame: the home's x and z, the
+    /// home's facing, the pelvis at the pose's pelvis target over the
+    /// world's origin (the frame's height is that word), the held items put
+    /// back after it; a golem left awake asks for none.
     #[test]
-    fn the_alarm_return_re_places_a_sent_golems_held_items() {
+    fn the_alarm_return_places_a_sent_golem_living_at_home() {
         use exa_physics::body::PartSetup;
         let mut app = return_app();
         let (_, player) = character(&mut app, Vec3::new(10.5, 0.0, 67.0), 0.0);
@@ -1420,8 +1405,21 @@ mod tests {
         app.update();
         exa_physics::sim_app::run_fixed_commands(app.world_mut());
         let w = app.world();
-        assert!(w.get::<exa_physics::grip::ReplaceHeld>(golem).is_some());
-        assert!(w.get::<exa_physics::grip::ReplaceHeld>(far).is_none());
+        let placement = w
+            .get::<crate::limp::LivingPlacement>(golem)
+            .expect("the golem sent home is placed");
+        assert_eq!(
+            *placement,
+            crate::limp::LivingPlacement::at(
+                Vec3::new(9.0, 0.0, 75.0),
+                2.0,
+                crate::limp::FrameHeight::Target(0.0)
+            )
+        );
+        assert!(placement.replace_held);
+        assert!(w.get::<crate::limp::LivingPlacement>(far).is_none());
+        // Woken for the pose ticks.
+        assert!(w.get::<Ragdoll>(golem).unwrap().countdown() >= golem::POSE_TICKS as i32);
     }
 
     /// With every golem asleep (or none near) the return sends none home
@@ -1461,21 +1459,6 @@ mod tests {
         let at = w.get::<Transform>(player_root).unwrap().translation;
         assert_eq!(at, Vec3::new(10.5, 0.0, 67.0));
         assert_eq!(w.resource::<crate::flow::FlowSteps>().steps.len(), 2);
-    }
-
-    /// The reset's move keeps a part's place about the root: a point 1 m
-    /// ahead of a root at the origin facing +z ends 1 m ahead of the new
-    /// root facing +x.
-    #[test]
-    fn the_reset_move_carries_the_pose_about_the_root() {
-        let moved = reset_move(
-            Vec3::ZERO,
-            0.0,
-            Vec3::new(7.0, 0.0, 69.0),
-            std::f32::consts::FRAC_PI_2,
-        );
-        let ahead = moved.transform_point3(Vec3::Z);
-        assert!((ahead - Vec3::new(8.0, 0.0, 69.0)).length() < 1e-5);
     }
 
     /// A bare level section exported with the alarm's settings.

@@ -1853,9 +1853,10 @@ impl Ragdoll {
     /// 8 cm ([`super::placement::matrix_foot_anchor`]), and its state is
     /// cleared; the feet centre is the anchors' mean, the chest point is
     /// taken anew on the placed parts as last tick's too with no velocity;
-    /// the character frame is taken anew from the placed pelvis. The body
-    /// wakes. Returns false, leaving the body alone, when the pose does not
-    /// fit the body.
+    /// the character frame is taken anew from the placed pelvis. Its sleep
+    /// countdown is left as it is, as the original's placement leaves it
+    /// (the golem's pose reset wakes the body itself). Returns false,
+    /// leaving the body alone, when the pose does not fit the body.
     ///
     /// Not here: the facing and the locomotion words (the caller's
     /// [`super::locomotion::Locomotor::placed`]), the pins (the original
@@ -1902,7 +1903,6 @@ impl Ragdoll {
             drive.anchor = None;
             drive.frame = None;
         }
-        self.wake();
         true
     }
 
