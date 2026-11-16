@@ -142,6 +142,12 @@ impl PlacedItem {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacedIndex(pub u32);
 
+/// On a prop's root (an object from the object libraries the level places):
+/// its index in the level section's list of props, which a save's level
+/// export writes its live placement back under.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropIndex(pub u32);
+
 /// The level section the current level was read from: the archive's
 /// `<locale>.rfc` or a save's own section, and which of its placed objects
 /// the load spawned. A save exports the level from it (the original walks
@@ -2308,7 +2314,10 @@ impl LevelLoad {
                             commands.spawn((placement, Visibility::default())).id()
                         }
                     };
-                    commands.entity(e).insert(Name::new(prop.object.clone()));
+                    commands.entity(e).insert((
+                        Name::new(prop.object.clone()),
+                        PropIndex(self.prop_entities.len() as u32),
+                    ));
                     self.prop_entities.push(e);
                     if started.elapsed() >= budget {
                         break;

@@ -36,9 +36,16 @@
 //! except the dead player's body once the story's respawn or exit cleared
 //! that mark ([`crate::left_behind`]): it is written as a dead character
 //! under its left-behind record.
-//! [Exarust's: the props, the doors' and levers' positions and the settings
-//! chunk's live words are the loaded section's; the living spawn does not
-//! restore a saved pose tree.]
+//! The props (objects from the object libraries the level places) are
+//! written where they stand ([`props_after`]): each prop root's live
+//! placement in its parent's frame, a prop over a moved free body taking
+//! the body's motion since it was registered. A body hung from the world by
+//! its links (a door's leaf, a lever's arm, a chain) moves neither the
+//! placed object nor the prop it hangs in.
+//! [Exarust's: the part records of an object's or prop's own bodies and
+//! cloth (the hung leaves' and arms' live frames, the live cloth particles)
+//! and the settings chunk's live words are the loaded section's; the living
+//! spawn does not restore a saved pose tree.]
 //!
 //! The original's character section (`0xCAC00001`): each character's health
 //! is stored into its record, the local character database is flushed and
@@ -207,6 +214,49 @@ pub fn placed_after(
         out.push(object);
     }
     (out, counts)
+}
+
+/// A prop (an object from the object libraries the level places) as it
+/// stands in the running scene: its place in the section's prop list and
+/// its placement in its parent's frame (the parent prop's, or the level's
+/// for a prop at the root), three rotation rows and the translation
+/// (metres), as the section's prop record stores it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveProp {
+    pub index: u32,
+    pub rows: [[f32; 3]; 4],
+}
+
+/// What the prop pass did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PropCounts {
+    /// Props the scene still holds.
+    pub kept: usize,
+    /// Of those, the ones whose placement changed.
+    pub moved: usize,
+    /// Of those, the ones that moved more than a centimetre.
+    pub moved_far: usize,
+}
+
+/// The section's props after the live scene: each prop the scene holds
+/// takes its live placement (the original's prop record writes the prop
+/// node's live matrix), unless it stands within [`UNMOVED`] of the stored
+/// one, which is kept. A prop the scene does not hold keeps its record.
+pub fn props_after(props: &mut [exa_formats::level::Prop], live: &[LiveProp]) -> PropCounts {
+    let mut counts = PropCounts::default();
+    for prop in live {
+        let Some(stored) = props.get_mut(prop.index as usize) else {
+            continue;
+        };
+        counts.kept += 1;
+        if rows_apart(&prop.rows, &stored.transform) > UNMOVED {
+            let travel = Vec3::from(prop.rows[3]).distance(Vec3::from(stored.transform[3]));
+            counts.moved += 1;
+            counts.moved_far += usize::from(travel > 0.01);
+            stored.transform = prop.rows;
+        }
+    }
+    counts
 }
 
 /// A character as it stands in the running scene, for the save's
@@ -534,12 +584,13 @@ pub fn saved_section(
     source: &[u8],
     spawned: &[u32],
     live: &[LivePlacement],
+    props: &[LiveProp],
     records: Vec<u8>,
     strings: Vec<u8>,
     story: bool,
     settings: SettingsState,
     characters: Option<SectionCharacters<'_>>,
-) -> exa_formats::Result<(Vec<u8>, PlacementCounts)> {
+) -> exa_formats::Result<(Vec<u8>, PlacementCounts, PropCounts)> {
     let mut scene = Scene::parse(source)?;
     let mut raw = LevelRaw::scan(source)?;
     if let Some(characters) = characters {
@@ -560,10 +611,11 @@ pub fn saved_section(
         live,
     );
     scene.placed_objects = placed;
+    let prop_counts = props_after(&mut scene.props, props);
     raw.object_database = Some(records);
     raw.object_strings = Some(strings);
     let bytes = export_level_scene(&scene, &raw, story, settings)?;
-    Ok((bytes, counts))
+    Ok((bytes, counts, prop_counts))
 }
 
 /// A placed object's entity as the save reads it: its id, its place in
@@ -576,12 +628,23 @@ type PlacedNode = (
     Has<exa_physics::prop::BodyNode>,
 );
 
+/// A prop's root entity as the save reads it: its place in the section's
+/// list, its world transform and whether a body moves it directly.
+type PropNode = (
+    Entity,
+    &'static exa_world::PropIndex,
+    &'static GlobalTransform,
+    Has<exa_physics::prop::BodyNode>,
+);
+
 /// What the save reads of the running level: where it came from and its
-/// placed objects with their bodies.
+/// placed objects and props with their bodies.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct LevelSaveScene<'w, 's> {
     source: Option<Res<'w, exa_world::LevelSource>>,
     placed: Query<'w, 's, PlacedNode>,
+    props: Query<'w, 's, PropNode>,
+    globals: Query<'w, 's, &'static GlobalTransform>,
     bodies: Query<
         'w,
         's,
@@ -708,26 +771,7 @@ impl LevelSaveScene<'_, '_> {
     /// placement (an object a body moves directly is where its node is; one
     /// over a moved body takes the body's motion since it was registered).
     pub fn live_placements(&self) -> Vec<LivePlacement> {
-        // The motion of each body since its registration, by the placed
-        // object at or above its root node.
-        let mut motion = std::collections::HashMap::new();
-        for (entity, body, ragdoll) in &self.bodies {
-            let (Some(placed), Some(part)) = (body.placed().first(), ragdoll.parts.first()) else {
-                continue;
-            };
-            let delta = part.transform() * placed.inverse();
-            let mut at = entity;
-            loop {
-                if self.placed.contains(at) {
-                    motion.entry(at).or_insert(delta);
-                    break;
-                }
-                match self.parents.get(at) {
-                    Ok(parent) => at = parent.parent(),
-                    Err(_) => break,
-                }
-            }
-        }
+        let motion = self.body_motion();
         let mut out: Vec<LivePlacement> = self
             .placed
             .iter()
@@ -747,6 +791,72 @@ impl LevelSaveScene<'_, '_> {
             .collect();
         // The list's order, then the drops in spawn order.
         out.sort_by_key(|p| p.index.unwrap_or(u32::MAX));
+        out
+    }
+
+    /// The motion of each free body since its registration, by the placed
+    /// object or prop at or above its root node. A body hung from the world
+    /// by its links (a door's leaf, a lever's arm, a chain) moves only its
+    /// own nodes, never the object it hangs in, so it moves no placement.
+    fn body_motion(&self) -> std::collections::HashMap<Entity, Affine3A> {
+        let mut motion = std::collections::HashMap::new();
+        for (entity, body, ragdoll) in &self.bodies {
+            if !ragdoll.world.is_empty() {
+                continue;
+            }
+            let (Some(placed), Some(part)) = (body.placed().first(), ragdoll.parts.first()) else {
+                continue;
+            };
+            let delta = part.transform() * placed.inverse();
+            let mut at = entity;
+            loop {
+                if self.placed.contains(at) || self.props.contains(at) {
+                    motion.entry(at).or_insert(delta);
+                    break;
+                }
+                match self.parents.get(at) {
+                    Ok(parent) => at = parent.parent(),
+                    Err(_) => break,
+                }
+            }
+        }
+        motion
+    }
+
+    /// The live props: each prop root's placement in its parent's frame,
+    /// a prop over a moved free body taking the body's motion since it was
+    /// registered (its parent prop's motion too), in list order.
+    pub fn live_props(&self) -> Vec<LiveProp> {
+        let motion = self.body_motion();
+        let world = |entity: Entity| -> Option<Affine3A> {
+            let affine = self.globals.get(entity).ok()?.affine();
+            let moved_directly = self
+                .props
+                .get(entity)
+                .is_ok_and(|(.., directly)| directly);
+            Some(match motion.get(&entity) {
+                Some(delta) if !moved_directly => *delta * affine,
+                _ => affine,
+            })
+        };
+        let mut out: Vec<LiveProp> = self
+            .props
+            .iter()
+            .filter_map(|(entity, index, ..)| {
+                let at = world(entity)?;
+                let parent = self
+                    .parents
+                    .get(entity)
+                    .ok()
+                    .and_then(|p| world(p.parent()))
+                    .unwrap_or(Affine3A::IDENTITY);
+                Some(LiveProp {
+                    index: index.0,
+                    rows: rows_of(parent.inverse() * at),
+                })
+            })
+            .collect();
+        out.sort_by_key(|p| p.index);
         out
     }
 
@@ -878,6 +988,7 @@ impl LevelSaveScene<'_, '_> {
         )>,
     ) -> Option<(String, Vec<u8>)> {
         let live = self.live_placements();
+        let props = self.live_props();
         let characters = characters.filter(|_| story).and_then(|(live, world)| {
             let local = self.local.as_deref_mut()?;
             let held: Vec<u32> = local.db.ids().collect();
@@ -921,6 +1032,7 @@ impl LevelSaveScene<'_, '_> {
             &source.bytes,
             &source.spawned,
             &live,
+            &props,
             records,
             strings,
             story,
@@ -936,7 +1048,14 @@ impl LevelSaveScene<'_, '_> {
                     database: database.clone(),
                 }),
         ) {
-            Ok((bytes, counts)) => {
+            Ok((bytes, counts, prop_counts)) => {
+                info!(
+                    "save: level section {} props: {} kept, {} moved ({} by more than 1 cm)",
+                    source.locale(),
+                    prop_counts.kept,
+                    prop_counts.moved,
+                    prop_counts.moved_far
+                );
                 info!(
                     "save: level section {} exported ({} bytes, local tier {} records): {} placed objects kept ({} moved, {} by more than 1 cm), {} gone, {} never spawned, {} added",
                     source.locale(),
@@ -1090,10 +1209,11 @@ mod tests {
         local.store(at, &[]);
         let records = local.write();
         let strings = scene.local_strings.clone().unwrap_or_default().write();
-        let (saved, counts) = saved_section(
+        let (saved, counts, _) = saved_section(
             source,
             &spawned,
             &live,
+            &[],
             records.clone(),
             strings,
             true,
@@ -1131,6 +1251,156 @@ mod tests {
                 .any(|object| object.id == moved_before.id
                     && (object.transform[3][1] - moved_before.transform[3][1] - 0.5).abs() < 1e-3)
         );
+    }
+
+    /// A prop the player pushed is saved where it stands: the prop pass
+    /// writes the live placement over the stored one, keeps an unmoved
+    /// prop's record as it was, and leaves an index past the list alone.
+    #[test]
+    fn the_prop_pass_writes_the_moved_props() {
+        let prop = |x: f32| exa_formats::level::Prop {
+            object: "barrel".into(),
+            flags: 0,
+            transform: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [x, 0.0, 0.0],
+            ],
+            parent: None,
+            extra: 0,
+            attachments: Vec::new(),
+        };
+        let mut props = vec![prop(1.0), prop(2.0)];
+        let mut moved = props[1].transform;
+        moved[3][2] += 0.4;
+        let mut noise = props[0].transform;
+        noise[3][1] += 1e-4;
+        let counts = props_after(
+            &mut props,
+            &[
+                LiveProp {
+                    index: 0,
+                    rows: noise,
+                },
+                LiveProp {
+                    index: 1,
+                    rows: moved,
+                },
+                LiveProp {
+                    index: 7,
+                    rows: moved,
+                },
+            ],
+        );
+        assert_eq!(
+            counts,
+            PropCounts {
+                kept: 2,
+                moved: 1,
+                moved_far: 1
+            }
+        );
+        assert_eq!(props[0].transform, prop(1.0).transform);
+        assert_eq!(props[1].transform, moved);
+    }
+
+    /// The running save reads the props from the scene: a prop root moved
+    /// 40 cm is written at its new place in the level's frame, and a prop
+    /// placed under it keeps its world place, so its record (in its
+    /// parent's frame) changes the other way. The written section reads
+    /// back with both (skipped without the game).
+    #[test]
+    fn the_running_save_writes_the_live_props() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let source = pack.get("exanima01.rfc").unwrap();
+        let scene = Scene::parse(source).unwrap();
+        let top = scene
+            .props
+            .iter()
+            .position(|p| p.parent.is_none())
+            .unwrap();
+        #[derive(Resource, Default)]
+        struct Out(Vec<LiveProp>, Option<(String, Vec<u8>)>);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Out>()
+            .insert_resource(exa_world::LevelSource {
+                entry: "exanima01.rfc".into(),
+                bytes: source.into(),
+                from_save: false,
+                spawned: Vec::new(),
+            })
+            .add_systems(
+                Update,
+                |mut scene: LevelSaveScene, mut out: ResMut<Out>| {
+                    out.0 = scene.live_props();
+                    out.1 = scene.section(&exa_formats::objdb::ObjectDb::default(), false, None);
+                },
+            );
+        let root = app
+            .world_mut()
+            .spawn((Transform::default(), GlobalTransform::default()))
+            .id();
+        let rows = scene.props[top].transform;
+        let stored = Transform::from_matrix(Mat4::from(Affine3A::from_cols(
+            Vec3::from(rows[0]).into(),
+            Vec3::from(rows[1]).into(),
+            Vec3::from(rows[2]).into(),
+            Vec3::from(rows[3]).into(),
+        )));
+        let moved = Transform::from_translation(stored.translation + Vec3::Z * 0.4)
+            .with_rotation(stored.rotation);
+        let parent = app
+            .world_mut()
+            .spawn((
+                moved,
+                GlobalTransform::from(moved),
+                exa_world::PropIndex(top as u32),
+                ChildOf(root),
+            ))
+            .id();
+        // A second prop record (the next one) hung under the moved prop at
+        // the world place it was stored at.
+        let child_index = (top + 1) as u32;
+        let child_world = Transform::from_xyz(3.0, 1.0, 2.0);
+        app.world_mut().spawn((
+            Transform::from_matrix(moved.to_matrix().inverse() * child_world.to_matrix()),
+            GlobalTransform::from(child_world),
+            exa_world::PropIndex(child_index),
+            ChildOf(parent),
+        ));
+        app.update();
+        let out = app.world().resource::<Out>();
+        assert_eq!(out.0.len(), 2);
+        let written = out.0[0].rows;
+        assert!((Vec3::from(written[3]) - moved.translation).length() < 1e-4);
+        let (locale, bytes) = out.1.clone().unwrap();
+        assert_eq!(locale, "exanima01");
+        let back = Scene::parse(&bytes).unwrap();
+        assert_eq!(back.props.len(), scene.props.len());
+        let at = Vec3::from(back.props[top].transform[3]);
+        assert!(
+            (at - Vec3::from(scene.props[top].transform[3]) - Vec3::Z * 0.4).length() < 1e-3,
+            "{at}"
+        );
+        // The child's record is its place in the moved parent's frame.
+        let child = Vec3::from(back.props[child_index as usize].transform[3]);
+        let expected = moved
+            .to_matrix()
+            .inverse()
+            .transform_point3(child_world.translation);
+        assert!((child - expected).length() < 1e-3, "{child} {expected}");
+        // Every other prop keeps its record.
+        for (i, (a, b)) in scene.props.iter().zip(&back.props).enumerate() {
+            if i != top && i != child_index as usize {
+                assert!(rows_apart(&a.transform, &b.transform) < 1e-5, "{i}");
+            }
+        }
     }
 
     /// Leaving the triangle flags out of a save's section costs no cloth its
@@ -1357,8 +1627,9 @@ mod tests {
             .unwrap_or_default();
         let strings = scene.local_strings.clone().unwrap_or_default().write();
         let world = [derrin.clone()];
-        let (saved, _) = saved_section(
+        let (saved, _, _) = saved_section(
             source,
+            &[],
             &[],
             &[],
             records,
@@ -1434,8 +1705,9 @@ mod tests {
             .map(|db| db.write())
             .unwrap_or_default();
         let strings = scene.local_strings.clone().unwrap_or_default().write();
-        let (saved, _) = saved_section(
+        let (saved, _, _) = saved_section(
             source,
+            &[],
             &[],
             &[],
             records,
