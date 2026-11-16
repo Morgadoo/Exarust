@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r268, 11-16) | target |
+| measure | start (r186, 11-10) | now (r269, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **57.69%** | **100%** |
+| **Ledger: bytes in a final state** | — | **57.94%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,996 | all |
+| Tests passing | 8,489 | 9,002 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -106,15 +106,15 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | AI & behaviour | 8 | 8 | 131 | 92,785 |
 | Game modes, arena & session | 7 | 7 | 182 | 76,611 |
 | World, levels & terrain | 5 | 5 | 153 | 76,455 |
-| Items, materials & crafting | 5 | 5 | 140 | 64,930 |
-| Data, assets & I/O | 6 | 6 | 140 | 44,077 |
+| Items, materials & crafting | 5 | 5 | 139 | 64,273 |
+| Data, assets & I/O | 6 | 6 | 118 | 38,360 |
 | Runtime & platform | 5 | 5 | 69 | 20,690 |
 | Core, math & threading | 3 | 3 | 79 | 15,557 |
 | Script, dialogue & story | 2 | 2 | 29 | 7,041 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,125** | **1,061,796** |
+| **Total** | **90** | **90** | **2,102** | **1,055,422** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 269 | An older save's world objects run the original's upgrade chain on a live load; three readers the game had duplicated go through the database routines; a loadout cost bug fixed (a one-handed weapon costs a point less); the container instantiate is ported, so a level's chest fill makes local copies with each row's condition (datastream). Chest, loadout and search scenes owed; level-load traces change (GPU on hold) |
 | 2026-11-16 | 268 | The remaining form keys come from the window procedure's key list: the main menu (its name buffer and the music code), the settings form, the power tree (its bound power keys), the skill and destination screens (any key: F76 and F122 fixed) and the hub's fields; the root task's key slot holds the KeyDef lines and the boot's Escape, runs only the best shortcut and ignores repeats (F135 fixed) (guikeys). A camera-mode ordering gap the new systems exposed was fixed on integration. Key scenes owed (GPU on hold) |
 | 2026-11-16 | 267 | The player behaviour's gamepad screen cursor is the original's (eased in screen space, advanced in the post-step and drawn at the render fraction); the capture takes the pad's look buttons and makes the desk skip its mouse move; the cursor read takes the plain aim-plane point except in an Overhead Swing and for the powers; the stagger halt, the dash and Head Pain inputs (motion 45 identified), the kinesis-drag request drop, the placements' heading store and the death hook's capture release are wired (playerbeh). Pad and combat-aim scenes owed (GPU on hold) |
 | 2026-11-16 | 266 | Live arcs test the level and bodies only when their record asks (only the Shock's burst), so hand, mace, shock-weapon arcs and sparks no longer stagger opponents (a bug fixed); the arc nodes are attached, entered, removed and placed under their weapon, item or struck part each frame, so weapon tendrils stay on the blade and sparks ride the struck limb; the records share the original's strided buffer; blow wisps are placed (they had sat in the fade-in) (tendrils). DEC-11 opened. Grid scenes with a picture check owed (GPU on hold) |

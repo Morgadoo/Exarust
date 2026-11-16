@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 665 | 161,606 | B1 wire (or prove unreachable) |
-| partial | 1,413 | 889,733 | B4 complete the port |
+| uncalled | 644 | 158,903 | B1 wire (or prove unreachable) |
+| partial | 1,411 | 886,062 | B4 complete the port |
 | missing | 55 | 11,367 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -22,8 +22,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | ai | 90,421 | 2,336 | 28 |
 | modes | 65,694 | 10,554 | 363 |
 | world | 56,920 | 18,972 | 563 |
-| items | 55,764 | 8,565 | 601 |
-| data | 31,939 | 12,138 | 0 |
+| items | 55,107 | 8,565 | 601 |
+| data | 28,925 | 9,435 | 0 |
 | runtime | 18,517 | 2,355 | 516 |
 | core | 12,193 | 3,305 | 59 |
 | script | 5,410 | 1,631 | 0 |
@@ -66,7 +66,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TRBDDoor | world | 4 / 5,922 | 1 / 2,085 | 0 / 0 | 8,007 |
 | TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
 | TForceBarricadeEffect | powers | 4 / 7,984 | 0 / 0 | 0 / 0 | 7,984 |
-| SG_ObjectDB2 (unit routines) | data | 8 / 4,937 | 23 / 2,931 | 0 / 0 | 7,868 |
 | TVCCloth | physics | 11 / 6,317 | 6 / 1,514 | 0 / 0 | 7,831 |
 | FLX_Materials_Procedural (unit routines) | items | 8 / 4,818 | 11 / 2,821 | 1 / 76 | 7,715 |
 | TCharacterView | ui | 14 / 6,327 | 4 / 1,141 | 0 / 0 | 7,468 |
@@ -151,9 +150,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_kdTrees (unit routines) | world | 10 / 2,369 | 0 / 0 | 0 / 0 | 2,369 |
 | TAudioEnvironment | audio | 3 / 2,097 | 2 / 270 | 0 / 0 | 2,367 |
 | TInventory | items | 8 / 2,297 | 1 / 41 | 0 / 0 | 2,338 |
-| Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 2 / 2,319 | 0 / 0 | 0 / 0 | 2,319 |
 | RF_Dynamics_Animation (unit routines) | characters | 5 / 2,100 | 0 / 0 | 2 / 173 | 2,273 |
 | TGridEnvManager | world | 3 / 2,199 | 0 / 0 | 0 / 0 | 2,199 |
+| SG_ObjectDB2 (unit routines) | data | 7 / 1,923 | 2 / 228 | 0 / 0 | 2,151 |
 | TScene | world | 1 / 740 | 8 / 1,355 | 0 / 0 | 2,095 |
 | Equipment effects and focus-item slot (RFE_Effects_Electricity (unit routines) by address) | characters | 6 / 1,501 | 1 / 167 | 4 / 400 | 2,068 |
 | TThaumTree | powers | 6 / 1,800 | 3 / 246 | 0 / 0 | 2,046 |
@@ -175,6 +174,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TCharDecomp2 | characters | 5 / 1,766 | 0 / 0 | 0 / 0 | 1,766 |
 | TRTDialogue | script | 2 / 1,734 | 0 / 0 | 0 / 0 | 1,734 |
 | RF_Env_Effects (unit routines) | powers | 1 / 1,666 | 0 / 0 | 0 / 0 | 1,666 |
+| Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 1 / 1,662 | 0 / 0 | 0 / 0 | 1,662 |
 | FLX_PostProcess (unit routines) | render | 3 / 1,480 | 2 / 52 | 1 / 127 | 1,659 |
 | TTransitionScreen | ui | 2 / 1,577 | 1 / 28 | 0 / 0 | 1,605 |
 | TBarricadeEntity | powers | 2 / 1,556 | 0 / 0 | 0 / 0 | 1,556 |
