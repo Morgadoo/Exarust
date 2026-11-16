@@ -11,7 +11,7 @@ use exa_formats::character_stats::{CharacterStats, Spawn};
 use exa_formats::characters::CharacterRecord;
 use exa_formats::morph::Physique;
 use exa_game::scene_bodies::{
-    body_stats, character_muscles, character_skin, human_frame, physical_frame, race_muscles,
+    body_stats, character_muscles, character_skin_at, human_frame, physical_frame, race_muscles,
 };
 use exa_physics::body::RaceMuscles;
 
@@ -357,7 +357,8 @@ fn setup(
                     female: physique.female,
                     ..CharacterRecord::default()
                 };
-                let (skin_look, skin_composite) = character_skin(
+                let (skin_look, skin_composite) = character_skin_at(
+                    loader.cache.textures.settings().texture_detail,
                     loader.game,
                     &body_name,
                     &record,
@@ -1923,7 +1924,8 @@ fn spawn_players(
             },
         };
         let player_physique = morph.as_ref().map_or(Physique::NEUTRAL, |m| m.physique);
-        let (player_look, player_composite) = character_skin(
+        let (player_look, player_composite) = character_skin_at(
+            loader.cache.textures.settings().texture_detail,
             loader.game,
             model::BODY_MODEL,
             &player_record,
@@ -2303,7 +2305,8 @@ fn spawn_players(
                 },
                 |opponent| opponent.record.clone(),
             );
-            let (duel_look, duel_composite) = character_skin(
+            let (duel_look, duel_composite) = character_skin_at(
+                loader.cache.textures.settings().texture_detail,
                 loader.game,
                 model::BODY_MODEL,
                 &duel_record,
@@ -4449,7 +4452,8 @@ fn spawn_placed_characters(
             missing += 1;
             continue;
         };
-        let (skin_look, skin_composite) = character_skin(
+        let (skin_look, skin_composite) = character_skin_at(
+            loader.cache.textures.settings().texture_detail,
             loader.game,
             &model_name,
             &c.record,

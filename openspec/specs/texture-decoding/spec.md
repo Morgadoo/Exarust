@@ -278,3 +278,10 @@ With the texture manager's fast-load flag set, a load the material path queues S
 #### Scenario: The flag set
 - **WHEN** the flag is set and a material texture and a terrain texture are queued
 - **THEN** the material's load is the priority item and the terrain's is not
+
+### Requirement: Empty extension field
+A name without a dot, a name ending in a dot and a name whose extension is longer than 16 bytes SHALL be dispatched alike, as a name without an extension.
+
+#### Scenario: A trailing dot
+- **WHEN** an image named `wall01n.` holds the image magic
+- **THEN** it goes to the image reader as `wall01n` does

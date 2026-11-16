@@ -374,16 +374,12 @@ impl ItemCatalogue {
             // naming a model.
             let mut at = Some(item);
             let mut model = None;
-            let mut bulk = None;
             // The nearest body section along the chain paints the icon
             // [guess: the original's section lookup inherits through the
             // template as its model lookup does].
             let mut appearance = None;
             for _ in 0..8 {
                 let Some(record) = at else { break };
-                if bulk.is_none() && !record.model.is_empty() {
-                    bulk = Some(record.equip_lock);
-                }
                 appearance = appearance.or(record.appearance);
                 if !record.model.is_empty() {
                     model = Some(ItemModel {
@@ -409,17 +405,35 @@ impl ItemCatalogue {
                             model.appearance = appearance.or(model.appearance);
                             model
                         });
-                    bulk = bulk.or_else(|| self.bulk.get(&(parent & ID_MASK)).copied());
                     break;
                 }
             }
             if let Some(model) = model {
                 self.level_models.insert(tagged, model);
             }
-            if let Some(bulk) = bulk {
-                self.level_bulk.insert(tagged, bulk);
-            }
+            let bulk = template_bulk(item.parent, tag, &by_id, &self.bulk);
+            self.level_bulk.insert(tagged, bulk);
         }
+    }
+}
+
+/// A copy's bulk (an id with a database tag), as the original reads it:
+/// the model section's bulk byte of the record its header names as its
+/// template, one step and no further (the copy's own byte is not read), 0
+/// when that record or its model section is missing (a template word of 0
+/// names no record). A template in the same tier is read from `same`, any
+/// other from the game's own records `base`.
+fn template_bulk(
+    parent: u32,
+    tag: u32,
+    same: &HashMap<u32, &exa_formats::objdb::Item>,
+    base: &HashMap<u32, u8>,
+) -> u8 {
+    use exa_formats::objdb::TAG_MASK;
+    if parent & TAG_MASK == tag {
+        same.get(&(parent & ID_MASK)).map_or(0, |t| t.equip_lock)
+    } else {
+        base.get(&(parent & ID_MASK)).copied().unwrap_or(0)
     }
 }
 
@@ -865,12 +879,19 @@ mod tests {
             record(2, "", 40, 0),
             record(3, "", LOCAL | 1, 0),
             record(4, "", 0, 0),
+            record(5, "Pear", LOCAL | 1, 9),
         ]);
         assert_eq!(catalogue.model(LOCAL | 1).unwrap().model, "Apple");
-        assert_eq!(catalogue.bulk(LOCAL | 1), Some(3));
+        // A copy's bulk is its template's model byte, one step: no template
+        // (a word of 0) is 0 whatever its own byte says.
+        assert_eq!(catalogue.bulk(LOCAL | 1), Some(0));
         assert_eq!(catalogue.model(LOCAL | 2).unwrap().model, "Sword");
         assert_eq!(catalogue.model(LOCAL | 2).unwrap().flags, 1);
         assert_eq!(catalogue.bulk(LOCAL | 2), Some(12));
+        assert_eq!(catalogue.bulk(LOCAL | 3), Some(3));
+        // Its own model and byte do not count: the template's do.
+        assert_eq!(catalogue.model(LOCAL | 5).unwrap().model, "Pear");
+        assert_eq!(catalogue.bulk(LOCAL | 5), Some(3));
         assert_eq!(catalogue.model(LOCAL | 3).unwrap().model, "Apple");
         assert!(catalogue.model(LOCAL | 4).is_none());
         assert!(catalogue.model(1).is_none());

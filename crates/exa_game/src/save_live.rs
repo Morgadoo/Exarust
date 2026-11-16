@@ -2933,7 +2933,7 @@ pub fn import_world_tier(
         live.ensure_base(&game.0);
     }
     let records = world.as_ref().map_or(0, |(tier, _)| tier.len());
-    let migrated = live.db_mut().import_world(world);
+    let migrated = live.import_world(world);
     info!(
         "save: world tier imported ({records} records, {migrated} visited by the template migration)"
     );
