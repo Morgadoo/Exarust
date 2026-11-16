@@ -565,3 +565,10 @@ A session's begin and continue SHALL clear the end menu's no-row-selected flag. 
 #### Scenario: A story continue
 - **WHEN** a story save is continued while a get-up is pending
 - **THEN** the end menu's no-row-selected flag and the animating flag are clear and the get-up stays pending
+
+### Requirement: The practice staging sets the staging freeze
+The practice start and the next practice fight SHALL end their staging with the staging freeze, before the practice hook; the step SHALL be posted for the next fixed step, where it sets the simulation's freeze.
+
+#### Scenario: Start and next
+- **WHEN** a practice starts and its next fight is staged, and the freeze step is applied and the fixed queue run
+- **THEN** each staging holds the freeze step right before the practice hook, and the freeze is set only once the queue runs
