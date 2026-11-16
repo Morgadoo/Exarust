@@ -125,9 +125,14 @@ pub fn bind_pack(
         .map(|child| icons.reserve(child.id, child.flags, catalogue).0)
         .collect::<Vec<_>>()
         .into_iter();
+    // An item the acquire gives no icon is not listed, as the original's
+    // list load skips an entry whose resolve fails.
     container.load_list(
         &children,
-        |id, _| Some((slots.next().unwrap_or(0), item_bulk(id, catalogue))),
+        |id, _| {
+            let slot = slots.next().unwrap_or(0);
+            (slot != 0 || catalogue.is_none()).then(|| (slot, item_bulk(id, catalogue)))
+        },
         |slot| icons.half(slot),
     )
 }
@@ -199,7 +204,11 @@ pub fn bind_equipment(
     }
     container.entries = worn_layout(
         &items,
-        &mut |id, flags| Some(icons.reserve(id, flags, catalogue)),
+        // The worn entry skips an item without an icon slot.
+        &mut |id, flags| {
+            let (slot, half) = icons.reserve(id, flags, catalogue);
+            (slot != 0 || catalogue.is_none()).then_some((slot, half))
+        },
         client,
         container.icon_size,
         roll,

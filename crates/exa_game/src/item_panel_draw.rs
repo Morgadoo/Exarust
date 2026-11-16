@@ -121,7 +121,11 @@ impl PanelIcons {
     /// condition byte and gains the lit bit; a streamed icon keeps the top
     /// tag bits and gains the effect bit for a model that asks for it. The
     /// slot has no atlas cell (`-1`, which the draw skips) until the
-    /// off-screen renderer fills it.
+    /// off-screen renderer fills it. An id the loaded catalogue holds no
+    /// model for gets no slot: the handle is 0, as the original's streamed
+    /// acquire answers for a record without a model section, and the
+    /// resolve error is reported. Without a catalogue (or before it is
+    /// loaded) the slot is reserved and the renderer decides.
     pub fn reserve(
         &mut self,
         id: u32,
@@ -138,8 +142,10 @@ impl PanelIcons {
                 let effect = model.flags & 0x2000 != 0;
                 streamed_key(flags, lit, effect)
             }
-            // A record without a model has no icon in the original; the
-            // slot still holds the entry so the panel can list it.
+            None if catalogue.is_some_and(|catalogue| !catalogue.is_empty()) => {
+                crate::item_icon_render::report_unresolved(id);
+                return (0, self.icon_half());
+            }
             None => key(flags, false),
         };
         self.reserve_keyed(id, name, model.map_or(0, |m| m.flags))

@@ -2164,7 +2164,12 @@ fn open_requested_containers(
                 if id == 0 {
                     return None;
                 }
+                // A child the acquire gives no icon is not listed, as the
+                // list load skips a failed resolve.
                 let (slot, _) = icons.reserve(id, flags, catalogue);
+                if slot == 0 && catalogue.is_some() {
+                    return None;
+                }
                 let bulk = catalogue.and_then(|c| c.bulk(id)).map_or(0, i32::from);
                 Some((slot, bulk))
             },
@@ -5094,6 +5099,85 @@ mod tests {
                 .0
                 .0,
             crate::arena::Mt19937::new(crate::item_container::DOLL_SEED)
+        );
+    }
+
+    /// A body carrying a shipped item and an id no record holds: the loot
+    /// request's pack lists only the item the acquire gives an icon, and
+    /// the other is reported as unresolved (shipped records, skipped
+    /// without the game).
+    #[test]
+    fn the_loot_pack_leaves_out_an_item_without_a_model() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(db) = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+            .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let catalogue = exa_items::catalogue::ItemCatalogue::of_database(&db);
+        let shipped = exa_formats::objdb::items(&db)
+            .into_iter()
+            .map(|item| item.id)
+            .find(|&id| catalogue.model(id).is_some())
+            .expect("a shipped item with a model");
+        let unknown = 0x0F_FFF2;
+        assert!(catalogue.model(unknown).is_none());
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
+            .insert_resource(catalogue)
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        let record = exa_formats::characters::CharacterRecord {
+            inventory: [shipped, unknown]
+                .into_iter()
+                .map(|item| exa_formats::characters::Carried {
+                    item,
+                    flags: 0,
+                    extra: 0,
+                })
+                .collect(),
+            race: 1,
+            ..exa_formats::characters::CharacterRecord::default()
+        };
+        let entity = app
+            .world_mut()
+            .spawn((
+                exa_items::possession::Possessions::of_record(&record),
+                exa_combat::Condition::DEAD,
+            ))
+            .id();
+        let target = entity.index().index() as i32;
+        app.world_mut().write_message(ScreenRequest {
+            screen: GameScreen::Loot,
+            player_ready: true,
+            player_alive: true,
+            target: Some(target),
+            flags: 0,
+            toggle: true,
+        });
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        let window = screens.loot_window(target).unwrap();
+        let ids: Vec<u32> = window.pack.entries.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![shipped]);
+        assert!(window.pack.entries[0].icon != 0);
+        assert!(
+            crate::engine_log::overlay_lines()
+                .iter()
+                .any(|line| line.contains("Unable to resolve item: 000FFFF2")),
+            "{:?}",
+            crate::engine_log::overlay_lines()
         );
     }
 
