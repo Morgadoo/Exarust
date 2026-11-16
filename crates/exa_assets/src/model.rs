@@ -23,7 +23,7 @@ use crate::paint::{
     factory_colour, factory_wear, layer_material, library, normal_library, paint_sized,
     paint_target_size, specular_library,
 };
-use crate::skin::{Joint, ParentFrame, Seams, VertexSkin, auto_skin_build};
+use crate::skin::{GroupStack, Joint, ParentFrame, Seams, VertexSkin, auto_skin_build};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
 use crate::texture_cache::{TextureCache, TextureKey};
 use exa_formats::factory::EmblemLayer;
@@ -2621,6 +2621,15 @@ pub(crate) fn scene_skins(
     if !skinned {
         return vec![None; scene.nodes.len()];
     }
+    skin_pass(scene, pack, given).results
+}
+
+/// The skin pass over every node of `scene` (see [`scene_skins`]).
+fn skin_pass<'a>(
+    scene: &'a Scene,
+    pack: PackKind,
+    given: &'a [Option<Vec<VertexSkin>>],
+) -> SkinPass<'a> {
     let len = scene.nodes.len();
     let mut pass = SkinPass {
         scene,
@@ -2628,24 +2637,50 @@ pub(crate) fn scene_skins(
         given,
         results: vec![None; len],
         state: vec![0; len],
+        stack: GroupStack::new(),
+        deepest: 0,
+        widest: 0,
+    };
+    // A garment's build starts each root on an empty frame, as the
+    // original's slot walk pushes one before a garment; a body's starts on
+    // the empty stack.
+    let garment = pack == PackKind::Characters;
+    let start = |pass: &mut SkinPass, index: usize| {
+        if garment {
+            pass.stack.push_empty();
+        }
+        pass.visit(index);
+        if garment {
+            pass.stack.pop();
+        }
     };
     for root in 0..len {
         if scene.nodes[root].parent.is_none_or(|p| p == 0 || p > len) {
-            pass.visit(root, &[]);
+            start(&mut pass, root);
         }
     }
     for index in 0..len {
-        pass.visit(index, &[]);
+        start(&mut pass, index);
     }
-    pass.results
+    pass
 }
 
-/// The recursive per-node pass of the skin builder. Each part pushes its
-/// groups' centres for the parts below it and the apparel matching reads the
-/// frame on top, the one its parent part pushed. A part that keeps a shipped
-/// skin stream (or one the transfer gave it), or that has no group, pushes
-/// an empty frame. Only bone-named mesh children are visited, as the
-/// original's skinned-mesh test admits them.
+/// The deepest group stack and the most centres one part pushed in the skin
+/// pass over `scene`, for the checks over the shipped models.
+#[cfg(test)]
+pub(crate) fn skin_stack_reach(scene: &Scene, pack: PackKind) -> (i32, usize) {
+    let pass = skin_pass(scene, pack, &[]);
+    (pass.deepest, pass.widest)
+}
+
+/// The recursive per-node pass of the skin builder over the original's
+/// group stack ([`GroupStack`]): each part reads the top frame (its parent
+/// part's group centres) for the apparel matching, pushes its own groups'
+/// centres for the parts below it and pops after them. A part that keeps a
+/// shipped skin stream (or one the transfer gave it), or that has no group,
+/// pushes an empty frame; a push past sixteen frames is refused with the
+/// original's error, and its pop still counts down. Only bone-named mesh
+/// children are visited, as the original's skinned-mesh test admits them.
 struct SkinPass<'a> {
     scene: &'a Scene,
     pack: PackKind,
@@ -2653,10 +2688,14 @@ struct SkinPass<'a> {
     results: Vec<Option<(u16, Vec<VertexSkin>)>>,
     /// 0 not visited, 1 visiting (a malformed cycle stops there), 2 done.
     state: Vec<u8>,
+    stack: GroupStack,
+    /// The deepest the stack went and the most centres a part pushed.
+    deepest: i32,
+    widest: usize,
 }
 
 impl SkinPass<'_> {
-    fn visit(&mut self, index: usize, incoming: &[Vec3]) {
+    fn visit(&mut self, index: usize) {
         if self.state.get(index).copied() != Some(0) {
             return;
         }
@@ -2667,7 +2706,10 @@ impl SkinPass<'_> {
             (NodeBody::Mesh(_), Some(weights)) if node.flags & 0x20 == 0 => {
                 bone_index(&node.name).map(|b| (b as u16, weights.clone(), Vec::new()))
             }
-            (NodeBody::Mesh(mesh), _) => node_skin(self.scene, index, mesh, self.pack, incoming),
+            (NodeBody::Mesh(mesh), _) => {
+                let top = self.stack.top();
+                node_skin(self.scene, index, mesh, self.pack, &top)
+            }
             _ => None,
         };
         let Some((bone, weights, outgoing)) = build else {
@@ -2685,9 +2727,15 @@ impl SkinPass<'_> {
             })
             .collect();
         self.state[index] = 2;
-        for child in children {
-            self.visit(child, &outgoing);
+        if self.stack.push(&outgoing).is_err() {
+            error!("Skinning group stack overflow.");
         }
+        self.deepest = self.deepest.max(self.stack.depth());
+        self.widest = self.widest.max(outgoing.len());
+        for child in children {
+            self.visit(child);
+        }
+        self.stack.pop();
     }
 }
 

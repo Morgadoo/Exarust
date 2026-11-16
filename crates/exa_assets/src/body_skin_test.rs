@@ -274,3 +274,51 @@ fn shipped_bodies_hand_their_skin_to_the_garments() {
         assert!(flagged > 1000, "{flagged}");
     }
 }
+
+/// How deep the skin pass's group stack goes and how many centres a part
+/// pushes over every shipped race body and garment (skipped without the
+/// game): never past the original's sixteen frames, so its overflow never
+/// happens; past eight centres (the spill into the next frame) only on the
+/// two golem bodies (whose children are body parts, which do not read the
+/// frame) and one garment, `uwc2harna`, whose second child on reads the
+/// spilled centres as its first child's push left them.
+#[test]
+fn shipped_skins_stay_inside_the_group_stack() {
+    let Some(dir) = crate::locate_install(None) else {
+        return;
+    };
+    let game = crate::GameData::open(dir).unwrap();
+    let mut reach = (0, 0);
+    let mut models = 0;
+    let mut wide_models = Vec::new();
+    for (kind, body) in [(PackKind::Resource, true), (PackKind::Characters, false)] {
+        let pack = game.pack(kind).unwrap();
+        for entry in pack.entries() {
+            let name = entry.name.to_ascii_lowercase();
+            if body && !name.ends_with("base.rfc") {
+                continue;
+            }
+            let Ok(scene) = Scene::parse(pack.bytes(entry)) else {
+                continue;
+            };
+            let (deep, wide) = crate::model::skin_stack_reach(&scene, kind);
+            if wide > 8 || deep > 16 {
+                eprintln!("{name}: depth {deep}, centres {wide}");
+                wide_models.push(name);
+            }
+            reach = (reach.0.max(deep), reach.1.max(wide));
+            models += 1;
+        }
+    }
+    eprintln!(
+        "{models} models: deepest stack {}, most centres {}",
+        reach.0, reach.1
+    );
+    assert!(models > 300);
+    assert!(reach.0 <= 16, "{reach:?}");
+    wide_models.sort();
+    assert_eq!(
+        wide_models,
+        ["golembfbase.rfc", "golembmbase.rfc", "uwc2harna"]
+    );
+}

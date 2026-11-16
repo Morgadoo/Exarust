@@ -29,13 +29,18 @@ splits on the groups, and up to three damped distance blends elsewhere
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Skinning). The shipped
 human and ogre bodies are checked watertight. The weights run in the model
 build on the compute pool; a mesh that ships weights keeps them. The
-builder's group stack limits are `skin::GroupStack` (sixteen frames of
-group centres in centimetres; only the separate empty push skips the
-limit). `skin::auto_skin_build` returns each part's frame for its children
-(`pushed`; empty for a mesh that keeps a shipped skin stream or finds no
-group), and the per-node model build walks the tree from its roots handing
-each child its parent's frame (`skin::ParentFrame`), so a garment child's
-nearest-joint match carries its group centres through its node transform
+per-node model build walks the tree from its roots over the builder's group
+stack as the original lays it out (`skin::GroupStack`: frames of a count and
+room for eight centres in centimetres, back to back): each part reads the
+top frame, pushes its groups' centres (`pushed` from
+`skin::auto_skin_build`; empty for a mesh that keeps a skin stream or finds
+no group) for its children and pops after them. A push past sixteen frames
+is refused with the original's "Skinning group stack overflow." and its pop
+still counts down; a garment root starts on an empty frame, which tests no
+limit; centres past the eighth run on into the next frame's words, where a
+child's push overwrites them (shipped: the two golem bodies and
+`uwc2harna`). A garment child's nearest-joint match carries its group
+centres through its node transform (`skin::ParentFrame`)
 and compares them with the parent part's centres as the stack's reader
 does (a parent centre only lowers the bar and is never taken).
 
