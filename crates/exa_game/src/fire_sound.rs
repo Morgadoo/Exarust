@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::{AudioEnvironment, SoundBank, VoiceHandle, voice_flags};
-use exa_world::flame::Flame;
+use exa_world::flame::{Flame, FlameView};
 
 pub struct FireSoundPlugin;
 
@@ -60,7 +60,7 @@ fn fire_loops(
     mut env: ResMut<AudioEnvironment>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut voices: ResMut<FireVoices>,
-    flames: Query<(Entity, &Flame, &GlobalTransform)>,
+    flames: Query<(Entity, &Flame, Option<&FlameView>, &GlobalTransform)>,
 ) {
     // Free the voices of flames that were despawned (a finished one-shot
     // fire, a level change).
@@ -84,8 +84,13 @@ fn fire_loops(
     if !env.is_live() {
         return;
     }
-    for (entity, flame, at) in &flames {
+    for (entity, flame, view, at) in &flames {
         let Some(name) = flame.emitter().sound_name() else {
+            continue;
+        };
+        // The sound walk is the frame's (`FlameView`), from the flame's
+        // first frame on.
+        let Some(view) = view else {
             continue;
         };
         let voice = match voices.0.get(&entity) {
@@ -102,8 +107,7 @@ fn fire_loops(
         let Some(buffer) = voice.buffer else {
             continue;
         };
-        let (volume, pitch) =
-            loop_levels(flame.emitter().sound.volume, flame.emitter().sound.pitch);
+        let (volume, pitch) = loop_levels(view.sound().volume, view.sound().pitch);
         // The sound's world position, in metres (the audio layer's units).
         let position = at.translation();
         match env.handle_voice(voice.handle) {

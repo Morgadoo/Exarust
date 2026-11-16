@@ -75,6 +75,7 @@ fn staged(emitter: Emitter, parent: Option<Entity>) -> ParticleSolve {
             emitter,
             parent,
             contacts: true,
+            step: None,
         }],
         ..ParticleSolve::default()
     }

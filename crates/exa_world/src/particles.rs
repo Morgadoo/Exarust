@@ -698,6 +698,22 @@ pub fn attach_node(node: &mut AttachedNode) {
     node.framed = true;
 }
 
+/// The per-frame half of an emitter's light and sound: the light's peak
+/// and full-update bit and the sound's volume and pitch walk. The original's
+/// frame routine moves them once a rendered frame, on its main thread,
+/// while its simulation step moves the rest of the light (the flicker walk,
+/// the jitter and the density); a frame that keeps them apart from the
+/// stepped emitter ([`Emitter::frame_on`]) reads the step's emitter as a
+/// copy and never writes it.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameWalks {
+    /// The highest intensity reached, times 1.1.
+    pub peak: f32,
+    /// A full light update is due next frame.
+    pub full: bool,
+    pub sound: SoundState,
+}
+
 /// The emitter's sound walk.
 #[derive(Debug, Clone, Copy)]
 pub struct SoundState {
@@ -1469,6 +1485,33 @@ impl Emitter {
     pub fn frame<R: Draws>(&mut self, rng: &mut R) -> LightFrame {
         let frame = self.light.frame(self.params.flags);
         self.sound.frame(self.light.density, self.params.flags, rng);
+        frame
+    }
+
+    /// The frame's own half of the light and sound, as the emitter starts
+    /// it ([`FrameWalks`]).
+    pub fn frame_walks(&self) -> FrameWalks {
+        FrameWalks {
+            peak: self.light.peak,
+            full: self.light.full,
+            sound: self.sound,
+        }
+    }
+
+    /// [`Emitter::frame`] with the frame's half of the light and sound kept
+    /// apart from the emitter, which it only reads: the step's walk,
+    /// jitter and density, and `walks`' peak, full-update bit and sound
+    /// walk, which this frame moves (the sound's draws from `rng`).
+    pub fn frame_on<R: Draws>(&self, walks: &mut FrameWalks, rng: &mut R) -> LightFrame {
+        let mut light = self.light;
+        light.peak = walks.peak;
+        light.full = walks.full;
+        let frame = light.frame(self.params.flags);
+        walks.peak = light.peak;
+        walks.full = light.full;
+        walks
+            .sound
+            .frame(self.light.density, self.params.flags, rng);
         frame
     }
 
