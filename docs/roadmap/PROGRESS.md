@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r274, 11-16) | target |
+| measure | start (r186, 11-10) | now (r277, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **58.05%** | **100%** |
+| **Ledger: bytes in a final state** | — | **58.1%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,032 | all |
+| Tests passing | 8,489 | 9,039 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -85,7 +85,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 
 | id | task | state | note |
 |---|---|---|---|
-| D1 | Working infrastructure | doing | D1.2 done: `context/tools/gpu_grid.sh` runs one grid at a time with a free-memory check (after the GPU loss); GPU runs on hold for a hardware fault (GPU_HOLD); determinism_grid.sh now shares the GPU lock |
+| D1 | Working infrastructure | doing | D1.2 done: `context/tools/gpu_grid.sh` runs one grid at a time with a free-memory check (after the GPU loss); GPU runs on hold for a hardware fault (GPU_HOLD); determinism_grid.sh now shares the GPU lock; since round 276 the build worker's RTX 4000 runs scenes, screenshots and determinism offscreen through `context/tools/worker_gpu.sh` while the local card is on hold |
 | D2 | Performance | todo | |
 | D3 | Platform | todo | Steam: decision DEC-2 |
 | D4 | Regression suite | todo | |
@@ -102,7 +102,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Rendering & GPU | 10 | 10 | 291 | 148,394 |
 | UI | 12 | 12 | 345 | 128,907 |
 | Thaumaturgy & effects | 9 | 9 | 155 | 110,772 |
-| Characters, motion & animation | 8 | 8 | 234 | 107,087 |
+| Characters, motion & animation | 8 | 8 | 229 | 105,928 |
 | AI & behaviour | 8 | 8 | 127 | 91,805 |
 | Game modes, arena & session | 7 | 7 | 182 | 76,611 |
 | World, levels & terrain | 5 | 5 | 151 | 76,114 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,082** | **1,052,573** |
+| **Total** | **90** | **90** | **2,077** | **1,051,414** |
 
 ## Open decisions
 
@@ -126,6 +126,9 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 277 | Garments take the body's skin through the original's morph transfer; held since round 241 for a picture check, released on the build worker's GPU: on main bent bodies in gambeson and brigandine had shown a garment ring floating above the back and torn panels, coats a white tear and the gambeson skirt flaring; with this lane they follow the body, golems unchanged, FPS within noise (skinning) |
+| 2026-11-16 | 276 | The build worker's RTX 4000 runs the game offscreen through a shared runner; it found that since round 253 the casters' tick never ran in the game (the vanish turn message and the sound sets' size cache were not bridged into the simulation world, so Vanish, Long Door and the Force Blast never got past the cast: F547, F548, fixed) and that screenshot runs lost one shot in nine (F546, fixed). Determinism passes on exanima01, 02, 06, arena and ten power and duel scenes; the owed scenes of rounds 252 to 272 mostly pass; F549 and F550 opened (workergpu) |
+| 2026-11-16 | 275 | The golem's coreless mark is written where the original writes it (the core drop clears it, the shown take-off and a core taken off the loot equipment set it and lay an awake golem down); the armour pass reruns only on worn or out-set changes; the re-dress runs at the loadout form's close (roster and specialist pages) and after a hub trade; the equipment finalisers are ordered step lists, their change-detection equivalent shown by test (equip). Golem and loadout scenes owed |
 | 2026-11-16 | 274 | Sliding doors are bodies by default as in the original: exanima01's 37 portcullises sit slid into their walls and close 170 cm along level rails (an older reading of a lift was wrong); their step runs right after the integration, lever and router orders move them, the hand drags them and the navigation refresh frees and raises their doorway cells; the hinged step takes the original's handle smoothing, energy order and unordered motor compares (doors). Traces change with portcullises; scenes owed |
 | 2026-11-16 | 273 | The hub, save screen, manual, end menu and arsenal take their keys from the window procedure's list; the root's menu toggle dispatches on the session phase as the original's (in the hub only the loadout form closes, the title page stays up); the GUI unit fills the large icon atlas from the common glyph sheet, sets the drag distance from the window height, clamps the inventory and journal opens and answers the pad's focus checks (guimain). Key scenes owed |
 | 2026-11-16 | 272 | The game's crystal drain drains the player's open inventory's pack panel and the record follows (a bug fixed: the open panel had saved stale charges over the drained record); the core crystal is shown over the figure, picked, dropped on for races that take it and taken off; the view image renders at the settings' supersampling (charview2). Inventory scenes owed (GPU on hold) |
