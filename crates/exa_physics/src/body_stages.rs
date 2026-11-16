@@ -185,8 +185,11 @@ pub trait SolverStage: Any + Send + Sync {
     fn sim_objects(&mut self, _bodies: &mut [&mut Ragdoll]) {}
     /// Body–body detection, before the level's.
     fn detect(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {}
-    /// Sim objects against each other, the bodies and the level.
-    fn sim_object_contacts(&mut self, _bodies: &mut [&mut Ragdoll]) {}
+    /// Sim objects against each other, the bodies and the level: the
+    /// object–body contacts see the `sleeping` bodies too (an awake object
+    /// pushes and wakes a sleeper, as body–body detection does).
+    fn sim_object_contacts(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {
+    }
     /// Each of the 8 friction passes, before the bodies' level friction
     /// (the pair friction).
     fn friction(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {}
@@ -308,7 +311,7 @@ pub fn solve_among<L: Level + Sync + ?Sized>(
         s.detect(bodies, sleeping);
     }
     for s in stages.iter_mut() {
-        s.sim_object_contacts(bodies);
+        s.sim_object_contacts(bodies, sleeping);
     }
     drop(span);
     let span = bevy::log::info_span!("solver: level detection").entered();

@@ -436,3 +436,162 @@ fn a_particle_mode_cloth_is_pushed_and_woken_by_a_body() {
     // The triangle buffer is never filled in the particle mode.
     assert!(cloth.pushes.iter().all(|p| *p == Vec3::ZERO));
 }
+
+/// The body's share of a cloth push takes the original's three words:
+/// 0.015 for an active striker, 0.01 for a cloth on a held chain, 0.002
+/// for every other contact (read from the executable's data).
+#[test]
+fn the_body_share_takes_the_originals_words() {
+    assert_eq!(body_share(true, false).to_bits(), 0x3c75_c28f);
+    assert_eq!(body_share(true, true).to_bits(), 0x3c75_c28f);
+    assert_eq!(body_share(false, true).to_bits(), 0x3c23_d70a);
+    assert_eq!(body_share(false, false).to_bits(), 0x3b03_126f);
+}
+
+/// The slide friction a pushing sphere puts into the body's motion: the
+/// speed's part across the push is kept at `−√(0.1·push²/v²)` of itself
+/// when `0.2·push² < v²`, else turned back whole; each squared speed over
+/// the small float adds `v²·2e-5` to the rustle tail (double precision);
+/// a body that barely moved there takes nothing.
+#[test]
+fn a_pushing_sphere_rubs_the_bodys_motion() {
+    // v = (3, 0, 4) cm, push (0, 0, −1) cm: v² = 25, push² = 1; across the
+    // push (3, 0, 0), kept at −√(0.1/25).
+    let mut tail = 0.5f32;
+    let slide = body_slide(Vec3::new(3.0, 0.0, 4.0), Vec3::new(0.0, 0.0, -1.0), &mut tail)
+        .expect("a moving body rubs");
+    let keep = -(0.1f64 / 25.0).sqrt() as f32;
+    assert_eq!(slide, Vec3::new(3.0 * keep, 0.0, 0.0));
+    assert_eq!(tail, (25.0f64 * 2.0e-5 + 0.5f64) as f32);
+    // 0.2 · 4 ≥ 0.25: the slide (0.3, 0, 0) is turned back whole (0 − v,
+    // so the zero lanes stay +0).
+    let mut tail = 0.0f32;
+    let back = body_slide(Vec3::new(0.3, 0.0, 0.4), Vec3::new(0.0, 0.0, -2.0), &mut tail).unwrap();
+    assert_eq!(back.x, -0.3);
+    assert_eq!(back.y.to_bits(), 0);
+    assert_eq!(back.z.to_bits(), 0);
+    assert_eq!(tail, (0.25f32 as f64 * 2.0e-5) as f32);
+    // At or under the small float, or unordered: nothing, no rustle.
+    let mut tail = 1.0f32;
+    assert_eq!(body_slide(Vec3::splat(1.0e-4), Vec3::Y, &mut tail), None);
+    assert_eq!(body_slide(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::Y, &mut tail), None);
+    assert_eq!(tail, 1.0);
+}
+
+/// One part's rest spheres over a cloth triangle (cm = world m · 100, the
+/// cloth's frame the world's).
+fn live_part(centre_m: Vec3, radius_m: f32) -> crate::body::Ragdoll {
+    crate::body::Ragdoll::new(&[crate::body::PartSetup {
+        bone: 1,
+        entity: bevy::prelude::Entity::from_raw_u32(7).unwrap(),
+        parent: None,
+        world: bevy::math::Affine3A::from_translation(centre_m),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.05),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: Some(vec![(Vec3::ZERO, radius_m)]),
+    }])
+}
+
+/// The live contact pushes the cloth as the fixed contact does and hands
+/// the body its share at once: the sphere's summed push times 0.002, in
+/// metres, on the part's particles by the sphere centre's raw weights in
+/// its rest tetrahedron (the approximate reciprocal); a body with motion
+/// at the sphere also takes the slide friction on its motion record and
+/// adds its rustle to the cloth's tail; the countdown trade wakes a
+/// sleeping body up to the cloth's.
+#[test]
+fn a_live_body_takes_its_share_of_the_cloths_push() {
+    let (particles, triangles) = floor_triangle(0.0);
+    let mut cloth = Cloth::new(particles.clone());
+    cloth.triangles = triangles.clone();
+    let bounds = triangle_bounds(&cloth);
+    // A part 3 cm over the face (radius 3 cm, padded 5 cm), still.
+    let mut body = live_part(Vec3::new(0.05, 0.05, 0.03), 0.03);
+    let before = body.parts[0].positions;
+    let contact = LiveContact {
+        to_object: bevy::math::Affine3A::IDENTITY,
+        cloth_box: crate::cloth::bounds(&particles),
+        padding: 2.0,
+        held_chain: false,
+    };
+    // The same sphere through the fixed contact gives the cloth's pushes
+    // and the summed push.
+    let sweep = sphere_sweep(
+        &contact.to_object,
+        &body.parts[0].transform(),
+        &body.parts[0].settled_transform(),
+        (Vec3::ZERO, 0.03),
+        2.0,
+        contact.cloth_box,
+    )
+    .expect("the sphere reaches the cloth");
+    let mut fixed = vec![Vec3::ZERO; 3];
+    let alone = touch_body(
+        &particles,
+        &triangles,
+        &bounds,
+        &ClothBody {
+            spheres: vec![sweep],
+            countdown: 0,
+            part: 0,
+        },
+        &mut fixed,
+    );
+    assert!(alone.pushed);
+    let mut pushes = vec![Vec3::ZERO; 3];
+    let mut tail = 0.0;
+    let touch = touch_ragdoll(
+        &particles, &triangles, &bounds, &mut pushes, &mut tail, &mut body, 0, &contact,
+    );
+    assert!(touch.pushed);
+    assert_eq!((touch.spheres, touch.swept), (1, 0));
+    assert_eq!(pushes, fixed);
+    assert_eq!(touch.reaction, alone.reaction);
+    // The body: push · 0.002 (cm) to metres, by the raw weights.
+    let share = alone.reaction * 0.002;
+    let rest = body.parts[0].rest.map(|p| p.to_array());
+    let w = engine_math::barycentric_fast(Vec3::ZERO, &rest);
+    for k in 0..4 {
+        assert_eq!(body.parts[0].positions[k], before[k] + share * 0.01 * w[k]);
+    }
+    // A still body adds no rustle and keeps no motion.
+    assert_eq!(tail, 0.0);
+    assert_eq!(body.parts[0].motion_at(&w), Vec3::ZERO);
+
+    // Moving 1 cm a tick along x at the sphere: v² = 1, the push across
+    // it, so the slide keeps −√(0.1·push²/1) of the motion, and the tail
+    // takes 2e-5.
+    let mut body = live_part(Vec3::new(0.05, 0.05, 0.03), 0.03);
+    body.parts[0].add_motion(&[1.0; 4], Vec3::new(0.01, 0.0, 0.0));
+    let velocity = body.parts[0].motion_at(&w) * 100.0;
+    let mut pushes = vec![Vec3::ZERO; 3];
+    let mut tail = 0.0;
+    touch_ragdoll(
+        &particles, &triangles, &bounds, &mut pushes, &mut tail, &mut body, 0, &contact,
+    );
+    let mut expected_tail = 0.0;
+    let slide = body_slide(velocity, share, &mut expected_tail).unwrap();
+    assert_eq!(tail, expected_tail);
+    assert_eq!(tail, (f64::from(velocity.length_squared()) * 2.0e-5) as f32);
+    let motion = body.parts[0].motion_at(&[1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(motion, Vec3::new(0.01, 0.0, 0.0) + slide * 0.01 * w[0]);
+
+    // A sleeping body (countdown 0) under the awake cloth is touched up to
+    // the cloth's countdown.
+    let mut body = live_part(Vec3::new(0.05, 0.05, 0.03), 0.03);
+    body.hold_out();
+    body.set_disabled(false);
+    assert!(body.asleep());
+    let mut countdown = 20;
+    assert!(!trade_body_countdowns(&mut countdown, &mut body));
+    assert!(!body.asleep());
+    assert_eq!(body.countdown(), 20);
+    // An awake body with the higher countdown wakes the cloth instead.
+    let mut countdown = 0;
+    assert!(trade_body_countdowns(&mut countdown, &mut body));
+    assert_eq!(countdown, 20);
+}

@@ -32,13 +32,9 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use crate::cloth_parts::{self, PartCells};
-use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 use exa_physics::cloth::{self, Cloth};
-use exa_physics::cloth_level;
-use exa_physics::contact::Level;
-use exa_physics::sector::{self, ObjectBodyPart, ObjectBounds, ObjectContacts};
+use exa_physics::sector::{self, ObjectBounds};
 
 /// Marks a mesh part whose RFC node carries the cloth marker.
 #[derive(Component, Debug, Clone, Copy, Default)]
@@ -114,13 +110,18 @@ impl ClothInstance {
 /// The sector's live simulated-object list: every cloth of the level in the
 /// original's 600 cm object grid, in a stable entity order (the order the
 /// original's object list keeps, oldest first). A cloth migrates to its
-/// new cell after each tick.
+/// new cell after each tick. The grid takes the scene's shape (its columns,
+/// rows and origin cell, so a cloth in the first or the last row is parked
+/// as the original's overflow guard parks it); a scene without one keeps
+/// the 4096 × 4096 stand-in about [`ClothObjects::ORIGIN`].
 #[derive(Resource, Debug)]
 pub struct ClothObjects {
     /// The cloths, oldest entity first.
     pub order: Vec<Entity>,
     /// Their cells.
     pub grid: sector::ObjectGrid,
+    /// The keys the grid was made with.
+    keys: crate::cloth_parts::ClothGrid,
 }
 
 impl Default for ClothObjects {
@@ -145,7 +146,32 @@ impl ClothObjects {
         Self {
             order: Vec::new(),
             grid: sector::ObjectGrid::new(Self::COLUMNS, Self::ROWS, Self::ORIGIN),
+            keys: crate::cloth_parts::ClothGrid::default(),
         }
+    }
+
+    /// The grid's columns, rows and origin cell for `keys`.
+    fn dimensions(keys: crate::cloth_parts::ClothGrid) -> (i32, i32, (i32, i32)) {
+        match keys {
+            crate::cloth_parts::ClothGrid::Cells { origin } => (Self::COLUMNS, Self::ROWS, origin),
+            crate::cloth_parts::ClothGrid::Scene(shape) => (shape.columns, shape.rows, shape.origin),
+        }
+    }
+
+    /// Gives the grid the scene's keys; a change empties the list, so the
+    /// next tick inserts every cloth afresh.
+    pub fn shape(&mut self, keys: crate::cloth_parts::ClothGrid) {
+        if self.keys != keys {
+            self.keys = keys;
+            self.order.clear();
+            self.reset();
+        }
+    }
+
+    /// An empty grid of the list's shape.
+    pub fn reset(&mut self) {
+        let (columns, rows, origin) = Self::dimensions(self.keys);
+        self.grid = sector::ObjectGrid::new(columns, rows, origin);
     }
 }
 
@@ -301,7 +327,7 @@ pub struct ClothWork {
 }
 
 impl ClothWork {
-    fn add(&mut self, other: &Self) {
+    pub(crate) fn add(&mut self, other: &Self) {
         self.awake += other.awake;
         self.asleep += other.asleep;
         self.skipped += other.skipped;
@@ -338,7 +364,7 @@ impl ClothDebug {
     }
 
     /// Adds one tick and, once a second, logs and resets.
-    fn tick(&mut self, total: ClothWork, names: &Query<&Name>, parents: &Query<&ChildOf>) {
+    pub(crate) fn tick(&mut self, total: ClothWork, names: &Query<&Name>, parents: &Query<&ChildOf>) {
         self.sum.add(&total);
         self.ticks += 1;
         if self.ticks < 83 {
@@ -431,7 +457,7 @@ impl ClothDebug {
 
 /// A cloth's world bound in centimetres, from its particles' local bounds
 /// and its node's transform: the centre and the sphere around the box.
-fn cloth_bound(cloth: &Cloth, at: &GlobalTransform) -> (ObjectBounds, Affine3A) {
+pub(crate) fn cloth_bound(cloth: &Cloth, at: &GlobalTransform) -> (ObjectBounds, Affine3A) {
     let (centre, half) = cloth::bounds(&cloth.particles);
     let scale = at.scale().abs().max_element();
     let world = at.transform_point(centre * 0.01);
@@ -667,46 +693,6 @@ fn build_cloth_nodes(
     }
 }
 
-/// What the sequential half of the stage settles for one cloth before its
-/// contacts and step, which run for every cloth at once.
-struct ClothPlan {
-    /// The cloth's id in the object list.
-    id: usize,
-    /// Its cell after the object list's pre-step re-bucket.
-    cell: (i32, i32),
-    /// Its world bound and the world-to-cloth transform.
-    object: ObjectBounds,
-    to_object: Affine3A,
-    /// The cloth's own character: every node above it.
-    own: Vec<Entity>,
-    /// The scene node whose static mesh the cloth is drawn from.
-    own_node: Option<Entity>,
-    /// A particle-mode cloth's owner (the nearest body part above it).
-    owner: Option<Entity>,
-    /// The node's frame this tick, and whether it moved since the last.
-    frame: Affine3A,
-    moved: bool,
-    /// Whether the cloth was asleep at the stage's start.
-    asleep: bool,
-    /// Whether the cloth's record is the particle mode.
-    particle_mode: bool,
-}
-
-/// What a cloth's contacts and step leave for the sequential end of the
-/// stage: its centre after the step (when it stepped) and its debug line.
-struct ClothOutcome {
-    index: usize,
-    after: Option<Vec3>,
-    line: Option<ClothTick>,
-    /// The rustle loop's state, when it plays or has just stopped.
-    rustle: Option<cloth::ClothRustled>,
-}
-
-/// A body part offered to the cloths this tick: its entity, whether its
-/// body sleeps, whether its body takes object contacts at all (a disabled
-/// body, an item on the cursor, does not), and its contact data.
-type OfferedPart<'a> = (Entity, bool, bool, ObjectBodyPart<'a>);
-
 /// Whether a body takes the cloths' body contacts this tick, as the
 /// original's object-body stage masks it: a body whose state carries the
 /// disabled bit (0x800, an item on the cursor) or the 4 bit is skipped,
@@ -716,497 +702,6 @@ type OfferedPart<'a> = (Entity, bool, bool, ObjectBodyPart<'a>);
 /// [`Ragdoll::disabled`] stands for; Exarust keeps no separate 4 bit.
 pub fn body_meets_objects(body: &Ragdoll) -> bool {
     !body.disabled()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn step_cloths(
-    mut instances: Query<(Entity, &mut ClothInstance, &GlobalTransform)>,
-    bodies: Query<(Entity, Ref<Ragdoll>)>,
-    parents: Query<&ChildOf>,
-    scene_nodes: Query<(), With<exa_physics::StaticNode>>,
-    physics: Option<Res<Physics>>,
-    statics: Option<Res<exa_physics::StaticColliders>>,
-    mut objects: ResMut<ClothObjects>,
-    live_contacts: Res<ClothContacts>,
-    mut debug: ResMut<ClothDebug>,
-    wind: Res<ClothWind>,
-    mut rustles: MessageWriter<cloth::ClothRustled>,
-    names: Query<&Name>,
-    mut part_cells: Local<sector::CellGrid>,
-    mut index: Local<PartCells>,
-) {
-    let on = debug.on;
-    let started = on.then(std::time::Instant::now);
-    let mut total = ClothWork::default();
-    debug.cloths.clear();
-    let gravity = cloth::gravity_cm(1.0);
-    // The object list's stable order: the entity id, oldest first. A new or
-    // removed cloth rebuilds the grid; otherwise each object migrates after
-    // its tick, as the original's list does.
-    let mut order: Vec<Entity> = instances.iter().map(|(entity, ..)| entity).collect();
-    order.sort_unstable();
-    let rebuilt = objects.order != order;
-    if rebuilt {
-        objects.order = order;
-        objects.grid = sector::ObjectGrid::new(
-            ClothObjects::COLUMNS,
-            ClothObjects::ROWS,
-            ClothObjects::ORIGIN,
-        );
-    }
-    // Every part of every body (asleep too) that can meet an object, linked
-    // in the grid cell its mesh box's world centre falls in, as the
-    // sector's body grid links it: an object is offered only the parts in
-    // the nine cells around its own ([`sector::CellGrid::around`]). The
-    // index re-buckets only the bodies changed since the last tick (a deep
-    // sleeper's parts stay where they were), and nothing while no cloth is
-    // simulated ([`PartCells`]).
-    if objects.order.is_empty() {
-        index.clear();
-    } else {
-        index.refresh(
-            bodies
-                .iter()
-                .map(|(entity, body)| (entity, body.is_changed(), body.into_inner())),
-            ClothObjects::ORIGIN,
-        );
-    }
-    let indexed = on.then(std::time::Instant::now);
-    // The sequential half, in the object list's order: each cloth's frame,
-    // owner and own character, its carry into the frame, and the object
-    // list's re-bucket before its step. It touches the shared object list,
-    // so it keeps the list's order.
-    let mut plans: bevy::ecs::entity::EntityHashMap<(usize, ClothPlan)> =
-        bevy::ecs::entity::EntityHashMap::default();
-    let order = std::mem::take(&mut objects.order);
-    for (id, &entity) in order.iter().enumerate() {
-        let Ok((_, mut instance, at)) = instances.get_mut(entity) else {
-            continue;
-        };
-        let particle_mode = instance.cloth.record.particle_mode();
-        let frame = at.affine();
-        let last_frame = instance.frame;
-        let moved = last_frame != Some(frame);
-        instance.frame = Some(frame);
-        // The cloth's own character, and the scene node whose static mesh
-        // the cloth is drawn from: neither pushes it. The original's static
-        // stage skips the mesh of the cloth's own node; the body skip is a
-        // guess [the cloth's body-contact call is taken to skip the parts
-        // above its node].
-        let mut own = Vec::new();
-        let mut own_node = scene_nodes.contains(entity).then_some(entity);
-        let mut above = entity;
-        while let Ok(parent) = parents.get(above) {
-            above = parent.parent();
-            own.push(above);
-            if own_node.is_none() && scene_nodes.contains(above) {
-                own_node = Some(above);
-            }
-            if own.len() > 64 {
-                break;
-            }
-        }
-        // A particle-mode cloth's owner: the nearest body part above it
-        // (the original's cloth takes the body its node's parent carries).
-        // The cloth never sleeps below the owner's countdown, and its
-        // particles keep their world motion when the owner moves its node.
-        let owner = if particle_mode {
-            own.iter().copied().find_map(|e| {
-                let body = index.owner_of(e)?;
-                let (_, body) = bodies.get(body).ok()?;
-                Some((e, body.countdown()))
-            })
-        } else {
-            None
-        };
-        if let Some((_, countdown)) = owner {
-            instance.cloth.owner_sleep = countdown;
-            if let Some(last) = last_frame
-                && last != frame
-            {
-                carry_into_frame(&mut instance.cloth, last, frame);
-            }
-        }
-        let (object, to_object) = cloth_bound(&instance.cloth, at);
-        if rebuilt {
-            objects.grid.insert(object.centre);
-        } else {
-            objects.grid.migrate(id, object.centre);
-        }
-        let cell = objects
-            .grid
-            .cell_of_id(id)
-            .unwrap_or_else(|| sector::cell_of(object.centre, ClothObjects::ORIGIN));
-        let asleep = instance.cloth.sleep <= 0;
-        plans.insert(
-            entity,
-            (
-                id,
-                ClothPlan {
-                    id,
-                    cell,
-                    object,
-                    to_object,
-                    own,
-                    own_node,
-                    owner: owner.map(|(e, _)| e),
-                    frame,
-                    moved,
-                    asleep,
-                    particle_mode,
-                },
-            ),
-        );
-    }
-    objects.order = order;
-    let planned = on.then(std::time::Instant::now);
-    // The tick's parts the cloths can be offered: those linked in the nine
-    // cells around some cloth, each cell's in the order a full re-bucket
-    // links them, with their bodies' sleep and contact data.
-    let mut all_parts: Vec<OfferedPart> = Vec::new();
-    part_cells.clear();
-    if live_contacts.0 && !plans.is_empty() {
-        let mut cells = Vec::new();
-        cloth_parts::cells_around(plans.values().map(|(_, plan)| plan.cell), &mut cells);
-        let mut linked = Vec::new();
-        for &cell in &cells {
-            index.sorted_in(cell, &mut linked);
-            for at in &linked {
-                let Ok((_, body)) = bodies.get(at.body) else {
-                    continue;
-                };
-                let body = body.into_inner();
-                let Some(part) = body.parts.get(at.part) else {
-                    continue;
-                };
-                let now = part.transform();
-                part_cells.insert(cell, all_parts.len());
-                all_parts.push((
-                    part.entity,
-                    body.asleep(),
-                    body_meets_objects(body),
-                    ObjectBodyPart {
-                        now,
-                        previous: part.settled_transform(),
-                        spheres: &part.spheres,
-                        centre: now.transform_point3(part.pairing.sphere.centre),
-                        radius: part.pairing.sphere.radius,
-                        mesh: &part.pairing.mesh,
-                        countdown: body.countdown(),
-                        points: part.positions,
-                        previous_points: part.previous,
-                    },
-                ));
-            }
-        }
-    }
-    let gathered = on.then(std::time::Instant::now);
-    // Each cloth's contacts and step, every cloth at once: a cloth reads
-    // only the tick's shared body parts, the static grid and the level, and
-    // writes only itself, so the order they run in changes nothing.
-    let outcomes = std::sync::Mutex::new(Vec::with_capacity(plans.len()));
-    let shared = StepShared {
-        all_parts: &all_parts,
-        part_cells: &part_cells,
-        physics: physics.as_deref(),
-        statics: statics.as_deref(),
-        live_contacts: live_contacts.0,
-        gravity,
-        wind: &wind.0,
-        on,
-    };
-    instances
-        .par_iter_mut()
-        .batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
-        .for_each(|(entity, mut instance, at)| {
-            let Some((index, plan)) = plans.get(&entity) else {
-                return;
-            };
-            let outcome = step_one(&shared, *index, entity, plan, &mut instance, at);
-            if let Ok(mut outcomes) = outcomes.lock() {
-                outcomes.push(outcome);
-            }
-        });
-    let stepped = on.then(std::time::Instant::now);
-    let mut outcomes = outcomes.into_inner().unwrap_or_default();
-    outcomes.sort_unstable_by_key(|o| o.index);
-    // The object list's re-bucket after each step, as the original's, in
-    // its order.
-    for outcome in outcomes {
-        if let Some(after) = outcome.after {
-            objects.grid.migrate(outcome.index, after);
-        }
-        if let Some(rustle) = outcome.rustle {
-            rustles.write(rustle);
-        }
-        if let Some(line) = outcome.line {
-            total.add(&line.1);
-            debug.cloths.push(line);
-        }
-    }
-    if let (Some(t), Some(indexed), Some(planned), Some(gathered), Some(stepped)) =
-        (started, indexed, planned, gathered, stepped)
-    {
-        let micros = |a: std::time::Instant, b: std::time::Instant| {
-            b.saturating_duration_since(a).as_micros() as u64
-        };
-        total.parts_micros = micros(t, indexed) + micros(planned, gathered);
-        total.rebucketed = index.rebucketed as u32;
-        total.gathered = all_parts.len() as u32;
-        total.plan_micros = micros(indexed, planned);
-        total.cloths_micros = micros(gathered, stepped);
-        total.micros = t.elapsed().as_micros() as u64;
-        debug.last_micros = total.micros;
-        debug.last_parts_micros = total.parts_micros;
-        debug.tick(total, &names, &parents);
-    }
-}
-
-/// What every cloth's contacts and step read: the tick's body parts and
-/// their cells, the level and its static grid.
-struct StepShared<'a, 'p> {
-    all_parts: &'a [OfferedPart<'p>],
-    part_cells: &'a sector::CellGrid,
-    physics: Option<&'a Physics>,
-    statics: Option<&'a exa_physics::StaticColliders>,
-    live_contacts: bool,
-    gravity: Vec3,
-    wind: &'a cloth::Wind,
-    on: bool,
-}
-
-/// One cloth's contacts and step: the body parts in the nine cells around
-/// its own and the level's triangles about it, then the cloth's tick.
-fn step_one(
-    shared: &StepShared,
-    index: usize,
-    entity: Entity,
-    plan: &ClothPlan,
-    instance: &mut ClothInstance,
-    at: &GlobalTransform,
-) -> ClothOutcome {
-    let on = shared.on;
-    let cloth_started = on.then(std::time::Instant::now);
-    let mut work = ClothWork::default();
-    let mut offered_parts: Vec<Entity> = Vec::new();
-    let mut pushers = Vec::new();
-    let mut after = None;
-    let mut rustle = None;
-    let ClothPlan {
-        id,
-        cell,
-        object,
-        to_object,
-        ref own,
-        own_node,
-        owner,
-        frame,
-        moved,
-        asleep,
-        particle_mode,
-    } = *plan;
-    debug_assert_eq!(id, index);
-    work.asleep = u32::from(asleep);
-    'cloth: {
-        let mut contacts = ObjectContacts::default();
-        if shared.live_contacts && shared.physics.is_some() && shared.statics.is_some() {
-            let bodies_started = on.then(std::time::Instant::now);
-            // Objects against bodies: the parts the grid sector's object
-            // stage walks (those bucketed in the nine cells around the
-            // object's own), passing its pre-test
-            // ([`sector::object_body_meet`]); a sleeping cloth takes awake
-            // bodies only. The particle mode takes its owner's character
-            // too (its owner's spheres without padding); any other cloth
-            // skips its own character.
-            let object_box = cloth::bounds(&instance.cloth.particles);
-            let all_parts = shared.all_parts;
-            let offered: Vec<usize> = shared
-                .part_cells
-                .around(cell)
-                .filter(|&index| {
-                    let (part_entity, body_asleep, meets, _) = &all_parts[index];
-                    *meets
-                        && sector::object_takes_body(asleep, *body_asleep)
-                        && (particle_mode || !own.contains(part_entity))
-                })
-                .collect();
-            if on {
-                offered_parts = offered.iter().map(|&index| all_parts[index].0).collect();
-            }
-            work.parts = offered.len() as u32;
-            if particle_mode {
-                let parts = offered.iter().map(|&index| {
-                    let (part_entity, _, _, part) = all_parts[index];
-                    (part, owner == Some(part_entity))
-                });
-                contacts.gather_particle_bodies(&to_object, object, parts);
-                work.bodies = contacts.particle_bodies.len() as u32;
-            } else {
-                let parts = offered.iter().map(|&index| all_parts[index].3);
-                contacts.gather_bodies(&to_object, object, object_box, parts);
-                work.bodies = contacts.bodies.len() as u32;
-            }
-            for body in &contacts.bodies {
-                work.spheres += body.spheres.len() as u32;
-                work.swept += body.spheres.iter().filter(|s| s.moving).count() as u32;
-            }
-            if let Some(t) = bodies_started {
-                work.body_micros = t.elapsed().as_micros() as u64;
-            }
-            // A sleeping cloth that no body reaches, in a frame that did
-            // not move, is the level stage's fixed point: nothing to do.
-            if asleep && !moved && contacts.bodies.is_empty() && contacts.particle_bodies.is_empty()
-            {
-                work.skipped = 1;
-                break 'cloth;
-            }
-        } else if asleep {
-            // A sleeping cloth with no contacts does not step.
-            break 'cloth;
-        }
-        let level_stage =
-            shared.live_contacts && shared.physics.is_some() && shared.statics.is_some();
-        instance.cloth.bodies = std::mem::take(&mut contacts.bodies);
-        instance.cloth.particle_bodies = std::mem::take(&mut contacts.particle_bodies);
-        instance.cloth.level.clear();
-        instance.cloth.level_pieces.clear();
-        work.awake = u32::from(!asleep);
-        // A cloth that follows an owner falls along the world's gravity in
-        // its node's frame.
-        let gravity = if owner.is_some() {
-            frame.inverse().transform_vector3(shared.gravity)
-        } else {
-            shared.gravity
-        };
-        let step_started = on.then(std::time::Instant::now);
-        // The original steps the object and then gathers its level
-        // contacts, so the level's records are culled by where the step
-        // left the cloth ([`cloth::step_before_level`] and
-        // [`cloth::finish_step`]).
-        // The wind meets the cloth in the world: its particles are in the
-        // node's frame, in centimetres.
-        let to_world = Affine3A::from_scale(Vec3::splat(100.0))
-            * frame
-            * Affine3A::from_scale(Vec3::splat(0.01));
-        let wind = cloth::WindAt {
-            wind: shared.wind,
-            to_world,
-        };
-        let stepped = cloth::step_before_level_in(&mut instance.cloth, gravity, Some(wind));
-        if let Some(t) = step_started {
-            work.step_micros = t.elapsed().as_micros() as u64;
-        }
-        if let Some((before, awake)) = stepped {
-            if level_stage && let (Some(physics), Some(statics)) = (shared.physics, shared.statics)
-            {
-                let level_started = on.then(std::time::Instant::now);
-                // Objects against the level, after their step: the static
-                // grid's records around the stepped object's cell that pass
-                // its pre-test, less the cloth's own node's meshes, each
-                // one's triangles within the object's bound box as one
-                // piece.
-                let (object, _) = cloth_bound(&instance.cloth, at);
-                let centre_m = object.centre * 0.01;
-                let radius_m = object.radius * 0.01;
-                let (lo, hi) = (
-                    centre_m - Vec3::splat(radius_m),
-                    centre_m + Vec3::splat(radius_m),
-                );
-                let own_index = own_node.map(|n| n.index().index());
-                let mut near = Vec::new();
-                let mut triangles = Vec::new();
-                statics.near_object(object.centre, object.radius, &mut near);
-                for &record_id in &near {
-                    let Some(record) = statics.grid().get(record_id) else {
-                        continue;
-                    };
-                    work.records += 1;
-                    if own_index.is_some_and(|n| n != 0 && n == record.node) {
-                        work.own_records += 1;
-                        continue;
-                    }
-                    triangles.clear();
-                    physics.0.triangles(record.piece, lo, hi, &mut triangles);
-                    contacts.gather_level(&to_object, triangles.iter().copied());
-                }
-                work.pieces = contacts.pieces.len() as u32;
-                work.triangles = contacts.level.len() as u32;
-                instance.cloth.level = std::mem::take(&mut contacts.level);
-                instance.cloth.level_pieces = std::mem::take(&mut contacts.pieces);
-                cloth_level::touch_level(&mut instance.cloth);
-                if let Some(t) = level_started {
-                    work.level_micros = t.elapsed().as_micros() as u64;
-                }
-            }
-            cloth::finish_step(&mut instance.cloth, &before, awake);
-        }
-        work.level_tests = instance.cloth.level_tests as u64;
-        work.sweep_tests = instance.cloth.body_tests as u64;
-        if on {
-            let count = instance.cloth.particles.len() as f32;
-            let sum = instance.cloth.mean_velocity * count;
-            work.velocity2 = sum.length_squared();
-            let threshold = (count * 1e-6).sqrt();
-            work.thresholds = (threshold, (2.0 * threshold) * (2.0 * threshold));
-            for &index in &instance.cloth.pushed_by {
-                let tagged = if particle_mode {
-                    instance
-                        .cloth
-                        .particle_bodies
-                        .get(index)
-                        .map(|b| (b.part, b.countdown))
-                } else {
-                    instance
-                        .cloth
-                        .bodies
-                        .get(index)
-                        .map(|b| (b.part, b.countdown))
-                };
-                let Some((part, countdown)) = tagged else {
-                    continue;
-                };
-                if let Some(&part) = offered_parts.get(part) {
-                    pushers.push((part, countdown));
-                }
-            }
-        }
-        // The object list's re-bucket after its step (made in the list's
-        // order once every cloth has stepped).
-        let (moved_to, _) = cloth_bound(&instance.cloth, at);
-        after = Some(moved_to.centre);
-        // The frame's mesh write-back takes the particles once, after the
-        // frame's last tick ([`write_cloth_meshes`]).
-        instance.stale_mesh = true;
-        // The rustle loop at the cloth's centre while it plays, and once
-        // when it stops.
-        if let Some(sound) = instance.cloth.record.rustle
-            && (instance.cloth.rustle || instance.rustling)
-        {
-            let playing = instance.cloth.rustle;
-            instance.rustling = playing;
-            rustle = Some(cloth::ClothRustled {
-                cloth: entity,
-                sound,
-                position: moved_to.centre * 0.01,
-                volume: instance.cloth.rustle_volume,
-                pitch: instance.cloth.rustle_pitch,
-                playing,
-            });
-        }
-    }
-    let line = cloth_started.map(|t| {
-        work.micros = t.elapsed().as_micros() as u64;
-        work.particles = instance.cloth.particles.len() as u32;
-        work.sleep = instance.cloth.sleep;
-        work.pins = instance.cloth.pins.len() as u32;
-        (entity, work, pushers)
-    });
-    ClothOutcome {
-        index,
-        after,
-        line,
-        rustle,
-    }
 }
 
 /// A stepped cloth's mesh positions (metres, one per mesh vertex), taken
@@ -1432,20 +927,33 @@ pub struct ClothPlugin;
 impl Plugin for ClothPlugin {
     fn build(&self, app: &mut App) {
         bridge_cloth_types(app);
+        app.init_resource::<exa_physics::body::SolverStages>();
+        app.world_mut()
+            .resource_mut::<exa_physics::body::SolverStages>()
+            .add(crate::cloth_stage::ClothSolve::default());
         app.init_resource::<ClothObjects>()
             .init_resource::<ClothContacts>()
             .init_resource::<SceneWind>()
             .init_resource::<ClothWind>()
             .insert_resource(ClothDebug::from_env())
             .add_systems(Update, (build_cloth_nodes, publish_scene_wind))
-            // The sector runs its simulated objects after the bodies' tick
-            // (the original's object step and contacts are inside it); the
-            // wind hook runs once a step before them.
+            // The sector runs its simulated objects inside the bodies'
+            // tick: their own step before the solver, their body contacts in
+            // it (the solver's cloth stage), their pass after the collisions
+            // and their level contacts after it ([`crate::cloth_stage`]).
+            // The wind hook runs once a step before them.
             .add_systems(
                 FixedUpdate,
-                (advance_cloth_wind, step_cloths)
+                (advance_cloth_wind, crate::cloth_stage::stage_cloths)
                     .chain()
-                    .after(exa_physics::body::BodyPostStep),
+                    .in_set(exa_physics::body::BodySystems)
+                    .before(exa_physics::body::step_bodies),
+            )
+            .add_systems(
+                FixedUpdate,
+                crate::cloth_stage::finish_cloths
+                    .in_set(exa_physics::body::BodySystems)
+                    .after(exa_physics::body::step_bodies),
             )
             // The meshes take the particles once a frame, after its ticks.
             .add_systems(
@@ -1477,6 +985,9 @@ fn bridge_cloth_types(app: &mut App) {
         .bridge_message::<ClothMeshUpdate>()
         .bridge_message::<cloth::ClothRustled>()
         .bridge_move_resource::<crate::cloth::ClothObjects>()
+        .bridge_move_resource::<exa_physics::body::SolverStages>()
+        .bridge_copy_in_resource::<exa_physics::SceneGrid>()
+        .bridge_snapshot::<exa_physics::body::Ragdoll>()
         .bridge_copy_in_resource::<crate::cloth::SceneWind>()
         .bridge_move_resource::<crate::cloth::ClothWind>();
 }
@@ -1758,10 +1269,13 @@ mod tests {
                 on: true,
                 ..ClothDebug::default()
             });
-        let body_at = |x: f32| {
+        // Each part has its node, as a level's bodies do (the solver's cloth
+        // stage finds a body by its first part's node).
+        let mut body_at = |x: f32| {
+            let node = app.world_mut().spawn_empty().id();
             Ragdoll::new(&[PartSetup {
                 bone: 1,
-                entity: Entity::PLACEHOLDER,
+                entity: node,
                 parent: None,
                 world: Affine3A::from_translation(Vec3::new(x, 1.5, 0.0)),
                 centre: Vec3::ZERO,
@@ -1775,10 +1289,13 @@ mod tests {
         };
         // The cloth's cell (x 0..6 m), the next cell, and twenty parts
         // three cells away.
-        app.world_mut().spawn(body_at(0.5));
-        app.world_mut().spawn(body_at(7.0));
-        for _ in 0..20 {
-            app.world_mut().spawn(body_at(20.0));
+        let bodies: Vec<Ragdoll> = [0.5, 7.0]
+            .into_iter()
+            .chain(std::iter::repeat_n(20.0, 20))
+            .map(&mut body_at)
+            .collect();
+        for body in bodies {
+            app.world_mut().spawn(body);
         }
         let mesh = app
             .world_mut()
@@ -1833,9 +1350,10 @@ mod tests {
                 on: true,
                 ..ClothDebug::default()
             });
+        let node = app.world_mut().spawn_empty().id();
         let body = Ragdoll::new(&[PartSetup {
             bone: 1,
-            entity: Entity::PLACEHOLDER,
+            entity: node,
             parent: None,
             world: Affine3A::from_translation(Vec3::new(0.5, 1.5, 0.0)),
             centre: Vec3::ZERO,
@@ -1848,6 +1366,7 @@ mod tests {
         }]);
         let mut disabled = body.clone();
         disabled.set_disabled(true);
+        disabled.parts[0].entity = app.world_mut().spawn_empty().id();
         app.world_mut().spawn(body);
         app.world_mut().spawn(disabled);
         let mesh = app

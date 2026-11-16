@@ -314,16 +314,122 @@ pub fn add_push(buffered: &mut Vec3, push: Vec3) {
 pub struct BodyTouch {
     /// Whether any of its spheres pushed a triangle.
     pub pushed: bool,
-    /// The summed push on the body (cm, the cloth's frame): the original
-    /// hands it back to the body, scaled; this port only reports it.
+    /// The summed push on the body (cm, the cloth's frame): the sum over
+    /// its spheres of each pushed triangle's `−direction · depth`.
     pub reaction: Vec3,
     /// Triangles the swept query looked at.
     pub tests: usize,
 }
 
+/// The triangles a body's sweeps may reach: those whose coarse sphere meets
+/// the sphere about the sweeps' coarse spheres, in triangle order, with
+/// their swept records (this port's stand-in for the original's cull
+/// against the body's box; see the module).
+fn cull(bounds: &[TriangleBound], count: usize, probes: &[SweptProbe]) -> (Vec<usize>, Vec<SweptProbe>) {
+    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    for p in probes {
+        lo = lo.min(p.position - Vec3::splat(p.radius));
+        hi = hi.max(p.position + Vec3::splat(p.radius));
+    }
+    let centre = (lo + hi) * 0.5;
+    // A hair of room for rounding so it never drops a triangle the walk's
+    // coarse test would keep.
+    let reach = (hi - lo).length() * 0.5 + 1.0e-3;
+    let mut picked = Vec::new();
+    let mut records = Vec::new();
+    for (index, bound) in bounds.iter().enumerate().take(count) {
+        let gap = bound.probe.position - centre;
+        let room = reach - bound.probe.radius;
+        // A NaN keeps the triangle: the walk's own tests decide.
+        if !(dot(gap, gap) > room * room) || !reach.is_finite() {
+            picked.push(index);
+            records.push(bound.probe);
+        }
+    }
+    (picked, records)
+}
+
+/// What one body sphere did to the cloth: whether it pushed, its summed
+/// push (`−direction · depth` over the triangles it pushed, cm, the cloth's
+/// frame, summed in walk order from zero) and the records it tested.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SphereTouch {
+    pub pushed: bool,
+    pub push: Vec3,
+    pub tests: usize,
+}
+
+/// One body sphere against the culled triangles (`picked`, their records
+/// `records`): the original's walk for one sphere, adding to `pushes`.
+fn touch_sphere(
+    particles: &[crate::cloth::Particle],
+    triangles: &[ClothTri],
+    bounds: &[TriangleBound],
+    (picked, records): (&[usize], &[SweptProbe]),
+    sphere: &BodySweep,
+    pushes: &mut [Vec3],
+) -> SphereTouch {
+    let mut touch = SphereTouch::default();
+    let probe = sphere_probe(sphere);
+    let count = particles.len();
+    let r = sphere.radius;
+    let mut from = 0;
+    while from < records.len() {
+        let Some(found) = swept_hit(records, &probe, from, records.len()) else {
+            touch.tests += records.len() - from;
+            break;
+        };
+        touch.tests += found + 1 - from;
+        from = found + 1;
+        let index = picked[found];
+        let tri = triangles[index];
+        if tri.a >= count || tri.b >= count || tri.c >= count {
+            continue;
+        }
+        let bound = &bounds[index];
+        let near = dot(sphere.from, bound.normal) - bound.offset;
+        let far = dot(sphere.to, bound.normal) - bound.offset;
+        let takes = if near > 0.0 { !(far > r) } else { !(far < -r) };
+        if !takes {
+            continue;
+        }
+        let mid = probe.position;
+        let on_plane = mid + bound.normal * -((near + far) * 0.5);
+        let (v0, v1, v2) = (
+            particles[tri.a].position,
+            particles[tri.b].position,
+            particles[tri.c].position,
+        );
+        let (closest, w) = closest_point(v0, v1, v2, on_plane);
+        let toward = closest - sphere.from;
+        let length2 = (toward.x * toward.x + toward.z * toward.z) + toward.y * toward.y;
+        let direction = if length2 == 0.0 {
+            Vec3::ZERO
+        } else {
+            toward * engine_math::reciprocal_sqrt(length2)
+        };
+        let reach = dot(sphere.to, direction) + r;
+        let at = dot(closest, direction);
+        if !(reach > at) {
+            continue;
+        }
+        let depth = reach - at;
+        touch.push += direction * -depth;
+        let largest = engine_math::max(engine_math::max(w[0], w[1]), w[2]);
+        let share = depth / largest;
+        for (vertex, weight) in [(tri.a, w[0]), (tri.b, w[1]), (tri.c, w[2])] {
+            add_push(&mut pushes[vertex], direction * (share * weight));
+        }
+        touch.pushed = true;
+    }
+    touch
+}
+
 /// One body's spheres against the cloth's triangles (`bounds` from
-/// [`triangle_bounds`]), adding to `pushes` (one per particle). The
-/// countdown trade is the caller's ([`trade_countdowns`]).
+/// [`triangle_bounds`]), adding to `pushes` (one per particle), with the
+/// body's sweeps fixed for the whole call (no body side: the live stage is
+/// [`touch_ragdoll`]). The countdown trade is the caller's
+/// ([`trade_countdowns`]).
 pub fn touch_body(
     particles: &[crate::cloth::Particle],
     triangles: &[ClothTri],
@@ -335,86 +441,243 @@ pub fn touch_body(
     if body.spheres.is_empty() || triangles.is_empty() {
         return touch;
     }
-    // The candidates: triangles whose coarse sphere meets the sphere about
-    // this body's coarse sweeps, in triangle order.
     let probes: Vec<SweptProbe> = body.spheres.iter().map(sphere_probe).collect();
-    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-    for p in &probes {
-        lo = lo.min(p.position - Vec3::splat(p.radius));
-        hi = hi.max(p.position + Vec3::splat(p.radius));
-    }
-    let centre = (lo + hi) * 0.5;
-    // This port's own cull (standing in for the body-box cull), with a
-    // hair of room for rounding so it never drops a triangle the walk's
-    // coarse test would keep.
-    let reach = (hi - lo).length() * 0.5 + 1.0e-3;
-    let mut picked = Vec::new();
-    let mut records = Vec::new();
-    for (index, bound) in bounds.iter().enumerate().take(triangles.len()) {
-        let gap = bound.probe.position - centre;
-        let room = reach - bound.probe.radius;
-        // A NaN keeps the triangle: the walk's own tests decide.
-        if !(dot(gap, gap) > room * room) || !reach.is_finite() {
-            picked.push(index);
-            records.push(bound.probe);
-        }
-    }
-    let count = particles.len();
-    for (sphere, probe) in body.spheres.iter().zip(&probes) {
-        let r = sphere.radius;
-        let mut from = 0;
-        let mut pushed = false;
-        while from < records.len() {
-            let Some(found) = swept_hit(&records, probe, from, records.len()) else {
-                touch.tests += records.len() - from;
-                break;
-            };
-            touch.tests += found + 1 - from;
-            from = found + 1;
-            let index = picked[found];
-            let tri = triangles[index];
-            if tri.a >= count || tri.b >= count || tri.c >= count {
-                continue;
-            }
-            let bound = &bounds[index];
-            let near = dot(sphere.from, bound.normal) - bound.offset;
-            let far = dot(sphere.to, bound.normal) - bound.offset;
-            let takes = if near > 0.0 { !(far > r) } else { !(far < -r) };
-            if !takes {
-                continue;
-            }
-            let mid = probe.position;
-            let on_plane = mid + bound.normal * -((near + far) * 0.5);
-            let (v0, v1, v2) = (
-                particles[tri.a].position,
-                particles[tri.b].position,
-                particles[tri.c].position,
-            );
-            let (closest, w) = closest_point(v0, v1, v2, on_plane);
-            let toward = closest - sphere.from;
-            let length2 = (toward.x * toward.x + toward.z * toward.z) + toward.y * toward.y;
-            let direction = if length2 == 0.0 {
-                Vec3::ZERO
-            } else {
-                toward * engine_math::reciprocal_sqrt(length2)
-            };
-            let reach = dot(sphere.to, direction) + r;
-            let at = dot(closest, direction);
-            if !(reach > at) {
-                continue;
-            }
-            let depth = reach - at;
-            touch.reaction += direction * -depth;
-            let largest = engine_math::max(engine_math::max(w[0], w[1]), w[2]);
-            let share = depth / largest;
-            for (vertex, weight) in [(tri.a, w[0]), (tri.b, w[1]), (tri.c, w[2])] {
-                add_push(&mut pushes[vertex], direction * (share * weight));
-            }
-            pushed = true;
-        }
-        touch.pushed |= pushed;
+    let (picked, records) = cull(bounds, triangles.len(), &probes);
+    for sphere in &body.spheres {
+        let one = touch_sphere(
+            particles,
+            triangles,
+            bounds,
+            (&picked, &records),
+            sphere,
+            pushes,
+        );
+        touch.tests += one.tests;
+        touch.reaction += one.push;
+        touch.pushed |= one.pushed;
     }
     touch
+}
+
+/// The body's share of a cloth's push, by the contact's friction class
+/// (the original's three words): 0.015 when the body part is an active
+/// striker (its class bit 0x10000), else 0.01 when the cloth carries the
+/// held-chain class bit 1, else 0.002 (every level cloth).
+pub fn body_share(body_strikes: bool, cloth_held_chain: bool) -> f32 {
+    if body_strikes {
+        crate::cloth::FRICTION[2]
+    } else if cloth_held_chain {
+        crate::cloth::FRICTION[1]
+    } else {
+        crate::cloth::FRICTION[0]
+    }
+}
+
+/// The rustle the body's motion adds per cm² a tick² of its squared speed
+/// at the sphere (double precision).
+pub const RUSTLE_PER_SPEED2: f64 = 2.0e-5;
+
+/// The share of the push's square at or above which the body's slide at the
+/// sphere is turned back whole (double precision); under it the slide
+/// keeps `√(0.1·push² / speed²)` of itself, reversed.
+pub const SLIDE_STOP_SHARE: f64 = 0.2;
+
+/// See [`SLIDE_STOP_SHARE`].
+pub const SLIDE_KEEP_SHARE: f64 = 0.1;
+
+/// The friction one pushing sphere puts into the body's motion record, from
+/// `velocity` (the body's motion at the sphere over the last tick, cm, as
+/// its record holds it) and `push` (the body's share of the push, cm, the
+/// same frame), and the rustle it adds to `tail`. Returns the change the
+/// record takes at that point, or `None` when the body barely moved there
+/// (its squared speed at most the engine's small float, or unordered).
+///
+/// The rules, in the original's precision: the squared speed `v²` over the
+/// small float adds `v²·2e-5` to the rustle tail (in double); the speed
+/// loses its part along the push (`v − push·(push·v)/push²`, single); then
+/// when `0.2·push² ≥ v²` (or unordered; double) the result is negated whole,
+/// else scaled by `−√(0.1·push²/v²)` (double, rounded to single). The `v²`
+/// in both tests is the speed's square before the projection.
+pub fn body_slide(velocity: Vec3, push: Vec3, tail: &mut f32) -> Option<Vec3> {
+    let v2 = (velocity.x * velocity.x + velocity.y * velocity.y) + velocity.z * velocity.z;
+    if !(v2 > MOTION_FLOOR2) {
+        return None;
+    }
+    *tail = (f64::from(v2) * RUSTLE_PER_SPEED2 + f64::from(*tail)) as f32;
+    let p2 = (push.x * push.x + push.y * push.y) + push.z * push.z;
+    let along = -((push.x * velocity.x + push.y * velocity.y) + push.z * velocity.z) / p2;
+    let slide = velocity + push * along;
+    if !(f64::from(p2) * SLIDE_STOP_SHARE < f64::from(v2)) {
+        Some(Vec3::ZERO - slide)
+    } else {
+        let keep = -(f64::from(p2) * SLIDE_KEEP_SHARE / f64::from(v2)).sqrt();
+        Some(slide * keep as f32)
+    }
+}
+
+/// How a cloth meets one live body part in the solver's object stage: the
+/// map from the world (m) into the cloth's frame (m), the box about the
+/// cloth's particles (cm, its frame), its padding (cm) and whether the
+/// cloth carries the held-chain class bit ([`body_share`]).
+#[derive(Debug, Clone, Copy)]
+pub struct LiveContact {
+    pub to_object: bevy::math::Affine3A,
+    pub cloth_box: (Vec3, Vec3),
+    pub padding: f32,
+    pub held_chain: bool,
+}
+
+/// What one live body part did to the cloth and took from it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiveTouch {
+    /// Whether any of its spheres pushed a triangle.
+    pub pushed: bool,
+    /// Its spheres that reached the cloth's box, and of those the moving.
+    pub spheres: usize,
+    pub swept: usize,
+    /// Triangles the swept query looked at.
+    pub tests: usize,
+    /// The summed push on the body before its share (cm, the cloth's
+    /// frame).
+    pub reaction: Vec3,
+}
+
+/// A body sphere's sweep for the cloth, in the cloth's frame and cm: from
+/// where the last tick left it (`previous`) to where the part is `now`,
+/// padded, kept only when it reaches the cloth's box (swept when it moved
+/// more than [`crate::sector::CLOTH_SWEEP_TRAVEL2`], else where it was).
+pub fn sphere_sweep(
+    to_object: &bevy::math::Affine3A,
+    now: &bevy::math::Affine3A,
+    previous: &bevy::math::Affine3A,
+    (centre, radius): (Vec3, f32),
+    padding: f32,
+    (box_centre, box_half): (Vec3, Vec3),
+) -> Option<BodySweep> {
+    let to = to_object.transform_point3(now.transform_point3(centre)) * 100.0;
+    let from = to_object.transform_point3(previous.transform_point3(centre)) * 100.0;
+    let reach = radius * 100.0 + padding;
+    let travel = to - from;
+    let travel2 = (travel.x * travel.x + travel.y * travel.y) + travel.z * travel.z;
+    let moving = f64::from(travel2) > crate::sector::CLOTH_SWEEP_TRAVEL2;
+    let kept = if moving {
+        let sweep = crate::intersect::Sweep::new(from, to);
+        crate::intersect::swept_sphere_aabb_hit(&sweep, reach, box_centre, box_half)
+    } else {
+        !crate::intersect::sphere_aabb_separated(from, reach, box_centre, box_half)
+    };
+    kept.then_some(BodySweep {
+        from,
+        to,
+        radius: reach,
+        moving,
+    })
+}
+
+/// The cloth's body contact against one live part `part` of `body`, with
+/// the body's side (the original's object-body slot, at its point in the
+/// sector step): the part's spheres from its last one, each swept from
+/// where the last tick left the part to where it is now (rebuilt after
+/// every push, so a later sphere sees the body the earlier ones moved),
+/// pushing the cloth's triangles into `pushes`; after each sphere that
+/// pushed, the body takes its share ([`body_share`] of the summed push,
+/// turned into the world) at the sphere's centre: the slide friction
+/// ([`body_slide`]) on its motion record, the rustle it adds to `tail`, and
+/// the push itself on its particles by the centre's raw weights in its rest
+/// tetrahedron (the approximate reciprocal, as the original's). The
+/// countdown trade is the caller's ([`trade_body_countdowns`]).
+#[allow(clippy::too_many_arguments)]
+pub fn touch_ragdoll(
+    particles: &[crate::cloth::Particle],
+    triangles: &[ClothTri],
+    bounds: &[TriangleBound],
+    pushes: &mut [Vec3],
+    tail: &mut f32,
+    body: &mut crate::body::Ragdoll,
+    part: usize,
+    contact: &LiveContact,
+) -> LiveTouch {
+    let mut touch = LiveTouch::default();
+    let Some(spheres) = body.parts.get(part).map(|p| p.spheres.clone()) else {
+        return touch;
+    };
+    if spheres.is_empty() || triangles.is_empty() {
+        return touch;
+    }
+    let sweeps = |body: &crate::body::Ragdoll, upto: usize| -> Vec<Option<BodySweep>> {
+        let p = &body.parts[part];
+        let (now, previous) = (p.transform(), p.settled_transform());
+        spheres[..upto]
+            .iter()
+            .map(|&s| sphere_sweep(&contact.to_object, &now, &previous, s, contact.padding, contact.cloth_box))
+            .collect()
+    };
+    let mut planned = sweeps(body, spheres.len());
+    if planned.iter().all(Option::is_none) {
+        return touch;
+    }
+    let probes: Vec<SweptProbe> = planned.iter().flatten().map(sphere_probe).collect();
+    let mut culled = cull(bounds, triangles.len(), &probes);
+    let strikes = body.parts[part]
+        .state
+        .has(crate::part::PartState::STRIKE_CHAIN);
+    let share = body_share(strikes, contact.held_chain);
+    let to_world = contact.to_object.inverse();
+    for k in (0..spheres.len()).rev() {
+        let Some(sweep) = planned[k] else {
+            continue;
+        };
+        touch.spheres += 1;
+        touch.swept += usize::from(sweep.moving);
+        let one = touch_sphere(
+            particles,
+            triangles,
+            bounds,
+            (&culled.0, &culled.1),
+            &sweep,
+            pushes,
+        );
+        touch.tests += one.tests;
+        touch.reaction += one.push;
+        if !one.pushed {
+            continue;
+        }
+        touch.pushed = true;
+        // The body's side: its share of the push in the world (cm), at the
+        // sphere's centre by its weights in the rest tetrahedron.
+        let push = to_world.transform_vector3(one.push * share);
+        let rest = body.parts[part].rest.map(|p| p.to_array());
+        let w = engine_math::barycentric_fast(spheres[k].0, &rest);
+        let velocity = body.parts[part].motion_at(&w) * 100.0;
+        if let Some(slide) = body_slide(velocity, push, tail) {
+            body.parts[part].add_motion(&w, slide * 0.01);
+        }
+        body.push_part_weighted(part, w, push * 0.01);
+        // The rest of the spheres meet the body where the push left it.
+        if k > 0 {
+            planned.truncate(k);
+            planned = sweeps(body, k);
+            let probes: Vec<SweptProbe> = planned.iter().flatten().map(sphere_probe).collect();
+            if probes.is_empty() {
+                break;
+            }
+            culled = cull(bounds, triangles.len(), &probes);
+        }
+    }
+    touch
+}
+
+/// The countdown trade after a live body pushed the cloth: the cloth takes
+/// the body's countdown when it is higher (waking the cloth), and when the
+/// cloth's is higher the body is touched up to it (a sleeper wakes, drops
+/// its stored level contacts and is solved from the next tick). Returns
+/// whether the cloth's countdown rose.
+pub fn trade_body_countdowns(cloth_countdown: &mut i32, body: &mut crate::body::Ragdoll) -> bool {
+    let (woke, owed) = trade_countdowns(cloth_countdown, body.countdown());
+    if let Some(count) = owed {
+        body.touch(count);
+    }
+    woke
 }
 
 /// A body sphere's record for the swept query: its sweep's midpoint, its
