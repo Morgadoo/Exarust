@@ -631,6 +631,11 @@ pub const JOURNAL_FOCUS: i32 = 3;
 /// One journal entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JournalEntry {
+    /// The entry's id word, which only the save reads: 0 for every entry
+    /// the journal makes (the opening page, an added one, the erase's reset
+    /// of the last); a loaded save's entries keep their saved words, and an
+    /// erase moves the later entries down with theirs.
+    pub id: i32,
     pub title: String,
     pub text: String,
 }
@@ -649,6 +654,7 @@ impl Default for Journal {
     fn default() -> Self {
         Self {
             entries: vec![JournalEntry {
+                id: 0,
                 title: NEW_ENTRY.to_string(),
                 text: String::new(),
             }],
@@ -663,6 +669,7 @@ impl Journal {
     pub fn ensure_entry(&mut self) {
         if self.entries.is_empty() {
             self.entries.push(JournalEntry {
+                id: 0,
                 title: NEW_ENTRY.to_string(),
                 text: String::new(),
             });
@@ -682,6 +689,7 @@ impl Journal {
     pub fn add_entry(&mut self, text: &str) {
         self.store_text(text);
         self.entries.push(JournalEntry {
+            id: 0,
             title: NEW_ENTRY.to_string(),
             text: String::new(),
         });
@@ -695,6 +703,7 @@ impl Journal {
         if self.entries.len() < 2 {
             self.ensure_entry();
             self.entries[0] = JournalEntry {
+                id: 0,
                 title: NEW_ENTRY.to_string(),
                 text: String::new(),
             };

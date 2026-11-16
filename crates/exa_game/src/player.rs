@@ -2740,6 +2740,13 @@ impl ChaseCamera {
         self.zoom
     }
 
+    /// The stored shown zoom: the value the ticks ease toward [`Self::zoom`]
+    /// and a frame moves to the zoom it draws (the controller's current
+    /// zoom word, which a save stamps into its header).
+    pub fn shown_zoom(&self) -> f32 {
+        self.shown_zoom
+    }
+
     /// Places the camera for a shot from `eye` to `focus` (any units), as
     /// the original's placement routine does
     /// ([`crate::nav_camera::place`]): the target and shown yaw become the

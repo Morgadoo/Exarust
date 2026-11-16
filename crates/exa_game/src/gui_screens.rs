@@ -5749,10 +5749,12 @@ mod tests {
         let journal = Journal {
             entries: vec![
                 exa_ui::game_gui::JournalEntry {
+                    id: 0,
                     title: "First".into(),
                     text: "A note".into(),
                 },
                 exa_ui::game_gui::JournalEntry {
+                    id: 0,
                     title: "Second".into(),
                     text: "Another note".into(),
                 },
@@ -5808,10 +5810,12 @@ mod tests {
             let mut screens = app.world_mut().resource_mut::<GameScreens>();
             screens.journal.entries = vec![
                 exa_ui::game_gui::JournalEntry {
+                    id: 0,
                     title: "First".into(),
                     text: "A note".into(),
                 },
                 exa_ui::game_gui::JournalEntry {
+                    id: 0,
                     title: "Second".into(),
                     text: "Another note".into(),
                 },
