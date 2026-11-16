@@ -1937,9 +1937,45 @@ pub(crate) fn hold_hand(
     // and focus bars for 5000 ms. A double click (with Ctrl held in combat
     // mode) then interacts with what is there. The original takes the double
     // click on the second press; Exarust reads it on that press's release.
+    // With the controls off their click, Ctrl and right-button handlers
+    // are not the view's: only the hand's own double-click hook is.
+    let controls_off = player_controls::PlayerControl::is_off(control.as_deref());
     if released {
         let left = hand.left.take();
+        if let Some(left) = left.filter(|l| !l.dragging && l.double)
+            && controls_off
+            && !hand.keeps_left
+            && !hand.out_of_reach
+        {
+            // The hand's idle double click: the pick under the pointer, a
+            // placed object's use or container ([`ObjectClick`] with the
+            // controls off, `crate::object_click`).
+            let window = windows.single().ok();
+            let ray = window
+                .zip(cameras.single().ok())
+                .and_then(|(window, (camera, eye))| window_ray(camera, eye, window, left.at));
+            if let Some(picked) = pick_with(
+                ray,
+                &sources.physics,
+                &sources.stand_ins,
+                &sources.collider_nodes,
+                &bodies,
+                None,
+            ) && !matches!(picked.hit, Hit::Character { .. })
+            {
+                let pointer = window
+                    .map(|window| (left.at * window.scale_factor()).as_ivec2())
+                    .unwrap_or(IVec2::ZERO);
+                objects.write(ObjectClick {
+                    hit: picked.hit,
+                    at: picked.at,
+                    pointer,
+                    double: true,
+                });
+            }
+        }
         if let Some(left) = left.filter(|l| !l.dragging)
+            && !controls_off
             && let Some((_, child)) = player
             && let Ok((pb, own, condition, _)) = player_bodies.get(child)
         {

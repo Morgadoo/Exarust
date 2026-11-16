@@ -388,8 +388,15 @@ pub fn run_object_clicks(
     time: Option<Res<Time<Virtual>>>,
     mut out: ClickOutputs,
     mut narrator: Narrator,
-    (players, reads): (Query<Entity, With<crate::player::PlayerBody>>, DeviceReads),
+    (players, reads, control): (
+        Query<Entity, With<crate::player::PlayerBody>>,
+        DeviceReads,
+        Option<Res<crate::player_controls::PlayerControl>>,
+    ),
 ) {
+    // With the controls off the double click is the hand's own hook, not
+    // the controls' Ctrl interaction.
+    let controls_off = crate::player_controls::PlayerControl::is_off(control.as_deref());
     let now = time.map_or(0, |t| t.elapsed().as_millis() as u64);
     let user = players.iter().next();
     for click in clicks.read() {
@@ -523,6 +530,44 @@ pub fn run_object_clicks(
         let Some(s) = sections.as_deref() else {
             continue;
         };
+        if controls_off {
+            // The hand's idle double click: a kind 0 use runs the object
+            // database's use at once, another usable kind lifts the use
+            // cursor, a container opens (the hand checked its bytes; with
+            // the controls off combat mode does not refuse it).
+            let idle = player_controls::idle_double_click(s, false, false);
+            info!("idle double click object {id:#x}: {idle:?}");
+            match idle {
+                player_controls::IdleDoubleClick::Nothing => {}
+                player_controls::IdleDoubleClick::UseNow => {
+                    match player_controls::take_use(s.usable.map_or(0, |u| u.kind)) {
+                        TakeUse::Nothing => {}
+                        TakeUse::Divination => {
+                            close_card(&mut out, now as u32);
+                            out.divination.write(OpenDivination { seed: 0 });
+                        }
+                        TakeUse::NameHook => {
+                            out.levels.write(ReadNamedLevel { id });
+                        }
+                    }
+                }
+                player_controls::IdleDoubleClick::UseOnCursor => {
+                    let kind = s.usable.as_ref().map_or(1, |u| u.kind);
+                    if let Some(cursor) = out.use_cursor.as_deref_mut() {
+                        cursor.lift(placed.tagged_id, placed.tagged_id, 0, 0, kind);
+                    }
+                }
+                player_controls::IdleDoubleClick::OpenContainer => {
+                    close_card(&mut out, now as u32);
+                    out.containers.write(ContainerRequest {
+                        object: entity,
+                        id,
+                        pointer: click.pointer,
+                    });
+                }
+            }
+            continue;
+        }
         let (use_of, opens) = player_controls::double_click_object(s, now as u32);
         info!("double click object {id:#x}: {use_of:?}, container {opens}");
         // A usable item taken in hand lifts the use cursor: the controls'
@@ -908,6 +953,50 @@ mod tests {
         assert!(drain::<ContainerRequest>(&mut app).is_empty());
         click(&mut app, Hit::Level, Vec3::new(2.3, 0.4, 0.0), false);
         assert!(drain::<WorldCard>(&mut app).is_empty());
+    }
+
+    /// With the controls off the double click is the hand's idle hook: a
+    /// class 0 object's database use runs at once (no tracks, no sound),
+    /// another usable class lifts the use cursor, and a container opens.
+    #[test]
+    fn the_idle_double_click_runs_while_the_controls_are_off() {
+        let mut app = app();
+        app.init_resource::<crate::player_controls::PlayerControl>();
+        assert!(
+            app.world()
+                .resource::<crate::player_controls::PlayerControl>()
+                .off
+        );
+        let deck = placed(
+            &mut app,
+            0x31,
+            Some(sections(Some((0, 5)), false, 0)),
+            Vec3::ZERO,
+        );
+        click(&mut app, Hit::SceneNode { node: deck }, Vec3::ZERO, true);
+        assert_eq!(
+            drain::<OpenDivination>(&mut app),
+            vec![OpenDivination { seed: 0 }]
+        );
+        assert!(drain::<exa_anim::tracks::StartTracks>(&mut app).is_empty());
+        assert!(drain::<exa_audio::PointSounded>(&mut app).is_empty());
+        let key = placed(
+            &mut app,
+            0x51,
+            Some(sections(Some((1, 2)), false, 0)),
+            Vec3::X,
+        );
+        click(&mut app, Hit::SceneNode { node: key }, Vec3::X, true);
+        assert!(
+            app.world()
+                .resource::<crate::player_controls::UseCursor>()
+                .up()
+        );
+        let chest = placed(&mut app, 0x61, Some(sections(None, true, 0)), Vec3::Z);
+        click(&mut app, Hit::SceneNode { node: chest }, Vec3::Z, true);
+        let requests = drain::<ContainerRequest>(&mut app);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].object, chest);
     }
 
     /// The double click on an unmarked subtype 1 object uses it: its use
