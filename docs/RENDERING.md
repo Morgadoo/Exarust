@@ -2058,9 +2058,29 @@ in world space there too):
   byte). A surface at or above the top slice clamps to it: no surface byte
   is written and slices 0..D−2 hold 20, so the lid's 5 becomes 20 and only
   the top slice's 26 stays. The column's lowest slice is the clamped height.
+  The surface is read from the terrain tile's vertex grid
+  (`GiTerrainHeights`, carried by each tile's entity): the column over quad
+  (column, row) takes the mean of the quad's anti-diagonal vertices
+  (column + 1, row) and (column, row + 1) in centimetres, `((a + b)·0.5)/fc
+  + b4` voxels, over the tile's present 6 m blocks only. Exarust finds the
+  quad from the column's whole world voxel, which is the original's
+  column-to-vertex match when the block sits on the tile (see the layout
+  note below); terrain meshes without a grid fall back to the highest
+  upward triangle under the column centre.
 - Every mesh's stored **GI sample points** (chunk `0x3D0CEC05`: a spacing
-  word, a count, then object-space points in cm) are transformed to the
-  world and splatted:
+  word, a count, then object-space points in cm) are splatted through the
+  mesh's world frame as the original does (`Occupancy::splat_mesh`): in
+  centimetres, the frame's three axis rows scaled by one over the voxel
+  size and its translation turned into `T/fc − 0.5` plus the block's
+  whole-voxel offset (8 + 30·(⌊N/2⌋ − first cell) in X and Z, the level's
+  vertical offset b4 in Y), each point at `(x·r0 + y·r1) + (z·r2 + t)`
+  (the original's sum order), truncated towards zero. Measuring from the
+  block's corner in metres instead put lattice points at 6.5 m a hair
+  short of their voxel centre, in the column before. Exarust's points and
+  frames are kept in metres (the reader's ×0.01) and taken back to
+  centimetres by ×100, which is not always the stored value's own float.
+  The grid cells' floor points (below) are splatted the same way, from the
+  cell's own space in centimetres:
   - trilinearly with weight 20, each cell's share rounded on its own, the
     sum saturating at 255; a mesh marked thin (`GiThinMesh`: the
     original's mesh set-up flags a surface thin when its material's render
@@ -2125,7 +2145,9 @@ in world space there too):
 600 steps by default, run 16 steps a frame (all of them in one frame stalled
 the window for seconds); the loading screen waits for the first block, and a
 rebuilt block warms behind the one on screen and is swapped in only when its
-warm-up is complete. The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
+warm-up is complete. The light is 8-bit sRGB RGB, with A = 1 − 5·occ
+stored as its nearest 8-bit code [guess: the reference driver's alpha
+rounding was not measured].
 
 **The 8-bit store.** The original renders each step into a
 `GL_SRGB8_ALPHA8` texture with `GL_FRAMEBUFFER_SRGB` on, so the hardware
@@ -2181,8 +2203,9 @@ drawn instead when the environment record has flag `0x20`, as on the
 outdoor terrain arenas: the original then draws `D − floor` slices rather
 than `D − 1 − floor`, `drawn_slices`), as the original
 clears the scratch target and draws only the groups: they stay dark and
-absorb light that reaches them through open walls. Voxel lights still add
-into them, as the original's additive pass follows the clear. A level
+absorb light that reaches them through open walls. Voxel lights and shapes
+still add into them, as the original's additive passes follow the clear
+and draw over their own boxes whatever the groups drew. A level
 without a sector grid draws all 64 sectors as one group from slice 0 (the
 original does not set that group's floor; it is 0 until a grid level has
 run [inf]), whatever the marks.
@@ -2265,8 +2288,12 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
 - a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
   light's vertical direction; unshaped lights carry (1, 1, 1);
 - a registered shape adds its fragment body's colour per voxel over the
-  manager's clipped box (`shape_draw`) and slice range, after the point
-  lights and before the voxel lights. The pass evaluates the six bodies
+  manager's clipped box (`shape_draw`) and slice range, after the groups'
+  draw and the voxel lights, each shape blended as its own pass into the
+  8-bit target (its colour clamped at 0, the stored codes decoded, the sum
+  encoded through the driver's steps: `blend_srgb8`), in the manager's list
+  order (`GiShapes`: registration order, a removal swapping the list's end
+  in), over every voxel of its box, the dark ones included. The pass evaluates the six bodies
   (`gi_dome`, `gi_cuboid`, `gi_bubble`, `gi_telebubble`, `gi_gradline`,
   `gi_multipoint`) with the original's operation order and GL comparison
   semantics: the shells over the voxel's world centimetres through the
@@ -2282,8 +2309,16 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   (`exa_game::thaum::effect_light`, light scale 0.09); the other emissives
   have no live effect yet;
 - the original's program carries two matrix-shadow light slots (`SdwMat`,
-  `SdwMat2` for the first two lights whose shadow is one 2D map, i.e. the
-  sky light and spots); before drawing a group it moves the first such light at
+  `SdwMat2` for the first two lights of kind 2, whose shadow is one 2D map);
+  its neighbour weighting switches on light 0 alone being such a light.
+  Every 0.9.5 light is kind 3 except the manager's sky light and the
+  scene's `_Sunlight` (the light constructor's default 2 is overwritten
+  with 3 by the light record's reader, the instance copy and every game
+  light's creator), and the sun's multiplier is 0, so with the sky light up
+  a sun moved to slot 1 adds nothing and leaves the weighting alone; only
+  a level with a sun whose sky light is down (its fog's blue at most
+  1.19e−7 after the ×3) would differ [inf: not seen]. Before drawing a
+  group the original moves the first kind-2 light at
   index 2 or later to slot 1 when the sky light owns slot 0, or the first at
   index 1 or later to slot 0 without it (its scan reaches the last
   light, as its do-while does; `plan_light_slots`). Exarust has no spot
@@ -2356,17 +2391,23 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   gradline's two-ended gradient with its point light, and the multipoint's
   points at a quarter (its occlusion term is computed and unused). A shape
   entity's `GiShape` component lists and unlists it, as the effects'
-  constructors and destructors do. No gameplay effect registers one yet;
+  constructors and destructors do, and the level's teardown empties the
+  list, as the original's scene clear sets its count to zero (a shape that
+  outlives the level stays alive but is no longer drawn);
 - a moving GI mesh takes its old points out (weight −20) and its new ones
-  in (+20) over a box padded 1.5 voxels each side, rounded ties to even in
-  world voxels (`Occupancy::update_dynamic`; the original pads the
-  object's oriented bounds, Exarust the points' extent [adaptation]). A
+  in (+20), each through its frame as the build splats them, over the
+  original's box: in each frame the node's bounds centre ± its half
+  extents through the frame's absolute axes (`(|r0|·hx + |r1|·hy) +
+  |r2|·hz`), in centimetres over the voxel size, less and plus 1.5,
+  rounded ties to even, the union of the old and new frames' boxes
+  (`GiBounds`, `voxel_box`); a block is edited when its whole-voxel range
+  (its first voxel to 256 × D × 256 on, both ends included) meets that box,
+  and the box less the block's first voxel is the sub-upload. A mesh
+  without its node's bounds is boxed by its points' padded extent. A
   GI mesh the level's source collected is followed every frame
   (`GiMoved` keeps its source and last frames). Nothing runs while a block
   build is in flight, as the original returns while its build count is above
-  zero; the old points come out before the new go in, and only the built
-  blocks the old and new padded boxes meet are edited (the original compares
-  integer voxel boxes, Exarust world boxes [adaptation]). A block built after
+  zero; the old points come out before the new go in. A block built after
   a mesh moved holds it at the source frame, so its first pass moves it to
   the last one (the original's builder reads the current frames). The
   changed box is uploaded as a sub-rectangle (`GiOccupancyPatch`: the region,
@@ -2390,8 +2431,11 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   dark, as the original's untextured block does.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
-add straight into the volume, after the propagation, every step and in
-the warm-up:
+add straight into the volume, after the groups' draw and before the
+shapes, every step and in the warm-up, each light blended as its own pass
+into the 8-bit target (decoded, added, encoded through the driver's
+steps), so a light too faint to reach a voxel's next code leaves it as it
+was however many such lights overlap:
 - colour C = lin(rgb)·√intensity·3 (the original's linear workflow; 0.6
   in double precision on its legacy path), × 0.1 per step. The node keeps
   its base colour, current intensity, base intensity, base radius and
