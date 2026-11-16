@@ -124,6 +124,69 @@ pub fn body_reach(width: f32, scale: f32, margin: f32) -> f32 {
     width * scale + margin + BODY_EXTRA
 }
 
+/// How far a simulated object's point moves along a stream point's last
+/// move, at full share, and the stir it adds a point.
+pub const SIM_PUSH: f32 = 0.01;
+pub const SIM_STIR: f64 = 1e-5;
+
+/// The torrent's simulated-object walk (the cloths): every stream's live
+/// points from its head back, each taken into the object's frame
+/// (`to_object`, cm) with its reach [`body_reach`] (`scale` the reach scale
+/// the torrent's last contact left), tested against the object node's
+/// bounding sphere and then its box; every object point within that reach
+/// moves along the stream point's last move by `(1 − d²/r²)·0.01` (the
+/// product in single precision) and adds `(1 − d²/r²)·0.00001` to the
+/// object's stir (summed in double precision). Unlike the blast's walk the
+/// three compares let NaN through (they skip only on an ordered "beyond").
+/// Returns whether any point was met (the caller then wakes the object).
+pub fn stir_sim_object(
+    torrent: &Torrent,
+    scale: f32,
+    object: &mut super::blast::SimPoints,
+    to_object: impl Fn(Vec3) -> Vec3,
+) -> bool {
+    let mut hit = false;
+    for stream in &torrent.records[..torrent.count] {
+        let head = stream.head;
+        let mut k = head;
+        loop {
+            let point = &stream.points[k];
+            if point.life < 1 {
+                break;
+            }
+            let at = to_object(point.at);
+            let reach = body_reach(point.width, scale, torrent.margin);
+            let span = reach + object.radius;
+            let r2 = reach * reach;
+            let near = !(span * span < dist_sq(at, object.centre))
+                && !(r2
+                    < exa_physics::intersect::point_aabb_distance_squared(
+                        at,
+                        object.centre,
+                        object.half,
+                    ));
+            if near {
+                let motion = at - to_object(point.previous);
+                for p in &mut object.points {
+                    let d2 = dist_sq(at, *p);
+                    if r2 < d2 {
+                        continue;
+                    }
+                    let f = 1.0 - d2 / r2;
+                    *p += motion * (f * SIM_PUSH);
+                    object.stir = (f64::from(f) * SIM_STIR + f64::from(object.stir)) as f32;
+                    hit = true;
+                }
+            }
+            k = if k == 0 { POINTS - 1 } else { k - 1 };
+            if k == head {
+                break;
+            }
+        }
+    }
+    hit
+}
+
 /// The static surface's contact scale, push and the ease a point takes
 /// toward the contact.
 pub const STATIC_SCALE: f32 = 0.25;
@@ -1092,6 +1155,65 @@ mod tests {
 
     fn torrent() -> Torrent {
         Torrent::new(0.2, 12, &view(), &mut Mt19937::new(1), Roll(7))
+    }
+
+    /// One live stream point at `at` that moved by `motion`, width 12, in
+    /// a torrent of one stream with no margin.
+    fn one_live_point(at: Vec3, motion: Vec3) -> Torrent {
+        let mut t = torrent();
+        t.count = 1;
+        t.margin = 0.0;
+        let stream = &mut t.records[0];
+        stream.head = 0;
+        for point in &mut stream.points {
+            point.life = 0;
+        }
+        stream.points[0] = StreamPoint {
+            at,
+            previous: at - motion,
+            life: 20,
+            width: 12.0,
+            ..StreamPoint::default()
+        };
+        t
+    }
+
+    #[test]
+    fn the_object_walk_moves_points_within_reach_along_the_move() {
+        // Reach 12·0.25 + 0 + 40 = 43 cm.
+        let t = one_live_point(Vec3::ZERO, Vec3::new(0.0, 0.0, 10.0));
+        let mut object = crate::effects::blast::SimPoints {
+            points: vec![Vec3::new(20.0, 0.0, 0.0), Vec3::new(50.0, 0.0, 0.0)],
+            stir: 0.5,
+            centre: Vec3::new(35.0, 0.0, 0.0),
+            radius: 15.0,
+            half: Vec3::new(15.0, 0.0, 0.0),
+        };
+        assert!(stir_sim_object(&t, 0.25, &mut object, |p| p));
+        let r2 = 43.0f32 * 43.0;
+        let f = 1.0 - 400.0 / r2;
+        assert_eq!(
+            object.points[0],
+            Vec3::new(20.0, 0.0, 0.0) + Vec3::new(0.0, 0.0, 10.0) * (f * 0.01)
+        );
+        // 50 cm is past the reach: it stays.
+        assert_eq!(object.points[1], Vec3::new(50.0, 0.0, 0.0));
+        assert_eq!(object.stir, (f64::from(f) * 1e-5 + 0.5) as f32);
+        // The reach scale is the one the last contact left: at 0 the reach
+        // is 40 and still meets the 20 cm point.
+        let mut again = object.clone();
+        assert!(stir_sim_object(&t, 0.0, &mut again, |p| p));
+        // A dead point walks nothing; a box out of reach is skipped.
+        let mut dead = t.clone();
+        dead.records[0].points[0].life = 0;
+        let mut untouched = object.clone();
+        assert!(!stir_sim_object(&dead, 0.25, &mut untouched, |p| p));
+        assert_eq!(untouched, object);
+        let mut far = object.clone();
+        far.centre = Vec3::new(200.0, 0.0, 0.0);
+        far.half = Vec3::ZERO;
+        far.radius = 0.0;
+        assert!(!stir_sim_object(&t, 0.25, &mut far, |p| p));
     }
 
     #[test]

@@ -502,6 +502,7 @@ impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         exa_physics::sim_app::add_frame_commands(app);
         super::veil_live::bridge_veil_types(app);
+        crate::effects::danger::add_hazard_watch(app);
         super::summon_live::bridge_summon_types(app);
         app.add_message::<BarCommand>()
             .add_message::<exa_combat::veto::BlowPhased>()

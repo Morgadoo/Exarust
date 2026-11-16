@@ -95,6 +95,7 @@ impl Plugin for ThaumEffectsPlugin {
     fn build(&self, app: &mut App) {
         bridge_thaum_effects_types(app);
         exa_physics::sim_app::add_frame_commands(app);
+        crate::effects::danger::add_hazard_watch(app);
         app.add_message::<ArcShocked>()
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
@@ -1094,7 +1095,7 @@ pub fn energy_after_knocks(energy: f32, losses: &[f64]) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn tick_barricades(
+pub(crate) fn tick_barricades(
     mut commands: Commands,
     mut walls: Query<(Entity, &mut LiveBarricade, Option<&NavStamped>)>,
     mut bodies: Query<(Entity, &mut Ragdoll, Option<&mut SwingState>)>,
@@ -1811,7 +1812,8 @@ mod tests {
     use super::*;
 
     /// The plugin's systems run with a barricade standing on a navigation
-    /// grid (their parameters resolve, the stamp goes on and comes off).
+    /// grid (their parameters resolve, the stamp goes on and comes off, and
+    /// its sight entity joins the watch list and leaves it when it falls).
     #[test]
     fn the_effects_run_with_a_barricade_on_a_grid() {
         use bevy::asset::AssetPlugin;
@@ -1840,14 +1842,31 @@ mod tests {
         app.insert_resource(grid);
         let frame = WallFrame::facing(Vec3::new(0.0, 50.0, 0.0), Vec3::Z);
         let mut draws = Mt19937::new(5489);
-        let wall = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
+        let mut wall = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
+        // Its entry into the world made its AI entity.
+        wall.entity = true;
         let wall = app
             .world_mut()
             .spawn(LiveBarricade { wall, caster: None })
             .id();
+        // A brain that keeps the wall among its contacts.
+        let mut brain = Npc::new([0.5; 4]);
+        brain.contacts.push(exa_ai::contacts::ContactRecord {
+            id: wall.to_bits(),
+            object: true,
+            ..Default::default()
+        });
+        let watcher = app.world_mut().spawn(brain).id();
         app.world_mut().run_schedule(FixedUpdate);
         app.update();
         assert!(app.world().get::<NavStamped>(wall).is_some());
+        // Standing, the wall's sight entity is on the watch list.
+        assert_eq!(
+            app.world()
+                .resource::<crate::effects::danger::HazardWatch>()
+                .0,
+            [wall.to_bits()]
+        );
         let stamped: u32 = {
             let grid = app.world().resource::<NavGrid>();
             (0..40)
@@ -1867,6 +1886,14 @@ mod tests {
             (0..40).all(|z| (0..40).all(|x| grid.cell(x, z, Layer::Lower).penalty == 0)),
             "the fall takes it back"
         );
+        // The finished fall takes it off the watch list: the brain forgets it.
+        assert!(
+            app.world()
+                .resource::<crate::effects::danger::HazardWatch>()
+                .0
+                .is_empty()
+        );
+        assert!(app.world().get::<Npc>(watcher).unwrap().contacts.is_empty());
     }
 
     /// A looping hum takes the frame's gain, and its pitch only when the

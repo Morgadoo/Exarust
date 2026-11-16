@@ -532,8 +532,7 @@ pub(crate) fn stir_cloth(
     scale: f32,
     cloth: &mut exa_world::cloth::ClothInstance,
 ) -> bool {
-    let frame = cloth.frame.unwrap_or(bevy::math::Affine3A::IDENTITY);
-    let to_cloth = frame.inverse();
+    let (mut object, to_cloth) = cloth_object(cloth);
     let local: Vec<BlastChunk> = set
         .chunks
         .iter()
@@ -543,19 +542,36 @@ pub(crate) fn stir_cloth(
             ..*chunk
         })
         .collect();
+    if !hit_sim_points(&local, &set.setup, &mut object, scale) {
+        return false;
+    }
+    take_stir(cloth, &object);
+    true
+}
+
+/// A cloth as the effects' simulated-object walks take it: its particles
+/// (cm, in its node's frame) with the particles' box as the node's bounds,
+/// and the map from the world (m) into that frame.
+pub(crate) fn cloth_object(
+    cloth: &exa_world::cloth::ClothInstance,
+) -> (SimPoints, bevy::math::Affine3A) {
+    let frame = cloth.frame.unwrap_or(bevy::math::Affine3A::IDENTITY);
     let (low, high) = exa_physics::cloth::bounds(&cloth.cloth.particles);
     let centre = (low + high) * 0.5;
     let half = high - centre;
-    let mut object = SimPoints {
+    let object = SimPoints {
         points: cloth.cloth.particles.iter().map(|p| p.position).collect(),
         stir: cloth.cloth.rustle_tail,
         centre,
         radius: half.length(),
         half,
     };
-    if !hit_sim_points(&local, &set.setup, &mut object, scale) {
-        return false;
-    }
+    (object, frame.inverse())
+}
+
+/// A cloth an effect's walk met takes the moved points and the stir, and
+/// is woken to 256 ticks (the object's wake slot).
+pub(crate) fn take_stir(cloth: &mut exa_world::cloth::ClothInstance, object: &SimPoints) {
     for (particle, point) in cloth.cloth.particles.iter_mut().zip(&object.points) {
         particle.position = *point;
     }
@@ -564,7 +580,6 @@ pub(crate) fn stir_cloth(
         cloth.cloth.sleep = BODY_WAKE;
     }
     cloth.stale_mesh = true;
-    true
 }
 
 /// One static mesh of the level as the effect's static contact takes it:

@@ -2249,3 +2249,174 @@ fn a_not_now_cast_is_held_and_retried_by_the_controls() {
     assert!(matches!(state.active[0].class, ActiveClass::Shock(_)));
     assert_eq!(app.world().resource::<PlayerControl>().power_hold.slot, 0);
 }
+
+/// A duellist's running torrent stirs a cloth its streams pour through:
+/// the cloth's particles move, its rustle envelope takes the stir and it
+/// is woken to 256 ticks (the torrent's simulated-object contact).
+#[test]
+fn a_duellists_torrent_stirs_a_cloth_in_its_way() {
+    use crate::effects::torrent::{CHARGING, RUNNING};
+    use crate::thaum::torrent_live::{LiveTorrent, TORRENT};
+    use exa_physics::cloth::{Cloth, Particle};
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 3.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let particles: Vec<Particle> = [30.0, 45.0, 60.0]
+        .into_iter()
+        .map(|z| Particle {
+            position: Vec3::new(5.0, 0.0, z),
+            previous: Vec3::new(5.0, 0.0, z),
+        })
+        .collect();
+    let mut cloth = exa_world::cloth::ClothInstance::new(
+        Cloth::new(particles.clone()),
+        Handle::default(),
+        vec![0, 1, 2],
+    );
+    cloth.cloth.sleep = 0;
+    let cloth = app.world_mut().spawn(cloth).id();
+    let mut caster = PowerCaster::new(&[TORRENT]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(TORRENT);
+    duel_tick(&mut app);
+    let state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveTorrent>();
+        q.iter(app.world()).next().map(|t| t.torrent.state)
+    };
+    let mut ticks = 0;
+    while state(&mut app) == Some(CHARGING) {
+        // Charging walks no contact: the cloth is as it was.
+        let still = app
+            .world()
+            .get::<exa_world::cloth::ClothInstance>(cloth)
+            .unwrap();
+        assert_eq!(still.cloth.particles, particles);
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 200);
+    }
+    assert_eq!(state(&mut app), Some(RUNNING));
+    for _ in 0..10 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    let stirred = app
+        .world()
+        .get::<exa_world::cloth::ClothInstance>(cloth)
+        .unwrap();
+    assert_ne!(stirred.cloth.particles, particles);
+    assert!(stirred.cloth.rustle_tail > 0.0);
+    assert_eq!(stirred.cloth.sleep, crate::thaum::blast_live::BODY_WAKE);
+    assert!(stirred.stale_mesh);
+}
+
+/// A blast's sight entity joins the simulation's watch list as it starts
+/// and leaves it when its chunks are spent: every brain then forgets it
+/// (its contact record goes, the others stay).
+#[test]
+fn a_spent_blast_leaves_the_watch_list_and_every_brain_forgets_it() {
+    use crate::effects::danger::HazardWatch;
+    use crate::thaum::blast_live::LiveBlast;
+    use exa_ai::brain::Npc;
+    use exa_ai::contacts::ContactRecord;
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 0.35)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[0x201]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(0x201);
+    duel_tick(&mut app);
+    app.world_mut().run_schedule(FixedUpdate);
+    let blast = {
+        let mut q = app.world_mut().query_filtered::<Entity, With<LiveBlast>>();
+        q.iter(app.world()).next().expect("a blast")
+    };
+    assert_eq!(app.world().resource::<HazardWatch>().0, [blast.to_bits()]);
+    // A brain that has the blast among its contacts, and someone else.
+    let mut brain = Npc::new([0.5; 4]);
+    for id in [blast.to_bits(), target.to_bits()] {
+        brain.contacts.push(ContactRecord {
+            id,
+            object: id == blast.to_bits(),
+            ..ContactRecord::default()
+        });
+    }
+    let watcher = app.world_mut().spawn(brain).id();
+    let mut ticks = 0;
+    while count::<LiveBlast>(&mut app) == 1 {
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 400);
+        if count::<LiveBlast>(&mut app) == 1 {
+            // Charging or flying, it is watched and kept.
+            assert_eq!(app.world().resource::<HazardWatch>().0.len(), 1);
+            let ids: Vec<u64> = app
+                .world()
+                .get::<Npc>(watcher)
+                .unwrap()
+                .contacts
+                .iter()
+                .map(|c| c.id)
+                .collect();
+            assert!(ids.contains(&blast.to_bits()));
+        }
+    }
+    assert!(ticks > 0);
+    assert!(app.world().resource::<HazardWatch>().0.is_empty());
+    let ids: Vec<u64> = app
+        .world()
+        .get::<Npc>(watcher)
+        .unwrap()
+        .contacts
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, [target.to_bits()]);
+}
