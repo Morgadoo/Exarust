@@ -1555,6 +1555,8 @@ the line skin's wide frames are live: the combo drop-down lists and the palette 
 
 third TMotileAI pass: the combat state drops a collapsing or dead target and leaves combat, as the original does, instead of standing guard over it; apply roles is live: the fierce rule bit sets the phase word and the party list follows a body's start and end of following (companions join the story experience, convert and are written back to their records, a death or a gone body leaves); the follower arrival restarts the idle search; the idle driver's room-walk goal is proven unreachable. Left: the combat tick's step timing, a player foe's skill, the chase-leave clears, the golem glow fade, the removal hook. Arena and story scenes and determinism runs owed while the GPU is on hold.
 
+the lift's placement follows the original: the item's box centre starts 600 cm back along the cursor ray and slides to the first contact of any of its spheres within 1000 cm (the level, the other props and the loose props' meshes, the held body left out), each sphere starting where its far side reaches the camera's near plane (the old support plane reading was the near plane); with the controls off the hand's own frame places the lift by the GUI drop's rule, and a block holds it. The mouse capture was re-audited; its pad and desk differences are listed. Left: the GUI drop's first placement, character meshes and one-sidedness in the sweep, the request's kinesis and motion-45 gates. Lift scenes owed while the GPU is on hold; their traces change.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
