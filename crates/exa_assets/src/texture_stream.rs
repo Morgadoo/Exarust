@@ -115,8 +115,12 @@ pub struct TextureStreamPlugin;
 
 impl Plugin for TextureStreamPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TextureLoader>()
-            .add_systems(Update, (run_texture_loader, rebind_replaced_images).chain());
+        app.init_resource::<TextureLoader>().add_systems(
+            Update,
+            (run_texture_loader, rebind_replaced_images)
+                .chain()
+                .in_set(exa_physics::FramePhase::World),
+        );
     }
 }
 
@@ -187,7 +191,7 @@ fn binds_any(material: &ExaMaterial, images: &HashSet<AssetId<Image>>) -> bool {
     .any(|handle| images.contains(&handle.id()))
 }
 
-fn run_texture_loader(
+pub fn run_texture_loader(
     mut cache: ResMut<ModelCache>,
     mut loader: ResMut<TextureLoader>,
     game: Option<Res<Game>>,
