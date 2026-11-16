@@ -31,10 +31,18 @@
 //! 0.01 a tick toward 0 for 300, a close 0.075 a tick toward 1, which then
 //! latches. An open command wakes the body each tick it runs.
 //!
-//! The shipped leaves' rails lie level: each portcullis is placed slid
-//! into its wall (its slider points on their anchors, fraction 0, open),
-//! and shuts by travelling 170 cm along its rail into its frame, so the
-//! slider law, not a lift, moves it.
+//! The shipped leaves' rails lie level: each portcullis is placed standing
+//! in its arch with its slider points on their anchors (fraction 0, which
+//! the door reads as its open end), and its "shut" end is 170 cm along the
+//! rail, into the slot in its wall, so the slider law, not a lift, moves
+//! it. The door's reading is the original's (its registration measures the
+//! fraction from the anchors the placement puts the points on, its step
+//! slams and latches at fraction 1 and sounds the unlatch leaving it): a
+//! portcullis that reads shut leaves its arch clear, and the levers, on at
+//! load, clear it with their off signal (a close order), as the shipped
+//! puzzles play (a pulled lever opens the gate). The navigation grid
+//! follows the leaf's mesh, so a doorway is walkable where the leaf has
+//! left it, whatever the door reads.
 //!
 //! **The hand** ([`SlideBody::take_hold`]): the press adds the door's drag
 //! link at the hit (slack 1 cm, strength 0.003, the first three passes);
@@ -157,6 +165,16 @@ impl SlideBody {
     /// The travel link's fraction (1 shut, 0 open).
     pub fn fraction(&self, body: &Ragdoll) -> f32 {
         body.world[self.travel].length
+    }
+
+    /// Whether the leaf stands nearer its placed pose (its slider points on
+    /// their anchors, fraction 0) than its rail's far end. The door's
+    /// `closed` is the original's flag for the far end (fraction 1); on the
+    /// shipped portcullises' rails the placed pose is in the arch and the
+    /// far end in the wall, so a leaf at its placed pose blocks its doorway
+    /// while it reads open, and one that reads shut has cleared it.
+    pub fn at_placed_pose(&self, body: &Ragdoll) -> bool {
+        self.fraction(body) < 0.5
     }
 
     /// One tick of an awake leaf, right after its integration

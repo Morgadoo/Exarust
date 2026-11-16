@@ -107,12 +107,20 @@ fn list_mechanisms(
             let at = Vec3::from(body.parts[0].transform().translation);
             info!(
                 "mechanism list: sliding leaf {e:?} of {} at ({:.2}, {:.2}, {:.2}) m, \
-                 fraction {:.3}, closed {}, latched {}, fast {}, locked {}",
+                 fraction {:.3} ({}), closed {}, latched {}, fast {}, locked {}",
                 placed_id(e),
                 at.x,
                 at.y,
                 at.z,
                 glue.fraction(body),
+                // The shipped rails run from the arch (fraction 0) into the
+                // wall: the door's "closed" is the original's flag for the
+                // rail's far end, where the arch is clear.
+                if glue.at_placed_pose(body) {
+                    "nearer its placed pose, in its arch"
+                } else {
+                    "nearer its rail's far end, clear of its arch"
+                },
                 glue.door.closed,
                 glue.door.latched,
                 glue.door.fast,
