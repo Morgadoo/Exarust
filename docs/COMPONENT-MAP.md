@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 57.4% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 57.7% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.4% closed**, of which 45.2% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.7% partial and 6.9% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.7% closed**, of which 45.5% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.4% partial and 6.9% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -28,7 +28,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 55% | 51% | 2% | 1% | 39% | 6% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 53% | 50% | 1% | 2% | 46% | 1% |  |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 56% | 53% | 1% | 2% | 43% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 63% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
@@ -126,7 +126,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | FPC System RTL | Runtime & platform | 69 | 96% engine | 99% | 0% | 99% | 0% | 1% | 0% |
 | FPC SysUtils | Runtime & platform | 42 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | RF_OS_Functions | Runtime & platform | 12 | 68% | 32% | 11% | 19% | 2% | 54% | 14% |
-| Steam Input action bindings | Runtime & platform | 11 | 75% | 36% | 36% | 0% | 0% | 57% | 7% |
+| Steam Input action bindings | Runtime & platform | 11 | 75% | 38% | 37% | 0% | 0% | 57% | 5% |
 | RF_Main | Runtime & platform | 8 | 80% | 41% | 21% | 20% | 0% | 54% | 5% |
 | FPC RTL: lnfodwrf (DWARF line info) | Runtime & platform | 7 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | OpenGL loader & context setup | Runtime & platform | 6 | 75% engine | 100% | 0% | 100% | 0% | 0% | 0% |
@@ -346,9 +346,9 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TPopUpContainer | Items, materials & crafting | 0 | 85% | 46% | 46% | 0% | 0% | 54% | 0% |
 | TArsenalContFrame | Items, materials & crafting | 0 | 0% | 0% | 0% | 0% | 0% | 0% | 100% |
 | TMotileAI | AI & behaviour | 60 | 99% | 50% | 44% | 0% | 5% | 50% | 0% |
-| SG_PlayerControls | AI & behaviour | 47 | 99% | 55% | 54% | 1% | 0% | 45% | 0% |
+| SG_PlayerControls | AI & behaviour | 47 | 99% | 63% | 61% | 1% | 0% | 37% | 0% |
 | TPathFinder | AI & behaviour | 32 | 91% | 55% | 55% | 0% | 0% | 45% | 0% |
-| TPlayerBehaviour | AI & behaviour | 17 | 99% | 55% | 52% | 3% | 0% | 45% | 0% |
+| TPlayerBehaviour | AI & behaviour | 17 | 99% | 67% | 64% | 3% | 0% | 33% | 0% |
 | TCombatant | AI & behaviour | 17 | 97% | 67% | 60% | 0% | 8% | 28% | 4% |
 | TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 1% |
 | Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 39% | 36% | 3% | 0% | 55% | 5% |
