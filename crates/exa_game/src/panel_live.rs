@@ -324,7 +324,7 @@ pub struct ScriptedRelease(pub Option<IVec2>);
 
 /// Starts a drag on the entry under the pointer, or on the crystal in the
 /// shown card's socket under it.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn press(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -336,10 +336,11 @@ pub(crate) fn press(
     scripted: Option<Res<ScriptedPointer>>,
     cards: Res<crate::item_card::CardView>,
     mut icons: ResMut<PanelIcons>,
-    (fighters, mut minds, player_bodies): (
+    (fighters, mut minds, player_bodies, mut fixed): (
         Query<&exa_combat::Fighter>,
         Query<&mut crate::mind::casts::MindBody>,
         Query<Entity, With<crate::player::PlayerBody>>,
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     ),
 ) {
     // The press that ended the use cursor is the cursor's: the desk holds
@@ -390,9 +391,18 @@ pub(crate) fn press(
     let word = shown
         .and_then(|body| fighters.get(body).ok())
         .map_or(0, |fighter| fighter.perks.body_word());
+    // The body's mind is the simulation's: the end is written on the
+    // frame's copy and again at the next step.
     let mut breaks = || match (shown, player_bodies.iter().next()) {
         (Some(body), Some(player)) => minds.get_mut(body).is_ok_and(|mut mind| {
-            crate::mind::casts::end_binding_by(&mut mind, crate::mind::runtime::body_id(player))
+            let owner = crate::mind::runtime::body_id(player);
+            let end = move |mind: &mut crate::mind::casts::MindBody| {
+                crate::mind::casts::end_binding_by(mind, owner)
+            };
+            match fixed.as_deref_mut() {
+                Some(fixed) => fixed.write(body, &mut mind, end),
+                None => end(&mut mind),
+            }
         }),
         _ => false,
     };

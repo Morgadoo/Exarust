@@ -155,7 +155,7 @@ pub fn dress<'a>(
             if plan.kind == FigureDrop::Weapon {
                 crate::doll_view::hold_item(&mut p, id, flags, kind, false, &kind_of);
             } else {
-                crate::doll_view::hold_shield(&mut p, id, flags);
+                crate::doll_view::hold_shield(&mut p, id, flags, &kind_of);
             }
             set_hands(record, &p);
             // The hands' former items the take-in moved out.

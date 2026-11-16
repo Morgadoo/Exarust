@@ -2059,11 +2059,79 @@ impl Plugin for GameScreensPlugin {
             )
             .add_systems(
                 Update,
+                inventory_follows_the_set
+                    .after(exa_items::catalogue::swap_weapon_sets)
+                    .after(open_requested_screens)
+                    .before(draw_screens),
+            )
+            .add_systems(
+                Update,
                 (release_closed_icons, store_saved_containers)
                     .after(close_on_right_release)
                     .after(close_changed_loot_windows),
             );
     }
+}
+
+/// The inventory's page buttons (records 2 and 3, Primary and Secondary).
+const PAGE_BUTTONS: [usize; 2] = [2, 3];
+
+/// The open inventory follows its character's weapon set. The fill lights
+/// the page button of the set the record has out
+/// ([`exa_ui::game_gui::inventory_fill`]'s tab states), and a swap of the
+/// shown body's sets while the window is open lights the other one and
+/// loads the pack again from the record, whose held marks the swap moved
+/// (the original's swap does both through the body's open view). The
+/// pack's old icon references are given back before the load takes new
+/// ones.
+#[allow(clippy::type_complexity)]
+pub(crate) fn inventory_follows_the_set(
+    mut screens: ResMut<GameScreens>,
+    mut icons: Option<ResMut<PanelIcons>>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    bodies: Query<&exa_items::possession::Possessions>,
+    player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
+    mut seen: Local<Option<(Entity, bool)>>,
+) {
+    let Some(open) = screens.find(GameScreen::Inventory) else {
+        *seen = None;
+        return;
+    };
+    let Some((body, p)) = screens
+        .inventory_bound(player_bodies.iter().next())
+        .and_then(|body| bodies.get(body).ok().map(|p| (body, p)))
+    else {
+        return;
+    };
+    let second = exa_items::inventory_window::second_tab(p);
+    let states = exa_ui::game_gui::inventory_tab_states(p.flags);
+    if let Some(base) = screens
+        .task
+        .form_mut(open.form)
+        .and_then(|form| form.base_mut())
+    {
+        for (record, state) in PAGE_BUTTONS.into_iter().zip(states) {
+            if let Some(button) = base.records.get_mut(record)
+                && button.state != state
+            {
+                button.state = state;
+            }
+        }
+    }
+    if let Some((was_body, was)) = *seen
+        && was_body == body
+        && was != second
+        && let Some(icons) = icons.as_deref_mut()
+    {
+        icons.release_container(&mut screens.pack);
+        let loaded =
+            body_inventory::bind_inventory_pack(&mut screens.pack, p, icons, catalogue.as_deref());
+        info!(
+            "GUI: the shown body's sets swapped ({} set out): the pack loads {loaded} entries again",
+            if second { "second" } else { "first" }
+        );
+    }
+    *seen = Some((body, second));
 }
 
 /// The application's deactivation (the window procedure's focus loss): the
@@ -4089,6 +4157,79 @@ mod tests {
         };
         assert!(run(true));
         assert!(!run(false));
+    }
+
+    /// The open inventory lights the page button of the set its body has
+    /// out, and a swap while it is open lights the other one and loads the
+    /// pack again with the held marks the swap moved.
+    #[test]
+    fn the_inventory_follows_the_shown_bodys_weapon_set() {
+        use exa_items::possession::{Carried, HELD, Hand, Possessions, SECOND_SET};
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<exa_items::catalogue::ItemCatalogue>()
+            .add_message::<ScreenRequest>()
+            .add_systems(
+                Update,
+                (
+                    open_requested_screens,
+                    exa_items::catalogue::swap_weapon_sets,
+                    inventory_follows_the_set,
+                )
+                    .chain(),
+            );
+        let carried = |id: u32, flags: u32| Carried {
+            id,
+            flags,
+            x: 0,
+            y: 0,
+        };
+        let body = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                Possessions {
+                    flags: SECOND_SET,
+                    out: [Hand { id: 5, flags: 0 }, Hand::default()],
+                    stowed: [Hand { id: 6, flags: 0 }, Hand::default()],
+                    carried: vec![carried(5, HELD), carried(6, 0)],
+                    ..Default::default()
+                },
+            ))
+            .id();
+        app.world_mut().resource_mut::<GameScreens>().task.screen = (1600, 900);
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Inventory, true, true));
+        app.update();
+        let states = |app: &App| {
+            let screens = app.world().resource::<GameScreens>();
+            let form = screens.find(GameScreen::Inventory).unwrap().form;
+            let base = screens.task.form(form).unwrap().base().unwrap();
+            [base.records[2].state, base.records[3].state]
+        };
+        let held = |app: &App| {
+            let screens = app.world().resource::<GameScreens>();
+            let mut held: Vec<u32> = screens
+                .pack
+                .entries
+                .iter()
+                .filter(|e| e.flags & HELD != 0)
+                .map(|e| e.id)
+                .collect();
+            held.sort_unstable();
+            held
+        };
+        // The second set is out: Secondary is lit.
+        assert_eq!(states(&app), [0, 0x60]);
+        assert_eq!(held(&app), [5]);
+        app.world_mut()
+            .entity_mut(body)
+            .insert(exa_items::catalogue::SwapRequested);
+        app.update();
+        assert_eq!(states(&app), [0x60, 0]);
+        assert_eq!(held(&app), [6]);
     }
 
     #[test]
