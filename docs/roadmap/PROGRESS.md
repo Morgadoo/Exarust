@@ -85,7 +85,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 
 | id | task | state | note |
 |---|---|---|---|
-| D1 | Working infrastructure | doing | D1.2 done: `context/tools/gpu_grid.sh` runs one grid at a time with a free-memory check (after the GPU loss); GPU runs on hold for a hardware fault (GPU_HOLD); determinism_grid.sh now shares the GPU lock |
+| D1 | Working infrastructure | doing | D1.2 done: `context/tools/gpu_grid.sh` runs one grid at a time with a free-memory check (after the GPU loss); GPU runs on hold for a hardware fault (GPU_HOLD); determinism_grid.sh now shares the GPU lock; since round 276 the build worker's RTX 4000 runs scenes, screenshots and determinism offscreen through `context/tools/worker_gpu.sh` while the local card is on hold |
 | D2 | Performance | todo | |
 | D3 | Platform | todo | Steam: decision DEC-2 |
 | D4 | Regression suite | todo | |
