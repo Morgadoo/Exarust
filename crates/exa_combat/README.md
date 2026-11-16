@@ -120,7 +120,9 @@ pitch and muffling and each layer's ringing (`hit_sounds`). An armed bite
 above 0.1 sticks the weapon (`bite::stick`); its grab (`bite::grab_of`)
 pulls by the original's shares of the weapon's and the struck part's link
 mobilities, and once it breaks every grab to that part is dropped with the
-grab layer (`bite::BiteHold`). The hit reaction asks for the bite after a
+grab layer (`bite::BiteHold`); a body the displacement powers take out of
+the world drops its first bite still holding (`BiteHold::drop_first_grab`).
+The state flags carry the vanished bit 0x800 (`StateFlags::VANISHED`). The hit reaction asks for the bite after a
 wound by a held weapon (class bits 0x30) whose depth, in double, passes
 0.1 (`bite::bites`, `BiteTaken`); `bite::open_bites` builds it with the
 holder's link-iteration count as the lifetime unit (20, 15 for a feral

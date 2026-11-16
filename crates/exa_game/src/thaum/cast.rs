@@ -508,6 +508,7 @@ impl Plugin for CastPlugin {
         }
         crate::effects::danger::add_hazard_watch(app);
         super::summon_live::bridge_summon_types(app);
+        super::vanish_body::bridge_vanish_body_types(app);
         app.add_message::<BarCommand>()
             .add_message::<exa_combat::veto::BlowPhased>()
             .add_message::<super::veil_live::VeilSounded>()
@@ -663,6 +664,7 @@ impl Plugin for CastPlugin {
                 (
                     tick_casters,
                     follow_weapon_changes.after(tick_casters),
+                    super::vanish_body::turn_vanishing_bodies.after(tick_casters),
                     apply_otherwhere.after(tick_casters),
                     super::hold_live::end_holds,
                     super::hold_live::dress_strikes,
@@ -2345,6 +2347,16 @@ fn create_displacement(
                         caster_entity,
                         tex_pos,
                     ));
+                // Then the tendril image on the body, over a shell of its
+                // own ([`super::vanish_body`]).
+                if !shared && let Some(body) = ragdoll {
+                    let image = spawn_body_wisps(commands, caster_entity, body, draws, roll);
+                    if let Some(ActiveClass::Vanish(power)) =
+                        caster.active.last_mut().map(|entry| &mut entry.class)
+                    {
+                        power.node.image = Some(image.to_bits());
+                    }
+                }
             }
             debug!("displacement vanish: effect node {entity:?}");
             entity
@@ -2395,6 +2407,19 @@ fn create_displacement(
                         caster_entity,
                         tex_pos,
                     ));
+                // A player's door puts the tendril image up at once; the
+                // AI's when the grid finds its place.
+                if !shared
+                    && !ai
+                    && let Some(body) = ragdoll
+                {
+                    let image = spawn_body_wisps(commands, caster_entity, body, draws, roll);
+                    if let Some(ActiveClass::LongDoor(power)) =
+                        caster.active.last_mut().map(|entry| &mut entry.class)
+                    {
+                        power.node.image = Some(image.to_bits());
+                    }
+                }
             }
             debug!("displacement long door: effect node {entity:?}");
             entity
@@ -2550,6 +2575,18 @@ fn attach_visual(
     // creator's place and the parent link is only its lifetime.
     commands.entity(parent).add_child(node);
     node
+}
+
+/// The vanished bit of the caster's status word follows a vanish step: set
+/// as the body vanishes, cleared as it shows (the body's state flags take
+/// the same bit, [`super::vanish_body`]).
+fn vanish_status(body: &mut CastBody, step: &super::power::displacement::VanishStep) {
+    if step.hide {
+        body.status_bits |= casting::VANISHED;
+    }
+    if step.show {
+        body.status_bits &= !casting::VANISHED;
+    }
 }
 
 /// Places a vanished body at the destination its Long Door reached. The
@@ -2941,7 +2978,12 @@ fn spawn_hand_arcs(
         .id()
 }
 
-/// The constant displacement's wisps.
+/// The size of a body's tendril image before the body's size scales it.
+pub const BODY_WISP_SIZE: f32 = 12.0;
+
+/// A body's tendril image: the constant displacement's wisps, the summoned
+/// demon's and a vanish's after-image ([`super::vanish_body`]), sized
+/// [`BODY_WISP_SIZE`] times the body's size.
 pub(crate) fn spawn_body_wisps(
     commands: &mut Commands,
     caster: Entity,
@@ -2964,7 +3006,11 @@ pub(crate) fn spawn_body_wisps(
             .and_then(|&k| part_point(body, k, s.local))
             .unwrap_or(s.local)
     };
-    let mut wisps = Wisps::new(strands, 12.0, world, || draws.0.unit() as f32);
+    // The image's size, 12, times the body's size.
+    let size = body.drive.as_ref().map_or(1.0, |drive| drive.stats.size);
+    let mut wisps = Wisps::new(strands, BODY_WISP_SIZE * size, world, || {
+        draws.0.unit() as f32
+    });
     wisps.place(TICK_MS, world, &mut roll.0);
     commands
         .spawn((
@@ -3059,11 +3105,12 @@ pub(crate) fn tick_casters(
     mut moves: MessageWriter<Otherwhere>,
     mut holds: MessageWriter<super::hold_live::HoldEnd>,
     mut draws: ResMut<EffectDraws>,
-    (mut arcs, control, mut roll, mut sounded): (
+    (mut arcs, control, mut roll, mut sounded, mut turns): (
         Query<&mut LiveArcs>,
         Option<Res<crate::player_controls::PlayerControl>>,
         ResMut<EffectRoll>,
         MessageWriter<super::barricade_sound::ForceSounded>,
+        MessageWriter<super::vanish_body::VanishTurn>,
     ),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
@@ -3333,6 +3380,13 @@ pub(crate) fn tick_casters(
                     ActiveClass::Vanish(power) => {
                         power.answer_hook(body);
                         let step = power.control(event, now);
+                        vanish_status(body, &step);
+                        turns.write_batch(super::vanish_body::VanishTurn::of(
+                            caster_entity,
+                            super::displacement::VANISH,
+                            &step,
+                            power.base.shared,
+                        ));
                         // The come-back teleports the body to its own
                         // standing point (the original passes the ground
                         // point it keeps under the body), which holds it
@@ -3361,13 +3415,28 @@ pub(crate) fn tick_casters(
                             power.nav
                         };
                         let step = power.control(now, nav);
-                        if step.moved
-                            && let Some(destination) = power.destination
-                        {
-                            moves.write(Otherwhere {
-                                entity: caster_entity,
-                                to: Vec3::from_array(destination),
-                            });
+                        vanish_status(body, &step);
+                        turns.write_batch(super::vanish_body::VanishTurn::of(
+                            caster_entity,
+                            LONG_DOOR,
+                            &step,
+                            power.base.shared,
+                        ));
+                        // The come-back places the body at the door's
+                        // destination, or, when the body is collapsing,
+                        // where it stands.
+                        if step.moved {
+                            let to = if body.condition & casting::COLLAPSING != 0 {
+                                ragdoll.map(standing_point)
+                            } else {
+                                power.destination.map(Vec3::from_array)
+                            };
+                            if let Some(to) = to {
+                                moves.write(Otherwhere {
+                                    entity: caster_entity,
+                                    to,
+                                });
+                            }
                         }
                         if 0.0 < step.spend {
                             drain(body, step.spend);

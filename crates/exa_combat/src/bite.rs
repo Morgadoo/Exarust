@@ -201,6 +201,46 @@ fn pull(
     Ragdoll::pull_grab_across(weapon_body, wp, struck_body, sp, grab, disabled)
 }
 
+impl BiteHold {
+    /// The grab drop of a body taken out of the world (the displacement
+    /// powers' vanish): the first bite still holding (breakable, not
+    /// disabled) whose weapon is a part of `bodies[body]` goes; the struck
+    /// part and its neighbours leave the grab layer, and so does the
+    /// weapon's part. The original walks the living body's own links in
+    /// order and drops the first such grab; Exarust keeps every bite in one
+    /// list in the order they opened, so the first of the body's own is the
+    /// first it opened. Returns the dropped bite.
+    pub fn drop_first_grab(
+        &mut self,
+        bodies: &mut [&mut Ragdoll],
+        body: usize,
+    ) -> Option<HeldBite> {
+        let owns = |weapon: Entity| {
+            bodies
+                .get(body)
+                .is_some_and(|b| b.parts.iter().any(|p| p.entity == weapon))
+        };
+        let at = self.bites.iter().position(|b| {
+            b.grab.flags & exa_physics::body::LINK_DISABLED == 0
+                && b.grab.flags & exa_physics::body::LINK_BREAKABLE != 0
+                && owns(b.weapon)
+        })?;
+        let bite = self.bites.remove(at);
+        if let Some((sb, sp)) = find_part(bodies, bite.struck) {
+            bodies[sb].lower_grab_layer(sp);
+        }
+        if let Some(wp) = bodies[body]
+            .parts
+            .iter()
+            .position(|p| p.entity == bite.weapon)
+            && let Some(layer) = bodies[body].layer(wp)
+        {
+            bodies[body].set_layer(wp, layer & !PART_BIT);
+        }
+        Some(bite)
+    }
+}
+
 impl SolverStage for BiteHold {
     fn links(&mut self, bodies: &mut [&mut Ragdoll], _: usize) {
         let mut i = 0;
@@ -614,6 +654,45 @@ mod tests {
         );
         assert_eq!(struck.layer(0), Some(0));
         assert_eq!(weapon.layer(0), Some(0x80));
+    }
+
+    /// A body taken out of the world drops its first bite still holding:
+    /// a disabled bite is passed over, the struck part leaves the grab
+    /// layer and the weapon's part loses its bit; a later bite stays, and a
+    /// body that holds no bite drops nothing.
+    #[test]
+    fn a_vanishing_body_drops_its_first_holding_bite() {
+        let (mut weapon, mut struck) = (body(1, 0.0), body(2, 0.08));
+        struck.raise_grab_layer(0);
+        weapon.set_layer(0, 0xC0);
+        let link = stick(true, 0.25, 0.1, 20).unwrap();
+        let grab = grab_of(&link, &BitePoints::default(), 1.0, 1.0);
+        let mut spent = held(grab.clone());
+        spent.grab.flags |= exa_physics::body::LINK_DISABLED;
+        spent.opened = 3;
+        let mut later = held(grab.clone());
+        later.opened = 9;
+        let mut stage = BiteHold {
+            bites: vec![spent, held(grab), later],
+            broken: Vec::new(),
+        };
+        let dropped = stage
+            .drop_first_grab(&mut [&mut weapon, &mut struck], 0)
+            .expect("the weapon's body holds a bite");
+        assert_eq!(dropped.opened, 7);
+        assert_eq!(
+            stage.bites.iter().map(|b| b.opened).collect::<Vec<_>>(),
+            vec![3, 9]
+        );
+        assert_eq!(struck.layer(0), Some(0));
+        assert_eq!(weapon.layer(0), Some(0x80));
+        // The struck body is no weapon of any bite.
+        assert!(
+            stage
+                .drop_first_grab(&mut [&mut weapon, &mut struck], 1)
+                .is_none()
+        );
+        assert_eq!(stage.bites.len(), 2);
     }
 
     /// A held model without a body of its own sticks through the hand that
