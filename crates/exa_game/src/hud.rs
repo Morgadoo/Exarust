@@ -72,6 +72,14 @@ struct HeartbeatState {
 #[derive(Component)]
 struct HeartbeatSound;
 
+/// What the HUD reads off the player's body.
+type HudBody = (
+    &'static PlayerBody,
+    Option<&'static Fighter>,
+    Option<&'static PowerCaster>,
+    Option<&'static ShieldHold>,
+);
+
 /// The player's health, focus and combat mode for the HUD: the focus and
 /// the capacity it regenerates to are the caster's, full for a body that
 /// casts nothing. A shield in the player's off hand ([`ShieldHold`], the
@@ -81,12 +89,7 @@ struct HeartbeatSound;
 /// animation has run ([`power_bar_up`]).
 fn pick_hud(
     players: Query<&Children, With<Player>>,
-    bodies: Query<(
-        &PlayerBody,
-        Option<&Fighter>,
-        Option<&PowerCaster>,
-        Option<&ShieldHold>,
-    )>,
+    bodies: Query<HudBody>,
     view: Option<Res<crate::flow::GameView>>,
     tree: Option<Res<crate::power_screen::PowerScreen>>,
     mut hud: ResMut<HudBars>,
