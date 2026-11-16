@@ -1293,19 +1293,51 @@ skipped while the refresh delay counts down, as in the original):
 `terrain::wireframe` draws a block's edges as lines when `EXA_TERRAIN_WIRE`
 is set (the original's debug wireframe hook).
 
+**Terrain blocks drawn** (`terrain::blank_draw`): the original's lit terrain
+draw and both terrain shadow draws walk the inserted tiles' blocks and skip a
+block whose composite state is blank: the state the composite selection gives
+a new block, a block past the 44.4 m reach of the look-ahead point, and a
+block that lost its set to a steal. A visible blank block sorts first, so
+while sets are free every block in view is baked in the frame it comes into
+view; one that finds no set stays undrawn until it gets one. Exarust runs the
+selection live every frame and applies its answer to every draw: after Bevy's
+visibility check the blank blocks leave every camera's visible list (their
+view visibility is kept, so the selection still sees them as in view), the
+sun's cascade lists and the cube faces rendered that frame. This holds for
+the default per-pixel terrain as for the opt-in composite draw; DEC-6 is about
+the drawn blocks' shading, not about which blocks draw. On screen: no terrain
+is drawn, and none casts a shadow, past 44.4 m from the point 10 m ahead of
+the camera, and on a level with many blocks in view a block can stay undrawn
+while all 64 sets are held by visible blocks (`EXA_TERRAIN_DRAW_BLANK=1`
+draws every block, to compare).
+
+A block's plants follow its ground in the camera draws: the original's grass
+main draw tests the same blank bit on each block node before drawing the
+node's plant instances, so a blank block's plants are not drawn and no plant
+stands over missing ground. The grass shadow draws (sun and omni) do not
+test it, so the same plants still cast where plants cast at all (shadow
+quality above 4). Each plant chunk names its block (`terrain::PlantBlock`);
+`blank_draw` takes the chunks of blank blocks out of every camera's visible
+list and leaves the sun's cascades and the cube faces alone.
+
+The selection's visible bit is the block node's main-view bit, the one the
+scene's visible pass sets on a node it drew; a block the live scene holds
+takes its answer, any other block Bevy's view visibility.
+
 **Terrain shadows** (`terrain::shadow_draw`): the original's two terrain
 shadow draws (a tile's blocks into the sun's map, one block into a light's
-cube face) skip a block with the external-draw bit and draw only a block
-whose visible word has the main-view bit, which the scene's visible pass sets
-on a node it drew this frame. Exarust takes the blocks the live scene did not
-draw out of the sun's cascade lists after Bevy's light check, so terrain
-outside the view casts no sun shadow (`EXA_TERRAIN_SHADOW_ALL=1` keeps every
-block). The point lights' cube faces take the same rule: before the faces are
-built the undrawn blocks are listed in `CubeCasterGate`, and a face rendered
-that frame leaves them out. The face stays cached as rendered, as the
-original's does: its one-block draw tests the bit when the face renders and
-no block's bit change dirties a face, so a block out of view when its face
-rendered casts nothing into it until a caster or the light dirties the face.
+cube face) skip a blank block (above) and draw only a block whose visible
+word has the main-view bit, which the scene's visible pass sets on a node it
+drew this frame. Exarust takes the blank blocks and those the live scene did
+not draw out of the sun's cascade lists after Bevy's light check, so terrain
+outside the view or past the reach casts no sun shadow
+(`EXA_TERRAIN_SHADOW_ALL=1` keeps the undrawn blocks). The point lights' cube
+faces take the same rules: before the faces are built the blank and undrawn
+blocks are listed in `CubeCasterGate`, and a face rendered that frame leaves
+them out. The face stays cached as rendered, as the original's does: its
+one-block draw tests the bits when the face renders and no block's change
+dirties a face, so a block out of view when its face rendered casts nothing
+into it until a caster or the light dirties the face.
 Each block culls by its leaf descriptor: the 6 m block across, the height
 range of its bounds cells over the finished vertices, plus 1 cm on the half
 height (and, on a tile's edge, down over Exarust's skirt).

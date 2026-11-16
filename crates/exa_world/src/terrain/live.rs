@@ -144,6 +144,16 @@ impl TerrainStreaming {
         self.selector.drop_blocks(&blocks);
     }
 
+    /// The entities of the blocks that have no composite (blank): the
+    /// blocks the original's lit draw and shadow draws leave out.
+    pub fn blank_entities(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.blocks
+            .iter()
+            .zip(self.selector.blocks())
+            .filter(|(_, composite)| composite.is_blank())
+            .map(|(block, _)| block.entity)
+    }
+
     pub fn stream(&self) -> &TerrainStream {
         &self.stream
     }
@@ -371,6 +381,7 @@ pub fn drive_terrain_stream(
     )>,
     host: Option<ResMut<exa_render::terrain_composite::TerrainCompositeHost>>,
     assets: Option<ResMut<Assets<Image>>>,
+    live: Option<Res<crate::scene_live::LiveScene>>,
 ) {
     let Some(mut streaming) = streaming else {
         return;
@@ -403,14 +414,22 @@ pub fn drive_terrain_stream(
         return;
     };
     let focus = composite_focus(camera, back);
+    // The selector reads the block node's main-view bit, the one the scene's
+    // visible pass sets on a node it drew (the same bit the shadow draws
+    // test). A block the live scene holds takes its answer; any other block
+    // (no live scene, or not registered yet) takes Bevy's view visibility.
+    let main = live.as_deref().filter(|l| l.scene.is_some());
     let visible: Vec<bool> = streaming
         .blocks
         .iter()
         .map(|block| {
-            blocks
-                .get(block.entity)
-                .map(|(visibility, _)| visibility.get())
-                .unwrap_or(true)
+            main.and_then(|l| l.drawn_by_main(block.entity))
+                .unwrap_or_else(|| {
+                    blocks
+                        .get(block.entity)
+                        .map(|(visibility, _)| visibility.get())
+                        .unwrap_or(true)
+                })
         })
         .collect();
     // A hidden, in-reach block ranks by its nearest light; the volumes are
@@ -815,7 +834,10 @@ mod tests {
         streaming.drop_tile_blocks(0);
         assert!(streaming.selector().selected().is_empty());
         assert_eq!(streaming.selector().pools().high_free(), 21);
-        assert_eq!(streaming.selector().blocks()[0].state(), 6);
+        // The removal leaves the state word alone (only the selection's
+        // out-of-reach branch writes it back to wanted and blank); the set
+        // is handed back.
+        assert_eq!(streaming.selector().blocks()[0].state(), 0xa00);
         assert!(streaming.selector().blocks()[0].set().is_none());
         // Dropping a tile that has no blocks is harmless.
         streaming.drop_tile_blocks(7);

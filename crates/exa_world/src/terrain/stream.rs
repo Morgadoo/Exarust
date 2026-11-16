@@ -281,49 +281,23 @@ impl OrientedBox {
 /// original's plane walk computes it: for every plane the box centre lies in
 /// front of, the centre's plane distance less the box's support radius along
 /// the plane's normal in the box's own frame; the largest non-negative value
-/// wins, and a box overlapping the light answers 0. The sums are the
-/// instruction order, `(z + (y + x))`, and the support's component signs are
-/// copied onto the half extents (so a signed zero or NaN half extent keeps
-/// its own payload).
+/// wins, and a box overlapping the light answers 0. This is the engine's
+/// convex-volume clearance ([`exa_physics::intersect::outside_distance`]),
+/// which the original's block rank calls once per light of the block's room;
+/// the box's axes (the matrix's columns) are its frame.
 pub fn light_distance(light: &LightVolume, block: &OrientedBox) -> f32 {
-    let mut best = 0.0f32;
-    for plane in &light.planes {
-        let n = plane.normal;
-        let c = block.centre;
-        let centre_distance = (n.z * c.z + (n.y * c.y + n.x * c.x)) + plane.distance;
-        // Only the planes the centre is beyond take part. The instruction
-        // lets a NaN through here; its clearance is then NaN and fails the
-        // final compare, so skipping it now is the same.
-        if centre_distance.is_nan() || centre_distance < 0.0 {
-            continue;
-        }
-        // The normal in the box's frame: its dot product with each of the
-        // box's axes (the matrix's columns), summed `(x + y) + z` as the
-        // vector-by-matrix helper does.
-        let axis = |a: Vec3| (a.x * n.x + a.y * n.y) + a.z * n.z;
-        let v = Vec3::new(
-            axis(block.axes.x_axis),
-            axis(block.axes.y_axis),
-            axis(block.axes.z_axis),
-        );
-        let extent = |value: f32, half: f32| {
-            f32::from_bits(half.to_bits() | (value.to_bits() & 0x8000_0000))
-        };
-        let e = Vec3::new(
-            extent(v.x, block.half_extents.x),
-            extent(v.y, block.half_extents.y),
-            extent(v.z, block.half_extents.z),
-        );
-        let support = v.z * e.z + (v.y * e.y + v.x * e.x);
-        let clearance = centre_distance - support;
-        if clearance.is_nan() || clearance < 0.0 {
-            continue;
-        }
-        if best < clearance {
-            best = clearance;
-        }
-    }
-    best
+    let obb = exa_physics::intersect::Obb::new(
+        block.centre,
+        block.half_extents,
+        [block.axes.x_axis, block.axes.y_axis, block.axes.z_axis],
+    );
+    exa_physics::intersect::outside_distance(
+        light
+            .planes
+            .iter()
+            .map(|plane| (plane.normal, plane.distance)),
+        &obb,
+    )
 }
 
 /// The nearest light's distance for a block: the smallest

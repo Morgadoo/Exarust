@@ -52,14 +52,20 @@ enum Node {
     Material(usize),
 }
 
-/// A palette's rules and materials with child names resolved.
+/// A palette's rules and materials with child names resolved through the
+/// original's name-sorted brush table ([`BrushTable`]): the table the
+/// palette refresh builds (rules inserted first, then materials) and then
+/// reads for each rule's two children, and that the tile evaluation reads
+/// for each painted layer's name.
 pub struct RuleTree {
     nodes: Vec<Node>,
     materials: usize,
+    table: BrushTable,
 }
 
 impl RuleTree {
     pub fn new(palette: &Palette) -> Self {
+        let table = BrushTable::of(palette);
         let mut nodes: Vec<Node> = palette
             .rules
             .iter()
@@ -67,14 +73,15 @@ impl RuleTree {
                 kind: r.kind as usize,
                 lo: r.lo,
                 hi: r.hi,
-                a: Self::node(palette, &r.a),
-                b: Self::node(palette, &r.b),
+                a: table.get(&r.a).map(|e| e.node),
+                b: table.get(&r.b).map(|e| e.node),
             })
             .collect();
         nodes.extend((0..palette.materials.len()).map(Node::Material));
         Self {
             nodes,
             materials: palette.materials.len(),
+            table,
         }
     }
 
@@ -82,20 +89,16 @@ impl RuleTree {
         self.materials
     }
 
-    /// Node of a layer or child name: rules shadow materials of the same name.
-    pub fn node(palette: &Palette, name: &str) -> Option<usize> {
-        let name = name.trim();
-        palette
-            .rules
-            .iter()
-            .position(|r| r.name.eq_ignore_ascii_case(name))
-            .or_else(|| {
-                palette
-                    .materials
-                    .iter()
-                    .position(|m| m.name.eq_ignore_ascii_case(name))
-                    .map(|m| palette.rules.len() + m)
-            })
+    /// Node of a layer or child name, by the brush table's search: the
+    /// first sixteen bytes compared with `A`…`Z` lowered, and between a rule
+    /// and a material of the same name whichever entry the search meets.
+    pub fn node(&self, name: &str) -> Option<usize> {
+        self.table.get(name).map(|e| e.node)
+    }
+
+    /// The brush table the names resolve through.
+    pub fn table(&self) -> &BrushTable {
+        &self.table
     }
 
     /// Material weights of one vertex. `layers` pairs each painted layer's
@@ -618,7 +621,7 @@ mod tests {
             rule("Inland", 1, "Rock", "Grass", 0.25, 0.81),
         ]);
         let tree = RuleTree::new(&p);
-        let coast = RuleTree::node(&p, "coast").unwrap();
+        let coast = tree.node("coast").unwrap();
         let mut out = [0.0; 3];
         tree.weigh(&[(coast, 1.0)], &inputs(1.0, 1.0), &mut out);
         assert_eq!(out, [0.5, 0.0, 0.5]);
@@ -631,7 +634,7 @@ mod tests {
     fn leftover_weight_goes_to_the_first_node() {
         let p = palette(vec![rule("Fixed", 8, "Sand", "Rock", 0.0, 1.0)]);
         let tree = RuleTree::new(&p);
-        let grass = RuleTree::node(&p, "Grass").unwrap();
+        let grass = tree.node("Grass").unwrap();
         let mut out = [0.0; 3];
         tree.weigh(&[(grass, 0.5)], &inputs(0.0, 1.0), &mut out);
         assert_eq!(out, [0.25, 0.25, 0.5]);
@@ -657,7 +660,7 @@ mod tests {
         // its weight still counts against the leftover sent to node 0.
         let p = palette(vec![rule("Fixed", 8, "Rock", "Rock", 1.5, 2.0)]);
         let tree = RuleTree::new(&p);
-        let sand = RuleTree::node(&p, "Sand").unwrap();
+        let sand = tree.node("Sand").unwrap();
         let below = f32::from_bits(0x3A83_126E);
         assert!(below < 0.001f32);
         let mut out = [0.0; 3];
@@ -682,7 +685,7 @@ mod tests {
         // the byte alone.
         let p = palette(vec![rule("Height", 0, "Sand", "Rock", 0.0, 1.0)]);
         let tree = RuleTree::new(&p);
-        let height = RuleTree::node(&p, "Height").unwrap();
+        let height = tree.node("Height").unwrap();
         let mut nan = inputs(0.0, 1.0);
         nan[0] = f32::NAN;
         let mut bytes = [0u8; 3];
@@ -706,7 +709,7 @@ mod tests {
             rule("Inner", 0, "Rock", "Grass", 0.0, 1.0),
         ]);
         let tree = RuleTree::new(&p);
-        let outer = RuleTree::node(&p, "Outer").unwrap();
+        let outer = tree.node("Outer").unwrap();
         let mut nan = inputs(0.0, 1.0);
         nan[0] = f32::NAN;
         let mut bytes = [0u8; 3];
@@ -720,7 +723,7 @@ mod tests {
             rule("Inner", 0, "Rock", "Grass", 0.0, 1.0),
         ]);
         let tree = RuleTree::new(&p);
-        let outer = RuleTree::node(&p, "Outer").unwrap();
+        let outer = tree.node("Outer").unwrap();
         let mut totals = [0.0f32; 3];
         tree.weigh_bytes(&[(outer, 1.0)], &nan, &mut [0u8; 3], &mut totals);
         assert_eq!(totals, [1.0, 0.0, 0.0]);
@@ -736,8 +739,8 @@ mod tests {
         assert_ne!((1.0 - w0) - w1, 1.0 - (w0 + w1));
         let p = palette(vec![]);
         let tree = RuleTree::new(&p);
-        let rock = RuleTree::node(&p, "Rock").unwrap();
-        let grass = RuleTree::node(&p, "Grass").unwrap();
+        let rock = tree.node("Rock").unwrap();
+        let grass = tree.node("Grass").unwrap();
         let mut out = [0.0f32; 3];
         tree.weigh(&[(rock, w0), (grass, w1)], &inputs(0.0, 1.0), &mut out);
         assert_eq!(out[0].to_bits(), ((1.0 - w0) - w1).to_bits());
@@ -751,8 +754,8 @@ mod tests {
         // takes the rest of the coverage, so no leftover is walked.
         let p = palette(vec![rule("Split", 8, "Sand", "Sand", 0.0, 1.0)]);
         let tree = RuleTree::new(&p);
-        let split = RuleTree::node(&p, "Split").unwrap();
-        let rock = RuleTree::node(&p, "Rock").unwrap();
+        let split = tree.node("Split").unwrap();
+        let rock = tree.node("Rock").unwrap();
         let mut bytes = [0u8; 3];
         let mut totals = [0.0f32; 3];
         tree.weigh_bytes(

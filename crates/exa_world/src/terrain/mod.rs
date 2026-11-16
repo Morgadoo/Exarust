@@ -17,6 +17,7 @@
 
 pub mod manager;
 
+pub mod blank_draw;
 pub mod blend;
 pub mod composite;
 pub mod composite_draw;
@@ -88,19 +89,7 @@ impl Plugin for TerrainPlugin {
                 )
                     .chain(),
             )
-            .init_resource::<shadow_draw::TerrainShadowRule>()
-            .init_resource::<shadow_draw::TerrainShadowStats>()
-            .add_systems(
-                PostUpdate,
-                shadow_draw::sun_casts_drawn_blocks
-                    .after(bevy::light::SimulationLightSystems::CheckLightVisibility),
-            )
-            .add_systems(
-                PostUpdate,
-                shadow_draw::cube_faces_skip_undrawn_blocks
-                    .after(crate::scene_live::run_scene)
-                    .before(exa_render::lights::LightsSystems::Cubes),
-            )
+            .add_plugins(blank_draw::TerrainDrawRulesPlugin)
             .init_resource::<composite_draw::CompositeDraws>()
             .add_systems(
                 Update,
@@ -720,7 +709,8 @@ impl Plants {
 
     /// Grows a tile's plants as chunk meshes under `tile_entity`; returns
     /// how many grew. None grow in absent blocks (as in holes); a chunk
-    /// goes to the room of its plants' block.
+    /// goes to the room of its plants' block and names that block's entity
+    /// (`block_at`, by column + row × 8) as its [`PlantBlock`].
     #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
@@ -731,6 +721,7 @@ impl Plants {
         built: &BuiltTile,
         blocks: Option<&TileBlocks>,
         tile_entity: Entity,
+        block_at: &[Option<Entity>],
     ) -> usize {
         let n = TILE_VERTICES;
         let block = |p: bevy::math::Vec2| {
@@ -757,7 +748,14 @@ impl Plants {
             let (i, j) = vegetation::density_texel(p);
             built.density[j * TILE_MASK_SIDE + i]
         };
-        let growth = vegetation::grow(tile.vegetation_seed, &self.variants, density);
+        // The generator walks the tile's block nodes: a chunk whose block
+        // was not built grows nothing and draws no random numbers.
+        let growth = vegetation::grow(
+            tile.vegetation_seed,
+            &self.variants,
+            |k| block_at.get(k).is_some_and(Option::is_some),
+            density,
+        );
         let s = terrain.spacing;
         let half = (n - 1) as f32 * 0.5 * s;
         let place = |p: bevy::math::Vec2| {
@@ -824,6 +822,9 @@ impl Plants {
                     ChildOf(tile_entity),
                 ))
                 .id();
+            if let Some(&Some(block)) = block_at.get(k) {
+                commands.entity(e).insert(PlantBlock(block));
+            }
             if let Some(b) = blocks {
                 // The point set is partitioned into the tile's 8 × 8 chunks:
                 // chunk `k` is column `k % 8`, row `k / 8`.
@@ -841,6 +842,12 @@ impl Plants {
 /// quality 4.
 #[derive(Component)]
 pub struct PlantChunk;
+
+/// The 6 m terrain block whose plants a [`PlantChunk`] holds: the original
+/// keeps a block's plant instances on its block node, so the grass draw
+/// reads that block's composite state (see [`blank_draw`]).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlantBlock(pub Entity);
 
 /// Appends a Bevy mesh's positions, normals, UVs and indices to a variant.
 fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
@@ -1258,8 +1265,9 @@ impl TerrainBuild {
         let started = std::time::Instant::now();
         self.uploaded = 0;
         self.blocking = budget == std::time::Duration::MAX;
-        // The frame hook's one tile a step, as the original runs it from the
-        // terrain's activation hook.
+        // The frame hook's one tile a step: the original's activation
+        // inserts this hook into the scene's frame list, and its
+        // deactivation takes it out again.
         self.frame_hook(commands);
         while self.next < self.terrain.tiles.len() {
             // A surface map still being packed waits for a later step, and
@@ -1416,7 +1424,6 @@ impl TerrainBuild {
             build_tile(
                 &terrain,
                 tile,
-                &palette,
                 &tree,
                 &noise,
                 &mut bake_layers,
@@ -1628,6 +1635,9 @@ impl TerrainBuild {
         let tile_size = self.terrain.spacing * (TILE_VERTICES - 1) as f32;
         let wireframe = self.wireframe.clone();
         let mut block_entities = Vec::new();
+        // Each 6 m block's entity by its place in the tile (column + row ×
+        // 8): the block node whose plants a chunk is.
+        let mut block_at = [None; vegetation::CHUNKS * vegetation::CHUNKS];
         // Each block culls by its leaf descriptor over the tile's height
         // bounds (the finished, lifted vertices), as the original's block
         // nodes do; an edge block's box also reaches down over its skirt.
@@ -1679,6 +1689,9 @@ impl TerrainBuild {
                     .insert((aabb, bevy::camera::visibility::NoAutoAabb));
             }
             block_entities.push(part);
+            if block.bx < vegetation::CHUNKS && block.by < vegetation::CHUNKS {
+                block_at[block.bx + block.by * vegetation::CHUNKS] = Some(part);
+            }
             let centre_in_tile =
                 TerrainBlock::centre_in_tile(tile_size, record.bx, record.by, record.level);
             self.live_blocks.push(live::LiveBlock {
@@ -1724,6 +1737,7 @@ impl TerrainBuild {
                 built,
                 blocks,
                 tile_entity,
+                &block_at,
             );
         }
         self.grounds[slot] = Some(ground);
@@ -1965,7 +1979,6 @@ struct BuiltTile {
 fn build_tile(
     terrain: &Terrain,
     tile: &TerrainTile,
-    palette: &Palette,
     tree: &RuleTree,
     noise: &NoiseMaps,
     bake_layers: &mut dyn FnMut(&[usize]) -> Vec<BakeLayer>,
@@ -1994,7 +2007,7 @@ fn build_tile(
     let mut layers: Vec<(Option<usize>, &[u8])> = tile
         .layers
         .iter()
-        .map(|l| (RuleTree::node(palette, &l.name), l.weights.as_slice()))
+        .map(|l| (tree.node(&l.name), l.weights.as_slice()))
         .collect();
     let unresolved = layers.iter().filter(|l| l.0.is_none()).count();
     // The original keeps at most eleven painted brushes; at the next one
@@ -2687,15 +2700,7 @@ mod tests {
         };
         let tree = RuleTree::new(&palette);
         let noise = NoiseMaps::default();
-        let built = build_tile(
-            &terrain,
-            tile,
-            &palette,
-            &tree,
-            &noise,
-            &mut |_| Vec::new(),
-            None,
-        );
+        let built = build_tile(&terrain, tile, &tree, &noise, &mut |_| Vec::new(), None);
         assert_eq!(built.blocks.len(), 64);
         for block in &built.blocks {
             let indices = block.mesh.indices().unwrap().len();
@@ -2729,7 +2734,6 @@ mod tests {
         let built = build_tile(
             &terrain,
             tile,
-            &palette,
             &tree,
             &noise,
             &mut |_| Vec::new(),
@@ -2769,21 +2773,60 @@ mod tests {
             let noise = NoiseMaps::default();
             let mut most = 0;
             for tile in &terrain.tiles {
-                let built = build_tile(
-                    &terrain,
-                    tile,
-                    &palette,
-                    &tree,
-                    &noise,
-                    &mut |_| Vec::new(),
-                    None,
-                );
+                let built = build_tile(&terrain, tile, &tree, &noise, &mut |_| Vec::new(), None);
                 assert!(!built.truncated, "{level} tile {} {}", tile.x, tile.y);
                 most = most.max(built.materials.len());
             }
             // exanima01's dirt rooms stack eight; one exanima67 tile twelve.
             assert!(most > 4, "{level}: {most}");
         }
+    }
+
+    /// The brush table's binary search resolves every name the shipped
+    /// terrains use (each rule's two children and each tile's painted
+    /// layers) to the node the plain name match gives, rules before
+    /// materials: no shipped palette repeats a name or uses one past the
+    /// key's sixteen bytes (skipped without the game).
+    #[test]
+    fn shipped_names_resolve_through_the_brush_table() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let (mut levels, mut names, mut unresolved) = (0, 0, 0);
+        for entry in pack.entries() {
+            let Some(level) = entry.name.strip_suffix(".rft") else {
+                continue;
+            };
+            let terrain = Terrain::parse(pack.bytes(entry)).unwrap();
+            let (palette, _, _) = choose_palette(&terrain.palette, |name| pack.get(name));
+            let palette = palette.unwrap_or_else(|| panic!("{level}: no palette"));
+            let tree = RuleTree::new(&palette);
+            let linear = |name: &str| {
+                palette.entry(name).map(|e| match e {
+                    exa_formats::terrain::PaletteEntry::Rule(i) => i,
+                    exa_formats::terrain::PaletteEntry::Material(m) => palette.rules.len() + m,
+                })
+            };
+            let children = palette
+                .rules
+                .iter()
+                .flat_map(|r| [r.a.as_str(), r.b.as_str()]);
+            let layers = terrain
+                .tiles
+                .iter()
+                .flat_map(|t| t.layers.iter().map(|l| l.name.as_str()));
+            for name in children.chain(layers) {
+                assert_eq!(tree.node(name), linear(name), "{level}: {name:?}");
+                names += 1;
+                unresolved += usize::from(tree.node(name).is_none());
+            }
+            levels += 1;
+        }
+        eprintln!("{levels} terrains: {names} names, {unresolved} unresolved");
+        assert_eq!(levels, 17);
+        assert!(names > 0 && unresolved < names, "{names} {unresolved}");
     }
 
     /// Every shipped material's tiling factor is a whole number of 4/48 m
@@ -3055,6 +3098,30 @@ mod build_tests {
         assert_eq!(live.tiles().len(), 20);
         assert!(!live.blocks().is_empty());
         assert!(live.blocks().iter().all(|block| block.tile < 20));
+        // Every plant chunk names the block it stands on, in its own tile
+        // and at its own place (the grass draw reads that block's state).
+        let mut chunks = world.query::<(&PlantBlock, &ChildOf, &Transform)>();
+        let mut linked = 0;
+        for (block, tile, at) in chunks.iter(&world) {
+            let record = world.get::<TerrainBlock>(block.0).expect("a block");
+            assert_eq!(
+                world.get::<ChildOf>(block.0).unwrap().parent(),
+                tile.parent()
+            );
+            let tile_size = 48.0;
+            let centre =
+                TerrainBlock::centre_in_tile(tile_size, record.bx, record.by, record.level);
+            assert!((centre - at.translation).length() < 0.5, "{centre} {at:?}");
+            linked += 1;
+        }
+        let all = world
+            .query_filtered::<(), With<PlantChunk>>()
+            .iter(&world)
+            .count();
+        assert!(
+            linked > 0 && linked == all,
+            "{linked} of {all} chunks linked"
+        );
         // The frame hook's inserts showed every spawned tile: none is left
         // hidden by an insert handled before its entity existed.
         for tile in live.tiles().iter().flatten() {

@@ -29,6 +29,10 @@ pub struct LoadingStatus {
     pub fraction: f32,
 }
 
+/// The name of the interface camera: the loading screen's camera, which
+/// stays after the load to draw the interface over the game's view.
+pub const INTERFACE_CAMERA: &str = "_InterfaceCamera";
+
 /// Window pixels per atlas pixel for the loading text.
 const SCALE: f32 = 0.6;
 const BACKGROUND: Color = Color::srgb(0.02, 0.02, 0.025);
@@ -280,9 +284,17 @@ fn show(
     // there are already multiplied by their opacity: it goes over the game's
     // view premultiplied. (Bevy's default for a later camera blends it as
     // straight alpha, which multiplied every translucent pixel twice.)
+    // It belongs to no render layer: the interface draws through it whatever
+    // its layers, and with Bevy's default layer its orthographic box (a
+    // window's pixels wide, 2 km deep, about the world origin) listed every
+    // world mesh inside it as seen, so a whole arena's terrain counted as in
+    // view and every blank block and plant chunk sat in its visible list.
+    // The original draws its interface without walking the scene.
     commands.spawn((
         LoadingScreen,
+        Name::new(INTERFACE_CAMERA),
         Camera2d,
+        bevy::camera::visibility::RenderLayers::none(),
         Camera {
             order: 10,
             clear_color: ClearColorConfig::None,
@@ -373,5 +385,55 @@ fn update(
 fn hide(mut screens: Query<&mut Visibility, (With<LoadingScreen>, Without<Camera>)>) {
     for mut visibility in &mut screens {
         *visibility = Visibility::Hidden;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::camera::primitives::Aabb;
+    use bevy::camera::visibility::{NoAutoAabb, VisibilityPlugin, VisibleEntities};
+
+    use super::*;
+
+    /// A world mesh inside the interface camera's orthographic box is
+    /// neither listed by it nor seen through it; a plain 2D camera in the
+    /// same place lists it (the check itself works).
+    #[test]
+    fn the_interface_camera_lists_no_world_mesh() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin, VisibilityPlugin))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>()
+            .add_systems(Update, show);
+        let mesh = app
+            .world_mut()
+            .spawn((
+                Mesh3d(Handle::default()),
+                Aabb::from_min_max(Vec3::splat(-0.5), Vec3::splat(0.5)),
+                NoAutoAabb,
+                Transform::from_xyz(0.0, 0.0, -100.0),
+            ))
+            .id();
+        let plain = app.world_mut().spawn(Camera2d).id();
+        app.update();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<(Entity, &Name), (With<LoadingScreen>, With<Camera>)>();
+        let (interface, name) = cameras.single(app.world()).unwrap();
+        assert_eq!(name.as_str(), INTERFACE_CAMERA);
+        let listed = |app: &mut App, camera: Entity| {
+            app.world_mut()
+                .get_mut::<VisibleEntities>(camera)
+                .unwrap()
+                .get_mut(std::any::TypeId::of::<Mesh3d>())
+                .clone()
+        };
+        app.update();
+        assert!(listed(&mut app, interface).is_empty());
+        assert_eq!(listed(&mut app, plain), [mesh]);
+        // Without the plain camera, nothing sees the mesh.
+        app.world_mut().despawn(plain);
+        app.update();
+        assert!(!app.world().get::<ViewVisibility>(mesh).unwrap().get());
     }
 }
