@@ -63,7 +63,11 @@ fn light_update(b: &Case) -> Vec<u8> {
     light.radius = b.f32("light.radius");
     light.last_radius = b.f32("light.last");
     light.offset = [b.f32("light.ox"), b.f32("light.oy"), b.f32("light.oz")];
-    light.colour = [b.f32("light.red"), b.f32("light.green"), b.f32("light.blue")];
+    light.colour = [
+        b.f32("light.red"),
+        b.f32("light.green"),
+        b.f32("light.blue"),
+    ];
     light.dirty = u32_of(b, "light.dirty");
     let u = light.update(flags, b.u8("mode.linear") != 0);
     object(

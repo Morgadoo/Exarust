@@ -257,7 +257,8 @@ pub fn held_box_shape(frame: &ShellFrame, fit: RigidFit, colour: Vec3) -> (GiSha
     let shape = GiShape {
         program: GiShapeProgram::Cuboid,
         colour: light.colour,
-        matrix: Mat4::from_translation(-centre) * Mat4::from(exa_physics::engine_math::rigid_inverse(&node)),
+        matrix: Mat4::from_translation(-centre)
+            * Mat4::from(exa_physics::engine_math::rigid_inverse(&node)),
         half: light.extent,
         ..default()
     };

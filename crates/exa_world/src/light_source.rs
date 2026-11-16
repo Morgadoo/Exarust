@@ -647,7 +647,10 @@ mod tests {
         let mut light = LightSource::new(0, f32::from_bits(0x4024_6d67));
         light.colour = [0x3e6e_adb1, 0x3e60_0823, 0x3e94_5e41].map(f32::from_bits);
         let colour = light.direct_colour(true);
-        assert_eq!(colour.map(f32::to_bits), [0x3de9_6c1b, 0x3dce_923e, 0x3e33_a3a5]);
+        assert_eq!(
+            colour.map(f32::to_bits),
+            [0x3de9_6c1b, 0x3dce_923e, 0x3e33_a3a5]
+        );
     }
 
     #[test]
