@@ -30,9 +30,14 @@
 //! The original keeps all these points relative to the scene node and adds
 //! the node origin where it weighs them; Exarust keeps one world frame (cm).
 //! The routines work on plain numbers, so a caller can run them without a
-//! body; [`crate::brain::ai_tick`] only turns an idle character's model and
-//! leaves the head look to the body's locomotion, which the running game
-//! does not tick for an NPC.
+//! body. The body directions they write (the gaze's look, look smoothing
+//! and heading) are the body's own: a character on its locomotion has them
+//! written into its request after the state ([`crate::drive::publish`]) and
+//! its body turns toward the heading at its rates; a body without muscles
+//! has its model turned by the brain's stand-in.
+//! - **Look snap.** In combat the body's heading stays until the look
+//!   smoothing lies more than 30° from it, then takes the look direction
+//!   ([`look_snap`]).
 //!
 //! Evidence: the original's head-look, walk, turn, settle, aim, snap, stop,
 //! alert and steer routines, read from the instructions (sums and products
@@ -241,6 +246,28 @@ pub fn smooth_look(
         return None;
     }
     Some(dir_of(gaze.look))
+}
+
+/// The cone the combat look snap holds the body's heading within: 30°,
+/// the product of two singles (30 and the degree).
+pub const SNAP_DEGREES: f32 = 30.0;
+
+/// The look snap of a body in combat (after the AI tick's state): the gap
+/// from the yaw of the body's look smoothing to the yaw of its heading
+/// (each the engine's heading of the vector), wrapped into ±π in double
+/// precision; when its magnitude is strictly over 30° the heading takes the
+/// body's look direction (the vector itself). A NaN gap fails the ordered
+/// compare and moves nothing. Returns whether the heading moved. The body
+/// then turns toward that heading by its locomotion: a heading that trails
+/// the look by up to 30° stays where it is.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn look_snap(gaze: &mut Gaze) -> bool {
+    let d = gap(yaw_of(gaze.body_heading), yaw_of(gaze.body_smooth));
+    if !(SNAP_DEGREES * DEGREE < d.abs()) {
+        return false;
+    }
+    gaze.body_heading = gaze.body_look;
+    true
 }
 
 /// The body's idle look: its direction and pitch.
@@ -681,6 +708,30 @@ pub fn settle_look(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The look snap moves the heading to the look direction only when the
+    /// look smoothing lies strictly more than 30° from it (either side,
+    /// across ±π the short way); a NaN gap moves nothing.
+    #[test]
+    fn the_look_snap_moves_the_heading_past_thirty_degrees() {
+        let snapped = |heading: f32, smooth: f32| {
+            let mut gaze = Gaze {
+                body_heading: dir_of(heading),
+                body_smooth: dir_of(smooth),
+                body_look: Vec3::new(0.6, 0.0, 0.8),
+                ..Gaze::default()
+            };
+            let moved = look_snap(&mut gaze);
+            (moved, gaze.body_heading)
+        };
+        assert_eq!(SNAP_DEGREES * DEGREE, f32::from_bits(0x3f06_0a92));
+        assert_eq!(snapped(0.0, 0.6), (true, Vec3::new(0.6, 0.0, 0.8)));
+        assert_eq!(snapped(0.6, 0.0), (true, Vec3::new(0.6, 0.0, 0.8)));
+        assert_eq!(snapped(0.0, 0.5), (false, dir_of(0.0)));
+        // 3.0 and −3.0 lie 0.28 apart across ±π.
+        assert!(!snapped(3.0, -3.0).0);
+        assert!(!snapped(f32::NAN, 0.0).0);
+    }
 
     fn body(id: usize, x: f32, z: f32, dead: bool) -> BodyAt {
         BodyAt {

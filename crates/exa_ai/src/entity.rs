@@ -16,9 +16,19 @@
 //! the assessment and zero into a third; only the weight and the
 //! attraction are observable here.
 //!
+//! A brain keeps one goal entity ([`GoalEntity`]), created at the search's
+//! first pick and linked to each object it picks. While the brain's pick
+//! flag holds, the target pass weighs it first: its assessment writes the
+//! contact the pass keeps for it (no alarm; within reach the weight as its
+//! noticed and sighting levels and no attention), the contact enters the
+//! brain's contact list as an object, and with nothing that outranks it
+//! the pass attends it; the integration never raises its attention. The
+//! search's next step waits until the brain attends its goal entity.
+//!
 //! Evidence: the original's entity base (position from the linked scene
 //! object, the default aim point calling the position query), the goal
-//! entity's constructor and assessment.
+//! entity's constructor and assessment, the search's pick and release, the
+//! target pass's goal branch and the integration's attention test.
 
 use bevy::math::Vec3;
 
@@ -115,6 +125,85 @@ impl Perceivable for ObjectEntity {
     }
 }
 
+/// A brain's goal entity: the contact id it is kept under, its weight and
+/// the place (cm) of the object it is linked to, if any.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GoalEntity {
+    /// Its contact id: not a character's (no scene entity has it).
+    pub id: u64,
+    pub weight: f32,
+    /// The linked object's place (cm); none once the search let it go.
+    pub linked_cm: Option<Vec3>,
+}
+
+impl GoalEntity {
+    /// The goal entity of the brain on `brain` ([`goal_id`]), unlinked,
+    /// with the constructor's weight.
+    pub fn new(brain: bevy::prelude::Entity) -> Self {
+        Self {
+            id: goal_id(brain),
+            weight: GOAL_WEIGHT,
+            linked_cm: None,
+        }
+    }
+
+    /// The assessment the target pass's classify asks of it for a perceiver
+    /// whose body anchor is at `head_cm`, written into its contact
+    /// `record`: the alarm clears; linked and within 1200 cm (squared,
+    /// 3-D, a NaN distance in reach) the noticed and sighting levels take
+    /// the weight and the attention clears (the attraction, `1 − d/1200`
+    /// capped at 0.99, has no field in Exarust's contact). Beyond reach, or
+    /// unlinked, nothing more is written. Returns whether it was in reach.
+    pub fn assess(&self, head_cm: Vec3, record: &mut crate::contacts::ContactRecord) -> bool {
+        record.alarm = 0.0;
+        let Some(at_cm) = self.linked_cm else {
+            return false;
+        };
+        let entity = ObjectEntity {
+            at: at_cm / 100.0,
+            weight: self.weight,
+        };
+        let Some(assessed) = entity.assess(head_cm / 100.0) else {
+            return false;
+        };
+        record.sighting = assessed.weight;
+        record.noticed = assessed.weight;
+        record.attention = 0.0;
+        true
+    }
+}
+
+/// The search's pick on a brain's goal entity and pick flag: the entity
+/// (created now if there is none, for the brain on `brain`) is linked to
+/// the picked object at `at_cm` and the flag is set.
+pub fn pick(
+    goal: &mut Option<GoalEntity>,
+    picked: &mut bool,
+    brain: bevy::prelude::Entity,
+    at_cm: Vec3,
+) {
+    goal.get_or_insert_with(|| GoalEntity::new(brain)).linked_cm = Some(at_cm);
+    *picked = true;
+}
+
+/// The search lets its object go: the pick flag clears and the goal entity
+/// is unlinked (the brain keeps it).
+pub fn release(goal: &mut Option<GoalEntity>, picked: &mut bool) {
+    *picked = false;
+    if let Some(goal) = goal.as_mut() {
+        goal.linked_cm = None;
+    }
+}
+
+/// The contact id of the goal entity of the brain on `brain`: the brain
+/// entity's index as the high word over a low word of 0, the bits no
+/// entity has, so it never names a scene entity
+/// ([`bevy::prelude::Entity::try_from_bits`] refuses it) nor another
+/// brain's goal.
+pub fn goal_id(brain: bevy::prelude::Entity) -> u64 {
+    u64::from(brain.index().index()) << 32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +245,58 @@ mod tests {
         let far = ObjectEntity::new(Vec3::new(12.01, 1.5, 0.0));
         assert_eq!(far.attraction(head), None);
         assert_eq!(far.assess(head), None);
+    }
+
+    /// The goal entity's id names no entity and differs by brain; its
+    /// assessment clears the alarm and, linked and within 12 m, writes its
+    /// weight as the noticed and sighting levels and clears the attention;
+    /// beyond reach or unlinked it writes nothing more. The pick links it
+    /// and sets the flag, the release unlinks it and clears the flag.
+    #[test]
+    fn the_goal_entity_is_assessed_into_its_contact() {
+        use crate::contacts::ContactRecord;
+        let brain = bevy::prelude::Entity::from_raw_u32(7).unwrap();
+        let other = bevy::prelude::Entity::from_raw_u32(8).unwrap();
+        assert_eq!(bevy::prelude::Entity::try_from_bits(goal_id(brain)), None);
+        assert_ne!(goal_id(brain), goal_id(other));
+        let (mut goal, mut picked) = (None, false);
+        pick(&mut goal, &mut picked, brain, Vec3::new(0.0, 0.0, 600.0));
+        let g = goal.unwrap();
+        assert!(picked);
+        assert_eq!((g.id, g.weight), (goal_id(brain), 5.0));
+        let stale = ContactRecord {
+            alarm: 2.0,
+            noticed: 1.0,
+            sighting: 1.0,
+            attention: 3.0,
+            ..ContactRecord::default()
+        };
+        let mut c = stale;
+        assert!(g.assess(Vec3::ZERO, &mut c));
+        assert_eq!(
+            (c.alarm, c.noticed, c.sighting, c.attention),
+            (0.0, 5.0, 5.0, 0.0)
+        );
+        let mut far = stale;
+        assert!(!g.assess(Vec3::new(0.0, 0.0, -700.0), &mut far));
+        assert_eq!(
+            far,
+            ContactRecord {
+                alarm: 0.0,
+                ..stale
+            }
+        );
+        release(&mut goal, &mut picked);
+        assert!(!picked);
+        assert_eq!(goal.unwrap().linked_cm, None);
+        let mut unlinked = stale;
+        assert!(!goal.unwrap().assess(Vec3::ZERO, &mut unlinked));
+        assert_eq!(
+            unlinked,
+            ContactRecord {
+                alarm: 0.0,
+                ..stale
+            }
+        );
     }
 }

@@ -1633,6 +1633,8 @@ the function oracle covers 110 original functions bit for bit over 5000 cases ea
 
 the frame's Update and PostUpdate are fully ordered in named phases that follow the original's frame order (input, GUI, hub, session, controls, camera, hand, cursor, world, audio, draw, capture; prepare, placed, view, trace), and the schedule test now holds every schedule to zero unordered conflicting pairs, apart from seven documented pairs with private engine systems; ordering the frame fixed a GUI bug: paints that ran before the game screens' per-frame clear were wiped every frame (the story death's tip banner now shows). Determinism unchanged; the golden story_death scene changes by the banner.
 
+NPC bodies turn and look through their locomotion as the player's does: the AI keeps the original's three body directions (look, look smoothing, heading), runs the heading block after the state (the stepping copy, the combat look snap past 30 degrees, the out-of-combat chain's writer) and hands them to the locomotion, which turns the body at its rates; the duellist reads and writes them, runs the head tracking from the stab's sweep, and its chase sets grip mode 1. F389 ported: the search's pick creates the brain's perceived goal entity, the target pass weighs and attends it and the search waits for that attention; a classify bug fixed on the way (the attention bonus belonged to the attended contact, not the body's target). Every NPC's motion changes; each binary repeats itself.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the

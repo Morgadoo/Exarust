@@ -475,7 +475,8 @@ pub struct Integration {
     pub courage: f32,
     /// What it attends.
     pub attention: Option<u64>,
-    /// The scripted focus.
+    /// The goal entity ([`crate::entity::GoalEntity`]): attended, its
+    /// attention does not rise.
     pub scripted: Option<u64>,
     /// The calming scale: the personality's eagerness term
     /// `((3 − restraint) + confidence + 3)/8`.
@@ -788,8 +789,12 @@ pub struct PassInput<'a> {
     pub in_combat: bool,
     /// The score of what the brain already attends.
     pub attended: Option<f32>,
-    /// The scripted focus's sighting.
+    /// The goal entity's sighting while the search's pick flag holds (the
+    /// scripted focus, weighed first; [`crate::entity::GoalEntity`]).
     pub scripted: Option<Sighting>,
+    /// The goal entity's contact id, whether or not the pick flag holds:
+    /// with nothing noticed the pass keeps attending it.
+    pub goal: Option<u64>,
     /// The round-robin cursor.
     pub cursor: usize,
     /// What the brain attended before the pass.
@@ -821,10 +826,12 @@ pub fn target_pass(
         in_combat,
         attended,
         scripted,
+        goal,
         cursor,
         greet_gates,
         attended_id,
     } = input;
+    let goal_id = goal.or(scripted_id);
     let level_before = level;
     for c in contacts.iter_mut() {
         c.concern_target = 0.0;
@@ -856,7 +863,10 @@ pub fn target_pass(
         let mut record = sighting.contact;
         let at = Standing {
             level,
-            is_focus: Some(record.id) == foe,
+            // The contact the brain attends as the pass starts (the
+            // original compares with its attention word): it keeps the fled
+            // foe's alarm and adds 3 to a notice score.
+            is_focus: attended_id.is_some() && Some(record.id) == attended_id,
             threat: bevy::math::Vec2::new(sighting.position_cm.x, sighting.position_cm.z),
             threat_room: sighting.room,
         };
@@ -940,8 +950,8 @@ pub fn target_pass(
         }
         Outcome::Calm { noticed } => match noticed {
             None => {
-                // The scripted focus stays attended even with nothing seen.
-                report.attention = if attended_id == scripted_id {
+                // The goal entity stays attended even with nothing seen.
+                report.attention = if attended_id == goal_id {
                     attended_id
                 } else {
                     None

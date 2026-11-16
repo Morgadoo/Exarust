@@ -281,6 +281,7 @@ fn a_follower_searches_a_chest_and_a_loose_item() {
         .add_systems(
             Update,
             (
+                exa_ai::brain::ai_tick,
                 follow_and_search,
                 carry_out_search,
                 exa_ai::route_walk::walk_routes,
@@ -317,6 +318,7 @@ fn a_follower_searches_a_chest_and_a_loose_item() {
         .spawn((
             npc,
             exa_ai::Duellist::new(player),
+            exa_combat::Fighter::default(),
             Condition::default(),
             Transform::default(),
             GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
@@ -501,7 +503,12 @@ fn a_follower_searches_a_dead_body() {
         .insert_resource(BodyTicks(0))
         .add_systems(
             Update,
-            (follow_and_search, exa_ai::route_walk::walk_routes).chain(),
+            (
+                exa_ai::brain::ai_tick,
+                follow_and_search,
+                exa_ai::route_walk::walk_routes,
+            )
+                .chain(),
         );
     // Away from the world origin, where a new search last gathered.
     let player = app
@@ -536,6 +543,7 @@ fn a_follower_searches_a_dead_body() {
         .spawn((
             npc,
             exa_ai::Duellist::new(player),
+            exa_combat::Fighter::default(),
             Condition::default(),
             Transform::default(),
             GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
@@ -890,6 +898,7 @@ fn a_living_leader_hears_about_a_special_piece() {
             .add_systems(
                 Update,
                 (
+                    exa_ai::brain::ai_tick,
                     follow_and_search,
                     carry_out_search,
                     send_search_shots,
@@ -953,6 +962,7 @@ fn a_living_leader_hears_about_a_special_piece() {
             .spawn((
                 npc,
                 exa_ai::Duellist::new(leader),
+                exa_combat::Fighter::default(),
                 Condition::default(),
                 Transform::default(),
                 GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
@@ -1063,6 +1073,7 @@ fn a_shield_taken_off_the_dead_leaves_its_arm() {
         .add_systems(
             Update,
             (
+                exa_ai::brain::ai_tick,
                 follow_and_search,
                 carry_out_search,
                 send_search_shots,
@@ -1102,6 +1113,7 @@ fn a_shield_taken_off_the_dead_leaves_its_arm() {
         .spawn((
             npc,
             exa_ai::Duellist::new(player),
+            exa_combat::Fighter::default(),
             Condition::default(),
             Transform::default(),
             GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
@@ -1160,10 +1172,12 @@ fn a_shield_taken_off_the_dead_leaves_its_arm() {
     assert_eq!(mine.worn.iter().map(|w| w.id).collect::<Vec<_>>(), [200]);
 }
 
-/// The walk, settle and look the search asks of the AI: the path and the
-/// approach drop the walk's urgency to 0 (the follow had left it at 2),
-/// and the arrival's settle takes the brain's look and heading from the
-/// body's heading.
+/// The walk, settle and look the search asks of the AI: the look and the
+/// path wait until the brain's target pass (the real AI tick) attends the
+/// goal entity the pick linked to the chest, the path and the approach
+/// drop the walk's urgency to 0 (the follow had left it at 2), and the
+/// arrival's settle takes the brain's look and heading from the body's
+/// heading.
 #[test]
 fn the_search_calms_the_walk_and_settles_the_look() {
     let mut app = App::new();
@@ -1179,7 +1193,12 @@ fn the_search_calms_the_walk_and_settles_the_look() {
         .insert_resource(BodyTicks(0))
         .add_systems(
             Update,
-            (follow_and_search, exa_ai::route_walk::walk_routes).chain(),
+            (
+                exa_ai::brain::ai_tick,
+                follow_and_search,
+                exa_ai::route_walk::walk_routes,
+            )
+                .chain(),
         );
     let player = app
         .world_mut()
@@ -1214,6 +1233,7 @@ fn the_search_calms_the_walk_and_settles_the_look() {
         .spawn((
             npc,
             exa_ai::Duellist::new(player),
+            exa_combat::Fighter::default(),
             Condition::default(),
             Transform::default(),
             GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
@@ -1275,6 +1295,14 @@ fn the_search_calms_the_walk_and_settles_the_look() {
         if state == search::State::Approach {
             approached = true;
             assert_eq!(urgency, 0);
+            // The look and the path waited until the brain's target pass
+            // attended the goal entity the pick linked to the chest; its
+            // contact is an object weighed by its weight.
+            assert!(npc.goal_picked && npc.attends_goal());
+            let goal = npc.goal.unwrap();
+            assert_eq!(goal.linked_cm, Some(Vec3::new(2000.0, 0.0, 2300.0)));
+            let contact = npc.contacts.iter().find(|c| c.id == goal.id).unwrap();
+            assert!(contact.object && contact.sighting == 5.0);
             let route = app
                 .world()
                 .get::<exa_ai::route_walk::AiRoute>(follower)

@@ -611,6 +611,13 @@ pub trait Searcher {
     fn searched(&mut self) -> &mut Vec<u32>;
     /// Game time in seconds, for the comment window.
     fn now_s(&self) -> u32;
+    /// The pick: the brain's goal entity (created at the first pick) is
+    /// linked to the picked object at `at` and its pick flag is set, so its
+    /// target pass weighs the goal ([`crate::entity::GoalEntity`]).
+    fn pick_goal(&mut self, _at: Vec3) {}
+    /// The object is let go: the pick flag clears and the goal entity is
+    /// unlinked.
+    fn release_goal(&mut self) {}
 }
 
 /// One contact, for finding the leader.
@@ -1002,8 +1009,10 @@ impl Search {
         }
     }
 
-    /// Lets the object go and picks again.
-    fn give_up(&mut self, scene: &mut Scene) {
+    /// Lets the object go and picks again: the brain's pick flag clears and
+    /// its goal entity is unlinked.
+    fn give_up(&mut self, me: &mut dyn Searcher, scene: &mut Scene) {
+        me.release_goal();
         self.busy = false;
         self.release(scene);
         self.state = State::Pick;
@@ -1197,6 +1206,9 @@ impl Search {
                     self.busy = true;
                     me.gaze().look_until = self.timer_ms;
                     self.sweep.phase = 0;
+                    if let Some(o) = self.target.and_then(|t| scene.objects.get(t)) {
+                        me.pick_goal(o.at);
+                    }
                 } else {
                     self.state = State::Stand;
                     busy = false;
@@ -1211,7 +1223,7 @@ impl Search {
                         self.tries = 0;
                     }
                 }
-                Attention::Nobody => self.give_up(scene),
+                Attention::Nobody => self.give_up(me, scene),
                 Attention::Other => {
                     me.gaze().look_until = 0;
                     me.attend(ATTEND);
@@ -1307,7 +1319,7 @@ impl Search {
             if self.tries < TRIES {
                 self.state = State::Path;
             } else {
-                self.give_up(scene);
+                self.give_up(me, scene);
             }
             return;
         }
@@ -1316,7 +1328,7 @@ impl Search {
                 self.source = Source::Container;
             } else {
                 if me.searched().contains(&obj.id) {
-                    self.give_up(scene);
+                    self.give_up(me, scene);
                     return;
                 }
                 self.source = Source::Item;
@@ -1324,7 +1336,7 @@ impl Search {
         } else {
             let corpse = obj.corpse.and_then(|c| scene.corpses.get(c));
             let Some(corpse) = corpse.filter(|c| c.character && c.dead) else {
-                self.give_up(scene);
+                self.give_up(me, scene);
                 return;
             };
             self.corpse_pack = corpse.pack_id | CORPSE_TAG;
@@ -1448,6 +1460,7 @@ impl Search {
             obj.id
         };
         me.searched().push(tagged);
+        me.release_goal();
         self.busy = false;
         self.state = State::Pick;
         if self.source == Source::Item {

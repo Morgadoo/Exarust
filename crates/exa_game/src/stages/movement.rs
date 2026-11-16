@@ -568,6 +568,98 @@ mod tests {
             .desired_velocity
     }
 
+    /// An NPC duellist turns through its body: each body tick the AI's
+    /// brains' tick (the real plugin's chain) eases the AI's heading toward a
+    /// foe a quarter turn to its left and writes the look, the look snap
+    /// moves the request's heading only when the look is more than 30° from
+    /// it, the standing facing step leaves a body whose AI wrote its
+    /// directions alone, and the movement decision turns the body toward
+    /// the heading at its rate (300°/s): the body's yaw trails the heading,
+    /// which trails the look, and the model takes the body's yaw.
+    #[test]
+    fn an_npc_body_trails_its_ai_heading() {
+        use bevy::ecs::system::RunSystemOnce;
+        use exa_ai::Duellist;
+        let mut app = App::new();
+        app.add_plugins((bevy::MinimalPlugins, exa_ai::AiPlugin));
+        app.insert_resource(BodyTicks(1));
+        let mut human = Fighter::default();
+        human.stats.unarmed_reach = exa_combat::stance::UNARMED_REACH;
+        let target = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(3.0, 0.0, 0.0)),
+                human.clone(),
+            ))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let mut ai = Duellist::new(target);
+        ai.holds_ground = true;
+        ai.engaged = true;
+        let model = app
+            .world_mut()
+            .spawn((
+                ai,
+                Locomotion::facing(0.0),
+                exa_ai::drive::Driven::default(),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Animator::new("Default", "Idle"),
+                human,
+                ChildOf(root),
+            ))
+            .id();
+        let mut rows = Vec::new();
+        for _ in 0..80 {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.world_mut().run_schedule(exa_ai::BrainChain);
+            let world = app.world_mut();
+            world.run_system_once(exa_ai::drive::face_standing).unwrap();
+            world.insert_resource(TickedCharacter {
+                body: model,
+                character: Some(root),
+            });
+            world.run_system_once(decide_movement).unwrap();
+            let req = *world.get::<Locomotion>(model).unwrap();
+            let body = *world.get::<Locomotor>(model).unwrap();
+            let rotation = world.get::<Transform>(model).unwrap().rotation;
+            let aim = world.get::<Duellist>(model).unwrap().mind.heading;
+            assert!(rotation.abs_diff_eq(Quat::from_rotation_y(body.yaw), 1e-6));
+            rows.push((body.yaw, req.heading, req.look, aim));
+        }
+        // The body never turns past its heading, by at most 300°/s a tick.
+        let rate = locomotion::BASE_TURN * 1.25 + 1e-6;
+        for w in rows.windows(2) {
+            assert!((w[1].0 - w[0].0).abs() <= rate, "{w:?}");
+            assert!(w[1].0 <= w[1].1 + 1e-6, "{w:?}");
+        }
+        // The heading moved in snaps, and while the body turned toward the
+        // first its yaw trailed the heading, which trailed the look.
+        let first = rows
+            .iter()
+            .position(|r| r.1 > 0.3)
+            .expect("the heading snapped");
+        assert!(rows[first - 1].1.abs() < 1e-3, "{:?}", rows[first - 1]);
+        let (yaw, heading, look, aim) = rows[first];
+        assert!(
+            yaw < heading && heading <= look + 1e-3 && look <= aim + 1e-3,
+            "{:?}",
+            rows[first]
+        );
+        // Late on, the body has nearly reached its heading (the turn eases
+        // over the last 0.6 rad), which still trails the look.
+        let (yaw, heading, look, _) = *rows.last().unwrap();
+        assert!((yaw - heading).abs() < 0.01, "{:?}", rows.last());
+        assert!(look - heading > 0.1, "{:?}", rows.last());
+    }
+
     /// A free walk by the keys toward a heading 90° to the left: the capsule
     /// takes the walk along the heading (1.4 m/s), the body turns 240°/s ×
     /// 0.9 a tick (free walk at 0 cm a tick, moving by the keys) and its
