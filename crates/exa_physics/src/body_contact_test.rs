@@ -278,6 +278,65 @@ fn swept_hits_follow_the_original_rules() {
     assert!(d.y >= 0.0 && d.length() <= r, "push {d}");
 }
 
+/// A level hit takes the original's arithmetic (cm): the stored plane is
+/// the point's distance along the exact normal less 0.1 cm in double, the
+/// normal the push over its length summed y² + (x² + z²); a deepest point
+/// far outside the part (a weight over 1) gives the sphere centre's
+/// weights; the push is spread by sum then by the largest weight, so the
+/// heaviest particle takes it whole; the strain takes the push's length
+/// (under the 0.1 cm that restores the edges).
+#[test]
+fn a_level_hit_takes_the_originals_plane_and_spread() {
+    let mut b = ball(Vec3::ZERO);
+    let p = &mut b.parts[0];
+    p.strain = 0.0;
+    let before = p.positions;
+    let centre = Vec3::new(0.01, 0.0, 0.0);
+    let q = Vec3::new(0.013, -0.051, 0.007);
+    let delta = Vec3::new(0.0002, 0.0007, -0.0001);
+    let w = p.weights_exact(q - delta).unwrap();
+    assert!(crate::sector::largest_abs(w) <= 1.0);
+    assert!(p.hit(centre, q, delta));
+    let c = p.contacts[0];
+    assert_eq!(c.weights, w);
+    assert_eq!(c.normal, crate::engine_math::normalize_exact(delta));
+    let plane = (f64::from(c.normal.dot(q * 100.0)) - 0.1) as f32 / 100.0;
+    assert_eq!(c.plane, plane);
+    let (spread, _) = crate::sector::normalise_to_max(w).unwrap();
+    for i in 0..4 {
+        assert_eq!(p.positions[i], before[i] + delta * spread[i], "particle {i}");
+    }
+    assert_eq!(p.strain, crate::engine_math::length3(delta));
+    // A deepest point far outside: the centre's weights.
+    let far = Vec3::new(3.0, 0.0, 0.0);
+    assert!(crate::sector::largest_abs(p.weights_exact(far - delta).unwrap()) > 1.0);
+    assert!(p.hit(centre, far, delta));
+    assert_eq!(p.contacts[1].weights, weights(p, centre));
+    // A push under the original's 1e-5 cm² records nothing.
+    assert!(!p.hit(centre, q, Vec3::splat(1e-5)));
+    assert_eq!(p.contacts.len(), 2);
+}
+
+/// Through the live solver: a ball dropped on the floor stores contacts
+/// whose planes are 0.1 cm (in double, cm) under their points.
+#[test]
+fn a_landing_ball_stores_the_originals_planes() {
+    let mut app = app(floor(Vec3::ZERO), 1.0 / BODY_HZ);
+    let mut b = ball(Vec3::new(0.0, 0.2, 0.0));
+    b.set_velocity(Vec3::NEG_Y * 3.0);
+    let body = app.world_mut().spawn(b).id();
+    let mut seen = 0;
+    for _ in 0..40 {
+        app.update();
+        for c in &app.world().get::<Ragdoll>(body).unwrap().parts[0].contacts {
+            let plane = (f64::from(c.normal.dot(c.point * 100.0)) - 0.1) as f32 / 100.0;
+            assert_eq!(c.plane, plane);
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "the ball never touched the floor");
+}
+
 /// Four contacts at most per part: a fifth replaces the least isolated.
 #[test]
 fn a_part_keeps_its_four_most_spread_contacts() {

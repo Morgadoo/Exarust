@@ -419,6 +419,29 @@ fn the_immediate_push_keeps_momentum() {
     assert!(total.length() < 1e-7, "{total}");
 }
 
+/// The immediate push's split takes the original's order: 2 / (φ_A + φ_B)
+/// first, then times φ_A (these spreads give a different last bit than
+/// 2·φ_A / (φ_A + φ_B)); A moves by its share times (2 − f), B back by its
+/// share times f, over the spread weights.
+#[test]
+fn the_immediate_push_splits_in_the_originals_order() {
+    let (wa, wb) = ([1.0, 39.0, 0.0, 0.0], [3.0, 37.0, 3.0, 0.0]);
+    let ((na, phi_a), (nb, phi_b)) = (spread(wa).unwrap(), spread(wb).unwrap());
+    let f = phi_a * (2.0 / (phi_a + phi_b));
+    assert_ne!(f, 2.0 * phi_a / (phi_a + phi_b));
+    let mut a = ball(1, 1, Vec3::ZERO, 0.1);
+    let mut b = ball(2, 17, Vec3::X, 0.1);
+    let (a0, b0) = (a.parts[0].positions, b.parts[0].positions);
+    let (sa, sb) = shares(a.parts[0].pairing.mobility, b.parts[0].pairing.mobility);
+    let push = Vec3::new(0.0004, 0.0001, 0.0);
+    push_apart(&mut a.parts[0], &mut b.parts[0], wa, wb, push);
+    let (pa, pb) = (push * (sa * (2.0 - f)), push * (-sb * f));
+    for i in 0..4 {
+        assert_eq!(a.parts[0].positions[i], a0[i] + pa * na[i], "A {i}");
+        assert_eq!(b.parts[0].positions[i], b0[i] + pb * nb[i], "B {i}");
+    }
+}
+
 /// The immediate push adds its length to each side's strain, summed as the
 /// original's length routine sums: (x² + z²) + y² (its packed squares, the
 /// high pair folded onto the low one, then the second lane). This push's

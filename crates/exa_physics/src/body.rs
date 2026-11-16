@@ -291,8 +291,14 @@ const MAX_CONTACTS: usize = 4;
 /// Squared travel (m²) of a sphere centre over a tick above which the sphere
 /// is swept from where the last tick left it.
 const SWEEP_TRAVEL2: f32 = 1e-5;
-/// Pushes shorter than this (squared, m²) are ignored.
-const MIN_PUSH2: f32 = 1e-9;
+/// A level push shorter than this (squared, cm², the original's) is
+/// ignored.
+const MIN_PUSH2_CM: f32 = 1e-5;
+/// A level push longer than this (squared, cm²: 160 cm) is reported.
+const EXCESSIVE_PUSH2_CM: f32 = 25_600.0;
+/// A level contact's plane lies this far (cm, subtracted in double) under
+/// its point.
+const LEVEL_PLANE_SLOP_CM: f64 = 0.1;
 /// Depth (m) under a stored contact plane that is corrected.
 const MIN_DEPTH: f32 = 1e-7;
 /// Push length (m) at detection, and depth (m) in the plane pass, summed
@@ -302,8 +308,6 @@ const PUSH_STRAIN: f32 = 0.001;
 /// restored.
 const TRANSLATE_STRAIN: f32 = 0.001;
 const DEPTH_STRAIN: f32 = 0.01;
-/// A level push longer than this (m) is reported, not clamped.
-const EXCESSIVE_PUSH: f32 = 1.6;
 
 /// Regular tetrahedron, centred on the origin.
 const TEMPLATE: [Vec3; 4] = [
@@ -792,6 +796,23 @@ impl Part {
         Some([1.0 - w.x - w.y - w.z, w.x, w.y, w.z])
     }
 
+    /// Weights of the world point `x` over the current particles by the
+    /// original's exact barycentric routine (four triple products, each
+    /// times one exact reciprocal of the volume's), which the sector's
+    /// contact callbacks use; None when a weight is not finite (a flat
+    /// tetrahedron, where the original's division gives infinities).
+    pub(crate) fn weights_exact(&self, x: Vec3) -> Option<[f32; 4]> {
+        let w = crate::engine_math::barycentric_exact(x, &self.positions.map(|p| p.to_array()));
+        w.iter().all(|v| v.is_finite()).then_some(w)
+    }
+
+    /// Weights of the part-space point `local` over the rest particles, by
+    /// the same exact routine (the contact callbacks' weights on the
+    /// touched side).
+    pub(crate) fn rest_weights_exact(&self, local: Vec3) -> [f32; 4] {
+        crate::engine_math::barycentric_exact(local, &self.rest.map(|p| p.to_array()))
+    }
+
     /// How far the point with weights `w` moved this tick.
     fn slip(&self, w: &[f32; 4]) -> Vec3 {
         (0..4)
@@ -800,9 +821,11 @@ impl Part {
     }
 
     /// The part's smoothed velocity (m a tick) at the point with weights
-    /// `w`: the original's impact travel reads its smoothed array so.
-    fn smoothed_velocity(&self, w: &[f32; 4]) -> Vec3 {
-        (0..4).map(|i| self.smoothed[i] * w[i]).sum()
+    /// `w`: the original's impact travel reads its smoothed array so, with
+    /// its weighted point's paired sum `(w₀s₀ + w₁s₁) + (w₂s₂ + w₃s₃)`.
+    pub(crate) fn smoothed_velocity(&self, w: &[f32; 4]) -> Vec3 {
+        let s = &self.smoothed;
+        (s[0] * w[0] + s[1] * w[1]) + (s[2] * w[2] + s[3] * w[3])
     }
 
     /// How far the point with weights `w` moved over the two particle
@@ -845,38 +868,37 @@ impl Part {
 
     /// A level hit on sphere `centre` (part space): the closest point `q` on
     /// the triangle and the push `delta` that takes the sphere off it. The
-    /// part is pushed at once and the contact kept for the next tick.
+    /// part is pushed at once and the contact kept for the next tick. The
+    /// original works in cm: the gates, the plane's 0.1 cm (in double) and
+    /// the strain are taken there.
     fn hit(&mut self, centre: Vec3, q: Vec3, delta: Vec3) -> bool {
-        let len2 = delta.length_squared();
+        let d = balance::cm(delta);
+        let len2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
         // The original's `eps <= |δ|²` lets a NaN through to its own check,
-        // which logs and returns; +∞ passes and is used unclamped.
-        if len2.is_nan() || len2 < MIN_PUSH2 {
+        // which returns; +∞ passes and is used unclamped.
+        if len2.is_nan() || len2 < MIN_PUSH2_CM {
             return false;
         }
-        if len2 > EXCESSIVE_PUSH * EXCESSIVE_PUSH {
-            warn_once!("excessive level contact push: {:.2} m", len2.sqrt());
+        if len2 > EXCESSIVE_PUSH2_CM {
+            warn_once!("excessive level contact push: {:.2} m", len2.sqrt() / CM);
         }
         // The deepest point of the sphere, or its centre when that lies far
-        // outside the tetrahedron.
-        let w = self
-            .weights_now(q - delta)
-            .filter(|w| w.iter().all(|x| x.abs() <= 1.0))
-            .unwrap_or_else(|| weights(self, centre));
-        let normal = delta / len2.sqrt();
+        // outside the tetrahedron (the largest weight's magnitude over 1, by
+        // the original's maximum chain, so a NaN weight can pass).
+        let w = match self.weights_exact(q - delta) {
+            Some(w) if !(crate::sector::largest_abs(w) > 1.0) => w,
+            _ => weights(self, centre),
+        };
+        let normal = crate::engine_math::normalize_exact(delta);
+        // The plane 0.1 cm under the point, subtracted in double as the
+        // original's is (cm).
+        let plane = (f64::from(normal.dot(balance::cm(q))) - LEVEL_PLANE_SLOP_CM) as f32 / CM;
         self.offer(LevelContact {
             weights: w,
             point: q,
             normal,
-            plane: normal.dot(q) - CONTACT_SLOP,
+            plane,
         });
-        // Spread so that the heaviest particle takes the whole push.
-        let clamped = w.map(|x| x.max(0.0));
-        let top = clamped.iter().copied().fold(0.0, f32::max);
-        if top > 0.0 {
-            for (x, c) in self.positions.iter_mut().zip(clamped) {
-                *x += delta * (c / top);
-            }
-        }
         // The level impact's bookkeeping: the smoothed velocity at the
         // contact weights as found (the original reads it before it
         // normalises them for the push), and the point and push sums.
@@ -889,7 +911,13 @@ impl Part {
             self.level_travel = travel;
             self.level_travel2 = travel2;
         }
-        self.strain += len2.sqrt();
+        // Spread so that the heaviest particle takes the whole push: the
+        // weights normalised to their sum, then to their largest (the
+        // original's two normalisations, here with exact reciprocals).
+        if let Some((spread, _)) = crate::sector::normalise_to_max(w) {
+            self.push(&spread, delta);
+        }
+        self.strain += crate::engine_math::length3(delta);
         if self.strain > PUSH_STRAIN {
             keep_rigid(self);
         }
