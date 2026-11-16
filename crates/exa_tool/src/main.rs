@@ -109,6 +109,17 @@ enum Cmd {
         #[arg(long, default_value = "0")]
         quality: u8,
     },
+    /// Time the CPU texture generators: every apparel item of the object
+    /// database painted with its appearance and every factory recipe
+    /// painted into its atlas, after one warm-up round that decodes the
+    /// textures they read.
+    PaintBench {
+        #[arg(long, default_value = "3")]
+        rounds: usize,
+        /// At most this many jobs of each kind (0: all).
+        #[arg(long, default_value = "0")]
+        limit: usize,
+    },
     /// Summarise the skeleton and motion set of a `.rsq`.
     Rsq {
         #[arg(default_value = "humanoid.rsq")]
@@ -492,6 +503,24 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Paint { model, stem, out } => paint_item(&game, &model, &stem, &out),
+        Cmd::PaintBench { rounds, limit } => {
+            for (i, r) in exa_assets::paint_bench::run(&game, rounds, limit)
+                .iter()
+                .enumerate()
+            {
+                let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+                println!(
+                    "round {i}: {} apparel sets {:.1} ms ({:.2} ms each), {} factory atlases {:.1} ms ({:.2} ms each)",
+                    r.apparel,
+                    ms(r.apparel_time),
+                    ms(r.apparel_time) / r.apparel.max(1) as f64,
+                    r.factories,
+                    ms(r.factory_time),
+                    ms(r.factory_time) / r.factories.max(1) as f64,
+                );
+            }
+            Ok(())
+        }
         Cmd::Factory {
             name,
             out,

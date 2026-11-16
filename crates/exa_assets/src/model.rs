@@ -632,6 +632,16 @@ impl ModelCache {
     pub fn clear(&mut self) {
         *self = Self::default();
     }
+
+    /// Forgets the painted apparel and factory atlases (and the assembled
+    /// factory weapons that hold them), keeping the decoded texels and the
+    /// factory geometry, so the next request paints again
+    /// ([`crate::paint_bench`]).
+    pub fn forget_painted(&mut self) {
+        self.painted.clear();
+        self.factory_painted.clear();
+        self.models.retain(|key, _| !key.starts_with("factory/"));
+    }
 }
 
 /// The shading flags a diffuse slot adds from its texture word: a BC4 image

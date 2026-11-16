@@ -383,11 +383,24 @@ pub fn factories(game: &GameData) -> Result<()> {
     };
     let (mut ok, mut failed) = (0, 0);
     let mut versions = [0usize; 3];
+    // Parts by their paint-region flags (bit 0 texture-only overlay, bit 1
+    // mask-gated shade, bit 2 the alternate normal program).
+    let mut flagged: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for e in pack.entries() {
         match Factory::parse(pack.bytes(e)) {
             Ok(f) => {
                 ok += 1;
                 versions[f.version as usize] += 1;
+                for p in &f.parts {
+                    for bit in [1u32, 2, 4] {
+                        if p.flags & bit != 0 {
+                            flagged
+                                .entry(bit)
+                                .or_default()
+                                .push(format!("{}:{}", e.name, p.name));
+                        }
+                    }
+                }
             }
             Err(err) => {
                 failed += 1;
@@ -399,6 +412,14 @@ pub fn factories(game: &GameData) -> Result<()> {
         "{ok} factories parsed (v0 {}, v1 {}, v2 {}), {failed} failed",
         versions[0], versions[1], versions[2]
     );
+    for (bit, parts) in &flagged {
+        let shown: Vec<&str> = parts.iter().take(12).map(String::as_str).collect();
+        println!(
+            "part flag {bit:#x}: {} parts, e.g. {}",
+            parts.len(),
+            shown.join(", ")
+        );
+    }
     for (name, seed, quality) in [
         ("AxeTool2H_A01", 0x0D31_0870u32, 107u8),
         ("sword_lnga1", 0x1234_5678, 128),
