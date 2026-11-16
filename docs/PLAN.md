@@ -1553,6 +1553,8 @@ fourth TMotileDynamics pass: the swing's opening block (a counter keeps its arme
 
 the line skin's wide frames are live: the combo drop-down lists and the palette swatch popup draw through the line form draw and the wide window frame, read on the form's state word; the colour picker's frame marks (hover, press, close, icons) run through the draw skin's hit test; the title band is six units deep as in the running original (F24 closed); the colour swatches' backs go through the skins' control fills; the tables draw the line skin's header line with the corrected cap inset (F29 closed); the skill tooltips use the skin's rounded fill, pixel-equal. Left: the creator's marker trackbar, the default background's scroll arms and the draw skin's panel and scroll slots (no live form uses them; the original's record census is owed), the setup models. Hub window scenes owed while the GPU is on hold.
 
+third TMotileAI pass: the combat state drops a collapsing or dead target and leaves combat, as the original does, instead of standing guard over it; apply roles is live: the fierce rule bit sets the phase word and the party list follows a body's start and end of following (companions join the story experience, convert and are written back to their records, a death or a gone body leaves); the follower arrival restarts the idle search; the idle driver's room-walk goal is proven unreachable. Left: the combat tick's step timing, a player foe's skill, the chase-leave clears, the golem glow fade, the removal hook. Arena and story scenes and determinism runs owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
