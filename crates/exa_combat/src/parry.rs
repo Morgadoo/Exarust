@@ -1149,6 +1149,34 @@ fn release_parry_hold(world: &mut World, entity: Entity) {
     }
 }
 
+/// The clinch clear a placement on the ground makes before it places the
+/// body (the original's placement clears the parrying flag, then runs the
+/// clear): the parry is off and counters no motion, both hands and their
+/// parents lose the arm bit, and every item the body holds (its shield
+/// too) has its parry link disabled, whether a hold was on or not. The
+/// stance is not started again: the flag is cleared before the clear
+/// reads it.
+pub fn clear_for_placement(commands: &mut Commands, entity: Entity) {
+    commands.queue(move |world: &mut World| {
+        if let Some(mut f) = world.get_mut::<Fighter>(entity) {
+            clear_counter(&mut f);
+        }
+        let key = world.get_mut::<Ragdoll>(entity).and_then(|mut body| {
+            body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+            body.parts.first().map(|part| part.entity)
+        });
+        let Some(key) = key else { return };
+        let mut grips = world.query::<&mut exa_physics::grip::HeldGrip>();
+        for mut grip in grips.iter_mut(world) {
+            if grip.holder_key == key
+                && let Some(links) = grip.links.as_mut()
+            {
+                links.release_parry();
+            }
+        }
+    });
+}
+
 /// Whether either hand carries the parry's arm bit.
 fn holds_parry_arms(body: &Ragdoll) -> bool {
     body.parts.iter().any(|part| {
@@ -1817,22 +1845,25 @@ pub(crate) fn run_parries(
         .is_ok_and(|(_, _, _, _, _, attacking, _, _)| attacking.is_some());
     if !attacking {
         let mut own = bodies.p0();
+        // The release reads the hands' arm bit, not only the countered
+        // motion: a two-weapon attack guards its off hand with no parry.
         if let Ok((mut fighter, anim, _, _, _, _, body)) = own.get_mut(entity)
             && !fighter.parry.active
-            && fighter.parry.counter_motion.is_some()
             && crate::attack::AttackMotion::of_action(&anim.action).is_none()
-            && attack_left(&mut fighter)
-            && let Some(mut body) = body
-            && holds_parry_arms(&body)
         {
-            info!("attack left: {entity:?} releases the parry hold its aimed start kept");
-            body.clear_parry_arms(Ragdoll::PARRY_HANDS);
-            if let Some(key) = body.parts.first().map(|part| part.entity) {
-                for (_, mut grip) in &mut grips {
-                    if grip.holder_key == key
-                        && let Some(links) = grip.links.as_mut()
-                    {
-                        links.release_parry();
+            if fighter.parry.counter_motion.is_some() {
+                attack_left(&mut fighter);
+            }
+            if let Some(mut body) = body.filter(|b| holds_parry_arms(b)) {
+                info!("attack left: {entity:?} releases the parry hold its attack kept");
+                body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+                if let Some(key) = body.parts.first().map(|part| part.entity) {
+                    for (_, mut grip) in &mut grips {
+                        if grip.holder_key == key
+                            && let Some(links) = grip.links.as_mut()
+                        {
+                            links.release_parry();
+                        }
                     }
                 }
             }
@@ -2051,6 +2082,243 @@ pub(crate) fn run_parries(
                 active,
             );
         }
+    }
+}
+
+/// The weapon class of two held weapons.
+const TWO_WEAPONS: u8 = 0x90;
+
+/// The swing routine's opening block, on the ticked fighter's attack tick
+/// (the gates of [`crate::swing::run_swings`]), before the swing itself.
+/// A fighter whose combat target plays the very motion its last parry was
+/// picked for (an attack aimed from that parry):
+///
+/// - with a weapon and a shield (stance class 3) keeps aiming its armed
+///   parry at the target's blade ([`counter_hold`]), unless it lacks Ward
+///   and its clip is at 0.4 or past (compared in double, a NaN progress
+///   too), when the parry's hold is cleared ([`clear_counter`]);
+/// - with two weapons (class 0x90) keeps aiming it.
+///
+/// Two weapons also guard the hand that does not strike on every attack
+/// tick, target or not: the right hand and its parent take the arm bit for
+/// the motions 8 through 10, the left hand for the others. Leaving the
+/// attack's clip clears both hands (the motion start's release, in
+/// [`run_parries`]).
+#[allow(clippy::type_complexity)]
+pub(crate) fn hold_counter_parries(
+    ticked: Res<TickedCharacter>,
+    motions: Option<Res<Motions>>,
+    blades: Query<&Blade>,
+    mut bodies: ParamSet<(
+        Query<(
+            &mut Fighter,
+            &Animator,
+            &Attacker,
+            &Condition,
+            &Attacking,
+            &GlobalTransform,
+            Option<&mut Ragdoll>,
+            Option<&crate::CombatTarget>,
+        )>,
+        Query<(
+            &Animator,
+            &GlobalTransform,
+            Option<&Attacking>,
+            Option<&SwingState>,
+            Option<&Ragdoll>,
+        )>,
+    )>,
+    mut grips: Query<(Entity, &mut exa_physics::grip::HeldGrip)>,
+) {
+    let Some(motions) = motions else { return };
+    let entity = ticked.body;
+    // The fighter's side of the block, read before the target's.
+    let (shield, two, ward, countered, target, progress, motion, chest) = {
+        let own = bodies.p0();
+        let Ok((fighter, anim, attacker, condition, attacking, gt, body, target)) = own.get(entity)
+        else {
+            return;
+        };
+        if !crate::swing::attack_branch_runs(anim, *condition, body) {
+            return;
+        }
+        let Some(clip) = motions.clip(anim, &anim.action) else {
+            return;
+        };
+        let shield = attacker.stance_class == crate::attack::STANCE_SHIELD;
+        let two = attacking.weapon_class == TWO_WEAPONS;
+        if !shield && !two {
+            return;
+        }
+        (
+            shield,
+            two,
+            fighter.perks.has(exa_formats::characters::Perk::Ward),
+            fighter.parry.counter_motion,
+            target.and_then(|t| t.0).filter(|&t| t != entity),
+            anim.clip_progress(clip),
+            motions.0.action_index(&anim.action).unwrap_or(0) as i32,
+            stance::chest_point(gt, body),
+        )
+    };
+    // The target, when it plays the countered motion: its chest, its
+    // blade point now and a tick ago, the motion the armed point reads (the
+    // one a chained attack carries on), its progress and whether it
+    // cleaves.
+    let foe = target.and_then(|t| {
+        let others = bodies.p1();
+        let (anim, gt, attacking, swing, body) = others.get(t).ok()?;
+        let plays = motions.0.action_index(&anim.action)?;
+        if countered != Some(plays) {
+            return None;
+        }
+        let chained = swing.is_some_and(|s| s.has(crate::swing::flags::CONTINUATION));
+        let point_motion = attacking
+            .and_then(|a| a.chooser_motion(chained))
+            .unwrap_or(plays);
+        Some(CounterFoe {
+            chest_cm: stance::chest_point(gt, body) * 100.0,
+            tip_cm: {
+                let (now, before) = held_blade_tip(t, &blades);
+                (now * 100.0, before * 100.0)
+            },
+            motion: point_motion as i32,
+            progress: motions
+                .clip(anim, &anim.action)
+                .map_or(0.0, |c| anim.clip_progress(c)),
+            cleaving: swing.is_some_and(|s| s.has(crate::swing::flags::CLEAVING)),
+        })
+    });
+    let mut own = bodies.p0();
+    let Ok((mut fighter, _, _, _, _, _, mut body, _)) = own.get_mut(entity) else {
+        return;
+    };
+    let key = body
+        .as_deref()
+        .and_then(|b| b.parts.first().map(|part| part.entity));
+    if let Some(foe) = foe {
+        let clears = shield && !ward && !(f64::from(progress) < COUNTER_KEPT_UNTIL);
+        let hold = if clears {
+            None
+        } else {
+            counter_hold(
+                &foe,
+                &held(entity, &blades),
+                &fighter,
+                motion,
+                chest * 100.0,
+            )
+        };
+        match hold {
+            Some(CounterHold::Aim(grip, point)) => {
+                if !point.passed {
+                    fighter.parry.point_cm = point.point.to_array();
+                }
+                if let Some(key) = key {
+                    hold_parry_links(&mut grips, key, Some((grip, point.point)), true);
+                }
+            }
+            Some(CounterHold::Unarmed) => {}
+            None => {
+                info!("counter hold cleared: {entity:?} (progress {progress:.3})");
+                clear_counter(&mut fighter);
+                if let Some(body) = body.as_deref_mut() {
+                    body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+                }
+                if let Some(key) = key {
+                    hold_parry_links(&mut grips, key, None, false);
+                }
+            }
+        }
+    }
+    if two && let Some(body) = body.as_deref_mut() {
+        body.hold_parry_arm(if (8..=10).contains(&motion) {
+            RIGHT_HAND
+        } else {
+            LEFT_HAND
+        });
+    }
+}
+
+/// Without Ward a shield fighter's counter hold is cleared once its
+/// attack's clip reaches this share (compared in double).
+const COUNTER_KEPT_UNTIL: f64 = 0.4;
+/// The hands the parry's hold guards, right then left.
+const RIGHT_HAND: usize = Ragdoll::PARRY_HANDS[0];
+const LEFT_HAND: usize = Ragdoll::PARRY_HANDS[1];
+
+/// What the counter hold reads of the combat target that plays the
+/// countered motion (cm).
+#[derive(Clone, Copy, Debug)]
+struct CounterFoe {
+    chest_cm: Vec3,
+    tip_cm: (Vec3, Vec3),
+    motion: i32,
+    progress: f32,
+    cleaving: bool,
+}
+
+/// The counter hold's outcome.
+#[derive(Clone, Copy, Debug)]
+enum CounterHold {
+    /// Nothing armed to aim (the fists): nothing is written.
+    Unarmed,
+    /// The armed grip and its point.
+    Aim(Grip, ParryPoint),
+}
+
+/// The armed parry's aim from an attack (the original's armed grip called
+/// by the swing routine): unarmed, nothing; a cleaving target clears the
+/// hold (none); else the parry point on the target's blade and the grip
+/// for it, the fighter attacking with `motion`.
+fn counter_hold(
+    foe: &CounterFoe,
+    held: &Held,
+    fighter: &Fighter,
+    motion: i32,
+    chest_cm: Vec3,
+) -> Option<CounterHold> {
+    if !held.armed {
+        return Some(CounterHold::Unarmed);
+    }
+    if foe.cleaving {
+        return None;
+    }
+    let point = parry_point(
+        foe.tip_cm.0,
+        foe.tip_cm.1,
+        foe.chest_cm,
+        chest_cm,
+        foe.motion,
+        foe.progress,
+    );
+    let shield = match fighter.guard {
+        Guard::Shield(guard) => Some((guard.parry, guard.stamina)),
+        _ => None,
+    };
+    let grip = armed_parry_grip(
+        held,
+        ArmedBlow {
+            defender_motion: motion as u8,
+            defender_attacking: true,
+            cleaving: false,
+            passed: point.passed,
+        },
+        parry_distance(point.point, chest_cm),
+        shield,
+        held.count > 1,
+    )?;
+    Some(CounterHold::Aim(grip, point))
+}
+
+/// The parry's clear (the original's clinch clear) on an attacking
+/// fighter: it counters no motion and is not parrying. Its stance is not
+/// started again: an attack has already left the parry's clip.
+fn clear_counter(fighter: &mut Fighter) {
+    fighter.parry.active = false;
+    fighter.parry.counter_motion = None;
+    if fighter.guard == Guard::Parry {
+        fighter.guard = Guard::Open;
     }
 }
 
@@ -3055,5 +3323,121 @@ mod wiring_tests {
         let anim = app.world().get::<Animator>(fighter).unwrap();
         assert_eq!(anim.action, "Cmbt - Idle");
         assert!(!app.world().get::<Fighter>(fighter).unwrap().parry.active);
+    }
+
+    /// The defender of [`Duel::high`] turned attacker: it plays Attack Mid
+    /// (motion 5) at `progress` against its combat target, the foe, which
+    /// plays Attack Mid too, the motion its last parry was picked for. It
+    /// holds a sword (no fist), its stance class and weapon class as
+    /// given, Ward when asked. The parry link starts disabled.
+    fn counter_duel(progress: f32, stance_class: u8, class: u8, ward: bool) -> Duel {
+        let mut d = Duel::high();
+        let (me, foe) = (d.me, d.foe);
+        let fists: Vec<Entity> = d
+            .app
+            .world_mut()
+            .query::<(Entity, &Blade)>()
+            .iter(d.app.world())
+            .filter(|(_, b)| b.wielder == me)
+            .map(|(e, _)| e)
+            .collect();
+        for e in fists {
+            d.app.world_mut().despawn(e);
+        }
+        let mut foe_blade = Blade::new(foe, 0.9, sword());
+        foe_blade.tip_last = Some(Vec3::new(0.3, 1.5, 0.6));
+        foe_blade.swept_from = Some((Vec3::ZERO, Vec3::new(0.5, 1.5, 0.6)));
+        d.app.world_mut().spawn(foe_blade);
+        d.app.world_mut().spawn(Blade::new(me, 0.9, sword()));
+        d.app.world_mut().entity_mut(me).insert((
+            Condition::ATTACKING,
+            Attacking::new(AttackMotion::Main(0), class),
+            crate::CombatTarget(Some(foe)),
+        ));
+        d.edit::<Attacker>(|a| a.stance_class = stance_class);
+        d.edit::<Fighter>(|f| {
+            f.parry.counter_motion = Some(5);
+            if ward {
+                f.perks.insert(exa_formats::characters::Perk::Ward);
+            }
+        });
+        d.edit::<Animator>(|a| {
+            a.play_once("Attack Mid", "Cmbt - Idle");
+            a.time = progress * 100.0;
+            a.blend = 0.0;
+        });
+        let grip = d.grip;
+        d.app
+            .world_mut()
+            .get_mut::<exa_physics::grip::HeldGrip>(grip)
+            .unwrap()
+            .links
+            .as_mut()
+            .unwrap()
+            .release_parry();
+        d
+    }
+
+    fn arm_bit(d: &Duel, bone: usize) -> bool {
+        d.get::<Ragdoll>()
+            .parts
+            .iter()
+            .find(|p| p.bone == bone)
+            .unwrap()
+            .state
+            .has(exa_physics::part::PartState::ARM)
+    }
+
+    /// A shield fighter's attack aimed from its parry keeps aiming its
+    /// armed parry while the target plays the countered motion: the parry
+    /// link holds toward the parry point, the countered motion is kept.
+    /// Without Ward, from 0.4 of its clip the hold is cleared (the
+    /// countered motion, the hands' bit, the links); with Ward it is kept.
+    #[test]
+    fn a_shield_counter_keeps_its_hold_until_four_tenths_without_ward() {
+        let mut d = counter_duel(0.3, crate::attack::STANCE_SHIELD, 0x11, false);
+        d.edit::<Ragdoll>(|b| b.hold_parry_arms(Ragdoll::PARRY_HANDS));
+        d.tick();
+        assert!(grip_held(&d), "the armed hold aims the parry link");
+        assert_eq!(d.get::<Fighter>().parry.counter_motion, Some(5));
+        assert_ne!(d.get::<Fighter>().parry.point_cm, [0.0; 3]);
+
+        let mut d = counter_duel(0.4, crate::attack::STANCE_SHIELD, 0x11, false);
+        d.edit::<Ragdoll>(|b| b.hold_parry_arms(Ragdoll::PARRY_HANDS));
+        d.edit::<Fighter>(|f| f.parry.point_cm = [0.0; 3]);
+        d.tick();
+        assert!(!grip_held(&d));
+        assert_eq!(d.get::<Fighter>().parry.counter_motion, None);
+        assert!(!arm_bit(&d, 17) && !arm_bit(&d, 18));
+
+        let mut d = counter_duel(0.5, crate::attack::STANCE_SHIELD, 0x11, true);
+        d.tick();
+        assert!(grip_held(&d), "Ward keeps aiming past 0.4");
+        assert_eq!(d.get::<Fighter>().parry.counter_motion, Some(5));
+
+        // The target playing another motion: nothing is aimed or cleared.
+        let mut d = counter_duel(0.5, crate::attack::STANCE_SHIELD, 0x11, false);
+        d.edit::<Fighter>(|f| f.parry.counter_motion = Some(6));
+        d.tick();
+        assert!(!grip_held(&d));
+        assert_eq!(d.get::<Fighter>().parry.counter_motion, Some(6));
+    }
+
+    /// Two weapons (class 0x90) guard the hand that does not strike on every
+    /// attack tick: a motion outside 8 through 10 gives the left hand and
+    /// its parent the arm bit, the right hand none; leaving the attack's
+    /// clip clears it with no parry ever held.
+    #[test]
+    fn two_weapons_guard_the_hand_that_does_not_strike() {
+        let mut d = counter_duel(0.5, 6, 0x90, false);
+        d.edit::<Fighter>(|f| f.parry.counter_motion = None);
+        d.tick();
+        assert!(arm_bit(&d, 18) && arm_bit(&d, 16));
+        assert!(!arm_bit(&d, 17) && !arm_bit(&d, 13));
+        let me = d.me;
+        d.app.world_mut().entity_mut(me).remove::<Attacking>();
+        d.edit::<Animator>(|a| a.start("Cmbt - Idle", true, None, 0, Ease::Smooth));
+        d.tick();
+        assert!(!arm_bit(&d, 18) && !arm_bit(&d, 16));
     }
 }

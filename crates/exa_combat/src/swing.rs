@@ -226,10 +226,12 @@ impl Swing {
     }
 
     /// g at `progress`: 1 − 0.833·modulation·(d + d²), d = |progress −
-    /// 0.5|, or 1 − 0.833·modulation at or before the clip's first key.
+    /// 0.5|, or 1 − 0.833·modulation at or before the clip's first key (a
+    /// NaN progress too: the original's compare is unordered).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     fn shape(&self, progress: f32) -> f32 {
         let m = f64::from(self.modulation);
-        if progress <= 0.0 {
+        if !(progress > 0.0) {
             (1.0 - m * SHAPE) as f32
         } else {
             let d = (progress - MID_SWING).abs();
@@ -243,7 +245,10 @@ impl Swing {
     /// last key's time), with the clock's `base` rate and the character's
     /// `feral` level (the record's, 0..1): speed × g × 1.125 ×
     /// base, a `stab` ×1.2 (and early in it × (1.2·progress + 0.5)), a
-    /// feral character's × ((1 − f)/2 + f·smoothstep(progress) + 1/2).
+    /// feral character's × ((1 − f)/2 + f·smoothstep(progress) + 1/2)
+    /// (the smoothstep's term for a NaN progress as well, by the original's
+    /// unordered compare; (1 − f)/2 + 1/2 at or before the first key).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn rate(&self, stab: bool, progress: f32, base: f32, feral: f32) -> f32 {
         let mut g = self.shape(progress);
         if stab {
@@ -253,7 +258,7 @@ impl Swing {
             g = (f64::from(g) * STAB_SPEED) as f32;
         }
         if feral > 0.0 {
-            let ramp = if progress > 0.0 {
+            let ramp = if !(progress <= 0.0) {
                 smoothstep(progress) * feral + 0.5
             } else {
                 0.5
@@ -748,6 +753,27 @@ fn falls_off_balance(condition: Condition) -> bool {
     !(condition.dying()
         || condition.has(Condition::SHOCK_MASK)
         || condition == Condition::GETTING_UP)
+}
+
+/// Whether the ticked body's attack stage runs the swing routine's attack
+/// branch this tick: an attack's clip playing once, the body attacking and
+/// not taken by the falls branch (off its balance). The same gates
+/// [`run_swings`] passes before it ticks the swing.
+pub(crate) fn attack_branch_runs(
+    anim: &Animator,
+    condition: Condition,
+    body: Option<&Ragdoll>,
+) -> bool {
+    if anim.looping || AttackMotion::of_action(&anim.action).is_none() {
+        return false;
+    }
+    let off_balance = body
+        .and_then(|b| b.drive.as_ref())
+        .and_then(|d| off_balance_rate(d.balance().value, d.race.clip_rate));
+    if falls_off_balance(condition) && off_balance.is_some() {
+        return false;
+    }
+    condition == Condition::ATTACKING
 }
 
 /// The side a chain from `motion` goes on: the other one.

@@ -294,7 +294,8 @@ fn max_second(a: f32, b: f32) -> f32 {
 /// × the displacement; else the heading × amount·thrust·tone·P, P the
 /// phase push (boosted under the row's boost speed), − 0.4·tone × the
 /// displacement. The speed is the displacement along the heading. The
-/// clock's step as [`clock_step`].
+/// clock's step as [`clock_step`]. With support the head tilt is the
+/// exertion's ([`lean`]'s rule, not eased) once the run blend is set.
 pub fn locomote(
     req: &Locomotion,
     body: &mut Locomotor,
@@ -345,6 +346,12 @@ pub fn locomote(
     body.run = (f64::from(body.run) - f64::from(v.y.abs()) * RUN_VERTICAL) as f32;
     if body.run < 0.0 {
         body.run = 0.0;
+    }
+    // With support the head tilt is set again from this tick's exertion
+    // (the body tick's lean set it from last tick's and eased it): the
+    // twist after the routine reads this one.
+    if at.supported {
+        body.head_tilt = tilt_of(body.exertion);
     }
     // The gait columns.
     let rest = 1.0 - body.run;

@@ -106,6 +106,20 @@ fn feral_swings_ramp_up() {
     assert!(close(f.rate(false, 0.0, 1.0, 0.5), plain(0.0) * 0.75));
 }
 
+/// A NaN progress takes the first-key shape (the original's `<= 0` branch
+/// is reached through its unordered compare) and the feral smoothstep term
+/// (its `> 0` branch likewise), so a plain swing keeps its first-key rate
+/// and a feral one turns NaN.
+#[test]
+fn a_nan_progress_takes_the_unordered_branches() {
+    let a = sword_a();
+    assert_eq!(
+        a.rate(false, f32::NAN, 1.0, 0.0),
+        a.rate(false, 0.0, 1.0, 0.0)
+    );
+    assert!(a.rate(false, f32::NAN, 1.0, 0.5).is_nan());
+}
+
 /// A tired fighter's swing: stopped under 80 % of its energy, the share
 /// squared under all of it (in place of the weapon's rate), and scaled by
 /// the clock's base.

@@ -131,6 +131,13 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 CharacterTick,
                 (
+                    // The swing routine's opening block: an attack aimed
+                    // from a parry keeps (or clears) its hold, two weapons
+                    // guard the hand that does not strike.
+                    parry::hold_counter_parries
+                        .in_set(CharacterStage::Attack)
+                        .before(swing::run_swings)
+                        .run_if(condition::ticked_lives),
                     swing::run_swings
                         .in_set(CharacterStage::Attack)
                         .run_if(condition::ticked_lives)

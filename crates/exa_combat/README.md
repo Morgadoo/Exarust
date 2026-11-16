@@ -78,7 +78,15 @@ motion, the held items' parry grips, both hands' arm bit); the overhead
 and the stab end the parry in full and choose its stance again, which the
 attack returns to. When an attack is left for another clip, its countered
 motion and any hold its aimed start kept are released (the motion start's
-rule, in `parry::run_parries`).
+rule, in `parry::run_parries`; a hand's arm bit is released with no
+countered motion too). The swing routine's opening runs before the swing
+(`parry::hold_counter_parries`): while the combat target plays the
+countered motion, a weapon-and-shield fighter keeps aiming its armed parry
+from the attack, and without Ward clears the hold from 0.4 of its clip
+(double, a NaN too); two weapons keep aiming on the same test and guard the
+hand that does not strike every attack tick (the right hand for motions
+8–10, else the left, with its parent). A placement on the ground opens
+with the clinch clear (`parry::clear_for_placement`).
 
 A blocked striker recoils (`recoil`): strength and the stall rate become
 0.5 and the released bit clears. A class word of 0x90 (two weapons) that
