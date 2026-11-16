@@ -240,11 +240,13 @@ mod tests {
         let sounds = exa_physics::prop::BodySounds {
             impact: vec![Some("wodcol".into()), Some("mtlcol".into())],
             scrapes: Vec::new(),
+            fallback: None,
         };
         assert_eq!(ring_set(&sounds), Some("wodcol"));
         let silent = exa_physics::prop::BodySounds {
             impact: vec![None],
             scrapes: Vec::new(),
+            fallback: None,
         };
         assert_eq!(ring_set(&silent), None);
         assert_eq!(ring_set(&exa_physics::prop::BodySounds::default()), None);

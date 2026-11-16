@@ -229,6 +229,55 @@ fn free_loops(world: &mut World, gone: &[Entity]) {
     });
 }
 
+/// The number of shipped variants of each sound set the simulation's
+/// sound paths asked about, read from the sound pack once per name.
+#[derive(Resource, Debug, Default)]
+pub struct SetSizes(HashMap<String, usize>);
+
+impl SetSizes {
+    /// The variants of the set `name`: known, or read from `game`'s sound
+    /// pack and kept. `None` when it is not known and there is no game.
+    pub fn size(&mut self, game: Option<&Game>, name: &str) -> Option<usize> {
+        if let Some(&n) = self.0.get(name) {
+            return Some(n);
+        }
+        let n = SoundBank::set_size(game?, name);
+        self.0.insert(name.to_owned(), n);
+        Some(n)
+    }
+
+}
+
+/// The impact class of each newly registered plain body's parts: as the
+/// original's add-to-world gives a rigid body its class bit 0x40000 only
+/// when its collision sound list (its own, else its material's; a door
+/// leaf's slam set, else) has an entry, a part whose set has no shipped
+/// variant stops taking the level's impact call (`Part::reacts`), and a
+/// held item's non-striking contact no longer sounds. A part already
+/// without the bit keeps it clear; a set whose size is not known (no game
+/// loaded) leaves the part as it is.
+pub(crate) fn impact_class(
+    game: Option<Res<Game>>,
+    mut sizes: ResMut<SetSizes>,
+    mut bodies: Query<(&mut Ragdoll, &BodySounds), Added<Ragdoll>>,
+) {
+    for (mut body, names) in &mut bodies {
+        for i in 0..body.parts.len() {
+            let mut known = true;
+            let sounded = names
+                .impact_set(i, |n| {
+                    let size = sizes.size(game.as_deref(), n);
+                    known &= size.is_some();
+                    size.unwrap_or(0)
+                })
+                .is_some();
+            if known && !sounded {
+                body.parts[i].reacts = false;
+            }
+        }
+    }
+}
+
 /// Rings the plain bodies' impacts and runs their scrape sources, once per
 /// body tick, as the original's post-step does; the frame plays what rang
 /// and drives the loops. Whether a part's set has a variant is read from
@@ -240,7 +289,7 @@ pub(crate) fn body_sounds(
     stages: Option<Res<SolverStages>>,
     mut bodies: Query<(Entity, &mut Ragdoll, &BodySounds)>,
     mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
-    mut sizes: Local<HashMap<String, usize>>,
+    mut sizes: ResMut<SetSizes>,
     mut roll: Local<u32>,
     mut sounding: Local<bevy::ecs::entity::EntityHashSet>,
 ) {
@@ -250,11 +299,7 @@ pub(crate) fn body_sounds(
         .as_ref()
         .and_then(|s| s.get::<Pairs>())
         .map_or(&[][..], Pairs::touches);
-    let mut size = |name: &str| {
-        *sizes
-            .entry(name.to_owned())
-            .or_insert_with(|| SoundBank::set_size(&game, name))
-    };
+    let mut size = |name: &str| sizes.size(Some(&game), name).unwrap_or(0);
     // The touches walked once, not once a body.
     let mut struck = struck_by_body(touches);
     for (entity, mut body, names) in &mut bodies {
@@ -264,11 +309,11 @@ pub(crate) fn body_sounds(
         let mut impacts = struck.remove(&entity).unwrap_or_default();
         impacts.extend(body.level_impacts().iter().map(|i| (i.part, i.strength)));
         if !impacts.is_empty() {
-            let sounded: Vec<bool> = names
-                .impact
-                .iter()
-                .map(|n| n.as_deref().is_some_and(|n| size(n) > 0))
+            // Each part's set: its own, or a door leaf's slam set.
+            let part_names: Vec<Option<String>> = (0..body.parts.len())
+                .map(|i| names.impact_set(i, &mut size).map(str::to_owned))
                 .collect();
+            let sounded: Vec<bool> = part_names.iter().map(Option::is_some).collect();
             let rung: Vec<(usize, Vec3, ImpactEvent)> = ring_impacts(
                 &mut body,
                 &impacts,
@@ -286,7 +331,6 @@ pub(crate) fn body_sounds(
                 )
             })
             .collect();
-            let part_names = names.impact.clone();
             frame.send(move |world| play_rung(world, &part_names, &rung));
         }
         let events = body.scrape_events();

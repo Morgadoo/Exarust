@@ -453,8 +453,9 @@ pub struct Part {
     pub last_impact: f32,
     /// Whether the part takes the level's impact call (the original's class
     /// bit 0x40000, set at add-to-world on every part but a foot and its
-    /// children; a rigid body has it when its material has a collision
-    /// sound, which Exarust takes as always).
+    /// children; a rigid body has it only when its collision sound list has
+    /// an entry, which the audio side checks when the body registers,
+    /// `exa_audio`'s impact class).
     pub reacts: bool,
     /// This tick's accepted level hits of the part: their count, summed
     /// world points and pushes, and the fastest smoothed velocity with its

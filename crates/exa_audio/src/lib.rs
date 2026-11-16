@@ -112,9 +112,13 @@ impl Plugin for AudioPlugin {
                     .before(playback::advance_audio_environment),
             )
             .init_resource::<bodies::FrameBodySounds>()
+            .init_resource::<bodies::SetSizes>()
             .add_systems(
                 FixedUpdate,
-                bodies::body_sounds.after(exa_physics::body::BodySystems),
+                (
+                    bodies::impact_class.before(exa_physics::body::BodySystems),
+                    bodies::body_sounds.after(exa_physics::body::BodySystems),
+                ),
             );
         exa_physics::sim_app::add_frame_commands(app);
         // The reverb bus needs Bevy's audio output (absent in tests and
