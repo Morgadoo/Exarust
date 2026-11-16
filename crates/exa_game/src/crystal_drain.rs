@@ -272,7 +272,17 @@ fn collect_sources(
     );
 }
 
+/// What the inventory source reads of an open inventory: its pack panel
+/// and the icon manager that resolves the drained entries' icons again.
+#[derive(bevy::ecs::system::SystemParam)]
+struct OpenPack<'w> {
+    screens: Option<ResMut<'w, crate::gui_screens::GameScreens>>,
+    icons: Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
+    catalogue: Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
+}
+
 /// Once a game second: every source drained in turn.
+#[allow(clippy::too_many_arguments)]
 fn drain_sources(
     mut state: ResMut<CrystalDrain>,
     time: Option<Res<Time<Virtual>>>,
@@ -281,12 +291,13 @@ fn drain_sources(
     mut objects: Option<ResMut<LiveObjects>>,
     mut placed: Query<&mut exa_world::ObjectSections>,
     mut items: Option<ResMut<crate::doll_view::DollItems>>,
-    (mut screens, mut icons, catalogue): (
-        Option<ResMut<crate::gui_screens::GameScreens>>,
-        Option<ResMut<crate::item_panel_draw::PanelIcons>>,
-        Option<Res<exa_items::catalogue::ItemCatalogue>>,
-    ),
+    open: OpenPack,
 ) {
+    let OpenPack {
+        mut screens,
+        mut icons,
+        catalogue,
+    } = open;
     if loading.is_some() {
         return;
     }
