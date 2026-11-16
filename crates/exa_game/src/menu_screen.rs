@@ -12,13 +12,22 @@
 //! the selected row down, and the row runs on the release over it or on
 //! Enter. Escape goes back from the arena and practice pages, as the
 //! original's does at the main menu, and closes the screen elsewhere.
+//!
+//! The keys reach the menu as the window procedure sends them
+//! ([`crate::gui_keys::GuiKeyFrame`]) and go to the menu's key slot: a
+//! typed character enters the ten-byte name buffer, whose `barechoons`
+//! toggles the menu music; a key-down goes to the base form's key slot,
+//! which passes it up to the task. Escape is the root task's menu toggle
+//! ([`crate::commands::MenuToggleKey`], [`menu_toggle_key`]). Up, Down,
+//! Enter and Backspace are Exarust's keyboard stand-ins for the pad's menu
+//! words (the original's menu hears no other key from the keyboard).
 
 use std::sync::{Arc, Mutex};
 
 use bevy::audio::AudioSource;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
+use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, KeyRoute};
 use exa_ui::gui_draw::{
     GuiFrame, GuiFrames, GuiTextures, LayerTexture, icon_batch, menu_batch, text_batch,
 };
@@ -28,7 +37,8 @@ use exa_ui::icon_atlas::IconQuad;
 use exa_ui::menu::{
     CLICK_SOUND, MENU_SOUND_FLAGS, MENU_SOUND_GAIN, MENU_TITLE_INK, MENU_TITLE_TEXTURE,
     MainMenuKeyAction, MainMenuKeyInput, SELECT_SOUND, back_main_menu, main_menu_key,
-    menu_row_scale, menu_sound_pitch, select_main_menu, title_place,
+    menu_row_scale, menu_sound_pitch, select_main_menu, title_place, toggle_menu_music,
+    type_menu_name,
 };
 use exa_ui::skin::{SkinBatch, SkinInk};
 
@@ -100,6 +110,9 @@ pub struct MenuScreen {
     covered: bool,
     /// The clock of the last select cue, for the 200-unit limit.
     sound_stamp: u32,
+    /// The last ten typed characters (A-Z lowered), which the key slot
+    /// compares with the music code.
+    pub name: [u8; 10],
 }
 
 impl Default for MenuScreen {
@@ -115,6 +128,7 @@ impl Default for MenuScreen {
             dirty: true,
             covered: false,
             sound_stamp: 0,
+            name: [0; 10],
         }
     }
 }
@@ -322,12 +336,18 @@ pub struct MenuScreenPlugin;
 
 impl Plugin for MenuScreenPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<MenuScreen>()
             .init_resource::<TitleLogo>()
             .init_resource::<MenuSoundRoll>()
             .add_message::<MenuChoice>()
             .add_message::<MenuSound>()
+            .add_message::<crate::commands::MenuToggleKey>()
             .add_systems(Startup, setup_router)
+            .add_systems(
+                PostUpdate,
+                menu_toggle_key.after(crate::commands::RootKeySet),
+            )
             .add_systems(
                 Update,
                 (toggle, input, draw, play_menu_sounds)
@@ -417,9 +437,56 @@ fn toggle(
     open_menu(&mut menu, flow.as_deref_mut());
 }
 
+/// The virtual keys of Exarust's keyboard stand-ins.
+const VK_BACK: u32 = 0x08;
+const VK_RETURN: u32 = 0x0d;
+const VK_UP: u32 = 0x26;
+const VK_DOWN: u32 = 0x28;
+
+/// The music code toggles the menu music: the alternative flag flips and
+/// the menu theme for it plays (the drum-and-bass theme at 0.2, the plain
+/// one at 0.1).
+fn toggle_music(flow: Option<&mut Flow>, steps: Option<&mut crate::flow::FlowSteps>) {
+    let Some(flow) = flow else {
+        return;
+    };
+    let toggled = toggle_menu_music(flow.alternative_music);
+    flow.alternative_music = toggled.drum_and_bass;
+    info!("menu: the music code plays {}", toggled.theme);
+    if let Some(steps) = steps {
+        steps.steps.push(crate::flow::Step::Music {
+            name: toggled.theme,
+            volume: toggled.gain,
+            restart: false,
+        });
+    }
+}
+
+/// The root task's menu toggle ([`crate::commands::MenuToggleKey`], the
+/// Escape that climbed from the menu's key slot): on the open menu it goes
+/// back from the arena and practice pages and closes the screen elsewhere.
+/// With the menu closed the toggle's opening arms stay with F1 and the
+/// screens' own Escape (the arena's pause).
+pub fn menu_toggle_key(
+    mut toggles: MessageReader<crate::commands::MenuToggleKey>,
+    mut menu: ResMut<MenuScreen>,
+    settings: Option<Res<crate::settings_form::SettingsForm>>,
+    manual: Option<Res<crate::help_live::ManualScreen>>,
+) {
+    if toggles.read().count() == 0 || !menu.open {
+        return;
+    }
+    if settings.is_some_and(|s| s.is_open()) || manual.is_some_and(|m| m.is_open()) {
+        return;
+    }
+    if !menu.back() {
+        menu.close();
+    }
+}
+
 /// Reads the pointer and keys while the menu is open. The Settings form,
 /// a form above the menu, takes them while it is open.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn input(
     mut menu: ResMut<MenuScreen>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -436,6 +503,11 @@ fn input(
     (mut pad, mut flow): (
         Option<ResMut<crate::pad_menu::PadMenu>>,
         Option<ResMut<Flow>>,
+    ),
+    (gui_keys, mut climbed, mut steps): (
+        Option<Res<crate::gui_keys::GuiKeyFrame>>,
+        Option<ResMut<crate::gui_keys::TaskKeys>>,
+        Option<ResMut<crate::flow::FlowSteps>>,
     ),
 ) {
     if !menu.open
@@ -505,25 +577,51 @@ fn input(
             MainMenuKeyAction::None => {}
         }
     }
-    if keys.just_pressed(KeyCode::Escape) {
-        if !menu.back() {
-            menu.close();
+    // The menu's key slot, for each key as the window procedure sends it.
+    let mut downs: Vec<u32> = Vec::new();
+    for key in gui_keys.iter().flat_map(|frame| frame.keys.iter().copied()) {
+        if key.flags & exa_ui::gui_keys::TYPED != 0 {
+            let typed = type_menu_name(menu.name, key.key as u8, key.flags);
+            menu.name = typed.buffer;
+            if typed.matched {
+                toggle_music(flow.as_deref_mut(), steps.as_deref_mut());
+            }
+            continue;
         }
-        return;
+        // A key-down: the base form's key slot. No record of the menu
+        // takes keys, so the key goes up to the task (the root's
+        // shortcuts: Escape toggles the menu).
+        let route = router.task.key(key.key, key.flags);
+        if matches!(route, KeyRoute::Task | KeyRoute::Root)
+            && let Some(climbed) = climbed.as_deref_mut()
+        {
+            climbed.forward(key);
+        }
+        if key.flags & exa_ui::gui_keys::REPEAT == 0 {
+            downs.push(key.key);
+        }
     }
-    if keys.just_pressed(KeyCode::ArrowDown) {
+    // Scripted runs without the key list read the button state.
+    if gui_keys.is_none() {
+        downs.extend(
+            keys.get_just_pressed()
+                .filter_map(|&k| crate::bindings::virtual_key(k)),
+        );
+    }
+    // Exarust's keyboard stand-ins for the pad's menu words.
+    if downs.contains(&VK_DOWN) {
         menu.move_selection(1);
     }
-    if keys.just_pressed(KeyCode::ArrowUp) {
+    if downs.contains(&VK_UP) {
         menu.move_selection(-1);
     }
-    if keys.just_pressed(KeyCode::Enter) {
+    if downs.contains(&VK_RETURN) {
         let row = menu.selected + 1;
         cue(&mut roll, MenuCue::Click);
         run(&mut menu, row, &mut exit, &mut choices);
         return;
     }
-    if keys.just_pressed(KeyCode::Backspace) {
+    if downs.contains(&VK_BACK) {
         menu.back();
         return;
     }
@@ -1026,6 +1124,78 @@ mod tests {
         press(&mut app, KeyCode::ArrowDown);
         assert_eq!(app.world().resource::<MenuScreen>().selected, 1);
         press(&mut app, KeyCode::F1);
+        assert!(!app.world().resource::<MenuScreen>().open);
+    }
+
+    /// The menu's key slot: a typed character enters the name buffer and
+    /// `barechoons` toggles the menu music; Escape climbs from the menu's
+    /// key slot to the root task, whose menu toggle goes back from the
+    /// start page and closes the title page.
+    #[test]
+    fn the_menu_types_the_music_code_and_escape_climbs_to_the_root() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GuiFrames>()
+            .init_resource::<Flow>()
+            .init_resource::<crate::flow::FlowSteps>()
+            .add_plugins((MenuScreenPlugin, crate::commands::CommandPlugin));
+        app.update();
+        app.world_mut().resource_mut::<MenuScreen>().open();
+        let send = |app: &mut App, code: KeyCode, key: Key, pressed: bool| {
+            app.world_mut().write_message(KeyboardInput {
+                key_code: code,
+                logical_key: key,
+                state: if pressed {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                },
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        };
+        for c in "BareChoons".chars() {
+            let code = match c.to_ascii_lowercase() {
+                'b' => KeyCode::KeyB,
+                'a' => KeyCode::KeyA,
+                'r' => KeyCode::KeyR,
+                'e' => KeyCode::KeyE,
+                'c' => KeyCode::KeyC,
+                'h' => KeyCode::KeyH,
+                'o' => KeyCode::KeyO,
+                'n' => KeyCode::KeyN,
+                _ => KeyCode::KeyS,
+            };
+            send(&mut app, code, Key::Character(c.to_string().into()), true);
+            send(&mut app, code, Key::Character(c.to_string().into()), false);
+            app.update();
+        }
+        assert_eq!(&app.world().resource::<MenuScreen>().name, b"barechoons");
+        assert!(app.world().resource::<Flow>().alternative_music);
+        let steps = &app.world().resource::<crate::flow::FlowSteps>().steps;
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            crate::flow::Step::Music { name, .. } if *name == exa_ui::menu::MENU_THEME_DNB.0
+        )));
+        // Escape on the start page goes back to the title through the root's
+        // menu toggle; on the title it closes the screen.
+        app.world_mut()
+            .resource_mut::<MenuScreen>()
+            .show(Page::Start);
+        send(&mut app, KeyCode::Escape, Key::Escape, true);
+        app.update();
+        send(&mut app, KeyCode::Escape, Key::Escape, false);
+        app.update();
+        let menu = app.world().resource::<MenuScreen>();
+        assert!(menu.open);
+        assert_eq!(menu.page, Page::Title);
+        send(&mut app, KeyCode::Escape, Key::Escape, true);
+        app.update();
         assert!(!app.world().resource::<MenuScreen>().open);
     }
 
