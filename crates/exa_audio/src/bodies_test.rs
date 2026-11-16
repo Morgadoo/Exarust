@@ -153,3 +153,75 @@ fn the_shipped_collision_sets_have_variants() {
         assert!(sounds.get(&format!("{set}01")).is_some(), "{set}");
     }
 }
+
+/// A part rings its own set when that has a shipped variant; else the root
+/// part of a door leaf rings its slam set (the original's door init gives
+/// a leaf whose material has no collision sound its slam list); else none.
+#[test]
+fn a_part_rings_its_own_set_then_a_doors_slam_set() {
+    let sizes = |n: &str| match n {
+        "wodcol" => 4,
+        "doora_slm" => 2,
+        _ => 0,
+    };
+    let door = BodySounds {
+        impact: vec![Some("stncol".into()), Some("stncol".into())],
+        scrapes: Vec::new(),
+        fallback: Some("doora_slm".into()),
+    };
+    assert_eq!(door.impact_set(0, sizes), Some("doora_slm"));
+    // Only the leaf itself (the door body) takes the slam set.
+    assert_eq!(door.impact_set(1, sizes), None);
+    let wood = BodySounds {
+        impact: vec![Some("wodcol".into())],
+        fallback: Some("doora_slm".into()),
+        ..BodySounds::default()
+    };
+    assert_eq!(wood.impact_set(0, sizes), Some("wodcol"));
+    assert_eq!(BodySounds::default().impact_set(0, sizes), None);
+}
+
+/// In the running game (the audio plugin's fixed-step systems), a newly
+/// registered body's parts keep their impact class only with a sounded
+/// set: a material set with variants keeps it, one without clears it, a
+/// door leaf without one keeps it through its slam set, and a set whose
+/// size is not known (no game loaded) leaves the part as it was.
+#[test]
+fn a_registered_body_keeps_its_impact_class_only_with_a_sounded_set() {
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<AudioSource>()
+        .add_message::<exa_physics::body::Footstep>()
+        .add_message::<exa_physics::mechanism_sound::MechanismSounded>()
+        .add_plugins(crate::AudioPlugin)
+        .insert_resource(Time::<Fixed>::from_hz(exa_physics::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            1.0 / 30.0,
+        )));
+    {
+        let mut sizes = app.world_mut().resource_mut::<SetSizes>();
+        sizes.0.insert("wodcol".into(), 4);
+        sizes.0.insert("stncol".into(), 0);
+        sizes.0.insert("doora_slm".into(), 2);
+    }
+    let sounds = |own: &str, fallback: Option<&str>| BodySounds {
+        impact: vec![Some(own.into())],
+        scrapes: Vec::new(),
+        fallback: fallback.map(str::to_owned),
+    };
+    let spawn = |app: &mut App, s: BodySounds| app.world_mut().spawn((body(1), s)).id();
+    let wood = spawn(&mut app, sounds("wodcol", None));
+    let stone = spawn(&mut app, sounds("stncol", None));
+    let door = spawn(&mut app, sounds("stncol", Some("doora_slm")));
+    let unknown = spawn(&mut app, sounds("glscol", None));
+    for _ in 0..3 {
+        app.update();
+    }
+    let reacts = |e: Entity| app.world().get::<Ragdoll>(e).unwrap().parts[0].reacts;
+    assert!(reacts(wood));
+    assert!(!reacts(stone));
+    assert!(reacts(door));
+    assert!(reacts(unknown));
+}

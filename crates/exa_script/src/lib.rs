@@ -39,6 +39,7 @@ impl Plugin for ScriptPlugin {
             .add_message::<LeaveDialogue>()
             .add_message::<EndConversationsOf>()
             .add_message::<EndNarration>()
+            .add_message::<EndAllConversations>()
             .add_message::<ScriptEffect>()
             .add_systems(
                 Update,
@@ -182,6 +183,13 @@ pub struct EndConversationsOf(pub u32);
 #[derive(Message, Debug, Clone, Copy, Default)]
 pub struct EndNarration;
 
+/// Every conversation ends ([`dialogue::Engine::end_all`]): live ones with
+/// their topic recorded, all released, a pending narration dropped and the
+/// reply panel closed. The game flow asks for it when a session is left and
+/// when the story's end menu exits.
+#[derive(Message, Debug, Clone, Copy, Default)]
+pub struct EndAllConversations;
+
 /// What a script asked the game to do.
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
 pub struct ScriptEffect(pub Effect);
@@ -216,11 +224,18 @@ fn run_conversations(
     mut leave: MessageReader<LeaveDialogue>,
     mut ends: MessageReader<EndConversationsOf>,
     mut end_narration: MessageReader<EndNarration>,
+    mut end_all: MessageReader<EndAllConversations>,
     mut effects: MessageWriter<ScriptEffect>,
 ) {
     let now = time.elapsed().as_millis() as u32;
     let player = conversations.player;
+    let ended = end_all.read().count() > 0;
     let ((), out) = conversations.with_scene(&scripts, now, |engine, scene| {
+        // A session's end comes first: what this frame asks for afterwards
+        // starts in the next session.
+        if ended {
+            engine.end_all(scene);
+        }
         for n in narrate.read() {
             engine.narrate(scene, Name::from_bytes(n.topic.as_bytes()), n.delay);
         }

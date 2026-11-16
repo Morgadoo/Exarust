@@ -136,8 +136,9 @@ pub struct BarricadeAdd {
     /// The cast motion started.
     pub motion: bool,
     pub entity: BarricadeEntity,
-    /// The hum's pitch, when the barricade names a sound.
-    pub hum_pitch: Option<f32>,
+    /// The hum's start into its buffer (s), when the hum's buffer loaded
+    /// (its length given).
+    pub hum_start: Option<f32>,
 }
 
 /// The AI entity a barricade carries: the 6 m sector its middle stands in
@@ -288,6 +289,8 @@ pub struct Barricade {
     pub entity: bool,
     /// The hum is playing.
     pub voice: bool,
+    /// The draw the hum's start takes (the process stream's, at the entry).
+    pub hum_roll: f64,
     /// The focus the power object holds.
     pub held: f32,
 }
@@ -345,6 +348,7 @@ impl Barricade {
             spawned: false,
             entity: false,
             voice: false,
+            hum_roll: 0.0,
             held: 0.0,
         }
     }
@@ -352,8 +356,10 @@ impl Barricade {
     /// Enters the world: starts the cast motion (0x24) with the power id
     /// (0x20206), installing its end hook when the cast starts; creates the
     /// power object and reserves the barricade's focus; starts the hum when
-    /// `hum` names the sound's base pitch, at `base·0.8·draw` (in double, in
-    /// that order); and makes the AI entity with the 6 m sector of the
+    /// its buffer loaded (`hum` its length, s): a looping voice at the node,
+    /// volume 0 and pitch 1, its start `length·0.8·draw` into the buffer (in
+    /// double, in that order; the draw is kept for the frame's voice); and
+    /// makes the AI entity with the 6 m sector of the
     /// wall's middle in a sector grid of `sectors` (width, height).
     pub fn add_to_world(
         &mut self,
@@ -375,8 +381,9 @@ impl Barricade {
         self.spawned = motion;
         self.entity = true;
         self.held = held;
-        let hum_pitch = hum.map(|base| ((f64::from(base) * 0.8) * roll) as f32);
-        self.voice = hum_pitch.is_some();
+        let hum_start = hum.map(|length| ((f64::from(length) * 0.8) * roll) as f32);
+        self.hum_roll = roll;
+        self.voice = hum_start.is_some();
         BarricadeAdd {
             power,
             held,
@@ -385,7 +392,7 @@ impl Barricade {
                 sector: sectors.and_then(|(w, h)| exa_ai::golem::sector_index(self.frame.at, w, h)),
                 registered: true,
             },
-            hum_pitch,
+            hum_start,
         }
     }
 
@@ -503,6 +510,7 @@ impl Barricade {
         let round = self.half_height;
         let mut front = false;
         let mut depth = 0.0;
+        let mut struck = Vec3::ZERO;
         for (k, &(centre, r)) in body.spheres.iter().enumerate() {
             let p = self.frame.local(centre);
             let side = p.x.abs() - inner;
@@ -523,6 +531,7 @@ impl Barricade {
             if p.z > 0.0 {
                 front = true;
                 depth = p.z;
+                struck = p;
             } else {
                 push = (f64::from(push) * 0.1) as f32;
             }
@@ -545,6 +554,7 @@ impl Barricade {
                         let volume = (f64::from(roll.unit()) * 0.2 + 0.3) as f32;
                         out.sound = Some(WallSound {
                             depth,
+                            at: struck,
                             volume,
                             pitch,
                         });
@@ -560,6 +570,7 @@ impl Barricade {
                     let volume = (f64::from(roll.unit()) * 0.3 + 0.1) as f32;
                     out.sound = Some(WallSound {
                         depth,
+                        at: struck,
                         volume,
                         pitch,
                     });
@@ -738,6 +749,9 @@ pub const WAKE_TICKS: i32 = 32;
 pub struct WallSound {
     /// How far in front of the wall the struck sphere was.
     pub depth: f32,
+    /// Where the last struck sphere in front stood, in the wall's frame
+    /// (cm): the sound plays there, carried into the world.
+    pub at: Vec3,
     pub volume: f32,
     pub pitch: f32,
 }
@@ -1159,7 +1173,8 @@ mod tests {
         );
         // Sector (1 + 5, −1 + 4) of a 10 × 8 grid.
         assert_eq!(add.entity.sector, Some(3 * 10 + 6));
-        assert_eq!(add.hum_pitch, Some(((2.0f64 * 0.8) * 0.5) as f32));
+        assert_eq!(add.hum_start, Some(((2.0f64 * 0.8) * 0.5) as f32));
+        assert_eq!(wall.hum_roll, 0.5);
         assert!(wall.spawned && wall.entity && wall.voice);
         let teardown = wall.destroy();
         assert!(teardown.entity && teardown.voice);
@@ -1177,7 +1192,7 @@ mod tests {
             busy.cast_hook,
             Some(crate::thaum::casting::CastHook { keeps: 0x20 })
         );
-        assert_eq!((add.entity.sector, add.hum_pitch), (None, None));
+        assert_eq!((add.entity.sector, add.hum_start), (None, None));
     }
 
     #[test]

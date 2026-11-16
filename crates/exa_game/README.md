@@ -597,15 +597,25 @@ nodes only. A wave cast runs its wave round the caster's body root
 (`thaum::wave_live`): charging on the blast's hook, paying its drain each
 tick, and thrown through the blast's contact slots, which its class shares
 (the level's meshes, the cloths, each other body part by part with the
-character knock). A torrent cast runs its streams from
+character knock); its throw alerts the caster's known characters as the
+blast's release does (`thaum::blast_live::alert_known`). A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
 its hook until the caster lets go or runs out, its points walking the
 level's meshes and each other body's part meshes with the two-sided query
 (`walk_torrent_mesh`: the surface points and pushes gathered per stream,
 the point eased toward its pushed place, the stream loop's bump; the limb
 callback pushing the part at the gathered surface's weights), the knock,
-counter, concern and pins a struck character takes per part, its ribbon drawn with the glow material, and
-leaving once its frame would draw nothing. Cast hooks answer by event
+counter, concern and pins a struck character takes per part, the level's
+cloths stirred by its live points at the reach scale the last contact left
+(`stir_torrent_cloth`), its ribbon drawn with the glow material, its charge
+loop `thmfrc_cu01` and stream loop `thmfrc_trntdr` playing at the tick's
+volumes and pitch (`thaum::torrent_sound`), and leaving once its frame
+would draw nothing. The barricade's hum `thmfrc_bc01` follows its frame's
+words and its impacts play `thmfrc_bi` at the struck sphere
+(`thaum::barricade_sound`, which also plays Force Strikes' end set); the
+blast's, wave's and barricade's sight entities form the simulation's
+watch list (`effects::danger::HazardWatch`): one that leaves it is
+forgotten by every brain. Cast hooks answer by event
 (`thaum::casting::CastHook`): the shell's and the bubble's refuse another
 cast until their raise clip ends, and a caster's animator leaving its cast
 action asks the hook with event 4 (`thaum::cast::call_motion_hooks`). The
@@ -2539,8 +2549,25 @@ step becomes a `SettingsEntry` message that the binary writes and flushes
 into the user's store, as the original's settings writer does, so a later
 launch greys EXPERT differently. The camera shots (offsets added to the framed point)
 with their cursor warps, the spawn turns (the engine's angle builder), the
-exit-trigger nudge, the practice scene filter, the practice and menu music,
-the unlock words and the save managers' signatures are pinned by tests.
+exit-trigger nudge, the practice and menu music,
+the unlock words and the save managers' signatures are pinned by tests. A
+shot's warp is applied while the window has the focus
+(`os_pointer::WarpPointer`, the client point over the scale factor). The
+practice start gives the player its roles anew (cleared, then Unaligned).
+The practice fights and the respawn write their frame height before the
+placement (`Step::PlacedFrame` → `level_change::PlacedFrame`, taken with
+the placement; the viewer then skips the save landing's floor probe): the
+start the pose's pelvis target plus 5 cm and each next fight its stand
+height over the origin, the portal placement the frame 15 cm up as the
+pelvis's own (`limp::FrameHeight::Given`). The original passes its practice
+scene filter to level loads that never read it, so Exarust has none. The
+session leave and the story exit end every conversation
+(`exa_script::EndAllConversations`). The in-game GUI (`GameView`, the HUD)
+goes on with each start and continue once its level is in and off with the
+session's leave; the death, the knock-out, the level exit and the story
+exit sweep the game screens instead (`Step::SweepScreens`). The new story
+sets the first wake-up's flag once its level is in (`Step::FirstWake`),
+after the load's GUI reset (`load_reset`) cleared it, as every load's does.
 Rules: `docs/UI.md` (The game flow).
 
 `splash` is the start-up splash screen: the black backdrop, the one-second

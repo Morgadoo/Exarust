@@ -1264,6 +1264,23 @@ pub struct SectorTurn {
     pub pending: Vec<usize>,
 }
 
+/// Adds an entry to a simulation's watch list, last (the force effects add
+/// the entity their sight sees as they start).
+pub fn watch_add<T>(watch: &mut Vec<T>, entry: T) {
+    watch.push(entry);
+}
+
+/// Removes the first match of `entry` from a watch list, the last entry
+/// taking its place, and reports whether it was there: only then does the
+/// original tell its listeners (every character's AI forgets the entry).
+pub fn watch_remove<T: PartialEq>(watch: &mut Vec<T>, entry: &T) -> bool {
+    let Some(at) = watch.iter().position(|e| e == entry) else {
+        return false;
+    };
+    watch.swap_remove(at);
+    true
+}
+
 /// The simulation flag bit that asks for the grids to be rebuilt.
 pub const REBUILD_GRID: u32 = 0x2_0000;
 
@@ -1384,19 +1401,18 @@ impl Simulation {
         register
     }
 
-    /// Adds a body to the watch list, last.
+    /// Adds a body to the watch list, last ([`watch_add`]).
     pub fn watch_add(&mut self, body: usize) {
-        self.watch.push(body);
+        watch_add(&mut self.watch, body);
     }
 
-    /// Removes a body from the watch list (the last one takes its place)
-    /// and reports whether it was there; the original then calls every
-    /// listener with the body (the listeners are returned here).
+    /// Removes a body from the watch list ([`watch_remove`]) and reports
+    /// whether it was there; the original then calls every listener with
+    /// the body (the listeners are returned here).
     pub fn watch_remove(&mut self, body: usize) -> (bool, Vec<usize>) {
-        let Some(at) = self.watch.iter().position(|&b| b == body) else {
+        if !watch_remove(&mut self.watch, &body) {
             return (false, Vec::new());
-        };
-        self.watch.swap_remove(at);
+        }
         (true, self.listeners.clone())
     }
 

@@ -419,6 +419,32 @@ fn the_immediate_push_keeps_momentum() {
     assert!(total.length() < 1e-7, "{total}");
 }
 
+/// The immediate push adds its length to each side's strain, summed as the
+/// original's length routine sums: (x² + z²) + y² (its packed squares, the
+/// high pair folded onto the low one, then the second lane). This push's
+/// two orders differ in the last bit; it stays under the 0.1 cm strain
+/// that restores the edges (and clears the strain).
+#[test]
+fn the_immediate_pushs_strain_sums_x_and_z_first() {
+    let v = Vec3::new(-0.000_490_921_608, -0.000_453_272_893, -0.000_319_080_515);
+    let xzy = ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt();
+    let xyz = ((v.x * v.x + v.y * v.y) + v.z * v.z).sqrt();
+    assert_ne!(xzy, xyz);
+    assert_eq!(push_length(v), xzy);
+    let mut a = ball(1, 1, Vec3::ZERO, 0.1);
+    let mut b = ball(2, 1, Vec3::X, 0.1);
+    a.parts[0].strain = 0.0;
+    // Equal mobilities and spreads: each side takes half, signed.
+    push_apart(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        [0.25; 4],
+        [0.25; 4],
+        v * 2.0,
+    );
+    assert_eq!(a.parts[0].strain, push_length(v * 2.0 * 0.5));
+}
+
 /// Two balls at rest, A's sphere side, `depth` (m) into each other along x,
 /// with a pair kept for the centroid of each: the point's depth along +x
 /// is `depth`, and A slipped `slip` (m) this tick.

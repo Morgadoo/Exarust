@@ -535,7 +535,7 @@ pub fn menu_scene_load() -> MenuSceneLoad {
 /// The GUI state a load resets, in the original's order: the death fade
 /// (a paused game gets its time back), the sweep that closes every game
 /// screen and the power tree, the crystal drain's source list, the item
-/// icon cache, then a game-main flag byte cleared. The live runner is
+/// icon cache, then the first wake-up's flag cleared. The live runner is
 /// [`crate::load_reset`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameGuiReset {
@@ -551,7 +551,8 @@ pub struct GameGuiReset {
     /// The item icon cache and its atlas emptied
     /// ([`crate::item_panel_draw::PanelIcons::clear`]).
     pub icons: bool,
-    /// The game-main flag byte the original zeroes last.
+    /// The game-main flag byte the original zeroes last: the story's
+    /// first-wake animating flag ([`crate::flow::Wake::animating`]).
     pub word: u32,
 }
 

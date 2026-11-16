@@ -212,8 +212,17 @@ bus next to the rodio sources) are in.
   (`exa_physics::body::impact_sound`) with the part's material set
   (`<prefix>col`, e.g. `wdlcol`, `mtlcol`, numbered 01 on). A sound is a
   one-shot at the part's mesh centre in the world (the original's body
-  centre). A part whose set has no shipped variant is silent. Held items
-  and characters are left to `exa_combat`.
+  centre). A part whose set has no shipped variant is silent, except a
+  door leaf, which rings its record's slam set (`BodySounds::fallback`,
+  `BodySounds::impact_set`), as the original's door init gives it. Held
+  items and characters are left to `exa_combat`.
+- When a body registers (fixed step, before the solver), each of its
+  parts without a sounded set loses its impact class (`Part::reacts`,
+  `bodies::impact_class`): the original's add-to-world sets the class bit
+  0x40000 only when the body's collision sound list has an entry, so such
+  a part makes no level impact and a held non-striking item no contact
+  sound. Set sizes are read from the sound pack once per name
+  (`bodies::SetSizes`); with no game loaded the parts are left as built.
 - Each scrape source drives one attached loop: over the speed floor a loop
   that is not playing starts at volume and pitch 1, then takes the event's
   volume, pitch and point; under the floor a playing loop gets the stop

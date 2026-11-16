@@ -16,8 +16,11 @@
 //!   charges and half of it while it runs; a shortfall calls the hook and
 //!   ends the cast. Its spawn delays draw from the effects' shared roll.
 //!   Once running (flags 0xb_0000), its live points take the sector's
-//!   contacts in its step's order: the level's static meshes, then each
-//!   other body part by part ([`walk_torrent_mesh`]: each stream's live
+//!   contacts in its step's order: the level's static meshes, the
+//!   level's cloths ([`stir_torrent_cloth`]: [`stir_sim_object`] at the
+//!   reach scale the last contact left, the cloth woken to 256 ticks and
+//!   its rustle envelope taking the stir), then each other body part by
+//!   part ([`walk_torrent_mesh`]: each stream's live
 //!   points from the head back, in the mesh's frame, past its bounding
 //!   sphere and box, asked of the mesh's two-sided sphere query with the
 //!   push-out callback that gathers the surface points and pushes; a point
@@ -37,8 +40,8 @@
 //! answers with its spheres.] The stream ribbon draws with
 //! `effecttorrent_f` ([`draw_torrents`]). The hit ends as the blast's does
 //! ([`super::blast_live::loosen_pins`]). The torrent's GI multi-point shape
-//! lives with it (`super::effect_light`). Not wired: the simulated objects'
-//! points and the sounds' voices.
+//! lives with it (`super::effect_light`), its two loops with their voices
+//! (`super::torrent_sound`).
 //!
 //! Evidence: the torrent's creator, start, hook, tick and frame, read from
 //! `Exanima.exe`.
@@ -60,7 +63,8 @@ use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon};
 use crate::effects::blast::{EPSILON, HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
     POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION, Torrent,
-    TorrentEvents, TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
+    TorrentEvents, TorrentView, limb_impulse, limb_terms, stir_sim_object, torrent_knock,
+    torrent_reach,
 };
 use crate::player::CursorGround;
 use crate::thaum::engine::lerp;
@@ -84,6 +88,12 @@ pub struct LiveTorrent {
     pub hooked: bool,
     /// The cast generation whose hook the torrent took.
     pub generation: u64,
+    /// The reach scale the torrent's last contact left: the level's 0.25,
+    /// a part's own ([`limb_terms`]); 0 before any. The simulated-object
+    /// walk reads it.
+    pub contact_scale: f32,
+    /// The draws the start's two loop voices take.
+    pub rolls: super::torrent_sound::TorrentRolls,
 }
 
 /// The torrent's start on its caster: cast motion 0x26 with the power id,
@@ -125,12 +135,20 @@ pub fn new_torrent(
     let generation = body.cast_generation;
     let torrent = Torrent::new(cost, tick_ms, view, &mut draws.0, roll.0);
     roll.0 = torrent.roll;
+    // The start's two loops take their starts from the process stream's
+    // next draws, the charge loop's first.
+    let rolls = super::torrent_sound::TorrentRolls {
+        charge: draws.0.unit(),
+        stream: draws.0.unit(),
+    };
     LiveTorrent {
         torrent,
         caster,
         target,
         hooked,
         generation,
+        contact_scale: 0.0,
+        rolls,
     }
 }
 
@@ -408,6 +426,26 @@ pub(crate) fn strike_torrent_part(
     (struck, impulse_sum)
 }
 
+/// The torrent's walk over a cloth ([`stir_sim_object`]): the stream
+/// points taken into the cloth's frame (cm), the cloth's particles and
+/// their box the object; a cloth met takes the moved points and the stir
+/// and is woken to 256 ticks. [inf: as the blast's, Exarust's cloth keeps
+/// its particles in its node's frame, so the points are taken into it.]
+pub(crate) fn stir_torrent_cloth(
+    torrent: &Torrent,
+    scale: f32,
+    cloth: &mut exa_world::cloth::ClothInstance,
+) -> bool {
+    let (mut object, to_cloth) = super::blast_live::cloth_object(cloth);
+    if !stir_sim_object(torrent, scale, &mut object, |p| {
+        to_cloth.transform_point3(p / CM) * CM
+    }) {
+        return false;
+    }
+    super::blast_live::take_stir(cloth, &object);
+    true
+}
+
 /// Whether the sector would hand the torrent a part: the part's mesh
 /// sphere (cm) meets the torrent's bounding sphere. [inf: as the blast's,
 /// a sphere test stands in for the sector's cell walk.]
@@ -480,9 +518,10 @@ pub(crate) fn tick_torrents(
     npcs: Query<&Npc>,
     mut draws: ResMut<EffectDraws>,
     mut roll: ResMut<EffectRoll>,
-    (statics, mut triangles): (
+    (statics, mut triangles, mut cloths): (
         Option<Res<exa_physics::StaticColliders>>,
         Local<Vec<[Vec3; 3]>>,
+        Query<&mut exa_world::cloth::ClothInstance>,
     ),
 ) {
     for (entity, mut live) in &mut torrents {
@@ -533,13 +572,20 @@ pub(crate) fn tick_torrents(
             caster.sync_body();
         }
         if live.torrent.flags & RUNNING_FLAGS != 0 {
-            // The sector's contacts in its step's order: the level, then
-            // the bodies' parts.
+            // The sector's contacts in its step's order: the level, the
+            // simulated objects, then the bodies' parts. Each contact
+            // leaves its reach scale for the next.
             if let (Some(physics), Some(statics)) = (physics.as_deref(), statics.as_deref()) {
                 let hits =
                     strike_level(&mut live.torrent, statics, physics, &places, &mut triangles);
                 if 0 < hits {
                     debug!("torrent {entity:?} meets the level: {hits} meshes");
+                }
+                live.contact_scale = STATIC_CONTACT.scale;
+            }
+            for mut cloth in &mut cloths {
+                if stir_torrent_cloth(&live.torrent, live.contact_scale, &mut cloth) {
+                    debug!("torrent {entity:?} stirs a cloth");
                 }
             }
             for (other, mut body) in &mut bodies {
@@ -552,6 +598,8 @@ pub(crate) fn tick_torrents(
                     if !part_near(&live.torrent, &body.parts[part]) {
                         continue;
                     }
+                    live.contact_scale =
+                        limb_terms(character, body.parts[part].inverse_mass, mass).0;
                     let (struck, impulse) =
                         strike_torrent_part(&mut live.torrent, &mut body, part, character, mass);
                     if !struck {

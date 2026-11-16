@@ -37,6 +37,7 @@ pub(crate) use exa_physics::engine_math::reciprocal_sqrt;
 
 pub mod arcs;
 pub mod barricade;
+pub mod barricade_sound;
 pub mod barrier_live;
 pub mod blast_live;
 pub mod blast_sound;
@@ -63,6 +64,7 @@ pub mod shell_hum;
 pub mod summon_live;
 pub mod throw_live;
 pub mod torrent_live;
+pub mod torrent_sound;
 pub mod tree;
 pub mod user_stamp;
 pub mod vanish_live;
@@ -1533,13 +1535,15 @@ pub struct TorrentMix {
 }
 
 /// Step a torrent. Below phase 1 the level follows the charge. Later it falls, and the channels ease or dim.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn step_torrent(phase: i32, charge: f32, level: f32, left: f32, right: f32) -> TorrentMix {
     let (level, playing) = if phase < 1 {
         let product = (2.0 - charge) * charge;
         ((f64::from(product) * 0.4) as f32, true)
     } else {
         let level = (f64::from(level) - 0.01) as f32;
-        (level, f64::from(level) >= 0.02)
+        // The voice is freed on an ordered "below 0.02": NaN keeps it.
+        (level, !(f64::from(level) < 0.02))
     };
     let (left, right) = if phase == 1 {
         let gap = 0.5 - left;

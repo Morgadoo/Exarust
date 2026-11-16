@@ -108,11 +108,33 @@ pub struct PendingScrapes(pub Vec<BodyScrape>);
 /// `impact` holds each part's collision sound set (its node's first mesh
 /// material's, [`crate::body::impact_sound`]), none for a part without a
 /// material; `scrapes` the sound of each scrape source, in the order the
-/// sources were added ([`crate::body::Ragdoll::scrapes`]).
+/// sources were added ([`crate::body::Ragdoll::scrapes`]); `fallback` a
+/// door leaf's slam set ([`BodySounds::impact_set`]).
 #[derive(Component, Debug, Clone, Default, PartialEq, Eq)]
 pub struct BodySounds {
     pub impact: Vec<Option<String>>,
     pub scrapes: Vec<String>,
+    /// The set the root part takes when its own set has no shipped
+    /// variant: a door leaf's slam set, which the original's door init
+    /// gives a leaf whose material has no collision sound.
+    pub fallback: Option<String>,
+}
+
+impl BodySounds {
+    /// The collision set part `part` rings, with `size` the number of
+    /// shipped variants of a set: its own set when that has a variant,
+    /// else (the root part) the fallback when that has one. `None` is a
+    /// part with no sound, which the original leaves without its impact
+    /// class bit.
+    pub fn impact_set(&self, part: usize, mut size: impl FnMut(&str) -> usize) -> Option<&str> {
+        let own = self.impact.get(part).and_then(|n| n.as_deref());
+        if let Some(own) = own.filter(|n| size(n) > 0) {
+            return Some(own);
+        }
+        self.fallback
+            .as_deref()
+            .filter(|n| part == 0 && size(n) > 0)
+    }
 }
 
 /// The stand-in colliders of each prop body (by its root node) and the
