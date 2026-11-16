@@ -126,7 +126,7 @@ impl SolverStage for Record {
     fn detect(&mut self, bodies: &mut [&mut Ragdoll], _: &mut [&mut Ragdoll]) {
         self.note("detect", 0, bodies);
     }
-    fn sim_object_contacts(&mut self, bodies: &mut [&mut Ragdoll]) {
+    fn sim_object_contacts(&mut self, bodies: &mut [&mut Ragdoll], _: &mut [&mut Ragdoll]) {
         self.note("sim_object_contacts", 0, bodies);
     }
     fn friction(&mut self, bodies: &mut [&mut Ragdoll], _: &mut [&mut Ragdoll]) {

@@ -1457,6 +1457,21 @@ pub struct ObjectBodyPart<'a> {
     pub previous_points: [Vec3; 4],
 }
 
+/// The sector's pre-test between a simulated object and a body part, before
+/// the object's own body contact: the part's bounding sphere must reach the
+/// object's, then [`object_body_meet`] with the distance from the object's
+/// centre to the part's mesh box (the cheap sphere test first: the box
+/// distance inverts the part's matrix, and the result is the same as the
+/// full test).
+pub fn object_meets_part(object: ObjectBounds, part: &ObjectBodyPart) -> bool {
+    let (centre, radius) = (part.centre * 100.0, part.radius * 100.0);
+    if intersect::spheres_separated(centre, radius, object.centre, object.radius) {
+        return false;
+    }
+    let box_distance2 = mesh_box_distance2(object.centre * 0.01, part.mesh, &part.now) * 1.0e4;
+    object_body_meet(object, centre, radius, box_distance2)
+}
+
 /// The contacts a simulated object takes from the sector's body and static
 /// stages, in the object's own space and centimetres, as the cloth step
 /// reads them: body spheres to stay outside, body spheres swept over the
@@ -1509,20 +1524,7 @@ impl ObjectContacts {
     ) {
         let (box_centre, box_half) = object_box;
         for (index, part) in parts.into_iter().enumerate() {
-            // The cheap sphere test first: the box distance inverts the
-            // part's matrix (the result is the same as the full test).
-            let (centre, radius) = (part.centre * 100.0, part.radius * 100.0);
-            if intersect::spheres_separated(centre, radius, object.centre, object.radius) {
-                continue;
-            }
-            let box_distance2 =
-                mesh_box_distance2(object.centre * 0.01, part.mesh, &part.now) * 1.0e4;
-            if !object_body_meet(
-                object,
-                part.centre * 100.0,
-                part.radius * 100.0,
-                box_distance2,
-            ) {
+            if !object_meets_part(object, &part) {
                 continue;
             }
             let mut body = crate::cloth_body::ClothBody {
