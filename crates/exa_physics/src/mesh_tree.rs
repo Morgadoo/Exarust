@@ -118,8 +118,10 @@ impl MeshTree {
 
     /// The nearest drop of a sphere of `radius` centred at `centre`
     /// straight down by at most `depth` (metres) onto the mesh: the column
-    /// walk of the original's Height Query in its mesh mode, each leaf
-    /// answering with its nearest face ([`crate::contact::drop_onto`]).
+    /// walk of the original's Height Query in its mesh mode, each leaf's
+    /// triangles in turn with the swept nearest test
+    /// ([`crate::mesh_query::swept_nearest`], in the tree's centimetres)
+    /// within the nearest hit so far.
     pub fn drop_onto(
         &self,
         triangles: &[[Vec3; 3]],
@@ -139,11 +141,7 @@ impl MeshTree {
                     let Some(t) = triangles.get(id as usize) else {
                         continue;
                     };
-                    if let Some(d) =
-                        crate::contact::drop_onto(t, centre, radius, *limit / TREE_SCALE)
-                        && d * TREE_SCALE < *limit
-                    {
-                        *limit = d * TREE_SCALE;
+                    if crate::contact::drop_onto(t, centre, radius, limit) {
                         found = Some(id);
                     }
                 }
@@ -186,17 +184,18 @@ pub fn ray_mesh(
 /// closest point to `on_point`, which may move the sphere (the next face
 /// sees the moved sphere). Through the mesh's kd-tree when it has one (the
 /// leaves the sphere's box reaches, in the tree's order), else every
-/// triangle in the file's order. The face test is the pair stage's
-/// (the sphere's centre in front of the face, within its radius). Returns
-/// whether a face was met.
+/// triangle in the file's order. The face test is the pair stage's front
+/// sphere test ([`crate::contact::sphere_hit`]) with the floor of the form
+/// that runs it. Returns whether a face was met.
 pub fn sphere_contacts(
     triangles: &[[Vec3; 3]],
     tree: Option<&MeshTree>,
     sphere: &mut (Vec3, f32),
     mut on_point: impl FnMut(&mut (Vec3, f32), Vec3),
 ) -> bool {
+    let floor = crate::contact::push_floor(tree.is_some());
     let mut face = |s: &mut (Vec3, f32), t: &[Vec3; 3]| -> bool {
-        match crate::contact::sphere_hit(t, s.0, s.1) {
+        match crate::contact::sphere_hit(t, s.0, s.1, floor) {
             Some((q, _)) => {
                 on_point(s, q);
                 true
@@ -369,17 +368,15 @@ pub fn body_drop(
     }
 }
 
-/// The brute-force column: every triangle in order, the nearest drop.
+/// The brute-force column: every triangle in order, each within the
+/// nearest drop so far (the mesh's own swept nearest callback).
 fn lowest_drop(triangles: &[[Vec3; 3]], centre: Vec3, radius: f32, depth: f32) -> Option<f32> {
-    let mut best: Option<f32> = None;
+    let mut best = depth * TREE_SCALE;
+    let mut found = false;
     for t in triangles {
-        if let Some(d) = crate::contact::drop_onto(t, centre, radius, best.unwrap_or(depth))
-            && best.is_none_or(|b| d < b)
-        {
-            best = Some(d);
-        }
+        found |= crate::contact::drop_onto(t, centre, radius, &mut best);
     }
-    best
+    found.then_some(best / TREE_SCALE)
 }
 
 #[cfg(test)]

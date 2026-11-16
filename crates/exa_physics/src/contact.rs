@@ -10,8 +10,6 @@ use bevy::prelude::*;
 
 /// A stored contact's plane lies this far (m) under the touched surface.
 pub(crate) const CONTACT_SLOP: f32 = 0.001;
-/// A centre this close (squared, m²) to a triangle lies on it.
-const ON_TRIANGLE2: f32 = 1e-12;
 
 /// A contact with the level: a point of a part (weights over its particles)
 /// kept on the outer side of a plane.
@@ -48,12 +46,24 @@ pub trait Level {
         false
     }
 
+    /// Whether `piece`'s mesh answers through its kd-tree (the original
+    /// builds one for a mesh node of more than 10 and fewer than 100 000
+    /// triangles, [`crate::mesh_tree::takes_tree`]) rather than its own
+    /// brute-force callbacks: the two front sphere tests differ in their
+    /// push floor ([`crate::mesh_query::PUSH_FLOOR`],
+    /// [`crate::mesh_query::BRUTE_PUSH_FLOOR`]). None by default.
+    fn has_tree(&self, _piece: u32) -> bool {
+        false
+    }
+
     /// The original's Height Query: a sphere of `radius` whose lowest point
     /// starts at `at` is swept straight down by at most `depth`. Returns
     /// the height of its lowest point where it first meets the front of an
-    /// upward face, or `None`. A sphere that starts against a face finds it
-    /// at `at` (the original counts a negative distance as 0). Only the
-    /// level answers it: living bodies are not part of it.
+    /// upward face, or `None`. Each face answers the original's swept
+    /// nearest test ([`crate::mesh_query::swept_nearest`]), which takes only
+    /// hits past the start: a sphere that starts within its radius of a
+    /// face does not meet it. Only the level answers it: living bodies are
+    /// not part of it.
     fn height_below(&self, at: Vec3, radius: f32, depth: f32) -> Option<f32> {
         height_query(self, at, radius, depth)
     }
@@ -235,7 +245,9 @@ fn height_query<L: Level + ?Sized>(level: &L, at: Vec3, radius: f32, depth: f32)
 }
 
 /// The sphere swept down `depth` against the triangles of the column under
-/// it, highest first, until none can be met sooner.
+/// it, each with the original's swept nearest test
+/// ([`crate::mesh_query::swept_nearest`], in centimetres) within the
+/// nearest drop so far: highest first, until none can be met sooner.
 fn sweep_down<L: Level + ?Sized>(level: &L, at: Vec3, radius: f32, depth: f32) -> Option<f32> {
     let centre = at + Vec3::Y * radius;
     let side = Vec3::new(radius, 0.0, radius);
@@ -248,93 +260,35 @@ fn sweep_down<L: Level + ?Sized>(level: &L, at: Vec3, radius: f32, depth: f32) -
     for &piece in &pieces {
         level.triangles(piece, lo, hi, &mut triangles);
     }
-    // Upward faces with the sphere in front of them, highest first.
     let mut faces: Vec<(f32, [Vec3; 3])> = triangles
         .iter()
-        .filter(|t| {
-            let n = (t[1] - t[0]).cross(t[2] - t[0]);
-            n.y > 0.0 && n.dot(centre - t[0]) >= 0.0
-        })
         .map(|t| (t[0].y.max(t[1].y).max(t[2].y), *t))
         .collect();
     faces.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let mut nearest: Option<f32> = None;
+    let mut best = depth * CM;
+    let mut found = false;
     for (top, t) in faces {
-        let reach = nearest.unwrap_or(depth);
-        // A face stops the sphere's lowest point at its own highest point
-        // or under it: one no higher than where it already stops cannot
-        // stop it sooner.
-        if top <= centre.y - reach - radius {
+        // The test meets a face where the ray enters the sphere about its
+        // closest point, so the drop is at least the start's height over
+        // the face's highest point less the radius: a face no higher than
+        // where the sphere already stops cannot stop it sooner.
+        if top <= centre.y - best / CM - radius {
             break;
         }
-        if let Some(d) = drop_onto(&t, centre, radius, reach) {
-            nearest = Some(d);
-        }
+        found |= drop_onto(&t, centre, radius, &mut best);
     }
-    nearest.map(|d| at.y - d)
+    found.then(|| at.y - best / CM)
 }
 
-/// How far (at most `reach`) a sphere of radius `r` centred at `c` drops
-/// straight down before it meets triangle `t`: the first of its face, its
-/// edges and its corners it touches; 0 when it starts against it.
-pub(crate) fn drop_onto(t: &[Vec3; 3], c: Vec3, r: f32, reach: f32) -> Option<f32> {
-    let n = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize()?;
-    let r2 = r * r;
-    let mut first = f32::INFINITY;
-    // The face: the centre one radius over the plane (or nearer to start
-    // with), over the triangle.
-    let s = n.dot(c - t[0]);
-    if n.y > 0.0 && s >= 0.0 {
-        let d = ((s - r) / n.y).max(0.0);
-        let below = c - Vec3::Y * d;
-        if inside(t, n, below - n * n.dot(below - t[0])) {
-            first = d;
-        }
-    }
-    for k in 0..3 {
-        let (p, q) = (t[k], t[(k + 1) % 3]);
-        // A corner: the centre one radius from it.
-        let w = c - p;
-        let w2 = w.length_squared();
-        if w2 <= r2 {
-            return Some(0.0);
-        }
-        let disc = w.y * w.y - (w2 - r2);
-        if disc >= 0.0 && w.y > 0.0 {
-            first = first.min(w.y - disc.sqrt());
-        }
-        // An edge: the centre one radius from its line, between its ends.
-        let length = (q - p).length();
-        if length <= 0.0 {
-            continue;
-        }
-        let u = (q - p) / length;
-        let a = 1.0 - u.y * u.y;
-        if a <= 1e-9 {
-            continue;
-        }
-        let along = w.dot(u);
-        let b = -w.y + along * u.y;
-        let rest = w2 - along * along - r2;
-        let disc = b * b - a * rest;
-        if disc < 0.0 {
-            continue;
-        }
-        let d = ((-b - disc.sqrt()) / a).max(0.0);
-        let at = along + d * -u.y;
-        if (0.0..=length).contains(&at) && (rest > 0.0 || d == 0.0) && (rest <= 0.0 || -b > 0.0) {
-            first = first.min(d);
-        }
-    }
-    (first <= reach).then_some(first)
-}
+/// Centimetres per metre: the mesh tests run in the original's units.
+pub(crate) const CM: f32 = 100.0;
 
-/// Whether `x`, on the plane of triangle `t` with normal `n`, lies inside it.
-fn inside(t: &[Vec3; 3], n: Vec3, x: Vec3) -> bool {
-    (0..3).all(|k| {
-        let (p, q) = (t[k], t[(k + 1) % 3]);
-        (q - p).cross(x - p).dot(n) >= -1e-7
-    })
+/// The original's swept nearest test of triangle `t` (metres) for a sphere
+/// of radius `r` centred at `c` dropped straight down, within `best`
+/// (centimetres; cut to the hit). Returns whether it met the face.
+pub(crate) fn drop_onto(t: &[Vec3; 3], c: Vec3, r: f32, best: &mut f32) -> bool {
+    let face = crate::mesh_query::face(&t.map(|v| v * CM));
+    crate::mesh_query::swept_nearest(&face, c * CM, Vec3::NEG_Y, r * CM, best)
 }
 
 /// A plain triangle list, one piece.
@@ -375,6 +329,14 @@ impl Level for rapier3d::prelude::PhysicsWorld {
             .is_some_and(|(c, _)| c.user_data == crate::prop::STAND_IN)
     }
 
+    /// The collider's own triangle count ([`crate::mesh_tree::takes_tree`]).
+    fn has_tree(&self, piece: u32) -> bool {
+        self.colliders
+            .get_unknown_gen(piece)
+            .and_then(|(c, _)| c.shape().as_trimesh())
+            .is_some_and(|m| crate::mesh_tree::takes_tree(m.indices().len()))
+    }
+
     fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
         use rapier3d::prelude::*;
         let Some((collider, _)) = self.colliders.get_unknown_gen(piece) else {
@@ -410,106 +372,52 @@ impl Level for rapier3d::prelude::PhysicsWorld {
     }
 }
 
-/// The closest point on triangle `t` to `x`.
-fn closest_point(t: &[Vec3; 3], x: Vec3) -> Vec3 {
-    use rapier3d::parry::query::PointQuery;
-    rapier3d::parry::shape::Triangle::new(t[0], t[1], t[2])
-        .project_local_point(x, false)
-        .point
+/// The original's front sphere test of triangle `t` (metres) for the
+/// sphere `c`, `r`: the closest point on it and the push off it, as
+/// [`crate::mesh_query::front_push_face`] answers in centimetres with the
+/// push floor of the form that runs it (`floor`: the kd-tree leaf's
+/// [`crate::mesh_query::PUSH_FLOOR`] or the brute-force callback's
+/// [`crate::mesh_query::BRUTE_PUSH_FLOOR`], see [`push_floor`]).
+pub(crate) fn sphere_hit(t: &[Vec3; 3], c: Vec3, r: f32, floor: f32) -> Option<(Vec3, Vec3)> {
+    let face = crate::mesh_query::face(&t.map(|v| v * CM));
+    let (q, push) = crate::mesh_query::front_push_face(&face, c * CM, r * CM, floor)?;
+    Some((q / CM, push / CM))
 }
 
-/// The sphere `c`, `r` against the front of triangle `t`: the closest point
-/// on it and the push off it (along the closest-point direction).
-pub(crate) fn sphere_hit(t: &[Vec3; 3], c: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
-    let n = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize()?;
-    let s = n.dot(c - t[0]);
-    if !(0.0..r).contains(&s) {
-        return None;
-    }
-    let q = closest_point(t, c);
-    let v = c - q;
-    let d2 = v.length_squared();
-    if d2 >= r * r {
-        return None;
-    }
-    if d2 < ON_TRIANGLE2 {
-        return Some((q, n * r));
-    }
-    let d = d2.sqrt();
-    Some((q, v * ((r - d) / d)))
-}
-
-/// The sphere of radius `r` moving from `start` to `end` against the front
-/// of triangle `t`. While the end stays in front this is the static test at
-/// the end; an end that crossed the plane is taken back to where the sphere
-/// first touched.
-pub(crate) fn swept_hit(t: &[Vec3; 3], start: Vec3, end: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
-    let n = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize()?;
-    let s0 = n.dot(start - t[0]);
-    let s1 = n.dot(end - t[0]);
-    // Written so that a NaN end or start is no hit.
-    if !(s0 >= 0.0 && s1 < r) {
-        return None;
-    }
-    if s1 > 0.0 {
-        return sphere_hit(t, end, r);
-    }
-    let travel = end - start;
-    let length = travel.length();
-    if length <= 0.0 {
-        return sphere_hit(t, end, r);
-    }
-    let u = travel / length;
-    // Where the centre is one radius in front of the plane.
-    let reference = if s0 <= r {
-        start
+/// The push floor of a mesh's front sphere test: the kd-tree leaf's when
+/// the mesh has a tree, else the brute-force callback's.
+pub(crate) fn push_floor(tree: bool) -> f32 {
+    if tree {
+        crate::mesh_query::PUSH_FLOOR
     } else {
-        start + travel * ((s0 - r) / (s0 - s1))
+        crate::mesh_query::BRUTE_PUSH_FLOOR
+    }
+}
+
+/// The original's swept sphere test of triangle `t` (metres) for the swept
+/// record `rec` (metres): the closest point and the push on the end, as
+/// [`crate::mesh_query::swept_push_face`] answers in centimetres (the
+/// kd-tree leaf's and the brute-force callback's forms are one test).
+pub(crate) fn swept_hit(t: &[Vec3; 3], rec: &crate::kd_tree::SweptRecord) -> Option<(Vec3, Vec3)> {
+    let face = crate::mesh_query::face(&t.map(|v| v * CM));
+    let swept = crate::mesh_query::Swept {
+        start: rec.start * CM,
+        end: rec.end * CM,
+        radius: rec.radius * CM,
+        direction: rec.direction,
+        length: rec.length * CM,
     };
-    let q = closest_point(t, reference);
-    let (a, b) = (q - start, q - end);
-    if a.dot(b) <= 0.0 {
-        let centre = if a.length_squared() < r * r {
-            match a.try_normalize() {
-                Some(dir) if a.length_squared() >= ON_TRIANGLE2 => q - dir * r,
-                _ => start + n * r,
-            }
-        } else {
-            let along = a.dot(u);
-            if along < 0.0 {
-                return None;
-            }
-            let h2 = r * r - (a - u * along).length_squared();
-            if h2 <= 0.0 {
-                return None;
-            }
-            let toi = along - h2.sqrt();
-            if toi > length {
-                return None;
-            }
-            start + u * toi
-        };
-        Some((q, centre - end))
-    } else {
-        // The end passed beside the triangle within reach of `q`: off `q`,
-        // never further behind the plane. (The original scales the start's
-        // offset here; see the design.)
-        let b2 = b.length_squared();
-        if b2 >= r * r {
-            return None;
-        }
-        let mut delta = if b2 < ON_TRIANGLE2 {
-            n * r
-        } else {
-            let bl = b2.sqrt();
-            b * ((bl - r) / bl)
-        };
-        let into = delta.dot(n);
-        if into < 0.0 {
-            delta -= n * into;
-        }
-        Some((q, delta))
-    }
+    let (q, push) = crate::mesh_query::swept_push_face(&face, &swept)?;
+    Some((q / CM, push / CM))
+}
+
+/// The two-sided sphere test of triangle `t` (metres) for the sphere `c`,
+/// `r`, as the mesh's boolean sphere query answers it
+/// ([`crate::mesh_query::two_sided_face`] in centimetres, the margin the
+/// engine's small float).
+pub(crate) fn sphere_touches(t: &[Vec3; 3], c: Vec3, r: f32) -> bool {
+    let face = crate::mesh_query::face(&t.map(|v| v * CM));
+    crate::mesh_query::two_sided_face(&face, c * CM, r * CM, crate::mesh_query::SMALL).is_some()
 }
 
 /// Of five contacts' weights on a part's particles (four kept, the newcomer

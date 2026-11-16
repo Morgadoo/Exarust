@@ -247,35 +247,50 @@ fn swept_hits_follow_the_original_rules() {
         Vec3::new(-1.0, 0.0, 1.0),
         Vec3::new(1.0, 0.0, 1.0),
     ];
+    let swept = |start: Vec3, end: Vec3, r: f32| {
+        swept_hit(&t, &crate::kd_tree::SweptRecord::new(start, end, r))
+    };
     let r = 0.1;
     let inside = Vec3::new(-0.5, 0.0, 0.5);
     // The end still in front: the static test at the end.
-    let (q, d) = swept_hit(&t, inside + Vec3::Y, inside + Vec3::Y * 0.04, r).unwrap();
+    let (q, d) = swept(inside + Vec3::Y, inside + Vec3::Y * 0.04, r).unwrap();
     assert!((q - inside).length() < 1e-6 && (d - Vec3::Y * 0.06).length() < 1e-6);
     // The end crossed: back to the first touch, along the reversed motion.
     let start = inside + Vec3::new(-0.3, 1.0, 0.0);
     let end = inside + Vec3::new(0.0, -0.2, 0.0);
-    let (_, d) = swept_hit(&t, start, end, r).unwrap();
+    let (_, d) = swept(start, end, r).unwrap();
     let centre = end + d;
     assert!((centre.y - r).abs() < 1e-5, "touches at {centre}");
     assert!(d.normalize().dot((start - end).normalize()) > 0.9999);
     // A start behind the face: nothing.
-    assert!(swept_hit(&t, inside - Vec3::Y * 0.05, inside - Vec3::Y * 0.5, r).is_none());
+    assert!(swept(inside - Vec3::Y * 0.05, inside - Vec3::Y * 0.5, r).is_none());
     // The static test is one-sided too.
-    assert!(sphere_hit(&t, inside - Vec3::Y * 0.01, r).is_none());
-    // Beside the triangle's edge, barely crossing: pushed off the edge
-    // point, never further behind the plane.
+    assert!(
+        sphere_hit(
+            &t,
+            inside - Vec3::Y * 0.01,
+            r,
+            crate::mesh_query::PUSH_FLOOR
+        )
+        .is_none()
+    );
+    // Beside the triangle's edge, barely crossing: the closest point is
+    // the edge point, past the end, and the push is the start's offset to
+    // it scaled by the end's gap (the original's quirk), lifted to the
+    // face.
     let edge = Vec3::new(0.0, 0.0, 0.0);
     let off = Vec3::new(0.05, 0.0, -0.05).normalize() * 0.05;
-    let (q, d) = swept_hit(
-        &t,
-        edge + off + Vec3::Y * 0.5,
-        edge + off - Vec3::Y * 1e-4,
-        r,
-    )
-    .unwrap();
+    let (start, end) = (edge + off + Vec3::Y * 0.5, edge + off - Vec3::Y * 1e-4);
+    let (q, d) = swept(start, end, r).unwrap();
     assert!(q.distance(edge) < 1e-5);
-    assert!(d.y >= 0.0 && d.length() <= r, "push {d}");
+    let (a, b) = (q - start, q - end);
+    let gap = b.length();
+    let mut expected = a * ((gap - r) / gap);
+    if expected.y < 0.0 {
+        expected.y = 0.0;
+    }
+    assert!((d - expected).length() < 1e-4, "push {d}, {expected}");
+    assert!(d.y >= 0.0, "push {d}");
 }
 
 /// A level hit takes the original's arithmetic (cm): the stored plane is

@@ -784,9 +784,9 @@ fn getting_up_finds_support_near_the_ground() {
 
 /// The Height Query sweeps a sphere down: it finds the floor under it, the
 /// edge of a step 5 cm beside its centre line where its lowest point is
-/// 30 + √(10² − 5²) − 10 = 28.66 cm up, passes faces turned down, finds a
-/// face it starts against where it starts, ignores one it starts behind,
-/// and nothing past its depth.
+/// 30 + √(10² − 5²) − 10 = 28.66 cm up, passes faces turned down, does
+/// not meet a face it starts against (the test takes only hits past the
+/// start) nor one it starts behind, and nothing past its depth.
 #[test]
 fn the_height_query_sweeps_a_sphere_down() {
     let ground = floor();
@@ -804,19 +804,18 @@ fn the_height_query_sweeps_a_sphere_down() {
             .map(|t| [t[0], t[2], t[1]]),
     );
     assert!(found(&under, at).unwrap().abs() < 1e-5);
-    assert_eq!(found(&ground, Vec3::new(0.0, -0.05, 0.0)), Some(-0.05));
+    assert_eq!(found(&ground, Vec3::new(0.0, -0.05, 0.0)), None);
     assert_eq!(found(&ground, Vec3::new(0.0, -0.5, 0.0)), None);
     assert_eq!(found(&ground, Vec3::new(0.0, 25.0, 0.0)), None);
 }
 
-/// The Height Query's drop of a sphere onto one triangle (face, edges and
-/// corners, 0 when it starts against it) is where the dropping centre first
-/// comes within its radius of the triangle, for upward faces with the
-/// sphere in front of them.
+/// The Height Query's drop of a sphere onto one triangle, the original's
+/// swept nearest test: where the touch falls inside the face, the centre
+/// stops one radius over the plane; a sphere that starts within its radius
+/// of the plane, or behind it, does not meet it (the test takes only hits
+/// past the start).
 #[test]
-fn a_sphere_drops_onto_a_triangle_where_it_first_touches() {
-    use rapier3d::parry::query::PointQuery;
-    use rapier3d::parry::shape::Triangle;
+fn a_sphere_drops_onto_a_triangle_one_radius_over_its_face() {
     let mut seed = 0x2545_f491_u32;
     let mut next = move || {
         seed ^= seed << 13;
@@ -824,42 +823,49 @@ fn a_sphere_drops_onto_a_triangle_where_it_first_touches() {
         seed ^= seed << 5;
         (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
     };
-    let (mut hits, mut misses) = (0, 0);
+    let inside = |t: &[Vec3; 3], n: Vec3, x: Vec3| {
+        (0..3).all(|k| {
+            let (p, q) = (t[k], t[(k + 1) % 3]);
+            (q - p).cross(x - p).dot(n) > 1e-4
+        })
+    };
+    let (mut faces, mut starts) = (0, 0);
     for _ in 0..4000 {
         let t = [0; 3].map(|_| Vec3::new(next() * 0.3, next() * 0.2, next() * 0.3));
         let c = Vec3::new(next() * 0.3, 0.15 + next() * 0.3, next() * 0.3);
         let r = 0.05 + 0.1 * next().abs();
-        let n = (t[1] - t[0]).cross(t[2] - t[0]);
-        if n.y <= 1e-3 || n.dot(c - t[0]) < 0.0 {
+        let Some(n) = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize() else {
+            continue;
+        };
+        let s = n.dot(c - t[0]);
+        if n.y <= 0.05 || s < 0.0 {
             continue;
         }
-        let triangle = Triangle::new(t[0], t[1], t[2]);
-        let gap = |d: f32| {
-            let x = c - Vec3::Y * d;
-            x.distance(triangle.project_local_point(x, true).point)
-        };
-        let reach = 0.6;
-        let drop = crate::contact::drop_onto(&t, c, r, reach);
-        let end = drop.unwrap_or(reach);
-        for k in (0..200).filter(|_| end > 0.0) {
-            let d = end * k as f32 / 200.0;
+        let mut best = 60.0;
+        let met = crate::contact::drop_onto(&t, c, r, &mut best);
+        if s <= r {
+            if inside(&t, n, c - n * s) {
+                assert!(!met, "{t:?} {c} {r}: met from within its radius");
+                starts += 1;
+            }
+            continue;
+        }
+        let d = (s - r) / n.y;
+        let touch = c - Vec3::Y * d - n * r;
+        if d * 100.0 < 60.0 - 1e-3 && inside(&t, n, touch) {
+            assert!(met, "{t:?} {c} {r}");
             assert!(
-                gap(d) > r - 1e-4,
-                "{t:?} {c} {r}: touches at {d}, not {drop:?}"
+                (best / 100.0 - d).abs() < 1e-4,
+                "{t:?} {c} {r}: {} {d}",
+                best / 100.0
             );
-        }
-        match drop {
-            Some(0.0) => assert!(gap(0.0) <= r + 1e-4),
-            Some(d) => assert!((gap(d) - r).abs() < 1e-4, "{t:?} {c} {r}: {d}"),
-            None => {}
-        }
-        if drop.is_some() {
-            hits += 1;
-        } else {
-            misses += 1;
+            faces += 1;
         }
     }
-    assert!(hits > 300 && misses > 300, "{hits} hits, {misses} misses");
+    assert!(
+        faces > 50 && starts > 20,
+        "{faces} face hits, {starts} starts"
+    );
 }
 
 /// A stance facing a quarter turn from the frame swings an ankle that
