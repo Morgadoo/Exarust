@@ -11,6 +11,20 @@
 //! grid's cost its run test reads, the request's start on every fighter with
 //! muscles ([`add_locomotion`]) and the standing character's facing
 //! ([`face_standing`]).
+//!
+//! The body's three directions the AI turns it by are the original's body
+//! fields: its look direction (the player's cursor direction, the
+//! request's cursor), its look smoothing (the head's look, the request's
+//! look, which the torso twist turns toward) and its heading (the request's
+//! heading, which the movement decision turns the body to at its rates).
+//! The AI keeps them as vectors in its gaze ([`crate::motion::Gaze`]: the
+//! brain's, or the driver's for a fighter without a brain). After the
+//! state, a present body whose route is not followed runs the AI tick's
+//! heading block ([`after_state`]) and the vectors are written into the
+//! request as yaws ([`publish`]); a direction the body or the route walk
+//! wrote in the request since then is taken back into the gaze at the start
+//! of the next AI tick ([`adopt_body_directions`]), as the original keeps
+//! one copy of each.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
@@ -37,6 +51,118 @@ pub struct Driver {
     /// The character the way test last stopped the walk for (its entity
     /// bits): it is skipped until the brain plans again.
     pub in_way: Option<u64>,
+    /// The heading, look and cursor yaws [`publish`] last wrote into the
+    /// request: a request yaw that differs was written by someone else (the
+    /// body, the route walk), and [`adopt_body_directions`] takes it back.
+    /// None until the AI first writes the body's directions: until then the
+    /// standing character faces as its model does ([`face_standing`]).
+    pub published: Option<[f32; 3]>,
+}
+
+/// The gaze that keeps a character's body directions: its brain's, or the
+/// driver's for a fighter without a brain.
+pub fn body_gaze<'a>(
+    npc: Option<&'a mut crate::brain::Npc>,
+    driver: &'a mut Driver,
+) -> &'a mut crate::motion::Gaze {
+    match npc {
+        Some(npc) => &mut npc.gaze,
+        None => &mut driver.gaze,
+    }
+}
+
+/// What the AI tick's heading block after the state did ([`after_state`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterState {
+    /// Stepping or attacking: the look smoothing and the heading took the
+    /// look direction.
+    Copied,
+    /// In combat: the look snap ran; true when it moved the heading.
+    Snapped(bool),
+    /// Out of combat: the brain's look chain is the block
+    /// ([`crate::motion::look_chain`], run by its tick).
+    Chain,
+}
+
+/// The AI tick's heading block after the state, for a present body whose
+/// route is not followed: a body that is stepping, or else in the attacking
+/// condition, takes its look direction as its look smoothing and its
+/// heading; otherwise a body with its in-combat mark runs the look snap
+/// ([`crate::motion::look_snap`]); otherwise the out-of-combat look chain
+/// runs (the brain's tick runs it, with the same first branch).
+pub fn after_state(
+    gaze: &mut crate::motion::Gaze,
+    stepping: bool,
+    attacking: bool,
+    in_combat: bool,
+) -> AfterState {
+    if stepping || attacking {
+        gaze.body_smooth = gaze.body_look;
+        gaze.body_heading = gaze.body_look;
+        AfterState::Copied
+    } else if in_combat {
+        AfterState::Snapped(crate::motion::look_snap(gaze))
+    } else {
+        AfterState::Chain
+    }
+}
+
+/// Writes the body's directions the gaze keeps into the locomotion
+/// request: the heading the movement decision turns the body to, the look
+/// the torso twist reads and the cursor (with the wanted direction), each
+/// the yaw of its vector by the engine's two-argument arctangent, as the
+/// body's turn reads its heading. A gaze that never took the body's
+/// directions (zero) writes nothing.
+pub fn publish(req: &mut Locomotion, driver: &mut Driver, gaze: &crate::motion::Gaze) {
+    if gaze.body_heading == Vec3::ZERO {
+        return;
+    }
+    let heading = crate::motion::yaw_atan2(gaze.body_heading);
+    let look = crate::motion::yaw_atan2(gaze.body_smooth);
+    let cursor = crate::motion::yaw_atan2(gaze.body_look);
+    req.heading = heading;
+    req.look = look;
+    req.cursor = cursor;
+    req.desired = cursor;
+    driver.published = Some([heading, look, cursor]);
+}
+
+/// Takes back into the gaze each body direction whose request yaw differs
+/// from the one [`publish`] last wrote (the body's turn toward a fall, the
+/// route walk, a flight's cursor): the vector is the engine's direction of
+/// that yaw. Nothing before the first publish.
+pub fn adopt(req: &Locomotion, driver: &mut Driver, gaze: &mut crate::motion::Gaze) {
+    let Some([heading, look, cursor]) = driver.published else {
+        return;
+    };
+    if req.heading != heading {
+        gaze.body_heading = crate::motion::dir_of(req.heading);
+    }
+    if req.look != look {
+        gaze.body_smooth = crate::motion::dir_of(req.look);
+    }
+    if req.cursor != cursor {
+        gaze.body_look = crate::motion::dir_of(req.cursor);
+    }
+    driver.published = Some([req.heading, req.look, req.cursor]);
+}
+
+/// The start of the brains' tick: every character on its locomotion takes
+/// back the body directions written into its request since the AI last
+/// wrote them ([`adopt`]).
+pub fn adopt_body_directions(
+    mut bodies: Query<(&Locomotion, &mut Driven, Option<&mut crate::brain::Npc>)>,
+) {
+    for (req, mut driven, npc) in &mut bodies {
+        let driver = &mut driven.0;
+        let mut own = driver.gaze;
+        let gaze = match npc {
+            Some(npc) => &mut npc.into_inner().gaze,
+            None => &mut own,
+        };
+        adopt(req, driver, gaze);
+        driver.gaze = own;
+    }
 }
 
 /// The driver's state on a character whose body walks by its locomotion
@@ -136,12 +262,13 @@ pub fn add_locomotion(
 }
 
 /// The standing character's facing, after the brains' passes: a character
-/// whose route is not driven and whose body does not walk turns toward the
-/// yaw the AI turned its model to ([`face`]; the movement stage turns the
-/// body at its rates and puts the model back on the body's yaw), and a walk clip its body no longer walks
-/// gives way to its stance over 20 frames with the fast ease, as the
-/// original's body tick starts the stored stance when it leaves the
-/// walking condition.
+/// whose route is not driven, whose body does not walk and whose AI has not
+/// written its body directions ([`Driver::published`]) turns toward the yaw
+/// its model faces ([`face`]; the movement stage turns the body at its
+/// rates and puts the model back on the body's yaw), and a walk clip its
+/// body no longer walks gives way to its stance over 20 frames with the
+/// fast ease, as the original's body tick starts the stored stance when it
+/// leaves the walking condition.
 #[allow(clippy::type_complexity)]
 pub fn face_standing(
     mut fighters: Query<(
@@ -157,9 +284,11 @@ pub fn face_standing(
         if driven.0.driving || body.moving() {
             continue;
         }
-        let yaw = exa_physics::body::locomotion::yaw_of(t.rotation * Vec3::Z);
-        if req.heading != yaw {
-            face(&mut req, yaw);
+        if driven.0.published.is_none() {
+            let yaw = exa_physics::body::locomotion::yaw_of(t.rotation * Vec3::Z);
+            if req.heading != yaw {
+                face(&mut req, yaw);
+            }
         }
         if let Some(mut anim) = anim
             && anim.looping
@@ -175,3 +304,82 @@ pub fn face_standing(
 /// into the stance when the body stops.
 const WALK: &str = "Walk";
 const WALK_END_BLEND: u32 = 20;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::motion::{Gaze, dir_of, yaw_atan2};
+
+    fn gaze(look: f32, smooth: f32, heading: f32) -> Gaze {
+        Gaze {
+            body_look: dir_of(look),
+            body_smooth: dir_of(smooth),
+            body_heading: dir_of(heading),
+            ..Gaze::default()
+        }
+    }
+
+    /// After the state: stepping or attacking, the look smoothing and the
+    /// heading take the look direction; in combat the look snap; out of
+    /// combat the brain's chain (nothing here).
+    #[test]
+    fn the_heading_block_after_the_state() {
+        let mut g = gaze(1.0, 0.2, 0.0);
+        assert_eq!(after_state(&mut g, true, false, true), AfterState::Copied);
+        assert_eq!((g.body_smooth, g.body_heading), (dir_of(1.0), dir_of(1.0)));
+        let mut g = gaze(1.0, 0.2, 0.0);
+        assert_eq!(after_state(&mut g, false, true, false), AfterState::Copied);
+        assert_eq!(g.body_heading, dir_of(1.0));
+        // In combat the heading stays within 30° of the look smoothing.
+        let mut g = gaze(1.0, 0.2, 0.0);
+        assert_eq!(
+            after_state(&mut g, false, false, true),
+            AfterState::Snapped(false)
+        );
+        assert_eq!(g.body_heading, dir_of(0.0));
+        let mut g = gaze(1.0, 0.6, 0.0);
+        assert_eq!(
+            after_state(&mut g, false, false, true),
+            AfterState::Snapped(true)
+        );
+        assert_eq!(g.body_heading, dir_of(1.0));
+        let mut g = gaze(1.0, 0.6, 0.0);
+        assert_eq!(after_state(&mut g, false, false, false), AfterState::Chain);
+        assert_eq!(g.body_heading, dir_of(0.0));
+    }
+
+    /// The body directions go into the request as yaws (the cursor's also
+    /// as the wanted direction); a request yaw the body or the walk wrote
+    /// since is taken back as its direction, the others stay.
+    #[test]
+    fn the_body_directions_go_into_the_request_and_come_back() {
+        let (mut req, _) = Locomotion::facing(0.0);
+        let mut driver = Driver::default();
+        // Never turned: nothing is written.
+        publish(&mut req, &mut driver, &Gaze::default());
+        assert_eq!((req.heading, driver.published), (0.0, None));
+        let mut g = gaze(1.0, 0.5, 0.25);
+        publish(&mut req, &mut driver, &g);
+        let written = [
+            yaw_atan2(dir_of(0.25)),
+            yaw_atan2(dir_of(0.5)),
+            yaw_atan2(dir_of(1.0)),
+        ];
+        assert_eq!([req.heading, req.look, req.cursor], written);
+        assert_eq!(req.desired, written[2]);
+        assert_eq!(driver.published, Some(written));
+        // Nothing else wrote: nothing is taken back.
+        let before = g;
+        adopt(&req, &mut driver, &mut g);
+        assert_eq!(g, before);
+        // The body turned its heading toward a fall: the heading comes back.
+        req.heading = -2.0;
+        adopt(&req, &mut driver, &mut g);
+        assert_eq!(g.body_heading, dir_of(-2.0));
+        assert_eq!(
+            (g.body_smooth, g.body_look),
+            (before.body_smooth, before.body_look)
+        );
+        assert_eq!(driver.published.map(|p| p[0]), Some(-2.0));
+    }
+}

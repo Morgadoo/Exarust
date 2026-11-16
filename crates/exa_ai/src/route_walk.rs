@@ -699,6 +699,7 @@ pub fn walk_routes(
         &mut Transform,
         Option<&mut Animator>,
         Option<Walking>,
+        Option<&Condition>,
     )>,
     mut roots: Query<
         (&mut CharacterBody, &GlobalTransform, Option<&mut Transform>),
@@ -714,7 +715,9 @@ pub fn walk_routes(
     }
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let grid = nav.as_deref();
-    for (mut route, npc, combatant, presence, parent, mut t, anim, walking) in &mut walkers {
+    for (mut route, mut npc, combatant, presence, parent, mut t, anim, mut walking, condition) in
+        &mut walkers
+    {
         let Ok((mut root, root_gt, root_t)) = roots.get_mut(parent.parent()) else {
             continue;
         };
@@ -726,6 +729,27 @@ pub fn walk_routes(
         }
         let route = &mut *route;
         if !route.following {
+            // The AI tick's heading block after the state, in the route
+            // walk's place, for a present body on its locomotion: then the
+            // body's directions go into its request.
+            if let Some((req, _, driven, ragdoll)) = walking.as_mut()
+                && presence.is_none_or(|p| p.state == crate::presence::PresenceState::Present)
+            {
+                let stepping = ragdoll.is_some_and(|r| r.stepping());
+                let attacking =
+                    condition.is_some_and(|c| c.0 == crate::combatant::CONDITION_ATTACKING);
+                let marked = combatant.is_some_and(|c| c.in_combat)
+                    || npc.as_ref().is_some_and(|n| n.alert.marked);
+                let driver = &mut driven.0;
+                let mut own = driver.gaze;
+                let gaze = match npc.as_deref_mut() {
+                    Some(n) => &mut n.gaze,
+                    None => &mut own,
+                };
+                crate::drive::after_state(gaze, stepping, attacking, marked);
+                crate::drive::publish(req, driver, gaze);
+                driver.gaze = own;
+            }
             // A stand-in walk that ended stops its body and its clip.
             if route.velocity != Vec3::ZERO {
                 route.velocity = Vec3::ZERO;

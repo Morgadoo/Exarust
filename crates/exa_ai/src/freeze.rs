@@ -332,8 +332,11 @@ mod tests {
 
     /// While the freeze holds, the AI tick runs the idle stand: the route the
     /// body follows soft-stops (the request's stopping bit), the turn takes
-    /// the look as its heading with a sway drawn, and the model turns to the
-    /// eased yaw. Without the freeze the walk follows the route on.
+    /// the look as its heading with a sway drawn and the offset eases. The
+    /// body on its locomotion is not turned by its model: the look chain
+    /// eases the look toward the heading, and the body's heading, within 30°
+    /// of it, stays and goes into the request. Without the freeze the walk
+    /// follows the route on.
     #[test]
     fn the_frozen_ai_tick_stands_its_body_and_turns_it() {
         use crate::route_walk::AiRoute;
@@ -357,7 +360,17 @@ mod tests {
             brain.turn.offset
         );
         let rotation = world.get::<Transform>(npc).unwrap().rotation;
-        assert!(rotation.angle_between(Quat::from_rotation_y(brain.turn.offset)) < 1e-5);
+        assert_eq!(rotation, Quat::IDENTITY);
+        assert!(
+            brain.gaze.look > 0.0 && brain.gaze.look < 0.01,
+            "{}",
+            brain.gaze.look
+        );
+        assert_eq!(brain.gaze.body_heading, crate::motion::dir_of(0.0));
+        let driven = world.get::<crate::drive::Driven>(npc).unwrap();
+        let heading = crate::motion::yaw_atan2(crate::motion::dir_of(0.0));
+        assert_eq!(req.heading, heading);
+        assert_eq!(driven.0.published.map(|p| p[0]), Some(heading));
         assert_eq!(world.resource::<StagingFreeze>().ticks(), 1);
 
         let (mut app, npc) = brain_app(false);

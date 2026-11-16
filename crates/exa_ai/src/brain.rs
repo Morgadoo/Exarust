@@ -1436,6 +1436,7 @@ pub fn ai_tick(
             Option<&mut exa_physics::body::Ragdoll>,
             Option<&mut Roles>,
             Option<&CharacterId>,
+            Has<exa_physics::body::locomotion::Locomotion>,
         ),
         Option<&GlobalTransform>,
         &Fighter,
@@ -1491,7 +1492,7 @@ pub fn ai_tick(
         mut npc,
         mut combatant,
         mut duellist,
-        (mut flags, mut body, mut roles, character_id),
+        (mut flags, mut body, mut roles, character_id, on_locomotion),
         gt,
         fighter,
         mut condition,
@@ -2029,8 +2030,22 @@ pub fn ai_tick(
                 let facing = npc.facing(transform.rotation);
                 let encumbrance = fighter.stats.encumbrance;
                 motion::turn_towards(&mut npc.turn, facing, encumbrance, now, &mut roll);
-                let offset = npc.turn.offset;
-                npc.turn_model(&mut transform, offset);
+                // A body on its locomotion is turned by its heading, which
+                // the heading block after the stand writes (the look chain
+                // without the in-combat mark, else the look snap after the
+                // state); a body without muscles is turned to the eased yaw.
+                if !on_locomotion {
+                    let offset = npc.turn.offset;
+                    npc.turn_model(&mut transform, offset);
+                } else if !npc.alert.marked {
+                    out_of_combat_look(
+                        &mut npc,
+                        facing,
+                        body.as_deref()
+                            .is_some_and(exa_physics::body::Ragdoll::stepping),
+                        condition.0 == combatant::CONDITION_ATTACKING,
+                    );
+                }
             }
             npc.roll = roll;
             continue;
@@ -2041,9 +2056,10 @@ pub fn ai_tick(
             write_sleeper(&mut condition, flags.as_deref_mut(), &sleeper);
         }
         // Out of combat the AI sways its look about its heading and the
-        // body turns to that heading. Exarust turns the model directly: the
-        // original lets the body's locomotion turn it, and the running game
-        // ticks no locomotion request for an NPC.
+        // body turns to that heading: a body on its locomotion by the
+        // heading the look chain writes ([`crate::drive::publish`]), one
+        // without muscles by Exarust's stand-in, which turns the model to
+        // the eased yaw.
         let waiting = !npc.sleeping && !fighting;
         if waiting
             && presence.is_none_or(|p| p.moves())
@@ -2143,45 +2159,24 @@ pub fn ai_tick(
             }
             // The look chain: the body's own look and smoothing directions
             // follow the head's offset, then the gait helper turns the look
-            // toward the heading and writes the body's look when it lags.
-            if npc.gaze.body_look == Vec3::ZERO {
-                npc.gaze.body_look = motion::dir_of(facing);
-                npc.gaze.body_smooth = motion::dir_of(facing);
-                npc.gaze.body_heading = motion::dir_of(facing);
-                npc.gaze.look = facing;
+            // toward the heading and writes the body's heading when it lags.
+            // It is the heading block of a body without the in-combat mark:
+            // a body on its locomotion with the mark runs the look snap
+            // after the state instead ([`crate::drive::after_state`]).
+            if !(on_locomotion && npc.alert.marked) {
+                out_of_combat_look(
+                    &mut npc,
+                    facing,
+                    body.as_deref()
+                        .is_some_and(exa_physics::body::Ragdoll::stepping),
+                    condition.0 == combatant::CONDITION_ATTACKING,
+                );
             }
-            let turn = npc.turn;
-            let (body_look, body_smooth) = (npc.gaze.body_look, npc.gaze.body_smooth);
-            let heading_yaw = motion::yaw_of(npc.gaze.body_heading);
-            let chain = motion::look_chain(
-                &mut npc.gaze,
-                &turn,
-                motion::BodyLook {
-                    look: body_look,
-                    smooth: body_smooth,
-                    heading_yaw,
-                    facing_yaw: facing,
-                    // [guess: the running game has no stepping flag for an
-                    // NPC body.]
-                    stepping: false,
-                    attacking: condition.0 == combatant::CONDITION_ATTACKING,
-                    in_combat: false,
-                    // [guess: the running game has no object the brain looks
-                    // at; its live look target stays empty.]
-                    look_target_live: false,
-                },
-            );
-            npc.gaze.body_look = chain.look;
-            npc.gaze.body_smooth = chain.smooth;
-            if let Some(heading) = chain.heading.or(chain.turn) {
-                npc.gaze.body_heading = heading;
-            }
-            // The original turns the body's physical facing through its own
-            // locomotion; the running game ticks none for an NPC, so the
-            // model turns with the eased look, look plus sway, as before. A
-            // brain that follows a route is turned by its walk
+            // A body without muscles has no locomotion to turn it: Exarust
+            // turns its model with the eased look, look plus sway. A brain
+            // that follows a route is turned by its walk
             // ([`crate::route_walk::walk_routes`]).
-            if npc.flight.is_none() && !following {
+            if !on_locomotion && npc.flight.is_none() && !following {
                 let offset = npc.turn.offset;
                 npc.turn_model(&mut transform, offset);
             }
@@ -2190,6 +2185,47 @@ pub fn ai_tick(
     }
     if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
         clock.passed = ticks.0;
+    }
+}
+
+/// The AI tick's out-of-combat heading block for a body facing `facing`
+/// (a yaw): a brain that has never turned takes the facing as its body
+/// directions and its look; then the look chain
+/// ([`motion::look_chain`]): the body's own look and smoothing directions
+/// follow the head's offset, then the gait helper turns the look toward
+/// the heading and writes the body's heading when it lags past 30°. A body
+/// that is stepping or attacking takes its look as its smoothing and
+/// heading instead.
+pub fn out_of_combat_look(npc: &mut Npc, facing: f32, stepping: bool, attacking: bool) {
+    if npc.gaze.body_look == Vec3::ZERO {
+        npc.gaze.body_look = motion::dir_of(facing);
+        npc.gaze.body_smooth = motion::dir_of(facing);
+        npc.gaze.body_heading = motion::dir_of(facing);
+        npc.gaze.look = facing;
+    }
+    let turn = npc.turn;
+    let (body_look, body_smooth) = (npc.gaze.body_look, npc.gaze.body_smooth);
+    let heading_yaw = motion::yaw_of(npc.gaze.body_heading);
+    let chain = motion::look_chain(
+        &mut npc.gaze,
+        &turn,
+        motion::BodyLook {
+            look: body_look,
+            smooth: body_smooth,
+            heading_yaw,
+            facing_yaw: facing,
+            stepping,
+            attacking,
+            in_combat: false,
+            // [guess: the running game has no object the brain looks at;
+            // its live look target stays empty.]
+            look_target_live: false,
+        },
+    );
+    npc.gaze.body_look = chain.look;
+    npc.gaze.body_smooth = chain.smooth;
+    if let Some(heading) = chain.heading.or(chain.turn) {
+        npc.gaze.body_heading = heading;
     }
 }
 
@@ -2470,6 +2506,11 @@ pub fn flee_walk(
         if let Some((req, ..)) = walking.as_mut() {
             req.cursor = req.heading;
             req.desired = req.heading;
+            // The body's look direction is the brain's too: the heading
+            // block after the state writes it into the request again.
+            if npc.gaze.body_heading != Vec3::ZERO {
+                npc.gaze.body_look = npc.gaze.body_heading;
+            }
         }
         let feet_cm = root_gt.translation() * 100.0;
         let at_cm = gt.translation() * 100.0;

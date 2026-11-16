@@ -166,6 +166,7 @@ impl Plugin for AiPlugin {
                     freeze::advance_staging_freeze,
                     (
                         drive::add_locomotion,
+                        drive::adopt_body_directions,
                         brain::death_hook,
                         brain::apply_new_roles,
                         brain::rate_the_player,
@@ -408,9 +409,14 @@ pub struct Duellist {
     /// The last combat tick ended at the chase, following the route (the
     /// character's [`route_walk::AiRoute`]).
     chasing: bool,
-    /// The stab's aim, which the behaviour turns toward the foe while a
-    /// stab plays and the body's stab drive pulls the weapon onto.
+    /// The stab's aim, which the AI's head tracking turns toward the
+    /// estimate while a stab plays and the body's stab drive pulls the
+    /// weapon onto.
     stab_aim: exa_combat::stab::StabAim,
+    /// The grip mode the last combat tick set on the body (the chase's 1
+    /// while it follows), as [`exa_character::grip_runtime::GripModeAsk`]
+    /// holds it.
+    grip_ask: Option<i32>,
     /// The body's step as this tick's combat state left it, and whether
     /// it started a step: written into the body by [`apply_feet_steps`].
     feet_write: Option<FeetWrite>,
@@ -497,6 +503,7 @@ impl Duellist {
             focus: None,
             dropped: false,
             stab_aim: exa_combat::stab::StabAim::default(),
+            grip_ask: None,
             feet_write: None,
             down_arc: None,
             clears_pose: false,
@@ -1428,6 +1435,12 @@ fn duellist(
                     brain.gaze.body_look = facing;
                     brain.gaze.body_smooth = facing;
                     brain.gaze.body_heading = facing;
+                } else if let Some(d) = driven.as_deref_mut() {
+                    // A fighter without a brain keeps its body directions in
+                    // its driver.
+                    d.0.gaze.body_look = facing;
+                    d.0.gaze.body_smooth = facing;
+                    d.0.gaze.body_heading = facing;
                 }
             }
             continue;
@@ -1929,8 +1942,21 @@ fn duellist(
             _ => None,
         };
         let mut feet_started = false;
+        // A body on its locomotion turns through its own directions: the
+        // combat tick reads its heading and its look smoothing.
+        let on_locomotion = walk.is_some() && driven.is_some();
+        let mut grip_ask = None;
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
+            let body_dirs = if on_locomotion {
+                match brains.get(entity) {
+                    Ok(npc) => Some(npc.gaze),
+                    Err(_) => driven.as_deref().map(|d| d.0.gaze),
+                }
+                .filter(|g| g.body_heading != Vec3::ZERO)
+            } else {
+                None
+            };
             let stepping = ai.step;
             let mut me = combat::Body {
                 now_ms: now as u32,
@@ -1991,13 +2017,13 @@ fn duellist(
                     i32::from(exa_formats::weapon_record::thrust_preference(&r))
                 }),
                 yaw,
-                heading: combat::of_yaw(yaw),
+                heading: body_dirs.map_or(combat::of_yaw(yaw), |g| g.body_heading),
                 facing: combat::of_yaw(yaw),
                 position: chest,
                 step_goal: stepping.map_or(chest, |s| s.goal * CM),
                 chest,
                 ground_y: feet.y * CM,
-                look: combat::of_yaw(ai.mind.heading),
+                look: body_dirs.map_or(combat::of_yaw(ai.mind.heading), |g| g.body_smooth),
                 target_point: combat::target_point(foe_chest, target.translation().y * CM),
                 to_target: ai.bearing.0,
                 distance_cm: ai.bearing.1,
@@ -2302,6 +2328,69 @@ fn duellist(
                 }
                 c.outcome
             });
+            // Following its route, the chase sets the body's grip mode 1.
+            if chased
+                .as_ref()
+                .is_some_and(|o| o.end == chase::End::Following)
+            {
+                grip_ask = Some(1);
+            }
+            // The body's look the tick wrote: first the stab's head tracking
+            // (the sweep's call), then the tick's end, which writes the look
+            // direction and the look smoothing from the heading again.
+            {
+                let facing = t.rotation * Vec3::Z;
+                let mut npc = brains.get_mut(entity).ok();
+                let mut own = driven
+                    .as_deref()
+                    .map_or_else(|| crate::motion::Gaze::at(ai.mind.heading), |d| d.0.gaze);
+                let gaze = match npc.as_deref_mut() {
+                    Some(n) => &mut n.gaze,
+                    None => &mut own,
+                };
+                if gaze.body_heading == Vec3::ZERO {
+                    gaze.body_look = facing;
+                    gaze.body_smooth = facing;
+                    gaze.body_heading = facing;
+                }
+                if out.track_head
+                    && let Some(frame) = ragdoll
+                        .and_then(|r| r.drive.as_ref())
+                        .and_then(|d| d.frame())
+                {
+                    let eye = frame
+                        .transform_point3(Vec3::from(exa_combat::aim::EYE_IN_FRAME_CM) / CM)
+                        * CM;
+                    let mut head = exa_combat::aim::HeadTrack {
+                        yaw: ai.stab_aim.yaw,
+                        pitch: ai.stab_aim.pitch,
+                    };
+                    let look = exa_combat::aim::track_head(
+                        &mut head,
+                        gaze.body_smooth.to_array(),
+                        eye.to_array(),
+                        facing.to_array(),
+                        ai.mind.estimate.to_array(),
+                    );
+                    ai.stab_aim.yaw = head.yaw;
+                    ai.stab_aim.pitch = head.pitch;
+                    ai.stab_aim.point_cm = Some(Vec3::from(look.point));
+                    gaze.body_smooth = Vec3::from(look.dir);
+                    gaze.body_look = Vec3::from(look.flat);
+                    commands.entity(entity).insert(ai.stab_aim);
+                }
+                if let Some(cursor) = out.cursor {
+                    gaze.body_look = cursor;
+                }
+                if let Some(look) = out.look {
+                    gaze.body_smooth = look;
+                }
+                if npc.is_none()
+                    && let Some(d) = driven.as_deref_mut()
+                {
+                    d.0.gaze = own;
+                }
+            }
             if marked && contacts.iter().any(|c| c.is_foe && !c.unreachable) {
                 // The foe is in reach again.
                 combatant.contacts[index].flags &= !crate::contacts::UNREACHABLE;
@@ -2713,9 +2802,12 @@ fn duellist(
                     "duellist {entity:?} attacks: {} (countering {countered:?})",
                     motion.action()
                 );
-                // A stab's aim starts on the attack's aim, level.
+                // A stab's head tracking starts on the yaw of the body's look
+                // smoothing (the AI's aim without body directions), level.
                 if motion == AttackMotion::Stab {
-                    ai.stab_aim = exa_combat::stab::StabAim::start(ai.mind.aim);
+                    let look =
+                        body_dirs.map_or(ai.mind.aim, |g| crate::motion::yaw_of(g.body_smooth));
+                    ai.stab_aim = exa_combat::stab::StabAim::start(look);
                     commands.entity(entity).insert(ai.stab_aim);
                 }
                 exa_combat::start_attack(
@@ -2741,22 +2833,12 @@ fn duellist(
             .filter(|_| ai.focus.is_none() && !ai.dropped)
             .map(|(_, _, _, f, ..)| (foe_chest / CM, f.stats.scale));
         ai.feet_write = feet_step.map(|fw| (fw, feet_started, aim));
-        // While a stab plays, the behaviour's stab aim turns toward the
-        // foe's estimate each tick, from the anchor by the shoulder in the
-        // character frame, kept near the body's heading.
-        if attacking.is_some_and(|a| a.motion == AttackMotion::Stab)
-            && let Some(frame) = ragdoll
-                .and_then(|r| r.drive.as_ref())
-                .and_then(|d| d.frame())
-        {
-            let anchor = frame.transform_point3(exa_combat::stab::ANCHOR_CM / CM) * CM;
-            let forward = frame.matrix3.z_axis;
-            let heading = exa_anim::quick_yaw(forward.x, forward.z);
-            let target = ai.mind.estimate;
-            for _ in 0..runs {
-                ai.stab_aim.step(target, anchor, heading);
-            }
-            commands.entity(entity).insert(ai.stab_aim);
+        // The grip mode the AI set this tick (none when it set none).
+        if ai.grip_ask != grip_ask {
+            ai.grip_ask = grip_ask;
+            commands
+                .entity(entity)
+                .insert(exa_character::grip_runtime::GripModeAsk(grip_ask));
         }
         if let (Some(at), Some(grid), Some(prints)) =
             (own_print, nav.as_deref_mut(), footprints.as_deref_mut())
@@ -2778,8 +2860,12 @@ fn duellist(
         if presence.is_some_and(|p| !p.moves()) {
             continue;
         }
-        // It turns to the heading its look follows.
-        t.rotation = Quat::from_rotation_y(ai.mind.heading);
+        // A body on its locomotion turns by its heading, which the AI
+        // tick's look snap moves ([`drive::after_state`]); a body without
+        // muscles is turned to the AI's heading at once [Exarust stand-in].
+        if !on_locomotion {
+            t.rotation = Quat::from_rotation_y(ai.mind.heading);
+        }
         if attacking.is_some() || !anim.looping {
             continue;
         }
@@ -3820,6 +3906,83 @@ mod tests {
         assert!((npc.gaze.body_look - facing).length() < 1e-6);
     }
 
+    /// A duellist on its locomotion, on the real AI plugin's brains' tick,
+    /// turns through its body: the combat tick eases the AI's heading toward
+    /// the foe a quarter turn away and writes the body's look smoothing from
+    /// it every tick, the request's look follows it, while the body's heading
+    /// (the request's heading) stays until the look smoothing is more than
+    /// 30° from it, when the look snap moves it to the look direction. The
+    /// model is not turned by the AI.
+    #[test]
+    fn a_duellist_on_its_locomotion_turns_by_its_heading() {
+        use exa_physics::body::locomotion::Locomotion;
+        let mut app = App::new();
+        app.add_plugins((bevy::MinimalPlugins, AiPlugin));
+        app.insert_resource(BodyTicks(1));
+        let target = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(3.0, 0.0, 0.0)),
+                human(),
+            ))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+            .id();
+        let mut ai = Duellist::new(target);
+        ai.holds_ground = true;
+        ai.engaged = true;
+        let (req, motor) = Locomotion::facing(0.0);
+        let fighter = app
+            .world_mut()
+            .spawn((
+                ai,
+                req,
+                motor,
+                drive::Driven::default(),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Animator::new("Default", "Idle"),
+                human(),
+                ChildOf(root),
+            ))
+            .id();
+        let mut headings = Vec::new();
+        for _ in 0..60 {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.world_mut().run_schedule(BrainChain);
+            let w = app.world();
+            let req = w.get::<Locomotion>(fighter).unwrap();
+            let ai = w.get::<Duellist>(fighter).unwrap();
+            let gaze = w.get::<drive::Driven>(fighter).unwrap().0.gaze;
+            // The entry tick takes the guard and runs no combat tick.
+            if ai.fighting() && gaze.body_heading != Vec3::ZERO {
+                // The look follows the AI's heading every tick.
+                assert_eq!(gaze.body_smooth, combat::of_yaw(ai.mind.heading));
+                assert_eq!(req.look, motion::yaw_atan2(gaze.body_smooth));
+                // The heading trails the look by no more than 30°.
+                let trail = motion::gap(motion::yaw_of(gaze.body_heading), ai.mind.heading);
+                assert!(trail.abs() <= 0.53, "trail {trail}");
+                headings.push((req.heading, ai.mind.heading));
+            }
+            assert_eq!(
+                w.get::<Transform>(fighter).unwrap().rotation,
+                Quat::IDENTITY
+            );
+        }
+        // The heading moved in whole snaps of more than 30°, the first once
+        // the look had turned that far.
+        let snaps: Vec<_> = headings.windows(2).filter(|w| w[0].0 != w[1].0).collect();
+        assert!(!snaps.is_empty() && snaps.len() <= 3, "{snaps:?}");
+        for w in &snaps {
+            assert!(motion::gap(w[1].0, w[0].0).abs() > 0.5, "{w:?}");
+        }
+        assert!(headings[0].0.abs() < 1e-3, "{:?}", headings[0]);
+        let (last, aim) = *headings.last().unwrap();
+        assert!(last > 0.5 && aim > last, "{last} {aim}");
+    }
+
     /// The down exit publishes the arc kind "recovering" (4), takes the
     /// guard as the body's stance word without starting it (the clip under
     /// way now ends in it) and clears the pose word; up again, the arc is
@@ -4568,6 +4731,64 @@ mod tests {
         false
     }
 
+    /// A stab under way runs the AI's head tracking from the combat tick's
+    /// sweep (its slot the original calls there): the head's yaw and pitch
+    /// step at most π/100 toward the estimate from the eye by the shoulder,
+    /// held within 45° of the body's facing, and the stab's aim point lies
+    /// 250 cm out along the tracked look; the tick's end then writes the
+    /// body's look and look smoothing from the heading again.
+    #[test]
+    fn a_stab_tracks_the_head_toward_the_estimate() {
+        use exa_physics::body::locomotion::Locomotion;
+        let (mut app, fighter, _) = duel(3.0, false);
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert((Locomotion::facing(0.0), drive::Driven::default()));
+        engage(&mut app, fighter);
+        assert!(strikes(&mut app, fighter));
+        let mut body = driven();
+        body.drive
+            .as_mut()
+            .unwrap()
+            .set_frame(bevy::math::Affine3A::IDENTITY);
+        app.world_mut().entity_mut(fighter).insert((
+            body,
+            Attacking::new(AttackMotion::Stab, 0),
+            Condition::ATTACKING,
+        ));
+        // A head that starts half a radian off steps back by π/100.
+        app.world_mut()
+            .entity_mut(fighter)
+            .get_mut::<Duellist>()
+            .unwrap()
+            .stab_aim = exa_combat::stab::StabAim::start(-0.5);
+        // The first tick whose sweep runs (the blow's branch) tracks it.
+        for _ in 0..200 {
+            if app
+                .world()
+                .get::<exa_combat::stab::StabAim>(fighter)
+                .is_some()
+            {
+                break;
+            }
+            step(&mut app);
+        }
+        let ai = app.world().get::<Duellist>(fighter).unwrap();
+        let aim = *app
+            .world()
+            .get::<exa_combat::stab::StabAim>(fighter)
+            .expect("the sweep tracked the head");
+        assert_eq!(aim, ai.stab_aim);
+        assert_eq!(aim.yaw, -0.5 + exa_combat::aim::HEAD_STEP);
+        let eye = Vec3::from(exa_combat::aim::EYE_IN_FRAME_CM);
+        let dir = exa_physics::engine_math::direction_from_pitch_yaw(aim.pitch, aim.yaw);
+        let point = aim.point_cm.expect("the aim point");
+        assert!((point - (eye + dir * 250.0)).length() < 1e-3, "{point}");
+        let gaze = app.world().get::<drive::Driven>(fighter).unwrap().0.gaze;
+        assert_eq!(gaze.body_smooth, combat::of_yaw(ai.mind.heading));
+        assert_eq!(gaze.body_look, gaze.body_smooth);
+    }
+
     /// A calm contact two metres ahead, inside the strike, stops the blow.
     #[test]
     fn a_friend_ahead_stops_the_strike() {
@@ -4871,6 +5092,17 @@ mod chase_tests {
         assert!(combatant.contacts.iter().all(|c| c.flags & 0x10 == 0));
         let body = app.world().get::<CharacterBody>(root).unwrap();
         assert!(body.desired_velocity.z > 0.0, "it walks the route");
+        // Following its route, the chase sets the body's grip mode 1 each
+        // tick.
+        app.world_mut().resource_mut::<BodyTicks>().0 = 7;
+        app.update();
+        let asked = app
+            .world()
+            .get::<exa_character::grip_runtime::GripModeAsk>(foe);
+        assert_eq!(
+            asked,
+            Some(&exa_character::grip_runtime::GripModeAsk(Some(1)))
+        );
     }
 
     /// A stuck fighter whose brain no longer sees its foe, and which follows

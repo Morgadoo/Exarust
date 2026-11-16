@@ -2048,3 +2048,70 @@ fn the_morale_drifts_stress_alarm_courage_panic_and_jitter() {
     assert!((down.health_ratio - 0.6).abs() < 1e-6);
     assert_eq!(down.jitter, -1.0);
 }
+
+/// The tick's look: a stab under way (motion 11) in the blow's sweep asks
+/// for the head tracking, a side swing does not; the end writes the body's
+/// look direction and look smoothing from the heading; a charge writes the
+/// look direction toward the target point (on the ground) and takes the
+/// heading from it, and leaves the look smoothing.
+#[test]
+fn the_tick_writes_the_look_and_asks_for_the_head_tracking() {
+    let (me, foe) = duel();
+    let run = |me: &Body| {
+        let mut mind = CombatMind {
+            level: 3,
+            eagerness: 0.5,
+            pressing: true,
+            heading: 0.3,
+            ..CombatMind::default()
+        };
+        let mut contacts = [foe_contact(3)];
+        let mut field = Flat::new(foe.chest);
+        field.approach = 2.0;
+        field.strike_within = 120.0;
+        let mut roll = 1;
+        let t = tick(
+            &mut mind,
+            me,
+            NOVICE,
+            World {
+                foe: Some(&foe),
+                focus: None,
+                contacts: &mut contacts,
+                around: &[],
+                field: &mut field,
+                leader_calls: false,
+            },
+            &mut roll,
+        );
+        (t, mind)
+    };
+    let stabbing = Body {
+        condition: ATTACKING,
+        motion: 0xb,
+        clock: 0.5,
+        ..me
+    };
+    let (t, mind) = run(&stabbing);
+    assert_eq!(t.exit, None);
+    assert!(t.track_head);
+    assert_eq!(t.cursor, Some(of_yaw(mind.heading)));
+    assert_eq!(t.look, t.cursor);
+    let swinging = Body {
+        motion: 5,
+        ..stabbing
+    };
+    assert!(!run(&swinging).0.track_head);
+    let charging = Body {
+        running: true,
+        forward_speed: 3.5,
+        ..me
+    };
+    let (t, mind) = run(&charging);
+    assert_eq!(t.exit, Some(Exit::Charge));
+    let ground = Vec3::new(me.position.x, me.ground_y, me.position.z);
+    let toward = unit(me.target_point - ground);
+    assert_eq!(t.cursor, Some(toward));
+    assert_eq!(t.look, None);
+    assert_eq!(mind.heading, yaw(toward));
+}
