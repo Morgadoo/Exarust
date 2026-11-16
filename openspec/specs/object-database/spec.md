@@ -330,3 +330,10 @@ An operative section's body SHALL keep, after its fixed words, a use script: its
 #### Scenario: The pedestal hand's body
 - **WHEN** an operative body of class 2, kind 3 with sound `DeviceA01` and a 27-byte text at `0x3C` is read
 - **THEN** the item's use script is that text; with the length 0 or −1 it has none
+
+### Requirement: Migrations run the item factory
+The migration of a level's local tier when the level loads, of a save's world tier when it is imported and of the archive pass's store SHALL hand every migrated factory weapon (its model named `@…`) to the item factory's stat pass, once the game's data is open.
+
+#### Scenario: A level with factory weapons
+- **WHEN** a shipped level's local tier is loaded with the game's factory pass installed
+- **THEN** its factory weapons' records differ from the migration without the pass

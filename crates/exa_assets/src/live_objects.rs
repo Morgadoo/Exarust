@@ -30,9 +30,27 @@ pub enum Changes {
     All,
 }
 
+/// The item factory's stat pass a migration hands a factory weapon's body
+/// (the factory's name, the part of the model name after its `@`): the
+/// game installs it ([`LiveObjects::set_factory`]) once its data is open,
+/// as the original's migration calls its item factory.
+#[derive(Clone)]
+pub struct FactoryHook(pub std::sync::Arc<FactoryFn>);
+
+/// The pass's signature: the factory's name and the weapon body it rebuilds.
+pub type FactoryFn = dyn Fn(&str, &mut [u8]) + Send + Sync;
+
+impl std::fmt::Debug for FactoryHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FactoryHook")
+    }
+}
+
 /// The live object database and a log of its writes.
 #[derive(Resource, Debug, Default)]
 pub struct LiveObjects {
+    /// The item factory's pass the tier migrations run.
+    factory: Option<FactoryHook>,
     db: ObjectDb,
     base_tried: bool,
     /// Bumped by every write, so the decoded caches built from the
@@ -47,9 +65,39 @@ pub struct LiveObjects {
 }
 
 impl LiveObjects {
+    /// Installs the item factory's pass the tier migrations run.
+    pub fn set_factory(&mut self, hook: FactoryHook) {
+        self.factory = Some(hook);
+    }
+
+    /// The item factory's pass, once the game installed it.
+    pub fn factory(&self) -> Option<FactoryHook> {
+        self.factory.clone()
+    }
+
+    /// The world tier imported from a save's section and migrated from its
+    /// templates with the item factory's pass, as the save load does
+    /// ([`ObjectDb::import_world`]); a write that may move records.
+    pub fn import_world(&mut self, export: Option<(Store, Library)>) -> usize {
+        let factory = self.factory.clone();
+        let db = self.db_mut();
+        match (export, factory) {
+            (Some((records, strings)), Some(FactoryHook(pass))) => {
+                db.world = records;
+                db.world_strings = strings;
+                db.migrate_tier_with(
+                    Tier::World,
+                    Some(&mut |name: &str, body: &mut [u8]| pass(name, body)),
+                )
+            }
+            (export, _) => db.import_world(export),
+        }
+    }
+
     /// A live database over an already built one (tests, tools).
     pub fn of(db: ObjectDb) -> Self {
         Self {
+            factory: None,
             db,
             base_tried: true,
             revision: 1,
@@ -195,9 +243,16 @@ impl LiveObjects {
         let records = records.unwrap_or_default();
         let count = records.len();
         let last = records.entries().last().map_or(0, |entry| entry.id);
+        let factory = self.factory.clone();
         let db = self.db_mut();
         db.load_local(records, strings.unwrap_or_default());
-        let migrated = db.migrate_tier(Tier::Local);
+        let migrated = match factory {
+            Some(FactoryHook(pass)) => db.migrate_tier_with(
+                Tier::Local,
+                Some(&mut |name: &str, body: &mut [u8]| pass(name, body)),
+            ),
+            None => db.migrate_tier(Tier::Local),
+        };
         info!(
             "object database: level {name} local tier {count} records (ids 1..={last}, {migrated} migrated), next local id {:#x}",
             self.db.first_free_id(Tier::Local) | exa_formats::objdb::LOCAL

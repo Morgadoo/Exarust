@@ -372,10 +372,10 @@ images the original builds at run time, so such a name may be one of those
 `image_format` is the loader's reader dispatch: a borrowed name goes first to
 a registered provider (Exarust's pack lookup is that provider) and then to
 the file reader its extension names. `.rfi` is the only reader registered; a
-name with another extension (or an empty one: a trailing dot, or more than
-the original's 16 bytes) reports the original's "Unrecognised file
+name with another extension reports the original's "Unrecognised file
 extension: …" message, titled "File format error"; a bare name stands for a
-provider's image, and one whose bytes carry no image magic fails like the
+provider's image (as does a trailing dot or an extension over the
+original's 16 bytes, which leave its field as empty as no dot does), and one whose bytes carry no image magic fails like the
 provider's reader. Both paths end in the grey placeholder, as the
 original's failed load does. `texture::decode_entry` runs that dispatch
 before the `.rfi` decoder; the streaming task and the material loader use
@@ -557,7 +557,12 @@ planks). The colour map follows the original's sRGB chain; the surface map is
 its packed intensity/gloss/metal target; the normal map is the item's normal
 plus the material's and damage normals, and the specular pass measures its
 creases on that painted normal map. Library textures tile by the original's
-`MatTile`/`DmgTile` rules (`paint::Tiling`). A factory region
+`MatTile`/`DmgTile` rules (`paint::Tiling`) and are read at the nearest
+texel. A region's own maps (shade, masks, item normal) no larger than the
+region are magnified bilinearly around each painted texel's centre,
+wrapping, as the original's linear samplers do; a larger one is read at
+the nearest texel of its full image (the original minifies through its mip
+chain, which the painter does not build). A factory region
 (`model::FactoryPaint`, drawn by `paint::RegionJob` into the weapon's
 atlas) paints each mask with its area's material (0 as
 SteelGen), lifted colour bytes and finish level, the factory's condition
@@ -731,7 +736,10 @@ trigger is not run: Exarust's characters carry no GI points.
 original's three tiers in one resource: the base tier (`objdb.rdb` and the
 shared `objstrings.rdb`, read the first time something asks), the local
 tier (the loaded level's own database, which the level load puts in place
-and migrates whole from its templates, as every import's hook does)
+and migrates whole from its templates, as every import's hook does, with
+the item factory's pass the game installs, `set_factory`, so a factory
+weapon is rebuilt from its factory; `import_world` does the same for a
+save's world tier)
 and the world tier (objects promoted out of levels, which a save's load
 fills and its save exports). Kits, container popups, the kit passes, the
 crystal drain (`write_section_byte`, a socket's charge) and the saves write
