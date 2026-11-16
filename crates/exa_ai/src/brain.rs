@@ -740,6 +740,27 @@ impl Npc {
             &mut way_out,
         );
         self.fled = fled;
+        // Debug aid (`RUST_LOG=exa_ai::pass=debug`): how the pass weighed the
+        // goal entity under the search's pick.
+        if let Some(goal) = goal_sighting {
+            debug!(
+                target: "exa_ai::pass",
+                "goal entity {:#x} weighed: noticed {:.2}, attention {:.2}, concern {:.2}, \
+                 hostility {:.2}; outcome {:?}, attends {:?}, other contacts {:?}",
+                goal.contact.id,
+                goal.contact.noticed,
+                goal.contact.attention,
+                goal.contact.concern,
+                goal.contact.hostility,
+                report.outcome,
+                report.attention,
+                self.contacts
+                    .iter()
+                    .filter(|c| c.id != goal.contact.id)
+                    .map(|c| (c.id, c.level, c.noticed, c.attention, c.concern, c.hostility))
+                    .collect::<Vec<_>>()
+            );
+        }
         let mut report = report;
         if let contacts::Outcome::Flee { id, .. } = report.outcome {
             // The pass's flee outcome calls the flee start with the level
