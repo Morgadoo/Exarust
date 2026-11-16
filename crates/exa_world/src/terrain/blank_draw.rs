@@ -147,6 +147,7 @@ mod tests {
     use crate::terrain::composite::{CompositeFeatures, CompositePools, detail_size};
     use crate::terrain::live::{LiveBlock, LiveTile, drive_terrain_stream};
     use crate::terrain::stream::{TerrainStream, TileStream};
+    use bevy::camera::visibility::{CascadesVisibleEntities, VisibleMeshEntities};
     use exa_render::cube_shadows::CubeCasterGate;
 
     /// A headless app with the draw rules and the live terrain driver, a
@@ -203,7 +204,22 @@ mod tests {
         let camera = world
             .spawn((Camera::default(), GlobalTransform::IDENTITY, visible))
             .id();
+        // A sun whose one cascade lists every block for the camera.
+        let mut cascades = CascadesVisibleEntities::default();
+        cascades.entities.insert(
+            camera,
+            vec![VisibleMeshEntities {
+                entities: entities.to_vec(),
+            }],
+        );
+        world.spawn(cascades);
         (app, camera, entities)
+    }
+
+    fn cast(app: &mut App) -> Vec<Entity> {
+        let mut suns = app.world_mut().query::<&CascadesVisibleEntities>();
+        let sun = suns.single(app.world()).unwrap();
+        sun.entities.values().next().unwrap()[0].entities.clone()
     }
 
     fn drawn(app: &mut App, camera: Entity) -> Vec<Entity> {
@@ -236,6 +252,7 @@ mod tests {
         // The camera draws the two composited blocks only, and the cube
         // faces leave the blank one out too.
         assert_eq!(drawn(&mut app, camera), [near, side]);
+        assert_eq!(cast(&mut app), [near, side]);
         let gate = app.world().resource::<CubeCasterGate>();
         assert!(gate.left_out.contains(&far));
         assert!(!gate.left_out.contains(&near) && !gate.left_out.contains(&side));
@@ -252,6 +269,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(drawn(&mut app, camera), entities);
+        assert_eq!(cast(&mut app), entities);
         assert!(app.world().resource::<CubeCasterGate>().left_out.is_empty());
     }
 
