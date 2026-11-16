@@ -109,9 +109,9 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 Update,
                 (
-                    weapon_blood::clear_at_world_reset,
+                    weapon_blood::clear_at_world_reset.before(exa_world::flame::frame_flames).after(crate::weapon_blood::release_gone_blades),
                     weapon_blood::release_gone_blades,
-                ),
+                ).in_set(exa_physics::FramePhase::World),
             )
             .add_plugins((
                 stance::StancePlugin,

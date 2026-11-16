@@ -456,7 +456,10 @@ impl Plugin for CollapsePlugin {
                 .after(track_condition),
         )
         .add_message::<crate::pain::PainSounded>()
-        .add_systems(Update, collapse_groans);
+        .add_systems(
+            Update,
+            collapse_groans.in_set(exa_physics::FramePhase::Audio),
+        );
         use exa_physics::sim_bridge::SimBridgeAppExt;
         app.bridge_copy::<Condition>()
             .bridge_copy::<crate::fall::FallDeath>()
