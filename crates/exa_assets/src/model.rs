@@ -2488,13 +2488,18 @@ impl ModelJob {
         }
         let body_model = pack == PackKind::Resource && is_body_model(&entry);
         let skinned = pack == PackKind::Characters || body_model;
-        let skins_of = |scene: &Scene| scene_skins(scene, skinned, pack);
-        // A garment takes its weights from the unmorphed body before it is
-        // morphed; the body's parts are skinned on their morphed shape and
-        // joints.
+        // A garment's share of the morphs comes from its unmorphed shape,
+        // and so do its weights: those its pieces take from the body
+        // through the transfer, the rest from its seams. The body's parts
+        // are skinned on their morphed shape and joints.
+        let parts = morph.as_ref().map(|m| m.parts(&scene, body_model));
+        let given: Vec<Option<Vec<VertexSkin>>> = match &parts {
+            Some(parts) if !body_model => crate::morph::given_skins(&scene, parts),
+            _ => Vec::new(),
+        };
+        let skins_of = |scene: &Scene| scene_skins(scene, skinned, pack, &given);
         let unmorphed = (morph.is_none() || !body_model).then(|| skins_of(&scene));
-        let morph = morph.map(|m| {
-            let parts = m.parts(&scene, body_model);
+        let morph = morph.zip(parts).map(|(m, parts)| {
             m.apply(&mut scene, &parts);
             m.built(parts)
         });
@@ -2603,10 +2608,15 @@ fn smooth_node(node: &mut Node, flags: &[u32]) {
 }
 
 /// The skin weights of every node of a scene, when it is skinned at all.
+/// `given` holds, by node, the weights a garment piece took from the body
+/// through the morph transfer ([`exa_formats::morph::BODY_SKIN`]): such a
+/// node keeps them, as the original's builder keeps a mesh's skin stream,
+/// and pushes an empty frame for the parts below it.
 pub(crate) fn scene_skins(
     scene: &Scene,
     skinned: bool,
     pack: PackKind,
+    given: &[Option<Vec<VertexSkin>>],
 ) -> Vec<Option<(u16, Vec<VertexSkin>)>> {
     if !skinned {
         return vec![None; scene.nodes.len()];
@@ -2615,6 +2625,7 @@ pub(crate) fn scene_skins(
     let mut pass = SkinPass {
         scene,
         pack,
+        given,
         results: vec![None; len],
         state: vec![0; len],
     };
@@ -2632,12 +2643,13 @@ pub(crate) fn scene_skins(
 /// The recursive per-node pass of the skin builder. Each part pushes its
 /// groups' centres for the parts below it and the apparel matching reads the
 /// frame on top, the one its parent part pushed. A part that keeps a shipped
-/// skin stream, or that has no group, pushes an empty frame. Only bone-named
-/// mesh children are visited, as the original's skinned-mesh test admits
-/// them.
+/// skin stream (or one the transfer gave it), or that has no group, pushes
+/// an empty frame. Only bone-named mesh children are visited, as the
+/// original's skinned-mesh test admits them.
 struct SkinPass<'a> {
     scene: &'a Scene,
     pack: PackKind,
+    given: &'a [Option<Vec<VertexSkin>>],
     results: Vec<Option<(u16, Vec<VertexSkin>)>>,
     /// 0 not visited, 1 visiting (a malformed cycle stops there), 2 done.
     state: Vec<u8>,
@@ -2649,8 +2661,13 @@ impl SkinPass<'_> {
             return;
         }
         self.state[index] = 1;
-        let build = match &self.scene.nodes[index].body {
-            NodeBody::Mesh(mesh) => node_skin(self.scene, index, mesh, self.pack, incoming),
+        let node = &self.scene.nodes[index];
+        let given = self.given.get(index).and_then(Option::as_ref);
+        let build = match (&node.body, given) {
+            (NodeBody::Mesh(_), Some(weights)) if node.flags & 0x20 == 0 => {
+                bone_index(&node.name).map(|b| (b as u16, weights.clone(), Vec::new()))
+            }
+            (NodeBody::Mesh(mesh), _) => node_skin(self.scene, index, mesh, self.pack, incoming),
             _ => None,
         };
         let Some((bone, weights, outgoing)) = build else {
@@ -5200,7 +5217,7 @@ mod tests {
                 if body {
                     bodies += 1;
                 }
-                let skins = scene_skins(&scene, true, kind);
+                let skins = scene_skins(&scene, true, kind, &[]);
                 for (index, skin) in skins.into_iter().enumerate() {
                     let Some((bone, skin)) = skin else { continue };
                     let NodeBody::Mesh(mesh) = &scene.nodes[index].body else {
@@ -5776,7 +5793,7 @@ mod tests {
             .unwrap();
         let scene = Scene::parse(bytes).unwrap();
         let skins: Vec<Option<(u16, Vec<VertexSkin>)>> =
-            scene_skins(&scene, true, crate::PackKind::Resource);
+            scene_skins(&scene, true, crate::PackKind::Resource, &[]);
         let merged = scene_merged_mesh(&scene, &skins, |_| true).expect("a merged body");
         // The eighteen parts' skin and eye groups reference 2 737 of the
         // scene's 7 430 vertices (the `_null` groups' are left out).

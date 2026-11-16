@@ -38,6 +38,23 @@ each child its parent's frame (`skin::ParentFrame`), so a garment child's
 nearest-joint match carries its group centres through its node transform
 and compares them with the parent part's centres as the stack's reader
 does (a parent centre only lowers the bar and is never taken).
+
+Body skin (`body_skin`): a race with a morph body hands its skin to the
+garment pieces whose render word carries `0x200000`, as the original's race
+loader and morph transfer do. `body_skin::merged_body` merges the race's
+base parts (unmorphed, skinned by the seam builder) into one editable mesh
+in the first root's frame and welds it; `body_skin_records` gives every
+base position of the morph set its nearest merged record, and
+`ModelLoader::morph_body` attaches them (`MorphBody::with_skin`). The
+transfer then yields each such piece's records (`PartMorph::skin`), which
+`morph::given_skins` turns into per-vertex weights the model build's skin
+pass keeps in place of the seam weights (the node pushes an empty frame, as
+a node keeping a stream does). A garment on a race with a morph body is
+transferred whatever the physique: below the smallest weight it keeps its
+shape and takes only the skin, under the key `<model>#<race>`. The records
+are built once per race (about 2 ms in the test profile); a garment's
+records once per race and model, with its share of the morphs; nothing runs
+per frame.
 Skinned linked-body objects (`prop_skin`): a model root mesh with render
 word `0x400000` (22 shipped objects, 105 meshes: sacks, mattresses, the two
 flails and the hanging growths) is the original's `_SKIN` build. Its bones

@@ -12,9 +12,12 @@
 //! as the original places a garment's pieces on its base body before
 //! fitting them. The body's parts are skinned on their morphed shape and
 //! joints, as the original skins the dressed character; a garment takes
-//! its weights from the unmorphed body, before it is morphed. Weights that
-//! change nothing (every target below the smallest weight) leave the shared
-//! model in place.
+//! its weights from its unmorphed shape, before it is morphed: a piece whose
+//! render word carries [`morph::BODY_SKIN`] the race body's skin records
+//! through the transfer ([`crate::body_skin`]), the rest from its own
+//! seams. Weights that change nothing (every target below the smallest
+//! weight) leave the shared body model in place; a garment on such a body
+//! still takes the body's skin, keeping its shape.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -27,6 +30,7 @@ use exa_formats::rsq::bone_index;
 use exa_rpk::PackKind;
 
 use crate::model::{Model, ModelJob, ModelLoader, is_body_model};
+use crate::skin::VertexSkin;
 
 /// Body parts a morph body has landmarks for (bones 1–18).
 const PARTS: u16 = 18;
@@ -100,6 +104,10 @@ pub(crate) struct JobMorph {
     /// The variant's cache key (the model's, then the morph's).
     pub(crate) key: String,
     pub(crate) weights: Vec<f32>,
+    /// The weights change the shape; when they do not, a garment is only
+    /// given the body's skin ([`morph::BODY_SKIN`]) and keeps its shape, as
+    /// the original transfers every garment whatever the physique.
+    shape: bool,
     body: Arc<MorphBody>,
     frames: Arc<HashMap<u16, Frame>>,
     pub(crate) parts_key: String,
@@ -145,9 +153,12 @@ impl JobMorph {
         )
     }
 
-    /// Morphs `scene` with `parts` at the weights.
+    /// Morphs `scene` with `parts` at the weights (nothing when they leave
+    /// the shape as it is).
     pub(crate) fn apply(&self, scene: &mut Scene, parts: &[Option<PartMorph>]) {
-        morph::morph_scene(scene, parts, &self.weights);
+        if self.shape {
+            morph::morph_scene(scene, parts, &self.weights);
+        }
     }
 
     pub(crate) fn built(self, parts: Arc<Vec<Option<PartMorph>>>) -> BuiltMorph {
@@ -157,6 +168,36 @@ impl JobMorph {
             parts,
         }
     }
+}
+
+/// The weights each node of `scene` took from the body through the
+/// transfer ([`PartMorph::skin`], by position element), by vertex; `None`
+/// for a node that builds its own.
+pub(crate) fn given_skins(
+    scene: &Scene,
+    parts: &[Option<PartMorph>],
+) -> Vec<Option<Vec<VertexSkin>>> {
+    scene
+        .nodes
+        .iter()
+        .zip(parts.iter().map(Some).chain(std::iter::repeat(None)))
+        .map(|(node, part)| {
+            let NodeBody::Mesh(mesh) = &node.body else {
+                return None;
+            };
+            let records = part?.as_ref()?.skin.as_ref()?;
+            Some(
+                mesh.position_ids
+                    .iter()
+                    .map(|&e| {
+                        records
+                            .get(e as usize)
+                            .map_or([(0, 0.0); 4], crate::body_skin::vertex_of)
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// The cache key of a model of `pack`.
@@ -178,7 +219,21 @@ impl ModelLoader<'_> {
             .and_then(|p| p.get(&format!("{stem}morph.rfc")))
             .and_then(|b| Scene::parse(b).ok())
             .and_then(|s| MorphBody::of_scene(&s))
-            .map(Arc::new);
+            .and_then(|body| {
+                // The body's skin records, which garments asking for them
+                // take through the transfer.
+                let records = self
+                    .game
+                    .pack(PackKind::Resource)
+                    .and_then(|p| p.get(&format!("{stem}base.rfc")))
+                    .and_then(|b| Scene::parse(b).ok())
+                    .and_then(|base| crate::body_skin::body_skin_records(&base, &body.set.base));
+                let body = match records {
+                    Some(records) => body.with_skin(records),
+                    None => Some(body),
+                };
+                body.map(Arc::new)
+            });
         self.cache.morph.bodies.insert(stem, body.clone());
         body
     }
@@ -210,7 +265,10 @@ impl ModelLoader<'_> {
 
     /// What morphing `entry` of `pack` by `morph` takes; `None` when it
     /// leaves the model as it is (no morph, a race without a morph body,
-    /// weights below the smallest).
+    /// weights below the smallest on a body model). A garment on a race
+    /// whose body hands its skin on is transferred at any weights: below the
+    /// smallest it takes only the body's skin, under a key of the race
+    /// alone.
     pub(crate) fn job_morph(
         &mut self,
         pack: PackKind,
@@ -220,15 +278,22 @@ impl ModelLoader<'_> {
         let morph = morph?;
         let body = self.morph_body(&morph.stem)?;
         let weights = morph.physique.weights(body.set.targets.len());
-        if !morph::morphs(&weights) {
+        let shape = morph::morphs(&weights);
+        if !shape && (pack != PackKind::Characters || body.skin.is_none()) {
             return None;
         }
         let frames = self.bone_frames(&morph.stem);
         let parts_key = format!("{}#{}", morph.stem, model_key(pack, entry));
         let parts = self.cache.morph.parts.get(&parts_key).cloned();
+        let key = if shape {
+            format!("{}#{}", model_key(pack, entry), morph.key())
+        } else {
+            format!("{}#{}", model_key(pack, entry), morph.stem)
+        };
         Some(JobMorph {
-            key: format!("{}#{}", model_key(pack, entry), morph.key()),
+            key,
             weights,
+            shape,
             body,
             frames,
             parts_key,
@@ -451,14 +516,24 @@ mod tests {
         let (a, b) = (positions(&p0.parts[0].0), positions(&p1.parts[0].0));
         assert_eq!(a.len(), b.len());
         assert!(a.iter().zip(&b).any(|(x, y)| x != y));
-        // A garment follows: positions move, weights stay.
+        // A garment follows: positions move, and its pieces asking for the
+        // body's skin take it whatever the physique; without a morph the
+        // seams' weights stay.
         let entry = "trouser_a";
         let plain = loader
             .morphed_model(PackKind::Characters, entry, None)
             .unwrap();
+        let level = loader
+            .morphed_model(PackKind::Characters, entry, Some(&neutral))
+            .unwrap();
         let fitted = loader
             .morphed_model(PackKind::Characters, entry, Some(&short))
             .unwrap();
+        assert!(!Arc::ptr_eq(&plain, &level));
+        assert_eq!(
+            loader.morphed_key(PackKind::Characters, entry, Some(&neutral)),
+            "Characters/trouser_a#human"
+        );
         let part = |m: &Model| {
             m.nodes
                 .iter()
@@ -468,11 +543,7 @@ mod tests {
                 .0
                 .clone()
         };
-        let (h0, h1) = (part(&plain), part(&fitted));
-        let (m0, m1) = (
-            loader.meshes.get(&h0).unwrap(),
-            loader.meshes.get(&h1).unwrap(),
-        );
+        let (h0, hn, h1) = (part(&plain), part(&level), part(&fitted));
         let p = |m: &Mesh| {
             m.attribute(Mesh::ATTRIBUTE_POSITION)
                 .unwrap()
@@ -480,16 +551,17 @@ mod tests {
                 .unwrap()
                 .to_vec()
         };
+        let joints = |m: &Mesh| format!("{:?}", m.attribute(Mesh::ATTRIBUTE_JOINT_INDEX));
+        let (m0, mn, m1) = (
+            loader.meshes.get(&h0).unwrap(),
+            loader.meshes.get(&hn).unwrap(),
+            loader.meshes.get(&h1).unwrap(),
+        );
         let moved = p(m0).iter().zip(p(m1)).filter(|(x, y)| *x != y).count();
         assert!(moved > 0);
-        assert_eq!(
-            m0.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT).map(|a| a.len()),
-            m1.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT).map(|a| a.len())
-        );
-        assert_eq!(
-            format!("{:?}", m0.attribute(Mesh::ATTRIBUTE_JOINT_INDEX)),
-            format!("{:?}", m1.attribute(Mesh::ATTRIBUTE_JOINT_INDEX))
-        );
+        assert_eq!(p(m0), p(mn));
+        assert_ne!(joints(m0), joints(mn));
+        assert_eq!(joints(mn), joints(m1));
         // Races without a morph body keep their model.
         let skeleton = BodyMorph::of_model("skelbase.rfc", short.physique);
         let bones = loader.model(PackKind::Resource, "skelbase.rfc").unwrap();

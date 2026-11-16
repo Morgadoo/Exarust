@@ -1582,7 +1582,7 @@ mod tests {
                 .and_then(|p| p.get(entry))
                 .unwrap();
             let scene = Scene::parse(bytes).unwrap();
-            let skins = crate::model::scene_skins(&scene, true, PackKind::Resource);
+            let skins = crate::model::scene_skins(&scene, true, PackKind::Resource, &[]);
             let (pairs, torn) = torn_pairs(&scene, &skins);
             assert_eq!(pairs, shared, "{entry}");
             assert!(

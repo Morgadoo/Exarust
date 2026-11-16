@@ -762,9 +762,36 @@ walk). This runs before the limb bodies and the motion binder read the
 nodes, so physique moves the joints and the links; the dressed mesh is
 then skinned on the morphed shape with the morphed joints. Exarust
 (`exa_formats::morph`, `exa_assets::morph`) does the same, recomputing
-normals from the morphed shape, and skins garments on the unmorphed body
-(its own nearest-vertex rule); the original also hands the body's skin
-weights to garments through the same mapping (not ported).
+normals from the morphed shape.
+
+**Body skin** (REA on the race loader, its merged-mesh walk, the record
+copy and the transfer's skin branch, read against the assembly). For a
+race whose look word has bit `0x4` (human, ancient, skeleton; only the
+first two have a morph body), the loader merges every body part of the
+base model (the mesh nodes in the first root's tree, depth first, whose
+name starts with neither `#` nor `_`) into one mesh in the first root's
+frame, welds it, and gives each base position of the set the 32-byte skin
+record (four joints, four weights) of the nearest merged position (first
+of equals). A garment piece whose render word has `0x200000` (2 694 of
+the 4 001 mesh pieces in `Characters.rpk`) then takes its weights from
+those records in the transfer instead of from its seams: each element
+merges the records of its surface triangle's corners at their
+barycentric weights (a weight below ≈1.2e-7, negatives included, merges
+nothing; a merge adds to a joint already held or takes the next free slot
+of four); elements off the body are cleared and filled from their
+neighbours already set at 1/distance, not divided, pass after pass; every
+record is normalised (negative weights to 0); then the corners of the
+triangles whose flags have a `0xC00000` bit, in triangle and corner order,
+are relaxed three times to half their own record plus half of each
+neighbour's at 1/distance (read before the pass) and normalised again. The
+skin builder then keeps that stream. The transfer runs for every garment
+a character wears, whatever the physique, so a garment on a neutral body
+takes the body's weights too. In the shipped data the morph mesh sits on
+the pelvis's frame, every base position lies within 1.6 cm of its record's
+position, every record has a joint, and no garment element is left
+without one. Against the seam weights Exarust built before, the dominant
+bone changes on 27 % (human) and 28 % (ancient) of those garments'
+vertices (`body_skin::shipped_bodies_hand_their_skin_to_the_garments`).
 
 **Controller** (`exa_assets::morph_controller`): setup, the nearest-point
 update, the barycentric basis, the blends, the vertex apply and the start
