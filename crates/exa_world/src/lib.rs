@@ -3403,6 +3403,40 @@ mod tests {
         assert!(found > 0, "exanima01 places a model-less volume");
     }
 
+    /// A story level's load keeps the level-enter hook's fog variant in its
+    /// live scene environment: the flooded `exanima04` loads at 1.4 (skipped
+    /// without the game).
+    #[test]
+    fn a_story_level_load_keeps_its_fog_variant() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: true,
+        };
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            spawn_level(&mut commands, &mut loader, "exanima04").expect("exanima04 loads");
+        }
+        queue.apply(&mut world);
+        let runtime = world
+            .get_resource::<environment::SceneEnvRuntime>()
+            .expect("the load keeps its scene environment");
+        assert_eq!(runtime.env.fog.distance, 1.4);
+    }
+
     /// What spawning `name` produced: the level's info, the names spawned
     /// and the number of entities and assets. Built at once, or in steps of
     /// `budget`.
