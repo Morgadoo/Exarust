@@ -2507,3 +2507,75 @@ fn a_duellists_torrent_keeps_its_loops_words() {
     assert!(last.loop_pitch < 2.0, "{}", last.loop_pitch);
     assert!(last.loop_volume > 0.3, "{}", last.loop_volume);
 }
+
+/// A duellist's wave alerts the characters its AI knows as it is thrown:
+/// one 3 m off takes concern toward the caster at the blast's weight with
+/// the aim cleared, `0.25·(1 − (d/1800)⁴)·3`, at the gain 3.
+#[test]
+fn a_thrown_wave_alerts_the_characters_its_caster_knows() {
+    use crate::effects::force_wave::WaveState;
+    use crate::thaum::wave_live::{LiveWave, WAVE};
+    use exa_ai::combatant::{Combatant, Contact, add_concern};
+    let mut app = new_app();
+    let chest = |at: Vec3| {
+        Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }])
+    };
+    let target = app.world_mut().spawn(chest(Vec3::new(0.0, 0.0, 9.0))).id();
+    let mut caster = PowerCaster::new(&[WAVE]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            chest(Vec3::ZERO),
+        ))
+        .id();
+    // The witness stands 3 m off; the caster's AI knows it, and it knows
+    // the caster.
+    let mut witness_mind = Combatant::default();
+    witness_mind.contacts.push(Contact::new(npc));
+    let witness = app
+        .world_mut()
+        .spawn((chest(Vec3::new(3.0, 0.0, 0.0)), witness_mind))
+        .id();
+    let mut caster_mind = Combatant::default();
+    caster_mind.contacts.push(Contact::new(witness));
+    app.world_mut().entity_mut(npc).insert(caster_mind);
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(WAVE);
+    duel_tick(&mut app);
+    let state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveWave>();
+        q.iter(app.world()).next().map(|w| w.wave.state)
+    };
+    let mut ticks = 0;
+    while state(&mut app) == Some(WaveState::Charging) {
+        let concern = app.world().get::<Combatant>(witness).unwrap().contacts[0].concern;
+        assert_eq!(concern, 0.0, "no alert while it charges");
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 200);
+    }
+    assert_eq!(state(&mut app), Some(WaveState::Thrown));
+    // The caster's chest at the origin, 300 cm from the witness's.
+    let f = (300.0f32 / 1800.0) * (300.0 / 1800.0);
+    let amount = 0.25 * (1.0 - f * f) * 3.0;
+    let mut expect = Contact::new(npc);
+    let concern = add_concern(&mut expect, 0.0, amount, 3.0);
+    let got = app.world().get::<Combatant>(witness).unwrap().contacts[0].concern;
+    assert_eq!(got, concern);
+}
