@@ -642,6 +642,38 @@ pub fn mark_moving_meshes(
     }
 }
 
+/// The meshes of a model whose registration in the simulation queues
+/// their box for the grid's refresh: a mesh node (not a placeholder) whose
+/// render word carries [`crate::nav::GRID_REFRESH_WORD`]. The original's
+/// registration tests the bit on a mesh node and, through the body's
+/// insertion, on a node with a rigid body (every shipped body sits on a
+/// mesh node).
+pub fn grid_queued_meshes(model: &Model) -> Vec<usize> {
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            n.mesh && !n.placeholder && n.render_flags & crate::nav::GRID_REFRESH_WORD != 0
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Marks a spawned model's meshes whose registration queues their box for
+/// the grid's refresh ([`grid_queued_meshes`],
+/// [`crate::nav::QueuesGridRefresh`]). Every spawn that puts a model in
+/// the level's simulation calls it: the level's own model, its props and
+/// its placed objects here; a model dropped into the world later should
+/// too.
+pub fn mark_grid_queued(commands: &mut Commands, model: &Model, nodes: &[Entity]) {
+    for i in grid_queued_meshes(model) {
+        if let Some(&e) = nodes.get(i) {
+            commands.entity(e).insert(crate::nav::QueuesGridRefresh);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

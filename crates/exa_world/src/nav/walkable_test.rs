@@ -177,3 +177,22 @@ fn the_flood_steps_as_the_planner() {
     let p = nearest_walkable(&g, at(10.0, 0.0, 10.0));
     assert!(close(p, at(45.0, 40.0, 15.0)), "{:?}", p * 100.0);
 }
+
+/// The flood reads the grid by its unchecked index too: from the first
+/// column, the neighbour to the west is the previous row's last cell, and
+/// a cheap one there is where the point goes, past the grid's west edge.
+#[test]
+fn the_flood_reads_the_previous_row_past_the_west_edge() {
+    let mut g = flat(24, 24);
+    for z in 0..24 {
+        for x in 0..24 {
+            cost(&mut g, x, z, Layer::Lower, 100, 0);
+        }
+    }
+    cost(&mut g, 23, 4, Layer::Lower, 0, 0);
+    let centre = g.cell_centre(0, 5);
+    let p = nearest_walkable(&g, Vec3::new(centre.x, 0.0, centre.y));
+    // Cell −1 of row 5: its centre is 3.75 m west, the grid ends at 3.6 m.
+    assert!((p.x + 3.75).abs() < 1e-4, "{p:?}");
+    assert!((p.z - centre.y).abs() < 1e-4, "{p:?}");
+}

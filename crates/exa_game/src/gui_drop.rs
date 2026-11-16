@@ -356,6 +356,9 @@ pub fn run_gui_drops(
         });
         let spawned = built.as_ref().map(|m| {
             let (root, nodes) = exa_world::spawn_model_nodes(&mut commands, m, None);
+            // Its meshes flagged for the grid queue their boxes as they
+            // register, as the sector's registration of a new node does.
+            exa_world::bodies::mark_grid_queued(&mut commands, m, &nodes);
             let (parts, sounds) =
                 exa_character::item_bodies(m, root, &nodes, &assets.meshes, factory_sound);
             (root, (parts, sounds))

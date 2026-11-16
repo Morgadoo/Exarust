@@ -356,6 +356,13 @@ colour pass ignores it. No shipped mesh sets it; Exarust keeps it as
 4 at level 2; mostly character body parts) has no identified meaning in this
 unit.
 
+Bit `0x100` queues the node for the navigation grid's refresh: a mesh node
+registered in a simulation sector with it has its box marked dirty on the
+pathfinder (REA on the sector's registration walk and body insertion, the
+only readers on a node; [NAVIGATION.md](../NAVIGATION.md), The refresh in
+play). 1536 shipped meshes set it, the movable props (doors, gates,
+cabinets, pots, amphorae): `exa-tool corpus render-words` lists them.
+
 ## Editable meshes
 
 Status: **verified** by REA on the original's mesh-smoothing unit, its mesh

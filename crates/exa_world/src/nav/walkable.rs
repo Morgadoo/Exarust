@@ -82,17 +82,25 @@ fn voxels(grid: &NavGrid, y: f32) -> i32 {
     (f64::from(y - base_cm(grid)) * (1.0 / VOXEL_CM)).round_ties_even() as i32
 }
 
-/// What cell (`x`, `z`) holds on `layer`; nothing outside the grid.
-fn at(grid: &NavGrid, x: i32, z: i32, layer: Layer) -> NavCell {
+/// What cell (`x`, `z`) holds on `layer`; nothing outside the grid (the
+/// cost query).
+fn bounded_at(grid: &NavGrid, x: i32, z: i32, layer: Layer) -> NavCell {
     if x < 0 || z < 0 {
         return NavCell::default();
     }
     grid.cell(x as usize, z as usize, layer)
 }
 
+/// What the nearest-walkable query reads for cell (`x`, `z`): the cell of
+/// its unchecked 32-bit index, so a column past the grid's side reads the
+/// neighbouring row ([`NavGrid::cell_unchecked`]).
+fn at(grid: &NavGrid, x: i32, z: i32, layer: Layer) -> NavCell {
+    grid.cell_unchecked(i64::from(x), i64::from(z), layer)
+}
+
 /// The layer whose slab a height `h` (voxels) meets at cell (`x`, `z`).
 fn layer_by_height(grid: &NavGrid, x: i32, z: i32, h: i32) -> Layer {
-    let upper = at(grid, x, z, Layer::Upper);
+    let upper = bounded_at(grid, x, z, Layer::Upper);
     if i32::from(upper.underside) - UPPER_BELOW < h && h < i32::from(upper.floor) + UPPER_ABOVE {
         Layer::Upper
     } else {
@@ -145,7 +153,7 @@ fn cell_of(grid: &NavGrid, p: [f32; 3]) -> (i32, i32) {
 pub fn cost_at(grid: &NavGrid, point: Vec3) -> (f32, f32) {
     let p = cm(point);
     let (x, z) = cell_of(grid, p);
-    let c = at(grid, x, z, layer_by_height(grid, x, z, voxels(grid, p[1])));
+    let c = bounded_at(grid, x, z, layer_by_height(grid, x, z, voxels(grid, p[1])));
     let share = |b: u8| (f64::from(b) * BYTE) as f32;
     (share(c.clearance), share(c.penalty))
 }

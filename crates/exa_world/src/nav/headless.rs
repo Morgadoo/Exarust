@@ -4,13 +4,14 @@
 //! the same inputs are collected.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::ecs::world::CommandQueue;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_assets::{GameData, ModelCache, ModelLoader};
 
-use super::view::{Ground, MovingMesh, PendingNav, floor_mesh};
+use super::view::{Ground, MovingMesh, PendingNav, QueuesGridRefresh, floor_mesh};
 use super::{NavGrid, NavSource};
 use crate::gi_volume::{GiFloor, GiPoints};
 
@@ -18,11 +19,39 @@ use crate::gi_volume::{GiFloor, GiPoints};
 pub struct HeadlessLevel {
     pub source: NavSource,
     pub info: crate::LevelInfo,
+    /// The meshes with bodies as the refresh samples them: points, frame
+    /// and the world centre of their box.
+    pub bodies: Vec<(Arc<Vec<Vec3>>, Affine3A, Vec3)>,
+    /// The nodes whose registration queues their box for the refresh
+    /// ([`super::QueuesGridRefresh`]): frame, box centre and half extents.
+    pub queued: Vec<(Affine3A, Vec3, Vec3)>,
 }
 
 impl HeadlessLevel {
     pub fn build(&self) -> NavGrid {
         self.source.build()
+    }
+
+    /// What the registration of the level's nodes would do if it came
+    /// after the build (in the original it comes before, while the level
+    /// loads, and the build's set-up drops it): every queued node's box
+    /// merged into the pending list, then one refresh from the bodies.
+    /// Returns whether a floor changed. A measure for the corpus test.
+    pub fn register(&self, grid: &mut NavGrid) -> bool {
+        let mut movers = super::Movers::default();
+        for &(at, centre, half) in &self.queued {
+            super::queue_box(&mut movers, grid, at, centre, half);
+        }
+        let bodies: Vec<super::MoverPoints> = self
+            .bodies
+            .iter()
+            .map(|(points, at, centre)| super::MoverPoints {
+                at: *at,
+                points: points.as_slice(),
+                centre: *centre,
+            })
+            .collect();
+        super::refresh_movers(grid, &mut movers, &bodies)
     }
 }
 
@@ -55,6 +84,8 @@ pub fn level_source(game: &GameData, name: &str) -> Option<HeadlessLevel> {
         base: pending.base,
         ..Default::default()
     };
+    let mut bodies = Vec::new();
+    let mut queued = Vec::new();
     let mut globals: HashMap<Entity, Affine3A> = HashMap::new();
     let mut stack = vec![root];
     while let Some(e) = stack.pop() {
@@ -67,6 +98,7 @@ pub fn level_source(game: &GameData, name: &str) -> Option<HeadlessLevel> {
             None => local,
         };
         globals.insert(e, global);
+        let bounds = entity.get::<crate::PartBounds>().copied();
         if let Some(gi) = entity.get::<GiPoints>() {
             let moving = entity.get::<MovingMesh>();
             if moving.is_none_or(|m| m.stamped) {
@@ -74,7 +106,16 @@ pub fn level_source(game: &GameData, name: &str) -> Option<HeadlessLevel> {
             }
             if moving.is_some() {
                 source.movers.push((gi.0.clone(), global));
+                let centre = bounds.map_or(Vec3::from(global.translation), |b| {
+                    global.transform_point3(b.centre)
+                });
+                bodies.push((gi.0.clone(), global, centre));
             }
+        }
+        if entity.contains::<QueuesGridRefresh>()
+            && let Some(b) = bounds
+        {
+            queued.push((global, b.centre, b.half_extents));
         }
         if entity.contains::<GiFloor>()
             && let Some(mesh) = entity.get::<Mesh3d>()
@@ -89,5 +130,10 @@ pub fn level_source(game: &GameData, name: &str) -> Option<HeadlessLevel> {
             stack.extend(children.iter());
         }
     }
-    Some(HeadlessLevel { source, info })
+    Some(HeadlessLevel {
+        source,
+        info,
+        bodies,
+        queued,
+    })
 }

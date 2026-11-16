@@ -708,7 +708,8 @@ exarust --no-gi --debug-column "81.74,37.45/80.34,40.1" play exanima01
 ```
 
 `exa-tool corpus render-words` tallies every mesh's render flags (the
-shadow-bias level and its bits) across the packs, with examples, and lists
+shadow-bias level and its bits, and the grid-refresh bit `0x100`) across
+the packs, with examples, lists every mesh with the grid-refresh bit and
 the `uw01_floor*` nodes ([formats/RFC.md](formats/RFC.md)).
 `exa-tool corpus floor-nodes` lists every node whose second flag word has
 the floor bit (`0x800000`, the only nodes the feet's Ground Query meets),
