@@ -1941,8 +1941,17 @@ pub struct Tick {
     pub step: Footstep,
     pub marks: StepMarks,
     pub blow: Blow,
-    /// The look direction from the heading.
+    /// The body's look smoothing direction (the head's look) the tick's
+    /// end writes: the direction of the heading.
     pub look: Option<Vec3>,
+    /// The body's look direction the tick writes: at its end the direction
+    /// of the heading (the look smoothing takes it too); a charge's toward
+    /// the target point, which its heading then takes.
+    pub cursor: Option<Vec3>,
+    /// A stab plays (motion 11) and the blow's sweep ran: the AI's head
+    /// tracking runs this tick (its slot the combat state calls there),
+    /// before the tick's end writes the look.
+    pub track_head: bool,
     /// A character contact that pressed harder than the foe. The caller takes
     /// it as the target.
     pub adopted: Option<Entity>,
@@ -2148,6 +2157,8 @@ pub fn tick(
         marks: StepMarks::default(),
         blow: Blow::default(),
         look: None,
+        cursor: None,
+        track_head: false,
         adopted: None,
         focus: None,
         clear_slow_turn: false,
@@ -2231,7 +2242,9 @@ pub fn tick(
     out.blow.set_flags |= d.set_flags;
     if me.running && 3.0 < me.forward_speed {
         let ground = Vec3::new(me.position.x, me.ground_y, me.position.z);
-        mind.heading = yaw(unit(me.target_point - ground));
+        let toward = unit(me.target_point - ground);
+        out.cursor = Some(toward);
+        mind.heading = yaw(toward);
         out.exit = Some(Exit::Charge);
         return out;
     }
@@ -2367,6 +2380,8 @@ pub fn tick(
         guard_kind = 0x10;
     }
     if guard_kind == 0 {
+        // The sweep calls the AI's head tracking while a stab plays.
+        out.track_head = me.motion == 0xb;
         turn_to = sweep_heading(mind, me, turn_to);
         approach_heading(mind, turn_to);
         mind.aim = turn_to;
@@ -2423,7 +2438,8 @@ pub fn tick(
         let aim = mind.aim;
         approach_heading(mind, aim);
     }
-    out.look = Some(of_yaw(mind.heading));
+    out.cursor = Some(of_yaw(mind.heading));
+    out.look = out.cursor;
     out.search = Some(found);
     out
 }
