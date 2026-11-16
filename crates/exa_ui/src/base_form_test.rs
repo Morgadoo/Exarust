@@ -170,3 +170,161 @@ fn a_press_raises_the_window_under_the_layer_rule() {
     task.release(1);
     assert_eq!(task.draw_order(), vec![root, b, a]);
 }
+
+/// The add-child places a window by its layer: an upper-layer window stays
+/// above windows added after it, a lower-layer one goes under them; a
+/// child form draws with its parent wherever the parent is raised; the
+/// toggle's active test reads the draw order outside the upper layer, and
+/// the tag search finds the visible window with the tag.
+#[test]
+fn an_added_window_takes_its_layers_place_and_the_tag_search_finds_it() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let child_of_root = |attributes: u32, tag: u32| {
+        let mut w = window();
+        w.parent = Some(root);
+        w.attributes |= attributes;
+        w.tag = tag;
+        w
+    };
+    let top = task.add(Box::new(child_of_root(form::attribute::UPPER_LAYER, 0)));
+    let a = task.add(Box::new(child_of_root(0, 0xce1c_2030)));
+    let low = task.add(Box::new(child_of_root(form::attribute::LOWER_LAYER, 0)));
+    let b = task.add(Box::new(child_of_root(0, 0xce1c_2010)));
+    let mut held = window();
+    held.parent = Some(a);
+    let held = task.add(Box::new(held));
+    assert_eq!(task.draw_order(), vec![root, low, a, held, b, top]);
+    assert!(task.is_active(b));
+    assert!(!task.is_active(a));
+    // The upper-layer form whose word is that layer alone is active as the
+    // first child only; this one has the window's other bits.
+    assert!(!task.is_active(top));
+    assert_eq!(task.find_by_tag(0xce1c_2030), Some(a));
+    assert_eq!(task.find_by_tag(0), None);
+    task.activate(a);
+    assert_eq!(task.draw_order(), vec![root, low, b, a, held, top]);
+    assert!(task.is_active(a));
+    assert_eq!(task.active, Some(a));
+    task.form_mut(a).unwrap().base_mut().unwrap().visible = false;
+    assert_eq!(task.find_by_tag(0xce1c_2030), None);
+}
+
+/// The base form's focus routine with no form: the remembered focus while
+/// it is visible and not the focus, else the root with control -1; a focus
+/// change remembers the visible form it leaves.
+#[test]
+fn a_focus_to_no_form_returns_to_the_remembered_one_or_the_root() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let mut a = window();
+    a.parent = Some(root);
+    let mut b = window();
+    b.parent = Some(root);
+    let a = task.add(Box::new(a));
+    let b = task.add(Box::new(b));
+    task.focus_form(Some(a), 0);
+    task.focus_form(Some(b), 0);
+    assert_eq!(task.remembered, Some((a, 0)));
+    task.focus_form(None, 0);
+    assert_eq!(task.active, Some(a));
+    assert_eq!(task.remembered, Some((b, 0)));
+    // A hidden remembered form is passed over for the root.
+    task.form_mut(b).unwrap().base_mut().unwrap().visible = false;
+    task.focus_form(None, 0);
+    assert_eq!((task.active, task.active_control), (Some(root), -1));
+    // The deactivation parks the focus on the root, remembering the form.
+    task.focus_form(Some(a), 0);
+    task.deactivate();
+    assert_eq!((task.active, task.active_control), (Some(root), -1));
+    assert_eq!(task.remembered, Some((a, 0)));
+}
+
+/// The release reaches a held slider with the landing bit even when the
+/// pointer is let go off it (the record tests the point itself), so the
+/// slider reports its change; a button released off itself does not fire.
+#[test]
+fn a_slider_let_go_off_its_track_still_reports_the_change() {
+    let mut w = window();
+    let mut slider = Control::new(4, 120, 120, 80, 12);
+    slider.reports = true;
+    w.records.push(slider);
+    let mut button = Control::new(1, 120, 200, 80, 24);
+    button.reports = true;
+    w.records.push(button);
+    let (mut task, id) = task_with(w);
+    task.update(false, (130, 125));
+    task.press(1);
+    task.update(false, (130, 180));
+    task.release(1);
+    let events = &base(&task, id).events;
+    assert!(events.contains(&BaseEvent::Changed(0)), "{events:?}");
+    task.form_mut(id)
+        .unwrap()
+        .base_mut()
+        .unwrap()
+        .events
+        .clear();
+    task.update(false, (130, 210));
+    task.press(1);
+    task.update(false, (130, 250));
+    task.release(1);
+    let events = &base(&task, id).events;
+    assert!(!events.contains(&BaseEvent::Changed(1)), "{events:?}");
+}
+
+/// The close slot's cascade on the window manager: a window's child form
+/// closes before it, both are deleted, and the tooltip request, the drop
+/// they source and the modal slot on them clear; a sibling is untouched.
+#[test]
+fn closing_a_window_closes_its_children_and_sweeps_the_slots() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let mut a = window();
+    a.parent = Some(root);
+    let a = task.add(Box::new(a));
+    let mut child = window();
+    child.parent = Some(a);
+    let child = task.add(Box::new(child));
+    let mut other = window();
+    other.parent = Some(root);
+    let other = task.add(Box::new(other));
+    task.focus_set(Some(child), 0);
+    task.tooltip.form = Some(child);
+    task.drop.source = Some(a);
+    task.drop.kind = 3;
+    task.modal = Some(child);
+    assert_eq!(task.close_form(a), 2);
+    assert!(task.form(a).is_none() && task.form(child).is_none());
+    assert!(task.form(other).is_some());
+    assert_eq!(task.tooltip.form, None);
+    assert_eq!(task.drop.kind, 0);
+    assert_eq!(task.modal, None);
+    // The focus went up the tree to the root (the parents were visible).
+    assert_eq!((task.active, task.active_control), (Some(root), -1));
+    assert_eq!(task.draw_order(), vec![root, other]);
+}
+
+/// A press activates its window through the child raise rule: a pressed
+/// lower-layer window stays under the plain ones, a pressed plain window
+/// goes on top of them.
+#[test]
+fn a_press_raises_by_the_child_rule() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let mut low = window();
+    low.parent = Some(root);
+    low.attributes |= form::attribute::LOWER_LAYER;
+    let low = task.add(Box::new(low));
+    let mut plain = window();
+    plain.parent = Some(root);
+    plain.move_to(300, 50);
+    let plain = task.add(Box::new(plain));
+    assert_eq!(task.draw_order(), vec![root, low, plain]);
+    // The lower window's title band, left of the plain one.
+    task.update(false, (120, 52));
+    task.press(1);
+    task.release(1);
+    assert_eq!(task.draw_order(), vec![root, low, plain]);
+    assert_eq!(task.active, Some(low));
+}

@@ -1413,6 +1413,25 @@ the task's state. A control value of `i32::MIN` means none.
   the lit bit follows the on bit, and the answer is the state's low byte
   without the lit bit. A hit-and-focus that finds no form focuses no form
   with control 1 and sets the cursor to 0.
+- **The base form's task rules.** A form is added among its parent's
+  children at its layer's place (a lower-layer form above the last
+  lower-layer sibling, an upper-layer form on top, any other under the
+  trailing upper-layer ones), and a form's child forms draw right after it.
+  The openers' tag search takes the first visible child with the tag; the
+  active test is the topmost child outside the upper layer (the first
+  child for a form whose word is that layer alone), read from the draw
+  order, not the focus. A press activates its window by the child raise
+  rule. A focus change remembers the visible form it leaves with its
+  control; the base form's focus to no form returns there while it is
+  visible and not the focus, else to the root with control -1, and the
+  application's deactivation (the window losing the system's focus) parks
+  the focus on the root the same way. Closing a form closes its child forms
+  first, depth first; each closed form is hidden, which clears the
+  manager's references to it and its tree (the remembered focus, the
+  pointer's target and capture, the tooltip request, a drop it sources, the
+  modal slot; its focus passes to a visible parent with control -1, else to
+  no form), and is deleted. Exarust's forms carry no owner, so no owned
+  popup closes with its opener, and the root's children are not tasks.
 
 ### The 3D viewport
 
