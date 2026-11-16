@@ -1488,17 +1488,23 @@ struct WordRow {
     cull_front: usize,
     /// With the keep-own-light bit (0x1000).
     own_light: usize,
+    /// With the grid-registration bit (0x100): registering the node in a
+    /// simulation sector queues its box for the navigation refresh.
+    grid_queue: usize,
     examples: Vec<String>,
 }
 
 /// `corpus render-words`: every mesh's render word (the word before its
 /// streams, the original's node render flags), tallied by shadow-bias
 /// level (bits 16..18) and the 0x80000 variant, with the cull-front
-/// (0x800) and keep-own-light (0x1000) bits counted; then every node whose
-/// name starts with `uw01_floor`, the broken floors of the dungeon levels.
+/// (0x800), keep-own-light (0x1000) and grid-registration (0x100) bits
+/// counted; then every mesh with the grid-registration bit; then every node
+/// whose name starts with `uw01_floor`, the broken floors of the dungeon
+/// levels.
 pub fn render_words(game: &GameData) -> Result<()> {
     let mut tally: BTreeMap<(u32, bool), WordRow> = BTreeMap::new();
     let mut floors = Vec::new();
+    let mut queued = Vec::new();
     for (kind, pack) in game.packs() {
         for e in pack.entries() {
             let b = pack.bytes(e);
@@ -1519,6 +1525,16 @@ pub fn render_words(game: &GameData) -> Result<()> {
                 row.meshes += 1;
                 row.cull_front += usize::from(word & 0x800 != 0);
                 row.own_light += usize::from(word & 0x1000 != 0);
+                row.grid_queue += usize::from(word & 0x100 != 0);
+                if word & 0x100 != 0 {
+                    queued.push(format!(
+                        "{}/{}:{} {word:#010x} flags {:#010x}",
+                        kind.file_stem(),
+                        e.name,
+                        node.name,
+                        node.flags
+                    ));
+                }
                 if row.examples.len() < 6 {
                     row.examples
                         .push(format!("{}/{}:{}", kind.file_stem(), e.name, node.name));
@@ -1535,17 +1551,25 @@ pub fn render_words(game: &GameData) -> Result<()> {
         }
     }
     println!(
-        "{:>5} {:>7} {:>8} {:>6} {:>6}  examples",
-        "level", "0x80000", "meshes", "0x800", "0x1000"
+        "{:>5} {:>7} {:>8} {:>6} {:>6} {:>6}  examples",
+        "level", "0x80000", "meshes", "0x800", "0x1000", "0x100"
     );
     for ((level, variant), row) in &tally {
         println!(
-            "{level:>5} {variant:>7} {:>8} {:>6} {:>6}  {}",
+            "{level:>5} {variant:>7} {:>8} {:>6} {:>6} {:>6}  {}",
             row.meshes,
             row.cull_front,
             row.own_light,
+            row.grid_queue,
             row.examples.join(", ")
         );
+    }
+    println!(
+        "\nmeshes with the grid-registration bit (0x100): {}",
+        queued.len()
+    );
+    for q in queued {
+        println!("  {q}");
     }
     println!("\nuw01_floor* nodes:");
     for f in floors {
