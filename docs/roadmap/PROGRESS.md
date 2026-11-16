@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r228, 11-15) | target |
+| measure | start (r186, 11-10) | now (r230, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **52.76%** | **100%** |
+| **Ledger: bytes in a final state** | — | **52.97%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 301 of 2,726 (11%) | 100% |
+| Live rows with scene or retail evidence | — | 306 of 2,742 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,714 | all |
+| Tests passing | 8,489 | 8,730 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,14 +98,14 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 184 | 187,026 |
+| Physics, bodies & cloth | 7 | 7 | 183 | 186,643 |
 | UI | 12 | 12 | 395 | 154,760 |
 | Rendering & GPU | 10 | 10 | 296 | 150,648 |
 | Thaumaturgy & effects | 9 | 9 | 168 | 119,006 |
 | AI & behaviour | 8 | 8 | 181 | 115,293 |
 | Characters, motion & animation | 8 | 8 | 237 | 107,529 |
-| Game modes, arena & session | 7 | 7 | 228 | 93,831 |
-| World, levels & terrain | 5 | 5 | 172 | 88,138 |
+| Game modes, arena & session | 7 | 7 | 216 | 89,736 |
+| World, levels & terrain | 5 | 5 | 169 | 87,396 |
 | Items, materials & crafting | 5 | 5 | 165 | 75,411 |
 | Data, assets & I/O | 6 | 6 | 142 | 44,244 |
 | Runtime & platform | 5 | 5 | 70 | 20,869 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,363** | **1,185,445** |
+| **Total** | **90** | **90** | **2,347** | **1,180,225** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 229–230 | Level lights are registered as scene light nodes; their aliases come from the light flood's cells and equal the old room lists on three shipped levels (scenenodes). The arena's company deaths, departures, hires, day board, hire list, continue fixups and kept bodies follow the assembly; won prizes reach the arsenal (arenapart). Game checks owed (GPU on hold). |
 | 2026-11-15 | 227–228 | The path planner plans with each AI state's goal record (size class, alert shift, accept distance, end test) and the walks use the original's single-precision raster (pathfinder). The turn stall, the hard hit's frozen swing and the knockback along the striker's slot vector follow the assembly; a hovering player looks ahead by the straight walk (motiledyn2). Game checks owed (GPU on hold). |
 | 2026-11-15 | 223–226 | Hook lists closed as engine with schedule-order tests; the deferred ring's wrap confirmed and left open (hookorder). Item panels, cards, sockets and the crystal drain, 17 findings (wireitems). A limb struck through a parry is wounded; the locomotion push enters before the lift (motiledyn). The gamepad's menu dispatch on gilrs (menupad). The GPU dropped again on driver 620: diagnosed as a hardware fault (the card was twice not found at power-on); GPU runs on hold (`context/tools/GPU_HOLD`) until the owner reseats it, so these rounds' game checks and determinism runs are owed. Ledger 51.9% → 52.6%. |
 | 2026-11-15 | 221–222 | The arena's tables run through the ported table view, with selection bands and drag labels; the skill ring closes on any key (F76, F77); no table in 0.9.5 edits, chooses or grows, so those rows are unreachable (wireskills). NPC flight, leave, combat exits, the nearby gather through the rooms' sight test and the follower's closing walk follow the assembly, lockstep unchanged (motileai, B4). Ledger 51.6% → 51.9%. |
