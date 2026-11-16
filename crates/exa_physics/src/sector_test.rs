@@ -1093,3 +1093,31 @@ fn the_placement_query_walks_the_nine_cells_in_order() {
         [(0, false), (1, true)]
     );
 }
+
+/// A scene's grid shape as the original's grid build and sector cache give
+/// it: the bias is half of each dimension (an unsigned shift), plus the
+/// sector node's cell rounded half to even (×1/600 in single precision);
+/// the neighbour table is the flat offsets, own cell first. The model's
+/// grid ([`crate::dynamics::Grid`]) takes the same rule.
+#[test]
+fn a_scene_grid_takes_half_its_size_and_its_node_cell() {
+    let level = GridShape::of_scene(33, 40, Vec3::ZERO);
+    assert_eq!(level.origin, (16, 20));
+    assert_eq!(level.offsets(), [0, -34, -33, -32, -1, 1, 32, 33, 34]);
+    // 1500 cm is 2.5 cells (even: 2), −1800 cm −3; −900 cm −1.5 (even: −2).
+    let moved = GridShape::of_scene(32, 40, Vec3::new(1500.0, 70.0, -1800.0));
+    assert_eq!(moved.origin, (18, 17));
+    assert_eq!(GridShape::of_scene(32, 40, Vec3::new(-900.0, 0.0, 0.0)).origin.0, 14);
+    // A point's flat index: (floor(z/600) + oz) · columns + floor(x/600) + ox.
+    assert_eq!(
+        level.index_of(Vec3::new(-1.0, 0.0, 601.0)),
+        (1 + 20) * 33 + 15
+    );
+    let model = crate::dynamics::Grid::new(crate::dynamics::GridSize {
+        width: 33,
+        height: 40,
+    });
+    assert_eq!(model.bias, [16, 20]);
+    assert_eq!(model.offsets, level.offsets());
+    assert_eq!(model.sector_cell(Vec3::new(1500.0, 70.0, -1800.0)), [18, 17]);
+}

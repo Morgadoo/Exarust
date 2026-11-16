@@ -201,6 +201,7 @@ pub fn teardown(
     commands.insert_resource(exa_physics::StaticBuild::default());
     commands.insert_resource(exa_physics::ColliderNodes::default());
     commands.insert_resource(exa_physics::StaticColliders::default());
+    commands.insert_resource(exa_physics::SceneGrid::default());
     commands.insert_resource(exa_physics::prop::StandIns::default());
     commands.remove_resource::<room_view::LevelRooms>();
     commands.remove_resource::<shadow_links::LevelWalls>();

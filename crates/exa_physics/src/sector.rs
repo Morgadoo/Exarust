@@ -219,6 +219,64 @@ pub fn object_cell_overflow(index: i32, columns: i32, rows: i32) -> bool {
     index <= columns || (i64::from(rows) - 1) * i64::from(columns) <= i64::from(index)
 }
 
+/// The shape of a simulation's grids as its scene sizes them: `columns` ×
+/// `rows` cells of 600 cm, and the origin cell a sector adds to a point's
+/// cell. The original's grid build halves the scene's two dimensions
+/// (unsigned shifts) for its bias, and a sector caches that bias plus its
+/// own node's cell (its x and z times 1/600, rounded half to even); a
+/// level's sector node stands at the world origin, so its origin is the
+/// bias. Cells are flat indices `z · columns + x`, and the nine cells around
+/// one are the flat offsets of [`GridShape::offsets`], so an x past either
+/// edge wraps into the next or the previous row, as in the original.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridShape {
+    pub columns: i32,
+    pub rows: i32,
+    /// The origin cell (x, z) a sector adds to a point's cell.
+    pub origin: (i32, i32),
+}
+
+impl GridShape {
+    /// The grids of a scene `columns` × `rows` cells, with the sector's
+    /// node at `node_cm` (cm; the level's at the world origin).
+    pub fn of_scene(columns: i32, rows: i32, node_cm: Vec3) -> Self {
+        let bias = ((columns as u32 >> 1) as i32, (rows as u32 >> 1) as i32);
+        let node = |v: f32| to_i64((v * INVERSE_CELL_SIZE_CM).round_ties_even()) as i32;
+        Self {
+            columns,
+            rows,
+            origin: (
+                node(node_cm.x).wrapping_add(bias.0),
+                node(node_cm.z).wrapping_add(bias.1),
+            ),
+        }
+    }
+
+    /// The flat offsets of a cell and its eight neighbours, the cell itself
+    /// first: 0, −w−1, −w, −w+1, −1, 1, w−1, w, w+1 (the grid build's
+    /// table, the same order as [`NEAR_OFFSETS`]).
+    pub fn offsets(&self) -> [i32; 9] {
+        let w = self.columns;
+        [
+            0,
+            (-1i32).wrapping_sub(w),
+            w.wrapping_neg(),
+            1i32.wrapping_sub(w),
+            -1,
+            1,
+            w.wrapping_sub(1),
+            w,
+            w.wrapping_add(1),
+        ]
+    }
+
+    /// The flat cell index of a world point (cm): its cell plus the origin,
+    /// `z · columns + x` (32-bit, wrapping).
+    pub fn index_of(&self, centre_cm: Vec3) -> i32 {
+        cell_index(cell_of(centre_cm, self.origin), self.columns)
+    }
+}
+
 /// A sparse cell grid: each cell lists the ids inserted into it. The
 /// original stores linked lists in dense arrays; a map of short vectors
 /// serves Exarust's unbounded levels with the same meaning (the pair stage
@@ -301,7 +359,18 @@ impl CellGrid {
     /// stage: a simulated object is offered the bodies linked in these
     /// cells around its own and no others.
     pub fn around(&self, cell: (i32, i32)) -> impl Iterator<Item = usize> + '_ {
-        NEAR_OFFSETS.into_iter().flat_map(move |(dx, dz)| {
+        self.around_with(cell, NEAR_OFFSETS)
+    }
+
+    /// The ids in the nine cells `offsets` away from `cell`, in the
+    /// offsets' order ([`CellGrid::around`] with [`NEAR_OFFSETS`]; a flat
+    /// grid passes [`GridShape::offsets`] as `(offset, 0)`).
+    pub fn around_with(
+        &self,
+        cell: (i32, i32),
+        offsets: [(i32, i32); 9],
+    ) -> impl Iterator<Item = usize> + '_ {
+        offsets.into_iter().flat_map(move |(dx, dz)| {
             self.get((cell.0.wrapping_add(dx), cell.1.wrapping_add(dz)))
                 .iter()
                 .copied()
@@ -983,6 +1052,33 @@ impl StaticGrid {
             rows,
             origin,
             ..Self::default()
+        }
+    }
+
+    /// The grid's columns, rows and origin.
+    pub fn shape(&self) -> GridShape {
+        GridShape {
+            columns: self.columns,
+            rows: self.rows,
+            origin: self.origin,
+        }
+    }
+
+    /// Gives the grid another shape and inserts every record again, in its
+    /// order and under its id (the spans' floor and cap and the wide bit
+    /// follow the new shape).
+    pub fn reshape(&mut self, shape: GridShape) {
+        if shape == self.shape() {
+            return;
+        }
+        let bodies = std::mem::take(&mut self.bodies);
+        self.cells = CellGrid::new();
+        self.columns = shape.columns;
+        self.rows = shape.rows;
+        self.origin = shape.origin;
+        for mut body in bodies {
+            body.mask &= !WIDE_COLLIDER;
+            self.insert(body);
         }
     }
 

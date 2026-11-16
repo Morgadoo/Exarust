@@ -703,6 +703,22 @@ impl Part {
         )
     }
 
+    /// The original's position-overflow reset of a part whose grid cell
+    /// fell outside the scene's grid rows ([`crate::sector::reset_overflow`]):
+    /// its particles, the last tick's and the tick's start all become the
+    /// tick before last's, so it stands where it stood two ticks ago with no
+    /// velocity, and its last-tick frame is its frame now (no sweep this
+    /// tick). Its drawn history and its displacement records are left alone.
+    pub(crate) fn reset_to_two_ticks_ago(&mut self) {
+        crate::sector::reset_overflow(
+            &mut self.positions,
+            &mut self.previous,
+            &self.two_ticks_ago,
+        );
+        self.start = self.two_ticks_ago;
+        self.settled = self.transform();
+    }
+
     /// The grid cell of [`Self::pose`] alone, computed the same way: the
     /// pair stage tests a sleeping part's cell before it needs the rest.
     pub(crate) fn cell(&self, origin: (i32, i32)) -> (i32, i32) {
@@ -2853,6 +2869,7 @@ pub fn bridge_body_types(app: &mut App) {
         .bridge_move_resource::<Physics>()
         .bridge_move_resource::<crate::collision_share::CollisionChanges>()
         .bridge_copy_resource::<crate::StaticColliders>()
+        .bridge_copy_in_resource::<crate::SceneGrid>()
         .bridge_move_resource::<ShoveQueue>()
         .bridge_move_resource::<DealtShoves>()
         .bridge_copy_resource::<BodyTicks>()
@@ -6085,11 +6102,21 @@ pub fn first_by_key<'a, T>(
 /// marked changed only once something woke it.
 pub fn step_bodies(
     physics: Res<Physics>,
-    statics: Option<Res<crate::StaticColliders>>,
+    (statics, scene): (
+        Option<Res<crate::StaticColliders>>,
+        Option<Res<crate::SceneGrid>>,
+    ),
     mut clock: ResMut<BodyTicks>,
     mut stages: ResMut<SolverStages>,
     mut bodies: Query<(Entity, &mut Ragdoll), Without<OutOfScene>>,
 ) {
+    // The scene's grid decides the pair stage's step, as the original's
+    // sector constructor takes its scene.
+    if let Some(scene) = scene.as_deref()
+        && let Some(pairs) = stages.get_mut::<Pairs>()
+    {
+        pairs.set_scene(*scene);
+    }
     let (mut awake, mut sleeping): (Vec<Mut<Ragdoll>>, Vec<Mut<Ragdoll>>) =
         (Vec::new(), Vec::new());
     // The bodies in the original's walk order ([`walk_order`]: the sector

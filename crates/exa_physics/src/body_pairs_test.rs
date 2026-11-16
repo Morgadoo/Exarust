@@ -6,7 +6,9 @@
 use bevy::math::Affine3A;
 
 use super::super::tests::floor_quad;
-use super::super::{BodyPlugin, PartSetup, Ragdoll, Sleep, SolverStage, SolverStages, WAKE_COUNT};
+use super::super::{
+    BODY_HZ, BodyPlugin, PartSetup, Ragdoll, Sleep, SolverStage, SolverStages, WAKE_COUNT,
+};
 use super::*;
 use crate::sector::Bounds;
 
@@ -1509,7 +1511,8 @@ fn a_part_that_changes_cells_moves_to_the_head_of_its_new_cell() {
         entry(&a),
         CellEntry {
             cell: home,
-            stamp: 5
+            stamp: 5,
+            parked: false,
         }
     );
     // `b` moves while asleep (outside the awake count): no move until it
@@ -1598,4 +1601,122 @@ fn hold_out_of_pairs_drops_through_the_stages() {
     assert_eq!(hold_out_of_pairs(Some(&mut stages), &mut [&mut b]), 1);
     assert_eq!(stages.get::<Pairs>().unwrap().kept().count(), 0);
     assert_eq!(hold_out_of_pairs(None, &mut [&mut a]), 0);
+}
+
+/// A 4 × 8 scene grid (origin cell (2, 4)): rows 0 and 7 are guarded, z
+/// from −24 to −18 m and from 18 to 24 m.
+fn small_grid() -> sector::GridShape {
+    sector::GridShape::of_scene(4, 8, Vec3::ZERO)
+}
+
+fn grid_pairs() -> Vec<Box<dyn SolverStage>> {
+    let mut pairs = Pairs::default();
+    pairs.set_scene(crate::SceneGrid::Grid(small_grid()));
+    vec![Box::new(pairs)]
+}
+
+/// The bounds pass's position-overflow reset (the original's grid step,
+/// after the iterations): a part whose mesh box centre crosses into the
+/// grid's last row is put back where the tick before last left it, with no
+/// velocity, and is bucketed in the park cell `columns + 1` for the tick's
+/// detection; the next tick, inside again, it falls from there. Without a
+/// scene grid nothing is reset.
+#[test]
+fn a_part_past_the_grid_rows_goes_back_two_ticks_and_parks() {
+    let grid = small_grid();
+    assert_eq!(grid.origin, (2, 4));
+    // 0.2 m a tick along z, from 17.9 m: the tick takes it to 18.1 m, in
+    // row floor(1810/600) + 4 = 7, the last.
+    let start = Vec3::new(0.5, 2.0, 17.9);
+    let ticked = |mut stages: Vec<Box<dyn SolverStage>>| {
+        let mut a = ball(1, 11, start, 0.1);
+        a.set_list_place(1);
+        a.set_velocity(Vec3::Z * 0.2 * BODY_HZ);
+        let before = a.parts[0].two_ticks_ago;
+        step(&mut [&mut a], NONE, &mut stages);
+        (a, before, stages)
+    };
+    let (free, ..) = ticked(pairs());
+    assert!(centre(&free).z > 18.05, "{}", centre(&free));
+    assert!(!free.parts[0].cell_entry.parked);
+
+    let (mut a, before, mut stages) = ticked(grid_pairs());
+    let p = &a.parts[0];
+    assert_eq!(p.positions, before);
+    assert_eq!(p.previous, before);
+    assert_eq!(p.two_ticks_ago, before);
+    assert!(p.cell_entry.parked);
+    // Linked at the detection in the park cell, index 4 + 1.
+    assert_eq!(p.cell_entry.cell, (5, 0));
+    // Inside the grid again (17.7 m, row 6): it falls straight down from
+    // where it was put back, no longer parked.
+    let y = centre(&a).y;
+    step(&mut [&mut a], NONE, &mut stages);
+    let p = &a.parts[0];
+    assert!(!p.cell_entry.parked);
+    assert!(centre(&a).y < y);
+    assert!((centre(&a).z - (start.z - 0.2)).abs() < 1e-4, "{}", centre(&a));
+    assert_eq!(p.cell_entry.cell, (6 * 4 + 2, 0));
+}
+
+/// Only rows are guarded: past the grid's x edge a part is not reset, and
+/// its flat cell is the next row's first (the original's index wraps), so
+/// it shares that cell with the parts there.
+#[test]
+fn the_grid_keys_wrap_past_the_x_edge() {
+    let keys = CellKeys {
+        grid: Some(small_grid()),
+    };
+    // Column 4 of row 2 is cell 12, the first of row 3.
+    assert_eq!(keys.key((4, 2), false), keys.key((0, 3), false));
+    assert_eq!(keys.key((4, 2), false), (12, 0));
+    assert_eq!(keys.key((1, 1), true), (5, 0));
+    let offsets: Vec<i32> = keys.offsets().iter().map(|o| o.0).collect();
+    assert_eq!(offsets, [0, -5, -4, -3, -1, 1, 3, 4, 5]);
+    // Without a scene grid, world cells and the 3 × 3 offsets.
+    let unbounded = CellKeys::default();
+    assert_eq!(unbounded.key((4, 2), true), (4, 2));
+    assert_eq!(unbounded.offsets(), sector::NEAR_OFFSETS);
+
+    // A part 13 m along x (column 4) in row 5: not reset.
+    let at = Vec3::new(13.0, 2.0, 7.0);
+    let mut a = ball(1, 11, at, 0.1);
+    let mut stages = grid_pairs();
+    step(&mut [&mut a], NONE, &mut stages);
+    assert!(!a.parts[0].cell_entry.parked);
+    assert!((centre(&a).x - at.x).abs() < 1e-5);
+}
+
+/// The scene grid reaches the pair stage through the step: a grid scene
+/// gives it its grid (and the overflow guard), a scene without a grid the
+/// all-pairs step, and the default leaves Exarust's unbounded cells.
+#[test]
+fn the_step_takes_the_scene_grid() {
+    let mut app = App::new();
+    app.add_plugins(BodyPlugin)
+        .insert_resource(super::super::Physics::default())
+        .insert_resource(crate::SceneGrid::Grid(small_grid()));
+    let mut a = ball(1, 11, Vec3::new(0.5, 2.0, 17.9), 0.1);
+    a.set_velocity(Vec3::Z * 0.2 * BODY_HZ);
+    let before = a.parts[0].two_ticks_ago;
+    let body = app.world_mut().spawn(a).id();
+    app.world_mut().run_schedule(FixedUpdate);
+    let pairs = |app: &App| {
+        app.world()
+            .resource::<SolverStages>()
+            .get::<Pairs>()
+            .map(|p| (p.phase(), p.grid()))
+    };
+    assert_eq!(
+        pairs(&app),
+        Some((BroadPhase::Cells, Some(small_grid())))
+    );
+    let a = app.world().get::<Ragdoll>(body).unwrap();
+    assert_eq!(a.parts[0].positions, before);
+    app.insert_resource(crate::SceneGrid::AllPairs);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(pairs(&app), Some((BroadPhase::AllPairs, None)));
+    app.insert_resource(crate::SceneGrid::Unbounded);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(pairs(&app), Some((BroadPhase::Cells, None)));
 }
