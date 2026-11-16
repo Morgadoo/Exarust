@@ -552,14 +552,21 @@ only.
 ### Level transitions
 
 * A level is available when the save has a section with the locale's name;
-  otherwise the game loads `<locale>.rfc` from the archive. Exarust exposes
-  the same order as `Slots::level_available`, with the archive's lookup
-  supplied by the caller.
-* The **transition save** runs when the save has **neither** an
-  `exanima04` section **nor** a section for the target level (the early
-  levels, entered for the first time): it flushes the scene, saves without
-  the health check and **copies the save over the checkpoint**. A save with
-  either section is left alone.
+  otherwise the game loads `<locale>.rfc` from the archive. The level exit
+  asks first and does nothing for a level found in neither. Exarust exposes
+  the same order as `Slots::level_available`; the running game's exit zones
+  and journeys ask it through `save_live::level_available` (the current
+  story slot's save, then the archive).
+* The **transition save** runs at a level exit that keeps a checkpoint
+  (levels below 7 with the `CheckPoints` setting on, level 6 always) when
+  the save has **neither** an `exanima04` section **nor** a section for the
+  target level (the early levels, entered for the first time): it flushes
+  the scene, saves without the health check and **copies the save over the
+  checkpoint** (the copy overwrites an existing `.rcp`: its fail-if-exists
+  argument is 0), and on level 6 the engine clock is kept. A save with
+  either section takes the exit's plain save instead (flush and save, no
+  copy, no clock). Exarust runs it as `SaveStep::TransitionSave` (REA, the
+  exit and the transition save, read in the assembly).
 * When the saved transition state (`0xD000C003`) is 2, the story loader
   forces the locale to `exanima05`; the load path then places the player at
   the portal node and sets the state to 1.
@@ -607,6 +614,16 @@ only.
   record; a later visit finds the corpse with its gear (REA on the death
   path, the strip routine and the respawn's flag clear, read in the
   assembly; `exa_game::left_behind`).
+* **The respawn's rebuild.** The death screen's CONTINUE first hands the
+  current player record back: its race byte is cleared and, with the
+  content stream's hook installed, its request (word `0x1000`, the world
+  scene) is posted. The respawn then saves, clears the whole world (the
+  player's body with it) and spawns the player anew from that record once
+  `exanima05` is in, so the player wakes stripped while the corpse keeps
+  the gear. Exarust's player survives level changes; the respawn's
+  `Step::RebuildPlayer` hands the record the save wrote to the next spawn
+  (`SavedPlayer`) and despawns the old root after the save
+  (`exa_game::save_live::RebuildPlayer`).
 * **Followers.** When the current scene character is flushed, every
   travelling character (controller word 4, flags without 0x800) joins the
   migration list once; a repeat is logged as `Duplicate simulation motile:
@@ -697,7 +714,17 @@ exists, the portal word goes to −1, the GUI and the dialogue engine are
 reset, the open form is closed and the game scene becomes the current
 scene, and the import uses the file's own name for its terrain probe
 (`menuscene.rft`). A word of the scene's grid goes to 0, the editor to mode 0 and the
-camera's matrices are updated last.
+camera's matrices are updated last. The camera's three writes are its
+node's field (60.0), its position and its target node's position, read
+from the constants in the assembly. The title after the splash and every
+return to the title run it before the menu form shows. Exarust runs it as
+`flow::Step::MenuScene`: the world goes, `menuscene` loads with no player
+(a surviving player's body stays out of the scene) and the view stands at
+the fixed camera (`level_change::MenuSceneView`, the field taken as the
+vertical field of view); the rooms follow the camera's target. The arena
+task reset, the portal word, the editor mode and the grid word have no
+Exarust counterpart, and the scene's lighting is the record's (the 1.8
+preset first is not applied).
 
 **Terrain.** A saved level's terrain file is the locale with its
 extension replaced by `.rft` (the loader looks it up in the archive and

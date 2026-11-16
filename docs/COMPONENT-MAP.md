@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 58.0% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 58.1% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.0% closed**, of which 45.8% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.2% partial and 6.8% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.1% closed**, of which 45.9% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.4% partial and 6.6% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -23,7 +23,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 39% | 19% | 2% | 32% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 57% | 40% | 15% | 2% | 36% | 8% |  |
-| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 32% | 11% |  |
+| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 33% | 10% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 58% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
@@ -33,7 +33,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 86% | 84% | 2% | 0% | 10% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 61% | 59% | 2% | 0% | 33% | 6% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 59% | 50% | 1% | 9% | 27% | 14% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 60% | 50% | 1% | 9% | 27% | 13% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -242,7 +242,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TkdTree | World, levels & terrain | 14 | 85% | 86% | 75% | 1% | 10% | 12% | 2% |
 | TTerrainGrass | World, levels & terrain | 12 | 83% | 66% | 60% | 4% | 2% | 34% | 0% |
 | TSceneEnvironment | World, levels & terrain | 10 | 94% | 81% | 81% | 0% | 0% | 19% | 0% |
-| TRBDDoor | World, levels & terrain | 9 | 91% | 13% | 12% | 0% | 0% | 65% | 23% |
+| TRBDDoor | World, levels & terrain | 9 | 91% | 16% | 16% | 0% | 0% | 84% | 0% |
 | RF_Terrain | World, levels & terrain | 7 | 71% | 52% | 50% | 1% | 0% | 9% | 40% |
 | RF_Terrain_Materials | World, levels & terrain | 6 | 90% | 30% | 30% | 0% | 0% | 52% | 18% |
 | RF_Dynamics_Game | World, levels & terrain | 5 | 93% | 57% | 56% | 1% | 0% | 35% | 8% |
@@ -488,7 +488,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TSkillUI | UI | 18 | 88% | 76% | 76% | 0% | 0% | 20% | 4% |
 | RF_GUI_Controls_Ex | UI | 16 | 87% | 75% | 12% | 1% | 62% | 25% | 0% |
 | RF_HW_Config | UI | 15 | 93% | 67% | 59% | 5% | 2% | 32% | 1% |
-| RF_GUI_Main | UI | 14 | 86% | 39% | 37% | 2% | 0% | 35% | 26% |
+| RF_GUI_Main | UI | 14 | 86% | 43% | 40% | 2% | 1% | 46% | 12% |
 | TGUIItemView | UI | 13 | 80% | 38% | 38% | 0% | 0% | 39% | 23% |
 | TTextBox | UI | 12 | 88% | 96% | 95% | 1% | 0% | 2% | 2% |
 | TIconManager | UI | 10 | 85% | 44% | 42% | 1% | 1% | 0% | 56% |
@@ -510,7 +510,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TGUIColSwatch | UI | 2 | 92% | 88% | 86% | 2% | 0% | 0% | 12% |
 | RF_GUI_Classes | UI | 2 | 85% | 100% | 0% | 3% | 97% | 0% | 0% |
 | TTonePicker | UI | 2 | 82% | 100% | 85% | 0% | 15% | 0% | 0% |
-| XA_HelpSystem | UI | 2 | 82% | 68% | 63% | 5% | 0% | 3% | 29% |
+| XA_HelpSystem | UI | 2 | 82% | 71% | 66% | 5% | 0% | 0% | 29% |
 | TTextRenderer | UI | 2 | 92% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TDropDownList | UI | 2 | 88% | 76% | 76% | 0% | 0% | 11% | 13% |
 | TGUITask | UI | 2 | 85% | 27% | 27% | 0% | 0% | 51% | 21% |
