@@ -1606,6 +1606,9 @@ pub enum Step {
     /// The unit's own tables are released at shutdown (the scripted-mode
     /// hook table and the three menu strings).
     Finalise,
+    /// The new career's company dialog is freed (its BACK's and NEXT's
+    /// steps behind the transition, [`crate::company_live`]).
+    CloseCompany,
 }
 
 /// The action behind the transition screen.
@@ -1632,6 +1635,15 @@ pub enum Action {
     /// registered mode's creator-cancel hook runs (when its entry has one)
     /// and the flow goes back to the title.
     CreatorCancel,
+    /// The company dialog's BACK: the dialog is freed and the flow goes
+    /// back to the title.
+    CompanyBack,
+    /// The company dialog's NEXT once the company is named: the dialog is
+    /// freed and the session state becomes the creator's (2). The
+    /// character-creation reset, the sound release and the procedural
+    /// material release that follow in the original are the creator's
+    /// (DEC-3).
+    CompanyNamed,
     /// The arena end menu's Continue into the next round or the next
     /// tournament round: the round is staged at black and the session
     /// plays again.
@@ -2598,6 +2610,13 @@ impl Flow {
         self.transition.is_some()
     }
 
+    /// Whether the transition screen takes the pointer: while it is up its
+    /// form answers every hit itself (its hit slot's -1, the form and no
+    /// control), so no form under it sees a press, a release or a hover.
+    pub fn takes_pointer(&self) -> bool {
+        self.transition_running()
+    }
+
     /// One frame of the transition screen, which the original runs as a GUI
     /// task whatever covers the game. The screen starts on its first frame
     /// (the clock is the frame's real clock, as the screen's stamp clock),
@@ -2693,6 +2712,15 @@ impl Flow {
             Action::LeaveToMenuForm => self.leave_to_menu_form(),
             Action::ClassCancel => self.quit_to_menu(),
             Action::CreatorCancel => self.creator_cancel(),
+            Action::CompanyBack => {
+                let mut steps = vec![Step::CloseCompany];
+                steps.extend(self.quit_to_menu());
+                steps
+            }
+            Action::CompanyNamed => {
+                self.phase = Phase::Creating;
+                vec![Step::CloseCompany]
+            }
             // The next round's routine ends with the playing phase.
             Action::ArenaRound => {
                 self.phase = Phase::Playing;
@@ -3553,6 +3581,20 @@ impl Flow {
         self.transition(Action::ClassCancel, fade_audio)
     }
 
+    /// The company dialog's BACK: behind the transition, with the music
+    /// left playing, the dialog is freed and the session leaves to the
+    /// title.
+    pub fn company_back(&mut self) -> Vec<Step> {
+        self.transition(Action::CompanyBack, false)
+    }
+
+    /// The company dialog's NEXT once the company is named: the creator has
+    /// started; behind the transition, with the music left playing, the
+    /// dialog is freed and the session state becomes the creator's.
+    pub fn company_named(&mut self) -> Vec<Step> {
+        self.transition(Action::CompanyNamed, false)
+    }
+
     /// The character creator's cancel (its first page's BACK and its cancel
     /// key, outside the arena recruit): behind the transition, with the music
     /// left playing, the creator form is released, a registered mode's
@@ -4280,6 +4322,9 @@ fn apply_menu_choices(
             | MenuCommand::Practice { .. }
             | MenuCommand::BeginStory
             | MenuCommand::NewCareer => Vec::new(),
+            // The arena's NEW CAREER opens the company dialog
+            // ([`crate::company_live`]); its NEXT asks for the creator.
+            MenuCommand::CompanyDialog => Vec::new(),
             // VERSUS switches the mode word to the versus lobby's before the
             // creator opens: the frame hook goes, and a registered mode's
             // enter hook would run (none is registered in 0.9.5).
@@ -4460,9 +4505,16 @@ pub(crate) fn apply_steps(
                     menu.open_at(page);
                 }
             }
+            // The menu's close before a show (the class select, the
+            // creator, the saves' screen, a session's start) also clears
+            // the viewport's version-line flag, so the version line does
+            // not stay over the show.
             Step::HideMenu => {
                 if let Some(menu) = menu.as_mut() {
                     menu.close();
+                }
+                if let Some(overlays) = out.overlays.as_mut() {
+                    overlays.title = false;
                 }
             }
             Step::EndMenu(end_menu) => {
@@ -4939,6 +4991,11 @@ pub(crate) fn apply_steps(
             Step::Quit => {
                 out.exit.write(AppExit::Success);
             }
+            Step::CloseCompany => {
+                if let Some(company) = out.company.as_mut() {
+                    company.close = true;
+                }
+            }
             // The save unit's work on the current slot
             // ([`crate::save_live`], idle without a save folder).
             Step::Save { drop_on_low_health } => {
@@ -5349,6 +5406,8 @@ pub(crate) struct FlowOutputs<'w> {
     show_fps: Option<Res<'w, exa_ui::ShowFps>>,
     /// The arena's held stagings, which a transition's callback fires.
     arena: Option<ResMut<'w, crate::arena_fade::ArenaStaging>>,
+    /// The company dialog the front end's NEW CAREER opened.
+    company: Option<ResMut<'w, crate::company_live::CompanyDialog>>,
 }
 
 /// The resources the story start's and the tips' steps write.

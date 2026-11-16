@@ -666,6 +666,30 @@ pub struct KitSnapshot {
     pub points_tab: i32,
 }
 
+/// The rating-dot sheet the loadout form's encumbrance record draws with,
+/// cut at the GUI level's dot side (loaded once per side).
+#[derive(Resource, Default)]
+pub struct LoadoutDots {
+    pub side: Option<i32>,
+    pub sheet: Option<crate::doll_view::DotSheet>,
+}
+
+/// The loadout form's encumbrance record's value for the shown kit: the
+/// preview body's encumbrance from what the kit wears and holds and the
+/// record's techniques, through [`exa_ui::loadout::encumbrance`].
+pub fn kit_encumbrance(
+    record: &CharacterRecord,
+    catalogue: &exa_items::catalogue::ItemCatalogue,
+) -> f32 {
+    let possessions = crate::shop_preview::possessions(record);
+    let skills = exa_formats::encumbrance::Skills::of_record(record);
+    exa_ui::loadout::encumbrance(crate::equip::encumbrance_of(
+        &possessions,
+        catalogue,
+        skills,
+    ))
+}
+
 /// The hub loadout form's item views, while it is open on the roster.
 #[derive(Resource, Debug, Default)]
 pub struct KitPanels {
@@ -864,6 +888,7 @@ pub fn sync_kit(
     mut panels: ResMut<KitPanels>,
     mut preview: ResMut<KitPreview>,
     players: Query<&CharacterData, With<crate::player::PlayerBody>>,
+    mut dots: Option<ResMut<LoadoutDots>>,
 ) {
     let (Some((arsenal, form)), Some(stores)) = (open_view(&windows), stores) else {
         if panels.open.take().is_some() {
@@ -883,6 +908,7 @@ pub fn sync_kit(
     let tab = arsenal.tab;
     let r = form.rect();
     let rects = kit_rects((r.x, r.y), r.w, r.h, form.unit(), false);
+    let dot_side = crate::doll_view::dot_side(form.unit());
     let Some(person) = member(&career, row) else {
         return;
     };
@@ -974,6 +1000,33 @@ pub fn sync_kit(
     record.name = person.name.clone();
     record.hands = loadout.hands;
     record.worn = loadout.worn.clone();
+    // The roster page's encumbrance record: ten times the square of the
+    // shown body's encumbrance, as the view change and the rank slider's
+    // finish write it.
+    if let Some(catalogue) = catalogue {
+        let value = kit_encumbrance(&record, catalogue);
+        if let Some(c) = windows
+            .forms
+            .get_mut(crate::hub_forms::FormWindow::Loadout)
+            .and_then(|form| {
+                form.geometry
+                    .controls
+                    .get_mut(exa_ui::arena_forms::loadout::ENCUMBRANCE)
+            })
+        {
+            c.value = value;
+        }
+        info!("loadout kit: encumbrance dots {value:.3}");
+    }
+    let side = dot_side;
+    if let Some(dots) = dots.as_mut()
+        && dots.side != Some(side)
+    {
+        dots.side = Some(side);
+        dots.sheet = game
+            .as_deref()
+            .and_then(|game| crate::doll_view::load_dot_sheet(game, side));
+    }
     let [px, py, pw, ph] = rects.preview;
     preview.rect = Some(exa_ui::gui_core::GuiRect::new(px, py, pw, ph));
     if preview.record.as_ref() != Some(&record) {

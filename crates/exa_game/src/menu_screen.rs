@@ -70,6 +70,10 @@ pub struct MenuSound {
     pub pitch: f32,
 }
 
+/// The back handler's `MenuClick` pitch: a fixed 1.0, where the rows'
+/// cues draw theirs.
+pub const BACK_CUE_PITCH: f32 = 1.0;
+
 /// The menu's cue draws: the original takes each pitch from the run-time
 /// library's unit generator (the Mersenne twister, not the engine's LCG).
 /// The original seeds that generator from the clock at start-up; this
@@ -100,6 +104,9 @@ pub struct MenuScreen {
     /// The row a press is held on, drawn nudged down; it runs when the
     /// press is released over it.
     pub pressed: Option<usize>,
+    /// The held press's pointer left its row: no row is selected (the
+    /// drag handler's selection 0) until it comes back or the press ends.
+    pub dragged_off: bool,
     /// The game-mode and session-state words the commands read.
     pub game: u32,
     pub session: u32,
@@ -122,6 +129,7 @@ impl Default for MenuScreen {
             page: Page::Title,
             selected: 0,
             pressed: None,
+            dragged_off: false,
             game: game_mode::MENU,
             session: session_state::MAIN_MENU,
             state: PageState::default(),
@@ -150,7 +158,13 @@ impl MenuScreen {
     pub fn close(&mut self) {
         self.open = false;
         self.pressed = None;
+        self.dragged_off = false;
         self.dirty = true;
+    }
+
+    /// The row drawn selected: none while a held press has left its row.
+    pub fn shown_selection(&self) -> Option<usize> {
+        (!self.dragged_off).then_some(self.selected)
     }
 
     /// Lays the menu out again at its next draw (the GUI scale moved).
@@ -168,6 +182,7 @@ impl MenuScreen {
         self.page = page;
         self.selected = 0;
         self.pressed = None;
+        self.dragged_off = false;
         self.dirty = true;
     }
 
@@ -179,6 +194,7 @@ impl MenuScreen {
             return;
         }
         self.selected = (self.selected as i32 + delta).clamp(0, count - 1) as usize;
+        self.dragged_off = false;
         self.dirty = true;
     }
 
@@ -212,6 +228,20 @@ impl MenuScreen {
             self.show(page_from_number(back.page));
         }
         back.sound
+    }
+
+    /// [`Self::back`] with its cue: a page change plays `MenuClick` at
+    /// pitch 1.0 (the back handler's own pitch, not a drawn one) before
+    /// the page shows.
+    pub fn back_with_cue(&mut self, sounds: &mut MessageWriter<MenuSound>) -> bool {
+        let changed = self.back();
+        if changed {
+            sounds.write(MenuSound {
+                cue: MenuCue::Click,
+                pitch: BACK_CUE_PITCH,
+            });
+        }
+        changed
     }
 
     /// The row's width in window pixels, as the menu font measures it.
@@ -481,6 +511,7 @@ pub fn menu_toggle_key(
     mut flow: Option<ResMut<Flow>>,
     mut manual: Option<ResMut<crate::help_live::ManualScreen>>,
     mut steps: Option<ResMut<crate::flow::FlowSteps>>,
+    mut sounds: MessageWriter<MenuSound>,
 ) {
     if toggles.read().count() == 0 {
         return;
@@ -491,7 +522,7 @@ pub fn menu_toggle_key(
     match phase {
         crate::flow::PHASE_MENU => {
             if menu.open {
-                menu.back();
+                menu.back_with_cue(&mut sounds);
             }
         }
         crate::flow::PHASE_PLAYING
@@ -593,7 +624,7 @@ pub fn input(
                 return;
             }
             MainMenuKeyAction::Forward => {
-                menu.back();
+                menu.back_with_cue(&mut sounds);
                 return;
             }
             MainMenuKeyAction::Back => {
@@ -663,7 +694,11 @@ pub fn input(
         return;
     }
     if downs.contains(&VK_BACK) {
-        menu.back();
+        menu.back_with_cue(&mut sounds);
+        return;
+    }
+    // The transition screen over the menu takes every pointer hit.
+    if flow.as_ref().is_some_and(|flow| flow.takes_pointer()) {
         return;
     }
     let Ok(window) = windows.single() else {
@@ -703,12 +738,34 @@ pub fn input(
         let hit = router.task.hit_and_focus(x, y);
         (hit.form == Some(router.form) && hit.control > 0).then_some(hit.control as usize - 1)
     };
-    // The pointer selects the row under it; while a press is held only
-    // the pressed row can be selected. The select rule stores the row and
-    // plays the cue at most once per 200 units.
+    // While a press is held, the drag handler: the pressed row stays
+    // selected while the pointer is on it, and no row is (the selection
+    // 0) once it leaves; a change stamps the clock once 200 units have
+    // passed, with the select cue only when a row is selected.
+    if let Some(pressed) = menu.pressed {
+        let target = (hit_row == Some(pressed)).then_some(pressed);
+        if target != menu.shown_selection() {
+            match target {
+                Some(row) => {
+                    menu.selected = row;
+                    menu.dragged_off = false;
+                }
+                None => menu.dragged_off = true,
+            }
+            if menu.sound_stamp.wrapping_add(200) < now {
+                if target.is_some() {
+                    cue(&mut roll, MenuCue::Select);
+                }
+                menu.sound_stamp = now;
+            }
+            menu.dirty = true;
+        }
+    }
+    // The pointer selects the row under it (the select rule stores the row
+    // and plays the cue at most once per 200 units).
     if let Some(row) = hit_row
         && menu.selected != row
-        && menu.pressed.is_none_or(|pressed| pressed == row)
+        && menu.pressed.is_none()
     {
         let selected = select_main_menu(row as i32 + 1, menu.sound_stamp as i32, now as i32, true);
         menu.selected = (selected.index - 1).max(0) as usize;
@@ -723,6 +780,7 @@ pub fn input(
     {
         menu.selected = row;
         menu.pressed = Some(row);
+        menu.dragged_off = false;
         menu.dirty = true;
         cue(&mut roll, MenuCue::Click);
     }
@@ -734,6 +792,7 @@ pub fn input(
         } else {
             menu.pressed = None;
         }
+        menu.dragged_off = false;
         menu.dirty = true;
     }
 }
@@ -835,7 +894,7 @@ pub fn painted_rows(
     height: i32,
     page: Page,
     state: PageState,
-    selected: usize,
+    selected: Option<usize>,
     pressed: Option<usize>,
     unit: i32,
 ) -> Vec<MenuRowPaint> {
@@ -855,7 +914,7 @@ pub fn painted_rows(
         page_origin(page, rows.len()),
         row_h(height),
         menu_font.ascent,
-        Some(selected),
+        selected,
         pressed,
         &labels,
         &widths,
@@ -901,7 +960,7 @@ pub fn menu_frame(
     height: i32,
     page: Page,
     state: PageState,
-    selected: usize,
+    selected: Option<usize>,
     pressed: Option<usize>,
     title_logo: bool,
     textures: &GuiTextures,
@@ -1011,7 +1070,7 @@ fn draw(
         height,
         menu.page,
         menu.state,
-        menu.selected,
+        menu.shown_selection(),
         menu.pressed,
         logo.as_deref().is_none_or(|logo| logo.0),
         textures,
@@ -1085,7 +1144,7 @@ mod tests {
             1080,
             Page::Title,
             PageState::default(),
-            1,
+            Some(1),
             None,
             true,
             &textures,
@@ -1115,7 +1174,7 @@ mod tests {
             1080,
             Page::Title,
             PageState::default(),
-            0,
+            Some(0),
             None,
             false,
             &textures,
@@ -1226,8 +1285,18 @@ mod tests {
             crate::flow::Step::Music { name, .. } if *name == exa_ui::menu::MENU_THEME_DNB.0
         )));
         // Escape on the start page goes back to the title through the root's
-        // menu toggle; on the title the menu's phase only goes back, so the
-        // title stays.
+        // menu toggle, with the back handler's MenuClick at pitch 1.0; on
+        // the title the menu's phase only goes back, so the title stays and
+        // no cue plays.
+        #[derive(Resource, Default)]
+        struct Heard(Vec<MenuSound>);
+        app.init_resource::<Heard>().add_systems(
+            Update,
+            (|mut sounds: MessageReader<MenuSound>, mut heard: ResMut<Heard>| {
+                heard.0.extend(sounds.read().copied());
+            })
+            .after(menu_toggle_key),
+        );
         app.world_mut()
             .resource_mut::<MenuScreen>()
             .show(Page::Start);
@@ -1238,11 +1307,105 @@ mod tests {
         let menu = app.world().resource::<MenuScreen>();
         assert!(menu.open);
         assert_eq!(menu.page, Page::Title);
+        let heard = std::mem::take(&mut app.world_mut().resource_mut::<Heard>().0);
+        assert_eq!(
+            heard,
+            vec![MenuSound {
+                cue: MenuCue::Click,
+                pitch: BACK_CUE_PITCH,
+            }]
+        );
         send(&mut app, KeyCode::Escape, Key::Escape, true);
         app.update();
         let menu = app.world().resource::<MenuScreen>();
         assert!(menu.open);
         assert_eq!(menu.page, Page::Title);
+        assert!(app.world().resource::<Heard>().0.is_empty());
+    }
+
+    /// A held press keeps its row selected while the pointer is on it; on
+    /// another row or off the rows no row is selected (the drag handler's
+    /// selection 0), and the release there runs nothing.
+    #[test]
+    fn a_held_press_dragged_off_its_row_selects_no_row() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GuiFrames>()
+            .init_resource::<Flow>()
+            .init_resource::<crate::flow::FlowSteps>()
+            .add_plugins(MenuScreenPlugin);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1280, 720),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.update();
+        app.world_mut().resource_mut::<MenuScreen>().open();
+        let point = |app: &mut App, at: Vec2| {
+            app.world_mut()
+                .get_mut::<Window>(window)
+                .unwrap()
+                .set_cursor_position(Some(at));
+            app.update();
+        };
+        // Find a point on two rows by moving the pointer down the centre
+        // column: the hover selects the row under it (a disabled row takes
+        // no point).
+        app.world_mut().resource_mut::<MenuScreen>().selected = 9;
+        let mut rows: Vec<(usize, Vec2)> = Vec::new();
+        for y in (0..720).step_by(2) {
+            let at = Vec2::new(640.0, y as f32);
+            point(&mut app, at);
+            let selected = app.world().resource::<MenuScreen>().selected;
+            if selected != 9 && rows.iter().all(|(row, _)| *row != selected) {
+                rows.push((selected, at));
+            }
+        }
+        assert!(rows.len() >= 2, "no point on two rows: {rows:?}");
+        let (row, first) = rows[0];
+        let second = rows[1].1;
+        point(&mut app, first);
+        assert_eq!(
+            app.world().resource::<MenuScreen>().shown_selection(),
+            Some(row)
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        point(&mut app, first);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear();
+        assert_eq!(app.world().resource::<MenuScreen>().pressed, Some(row));
+        // Onto the second row: neither row is selected.
+        point(&mut app, second);
+        let menu = app.world().resource::<MenuScreen>();
+        assert_eq!(menu.shown_selection(), None);
+        assert_eq!(menu.pressed, Some(row));
+        // Back onto the pressed row: it is selected again.
+        point(&mut app, first);
+        assert_eq!(
+            app.world().resource::<MenuScreen>().shown_selection(),
+            Some(row)
+        );
+        point(&mut app, Vec2::new(1.0, 1.0));
+        assert_eq!(app.world().resource::<MenuScreen>().shown_selection(), None);
+        // The release off the row runs nothing and the selection shows again.
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        point(&mut app, Vec2::new(1.0, 1.0));
+        let menu = app.world().resource::<MenuScreen>();
+        assert_eq!(menu.pressed, None);
+        assert_eq!(menu.page, Page::Title);
+        assert_eq!(menu.shown_selection(), Some(row));
     }
 
     #[test]
@@ -1301,7 +1464,7 @@ mod tests {
             1080,
             Page::Title,
             PageState::default(),
-            0,
+            Some(0),
             None,
             true,
             &textures,

@@ -130,6 +130,34 @@ pub struct OptionForms {
     pub clock: i64,
     /// The main font the forms draw with (its advances place the caret).
     pub font: Option<exa_ui::gui_font::GuiFont>,
+    /// The company dialog was opened by the front end's NEW CAREER: its
+    /// BACK and NEXT run behind the transition ([`crate::company_live`])
+    /// instead of closing the dialog at once.
+    pub company_front_end: bool,
+    /// The company dialog's BACK or NEXT waiting for
+    /// [`crate::company_live`]; once set, the dialog answers no more
+    /// buttons.
+    pub company_exit: Option<CompanyExit>,
+}
+
+/// The `focus_released` place a focus set with the pointer's next place
+/// unknown takes: the next pointer place seen becomes the place the pointer
+/// must leave before the focus follows it again (the opener's warp and
+/// focus, whose own move does not take the focus away).
+pub const FOCUS_HELD_UNTIL_SEEN: (i32, i32) = (i32::MIN, i32::MIN);
+
+/// The company dialog's way out, which [`crate::company_live`] runs behind
+/// the transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompanyExit {
+    /// BACK: back to the title.
+    Back,
+    /// NEXT with a name: the name and the emblem record are stored and the
+    /// creator starts.
+    Named {
+        name: String,
+        emblem: exa_ui::EmblemRecord,
+    },
 }
 
 /// A text field's or combo box's edit bytes beside its record.
@@ -169,6 +197,8 @@ impl OptionForms {
         self.edits.clear();
         self.held_swatch = None;
         self.dragging = None;
+        self.company_front_end = false;
+        self.company_exit = None;
     }
 }
 
@@ -320,6 +350,14 @@ impl HubWindows {
     /// design 1, no mirror, the four starting palette indices) applied to
     /// its records.
     pub fn open_company(&mut self) {
+        self.open_company_with(None);
+    }
+
+    /// Opens the company dialog as [`Self::open_company`] does, restoring
+    /// `last` (the emblem record the last NEXT stored) when its background
+    /// word is above 0, and focuses the name field, as the new career's
+    /// opener does.
+    pub fn open_company_with(&mut self, last: Option<exa_ui::EmblemRecord>) {
         let unit = self.unit_or_4();
         let screen = self.task.screen;
         let dialog = RecordForm::open(&company_form(screen, unit), screen, unit);
@@ -329,6 +367,10 @@ impl HubWindows {
         let mut state = EmblemState {
             editor: EmblemEditor::new(),
         };
+        if let Some(last) = last.filter(|last| last.background > 0) {
+            info!("company dialog: the last emblem {last:?} is restored");
+            state.editor.set_record(last);
+        }
         apply_emblem(&mut form, &state.editor);
         state.editor.refresh_colours();
         // The constructor's first selections only store the numbers; the
@@ -338,6 +380,28 @@ impl HubWindows {
         log_records("emblem form", &form);
         self.forms.push(FormWindow::Emblem, form);
         debug_assert_eq!(COMPANY_RECORDS.len(), 2);
+        self.focus_record(FormWindow::Emblem, emblem_records::NAME);
+    }
+
+    /// Gives a form's text field the key focus, its whole text selected,
+    /// as the GUI's focus call does (the focus then waits for the pointer
+    /// to move before it follows it again).
+    pub fn focus_record(&mut self, window: FormWindow, record: usize) {
+        let Some(c) = self
+            .forms
+            .get(window)
+            .and_then(|form| form.controls().get(record).cloned())
+        else {
+            return;
+        };
+        if !takes_keys(&c) {
+            return;
+        }
+        let mut view = view_of(&mut self.forms.options.edits, window, record, &c.text);
+        field_edit::focus_gained(&c.text, &mut view);
+        store_view(&mut self.forms.options.edits, window, record, view);
+        self.forms.options.key_focus = Some((window, record));
+        self.forms.options.focus_released = Some(self.forms.options.last_at);
     }
 
     /// Opens the colour picker on a colour (its caption the swatch's name),
@@ -375,6 +439,14 @@ impl HubWindows {
     ) {
         match window {
             FormWindow::Merchant => self.open_list(window, record),
+            // A front-end dialog's way out is already asked for.
+            FormWindow::Company if self.forms.options.company_exit.is_some() => {}
+            FormWindow::Company
+                if record == company::BACK && self.forms.options.company_front_end =>
+            {
+                info!("company dialog: BACK fades back to the title");
+                self.forms.options.company_exit = Some(CompanyExit::Back);
+            }
             FormWindow::Company => match record {
                 company::BACK => {
                     info!("company dialog: BACK returns to the front end");
@@ -416,8 +488,12 @@ impl HubWindows {
                 info!(
                     "company dialog: NEXT names the company {name:?} with emblem {emblem:?}; the creator follows (not run from the hub)"
                 );
-                career.company.name = name;
+                career.company.name = name.clone();
                 career.company.emblem = emblem;
+                if self.forms.options.company_front_end {
+                    self.forms.options.company_exit = Some(CompanyExit::Named { name, emblem });
+                    return;
+                }
                 self.forms.remove(FormWindow::Emblem);
                 self.forms.remove(FormWindow::Company);
                 self.forms.options.clear();
@@ -988,6 +1064,12 @@ impl crate::hub_forms::HubForms {
     /// whole text. After a release the focus waits for the pointer to move.
     pub(crate) fn follow_key_focus(&mut self, target: usize, at: (i32, i32)) {
         if let Some(released) = self.options.focus_released {
+            // A focus given before the pointer's next place is known keeps
+            // that place as its own.
+            if released == FOCUS_HELD_UNTIL_SEEN {
+                self.options.focus_released = Some(at);
+                return;
+            }
             if released == at {
                 return;
             }

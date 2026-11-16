@@ -627,8 +627,13 @@ pub enum MenuCommand {
     BeginStory,
     /// A CONTINUE: the character screen of a game mode's saves.
     CharacterScreen(u32),
-    /// The arena's NEW CAREER: an arena game, opened at the emblem
-    /// generator.
+    /// The arena's NEW CAREER: the menu closes and the company dialog (the
+    /// company name and the emblem generator) opens over the front end
+    /// ([`crate::company_live`]).
+    CompanyDialog,
+    /// The company dialog's NEXT once the company is named: character
+    /// creation starts in the arena's mode (the creator answers it,
+    /// [`crate::creator_screen`]).
     NewCareer,
     /// VERSUS: the versus lobby's character creator.
     Versus,
@@ -667,7 +672,7 @@ pub fn menu_command(page: Page, row: usize, game: u32, state: u32, versus: bool)
             _ => MenuCommand::None,
         },
         Page::Start => match row {
-            1 => MenuCommand::NewCareer,
+            1 => MenuCommand::CompanyDialog,
             2 => MenuCommand::CharacterScreen(game_mode::ARENA),
             3 => MenuCommand::ShowPage(Page::ClassSelect),
             4 => {
@@ -996,7 +1001,7 @@ mod command_tests {
         // only BACK without the versus lobby.
         assert_eq!(
             command(Page::Start, 1, MENU, MAIN_MENU, false),
-            MenuCommand::NewCareer
+            MenuCommand::CompanyDialog
         );
         assert_eq!(
             command(Page::Start, 2, MENU, MAIN_MENU, false),
