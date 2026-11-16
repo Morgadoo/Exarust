@@ -1265,15 +1265,18 @@ pub fn shape_draw(volume: ShapeVolume, origin: Vec3, dims: UVec3, voxel: f32) ->
     let half_x = half(volume.half.x);
     let half_z = half(volume.half.z);
     let half_y = half(volume.half.y);
-    let lo =
-        (IVec2::new(centre_x, centre_z) - IVec2::new(half_x, half_z)).max(IVec2::splat(SHAPE_LO));
-    let hi =
-        (IVec2::new(centre_x, centre_z) + IVec2::new(half_x, half_z)).min(IVec2::splat(SHAPE_HI));
+    // The original's integer arithmetic wraps: a box that is not a number
+    // (its centre and half extent at the cast's integer limits) wraps to an
+    // empty or clipped box rather than trapping.
+    let centre = IVec2::new(centre_x, centre_z);
+    let extent = IVec2::new(half_x, half_z);
+    let lo = centre.wrapping_sub(extent).max(IVec2::splat(SHAPE_LO));
+    let hi = centre.wrapping_add(extent).min(IVec2::splat(SHAPE_HI));
     (lo.x < hi.x && lo.y < hi.y && centre_y > 1).then_some(ShapeDraw {
         lo: lo.as_uvec2(),
         hi: hi.as_uvec2(),
-        first: centre_y - half_y,
-        count: half_y * 2 + 1,
+        first: centre_y.wrapping_sub(half_y),
+        count: half_y.wrapping_mul(2).wrapping_add(1),
     })
 }
 
@@ -3484,6 +3487,19 @@ fn propagate(
 
 #[cfg(test)]
 mod tests {
+    /// A shape whose box is not a number does not trap: the original's
+    /// integer arithmetic wraps (F552).
+    #[test]
+    fn a_shape_with_a_nan_or_infinite_box_does_not_trap() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let volume = ShapeVolume {
+                position: Vec3::splat(bad),
+                half: Vec3::splat(bad),
+            };
+            let _ = shape_draw(volume, Vec3::ZERO, UVec3::new(256, 256, 64), 0.25);
+        }
+    }
+
     /// The GI parameters must be laid out as a uniform buffer allows: an
     /// array of 4-byte values (a matrix written as `[[f32; 4]; 4]`) has a
     /// stride of 4 and panics at the first upload.
