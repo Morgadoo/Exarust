@@ -397,7 +397,7 @@ checked against the original's instructions: the sign stub, the
 rounding mode set and restored), the polynomial logarithm, exponential,
 sine and sine-cosine (the polynomials picked by mask arithmetic), the
 arctangent and octant atan2, arcsine and arccosine, the double-precision
-angle wrap, the 4×3 products, triple product, fast and exact barycentrics,
+angle wrap, the 4×3 products, the rigid frame's transpose product and row sum (`point_into_frame`, `point_out_of_frame`), triple product, fast and exact barycentrics,
 quaternion product, axis-angle and matrix conversions, the pitch/yaw, X,
 axis and look-at turns (the look basis normalised with `RSQRTSS`), the
 signed XZ heading through the fast arc cosine, the
@@ -1888,7 +1888,9 @@ original's resets.
 tree or every triangle of a small mesh), used by the hand's pick of bodies with no
 stand-in collider; `mesh_tree::sphere_contacts` is its sphere query (each front
 face the sphere reaches hands its closest point to a callback that may move the
-sphere). `mesh_query` holds the mesh's per-leaf effect tests the kd-tree
+sphere); `mesh_tree::two_sided_contacts` is its two-sided sphere query in
+centimetres, the slot the force blast's part contact and the particles'
+body pass ask. `mesh_query` holds the mesh's per-leaf effect tests the kd-tree
 installer sets beside the pair stage's: the two-sided sphere test (a
 force blast's, wave's and torrent's part and level contacts), the front
 sphere test and the swept test (the bolt's sampled walk). `mesh_tree` puts a body node's CPU triangles behind the tree as the
