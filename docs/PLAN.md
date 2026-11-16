@@ -1505,6 +1505,8 @@ the cloth's set-up and step follow the assembly: the link walk out from the pins
 
 the AI tick's route walk and path follower are ported from the assembly: each character has one route, walked once a body tick after every state, and roam, flight, chase and follow or search only plan into it; five duplicate walkers are removed. The follower's own stops (a soft stop near the carrot or the last point, a blocked line asking for a plan) replace the flat 100 cm arrival (F370 fixed); the end tests belong to the planner, already wired. NPC traces change wherever routes are walked; determinism runs and grid scenes owed while the GPU is on hold.
 
+the live solver takes the scene's own grid from the level's grid chunk: parts are bucketed by the original's flat cell index, and a part crossing into the grid's first or last row goes back to where it stood two ticks before and is parked, with the overflow logged. The static collider grid's origin bug is fixed, so a long wall is found from every cell it reaches. The pair contact uses the transpose relative frame; the pair pass and friction use the original's doubles, travel order, NaN branch and push order; the level impact gates compare in double and skip disabled bodies. Determinism runs and scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
