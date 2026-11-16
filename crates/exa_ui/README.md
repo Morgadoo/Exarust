@@ -942,3 +942,10 @@ popup placement), `tree_view` (the tree view with its pre-order rows,
 chevrons, rename field, drag and popup mode) and `object_editor` (the object
 appearance editor's control handlers and palette placement). `skin`'s
 `PaletteInk` names the palette shade a draw tints with.
+
+Round uitoolkit (L15): `text_edit::TextPictures` loads the `[rimg=NAME]`
+pictures a text names once (`NAME.rfi`, keyed by the first 16 bytes) and
+gives `TextBox::picture_sizes` for the layout and the picture layers for the
+draw (the manual's pages). `GuiTask::focus_lost`/`focus_regained` are the
+window procedure's kill-focus and set-focus; `gui_core::DOUBLE_CLICK` is the
+system's 500 ms.
