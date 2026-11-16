@@ -1102,6 +1102,23 @@ and the locomotion flags once), the mouse capture is dropped, the idle
 camera stops and the casting and kinesis inputs read nothing; the skill
 screen and the power tree also hold the pointer over the GUI.
 
+The spirit form's switch (`PlayerControl::set_spirit_form`,
+`controls_live::spirit_controls`, run on the frame from the spirit form's
+start and its way home) holds the controls: the hotkeys keep only the
+powers' permission (the key handler and the pad routine read
+`PlayerControl::hotkey_mask`), the hand keeps the left button off the world
+(`Hand::keeps_left`, which the combat toggle also writes), the Ctrl
+interaction and the claim of a pack drag over the world refuse, and the
+start closes every game screen with the power bar and ends the dialogue.
+The shop's trade mode keeps the inventory key to a collapsing player too.
+A bar cast answered "not now" holds its slot in the controls
+(`PlayerControl::power_hold`) for 500 ms; the frame retries it
+(`thaum::cast::BarAction::Retry`) until an answer other than "not now" or
+the hold's expiry. The death, the knock-out, the level exit and a weapon
+coming loose from the player's hand release a held left button at the
+next frame's input (`controls_live::EndGuiDrag`, the flow's
+`Step::EndGuiDrag`).
+
 The controls' block pair (`PlayerControl::set_blocked` and
 `set_second_block`, live in `controls_live`, the flow's `Step::Block` and
 the arena match tick) is separate from the off switch. The knock-out, the
@@ -1116,7 +1133,10 @@ after the block whatever the pointer does; the hotkeys still run, as the
 original's key handler does not test the byte. The second block is set
 while the arena hub's loadout form is open: it suspends the same inputs
 and the idle camera and also refuses the hotkeys, without clearing the
-locomotion flags.
+locomotion flags. Either block clears the drag's reach limit
+(`PlayerControl::drag_limit`: no 330 cm let-go, no 200 cm anchor clamp)
+and its release sets it again; while the controls are off or blocked the
+hand's drag waits for its release (the controls' frame runs the drag).
 
 The controls' rules (`player_controls`) are the click's and the
 double-click interaction's outcomes (a lock's key and first-unlock
@@ -1181,7 +1201,18 @@ stood on is refreshed; a fall ends a lift the same way
 (`item_cursor::{hover_word, snap_to_marker}`), as are the
 GUI drop's branch (an entry, from a GUI, with a body), its spawned record
 (both drag events alike), object spawner and next-frame queue, and the
-put-down's scripts within 5 cm² (`player_controls::nearby_scripts`).
+put-down's scripts within 5 cm² (`player_controls::nearby_scripts`): an
+item the press took off a lock (`HeldItem::from_lock`) that leaves it
+(anything but a relock within 5 cm², `item_cursor::drop_scripts_at`)
+queues the spot, and the device pass runs the objects' scripts there (a
+reconstruction device powers down); a put-back release locks the item
+again. Each turn of the lifted item re-orthonormalises its frame
+(`control_nodes::Frame::orthonormalized`, the engine's approximate
+normalisation); entering combat mode puts a lifted item back at the frames
+its lift saved (`Hand::cancel_lift`); the press's lift moves the pointer
+onto the lifted node's screen point (`os_pointer::WarpPointer`). The reach
+is measured unless the behaviour's walk latch holds a mouse-driven walk to
+the cursor (`PlayerBody::walking_to_cursor`), not by the right button.
 The right press's use start, its target class, the use release's dispatch
 (a locked door unlocks with its key or rattles; a liquid on a character
 or a character view; a kit on a world item with an id; an item window's
@@ -2071,10 +2102,15 @@ placed objects by their node box (a placeholder's 50 cm half box, else the
 model's root node bounds; sphere test, then at most 0.1 cm² off the box);
 the single click then only narrates a used device, and the double click
 uses the object found (an Exarust stand-in: the original's pick always
-returns the object's node). The double click's usable class 0 object leaves
-the scene (despawned, its static colliders removed through
-`ColliderNodes::take_under`) with its use sound (`exa_audio::PointSounded`,
-volume 0.25, pitch 1); a consumable's doors open 2100 ms later.
+returns the object's node). The double click's usable class 0 object
+starts the keyframe tracks of its node and the nodes under it
+(`exa_anim::tracks::StartTracks`), plays its use sound
+(`exa_audio::PointSounded`, volume 0.25, pitch 1) and stays in the scene
+(the original's use detaches nothing); subtype 1's target doors open 2100
+ms later (the secret switch's brick sinks and its wall opens). With the
+controls off the double click is the hand's idle hook instead
+(`player_controls::idle_double_click`): a class 0 object's database use
+runs at once, another usable class lifts the use cursor, a container opens.
 A placed chest, barrel or bag opens in its container popup from the
 interaction's double click (with Ctrl held in combat mode, in reach): the
 object's own use runs first (`player_controls::double_click_object`, the

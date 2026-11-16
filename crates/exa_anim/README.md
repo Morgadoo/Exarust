@@ -121,8 +121,9 @@ next frame), menus and pauses included.
   `StartTracks` starts the tracks of a node and the nodes under it as
   using an object does (once and reverse swap at each start), and every
   frame each playing track sets its node's translation from the original's
-  Catmull-Rom curve at its clock's time; F7 starts every track of the
-  level ([`docs/formats/RFC.md`](../../docs/formats/RFC.md), Keyframe
+  Catmull-Rom curve at its clock's time; the player's use of a kind 0
+  object sends it (`exa_game::object_click`), and F7 starts every track of
+  the level ([`docs/formats/RFC.md`](../../docs/formats/RFC.md), Keyframe
   tracks). The clock's modes (free, once, reverse, loop) are `tracks::clock`'s; both
   curves (the stored Catmull-Rom and the linear controller no chunk builds)
   are `exa_formats::key_track`'s; `slerp` is the original's quaternion blend
