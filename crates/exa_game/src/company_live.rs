@@ -110,6 +110,9 @@ fn open_from_menu(
     windows.forms.options.clear();
     windows.open_company_with(Some(draft.emblem));
     windows.forms.options.company_front_end = true;
+    // The pointer's warp follows; the name keeps the focus until the
+    // pointer moves on from where it lands.
+    windows.forms.options.focus_released = Some(crate::option_forms::FOCUS_HELD_UNTIL_SEEN);
     dialog.open = true;
     dialog.close = false;
     if let Ok(window) = window.single() {
@@ -297,6 +300,19 @@ mod tests {
             Some((FormWindow::Emblem, emblem_records::NAME))
         );
         assert!(app.world().resource::<CompanyDialog>().open);
+        // The pointer's first place after the warp keeps the name focused;
+        // only a move from there lets the focus follow the pointer.
+        {
+            let mut windows = app.world_mut().resource_mut::<HubWindows>();
+            let target = windows.forms.find(FormWindow::Emblem).unwrap();
+            for at in [(640, 271), (640, 271)] {
+                windows.forms.follow_key_focus(target, at);
+                assert_eq!(
+                    windows.forms.options.key_focus,
+                    Some((FormWindow::Emblem, emblem_records::NAME))
+                );
+            }
+        }
 
         press(&mut app, company::BACK);
         app.update();

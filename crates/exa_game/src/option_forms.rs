@@ -140,6 +140,12 @@ pub struct OptionForms {
     pub company_exit: Option<CompanyExit>,
 }
 
+/// The `focus_released` place a focus set with the pointer's next place
+/// unknown takes: the next pointer place seen becomes the place the pointer
+/// must leave before the focus follows it again (the opener's warp and
+/// focus, whose own move does not take the focus away).
+pub const FOCUS_HELD_UNTIL_SEEN: (i32, i32) = (i32::MIN, i32::MIN);
+
 /// The company dialog's way out, which [`crate::company_live`] runs behind
 /// the transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1058,6 +1064,12 @@ impl crate::hub_forms::HubForms {
     /// whole text. After a release the focus waits for the pointer to move.
     pub(crate) fn follow_key_focus(&mut self, target: usize, at: (i32, i32)) {
         if let Some(released) = self.options.focus_released {
+            // A focus given before the pointer's next place is known keeps
+            // that place as its own.
+            if released == FOCUS_HELD_UNTIL_SEEN {
+                self.options.focus_released = Some(at);
+                return;
+            }
             if released == at {
                 return;
             }
