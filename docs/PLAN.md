@@ -1613,6 +1613,8 @@ the simulation's mesh queries run the original's per-triangle tests (the face re
 
 the body morph follows the original's order: each target is added to the base in turn (the sum had been taken first), the morphed mesh is refitted with the mesh's own bounds routine, the morph-to-garment transfer walks the mesh incidence last face first as the load leaves it, and the race loader takes the morph file's first root's set; the slider-driven re-morph path is proven dead in 0.9.5 (four rows unreachable) and F41 closes; no visible change on the build worker's GPU across five physiques and a golem. Left: the original caches the transfer once per mesh object (the first race to wear it wins), Exarust per race and model, which needs a decision or a trace of shared garment objects.
 
+the terrain lane, held since round 242 for a picture check, is released: blank terrain blocks are left out of every draw and shadow draw as the original's only path (no terrain past about 44 m from the look-ahead point, which no shipped camera sees; shown with a free camera on the build worker's GPU), the brush table resolves the names, and a blank block's plants leave the camera draws but stay shadow casters as the original's grass hook does. Two older faults fixed on the way: the interface camera took part in world visibility and marked every arena mesh seen (it now has no render layer), and plant growth grew grass over blocks never built and shifted later blocks' random draws (it now walks only built blocks). Shadows unchanged; grass moves only on tiles with a missing block.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
