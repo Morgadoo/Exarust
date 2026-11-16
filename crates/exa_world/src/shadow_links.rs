@@ -99,6 +99,9 @@ pub struct ShadowReach {
     pub ranged: bool,
     /// The vertical shaping's y of a light shaped downwards.
     pub shaped: Option<f32>,
+    /// The spot shaping constants of such a light, from its record's
+    /// `(q, p)`, for the scene's alias link test.
+    pub spot: Option<crate::light_alias::SpotShape>,
 }
 
 impl ShadowReach {
@@ -109,6 +112,7 @@ impl ShadowReach {
             luma: linear.dot(LUMA) * intensity.max(0.0),
             ranged: true,
             shaped: None,
+            spot: None,
         }
     }
 }
@@ -141,6 +145,13 @@ impl LevelWalls {
     /// Whether the cell (`x`, `z`) is built (plane A's open flag).
     pub fn open(&self, x: i64, z: i64) -> bool {
         self.grid.open(x, z)
+    }
+
+    /// Whether light `id` at `light` sees a node past the walls, from the
+    /// windows its last flood left in the node's cell and its neighbours
+    /// ([`CellLights::sees`]).
+    pub fn sees(&self, id: u32, light: Vec3, node: &NodeBounds) -> bool {
+        self.cells.sees(&self.grid, id, light, node)
     }
 
     /// The cells light `id` was recorded in by its last flood, in the order
@@ -351,6 +362,7 @@ fn track_lights(
             luma: 1.0,
             ranged: true,
             shaped: None,
+            spot: None,
         });
         let index = match layer {
             Some(&LightLayer(l)) => {
@@ -979,6 +991,7 @@ mod tests {
                 luma: 1.88,
                 ranged: true,
                 shaped: None,
+                spot: None,
             },
         }
     }

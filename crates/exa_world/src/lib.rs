@@ -1821,6 +1821,7 @@ pub fn light_bundle(
         shadow_links::ShadowReach {
             ranged: light.ranged,
             shaped: light.spot.map(|_| y),
+            spot: light.spot.map(|[q, p]| light_alias::SpotShape::of(q, p)),
             ..shadow_links::ShadowReach::new(c, light.intensity, light.radius)
         },
         exa_render::lights::LightShaping(Vec2::new(y, z)),

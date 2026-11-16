@@ -79,12 +79,16 @@ use exa_render::view::project_to_screen;
 use bevy::platform::collections::HashMap;
 use exa_render::lights::{LightId, LightsSystems};
 
+use crate::light_alias::AliasLight;
+use crate::light_flood::NodeBounds;
 use crate::room_view::{InRoom, LevelRooms, RoomShell, RoomTracked};
 use crate::rooms::{CELL_M, DoorPortal, PORTAL_BOTTOM_CM, Rooms};
 use crate::scene_nodes::{
-    AliasLink, BOUNDS_SPLIT, Draw, NodeKind, Portal, SCENE_SECTOR, SCISSOR, Scene, SectorState,
+    BOUNDS_SPLIT, Draw, HAS_COLOUR, LIGHT_RANGED, LINK_CUTOFF, NodeKind, Portal, SCENE_SECTOR,
+    SCISSOR, SNAPSHOT_FLAT, Scene, SceneNode, SectorState,
 };
 use crate::shadow_links::{LevelWalls, ShadowReach};
+use exa_render::material::ExaMaterial;
 
 /// The scene's light kind for a point light (an omni light, which the
 /// activation floods through the cells).
@@ -96,6 +100,7 @@ impl Plugin for SceneLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LiveScene>()
             .init_resource::<SectorCull>()
+            .init_resource::<AliasLinks>()
             .add_systems(
                 PostUpdate,
                 run_scene
@@ -121,6 +126,19 @@ impl Plugin for SceneLivePlugin {
 pub struct SectorCull(pub bool);
 
 impl Default for SectorCull {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// Whether the node passes run the original's alias link methods on the
+/// live lights and materials (`--no-alias-links` turns them off, to
+/// compare: no alias sync, no colour bounds, a stand-in test that links
+/// nothing).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct AliasLinks(pub bool);
+
+impl Default for AliasLinks {
     fn default() -> Self {
         Self(true)
     }
@@ -166,6 +184,9 @@ pub struct LiveScene {
     timing_frames: u32,
     /// Frames refreshed since the last log line.
     refreshed: usize,
+    /// The time (ms) the last frame's scene update took (the original's
+    /// frame: activation, membership, node passes and link tests).
+    pub last_frame_ms: f32,
     /// Meshes registered or moved to another sector by this frame's run,
     /// for the light links ([`crate::shadow_links`]): a mesh is lit only by
     /// the lights its sector lists.
@@ -332,6 +353,7 @@ type MeshQuery<'w, 's> = Query<
         Has<NoFrustumCulling>,
         Has<NotShadowCaster>,
         Option<&'static RenderLayers>,
+        Option<&'static MeshMaterial3d<ExaMaterial>>,
     ),
     (With<Mesh3d>, Without<RoomShell>),
 >;
@@ -374,6 +396,74 @@ fn light_frame(
     (transform.translation(), Vec3::splat(radius / 3f32.sqrt()))
 }
 
+/// The radius the original gives an unranged light's node (3.4e38).
+const UNRANGED_RADIUS: f32 = f32::MAX;
+
+/// A light's link-test values, as its activation leaves them for the alias
+/// sync: the direct colour (linear colour times the current intensity), its
+/// luma as the intensity gate, the cutoff, the falloff `0.8/R` of a ranged
+/// light (`1/R` in single precision, the product in double, as the light's
+/// activation computes it; zero unranged), its radius (3.4e38 unranged)
+/// and spot shaping. The light node's option word takes the ranged bit,
+/// which picks the gated test, and the spot bits.
+fn set_link_light(node: &mut SceneNode, light: &PointLight, reach: Option<&ShadowReach>) {
+    let ranged = reach.is_none_or(|r| r.ranged);
+    let radius = reach.map_or(light.range, |r| r.radius);
+    let spot = reach.and_then(|r| r.spot);
+    let linear = light.color.to_linear();
+    let intensity = light.intensity / crate::LUMENS_PER_INTENSITY;
+    let colour = Vec3::new(linear.red, linear.green, linear.blue) * intensity;
+    let falloff = if ranged && radius > 0.0 {
+        (f64::from(1.0 / radius) * 0.8) as f32
+    } else {
+        0.0
+    };
+    let flags = if spot.is_some() { SNAPSHOT_FLAT } else { 0 };
+    node.link_light = Some(AliasLight {
+        position: Vec3::ZERO,
+        radius: if ranged { radius } else { UNRANGED_RADIUS },
+        colour,
+        intensity: exa_formats::colour::luma(colour.to_array()),
+        cutoff: LINK_CUTOFF,
+        falloff,
+        flags,
+        spot,
+        has_mask: false,
+    });
+    node.flags &= !(LIGHT_RANGED | crate::scene_nodes::SNAPSHOT_MODE);
+    node.flags |= flags;
+    if ranged {
+        node.flags |= LIGHT_RANGED;
+    }
+}
+
+/// A mesh's colour bound from its material: the specular colour times its
+/// level plus the diffuse (both linear, the diffuse ×1.5 for a legacy
+/// material), as the material's activation sums them and the geometry
+/// node's activation takes the largest over its parts (one part here).
+fn mesh_colour(params: &exa_render::material::ExaParams) -> Vec3 {
+    params.specular.truncate() + params.diffuse.truncate()
+}
+
+/// Whether a colour bound counts: its squared length, summed
+/// `(x² + y²) + z²`, above the engine's epsilon.
+fn colour_bound(c: Vec3) -> bool {
+    c.z * c.z + (c.y * c.y + c.x * c.x) > crate::geometry_node::BOUND_EPSILON
+}
+
+/// A scene node's box as the cell flood's wall test reads it.
+fn node_bounds(node: &SceneNode) -> NodeBounds {
+    let (obb, radius) = node.obb();
+    let m = node.world_rotation;
+    let h = node.half_extents;
+    NodeBounds {
+        centre: obb.centre,
+        radius,
+        extent_x: m.row(0).abs().dot(h),
+        extent_z: m.row(2).abs().dot(h),
+    }
+}
+
 /// The scene's per-frame update: registration, moves, removals, frames and
 /// bounds, then the original's frame with the room states and the main
 /// camera.
@@ -402,7 +492,11 @@ pub fn run_scene(
         ),
         SceneCamera,
     >,
-    mut scissors: ResMut<SectorScissors>,
+    (mut scissors, materials, links): (
+        ResMut<SectorScissors>,
+        Option<Res<Assets<ExaMaterial>>>,
+        Res<AliasLinks>,
+    ),
     (lights, added_lights, mut lights_removed, walls): LightParams,
 ) {
     let started = std::time::Instant::now();
@@ -429,6 +523,9 @@ pub fn run_scene(
     if fresh {
         live.reset();
         live.scene = Some(build_scene(&level.rooms, &level.portals));
+        if let Some(scene) = live.scene.as_mut() {
+            scene.alias_sync = links.0;
+        }
         live.rooms = Some(level.rooms.clone());
         live.dirty = vec![true; level.rooms.len() + 1];
         register.extend(meshes.iter().map(|m| m.0));
@@ -506,6 +603,7 @@ pub fn run_scene(
         };
         // Every Exarust light is a point light: the omni kind, flooded.
         scene.nodes[node].light_type = OMNI_LIGHT;
+        set_link_light(&mut scene.nodes[node], light, reach);
         scene.set_frame(node, position, Mat3::IDENTITY, half);
         scene.refresh(node);
         scene.register(node, sector);
@@ -535,6 +633,7 @@ pub fn run_scene(
         if scene.nodes[node].sector != Some(sector) {
             scene.move_to_sector(node, sector);
         }
+        set_link_light(&mut scene.nodes[node], light, reach);
         scene.set_frame(node, position, Mat3::IDENTITY, half);
         scene.refresh(node);
     }
@@ -544,7 +643,9 @@ pub fn run_scene(
         if live.node_of.contains_key(&entity) {
             continue;
         }
-        let Ok((_, transform, aabb, room, exempt, shadowless, layers)) = meshes.get(entity) else {
+        let Ok((_, transform, aabb, room, exempt, shadowless, layers, material)) =
+            meshes.get(entity)
+        else {
             continue;
         };
         if layers.is_some_and(|l| !l.intersects(&RenderLayers::default())) {
@@ -571,6 +672,15 @@ pub fn run_scene(
         };
         if !shadowless {
             scene.nodes[node].flags |= BOUNDS_SPLIT;
+        }
+        // The colour bound the alias link tests multiply by; a mesh with
+        // one takes light buckets even when it casts nothing.
+        let colour = material
+            .and_then(|m| materials.as_ref()?.get(&m.0))
+            .map_or(Vec3::ZERO, |m| mesh_colour(&m.params));
+        scene.nodes[node].colour = colour;
+        if links.0 && colour_bound(colour) {
+            scene.nodes[node].flags |= HAS_COLOUR;
         }
         let (centre, rotation, half) = mesh_frame(transform, aabb);
         scene.set_frame(node, centre, rotation, half);
@@ -756,16 +866,43 @@ pub fn run_scene(
                 .collect(),
         )
     };
-    let mut no_link = |_: usize, _: usize| AliasLink::default();
+    // The alias link methods, with the cell flood's wall test as the gated
+    // test's gate (a light the walls do not know passes).
+    let gate = |scene: &Scene, light: usize, node: usize| -> bool {
+        let (Some(walls), Some(&id)) = (walls.as_deref(), light_id_of.get(&light)) else {
+            return true;
+        };
+        walls.sees(
+            id,
+            scene.nodes[light].world,
+            &node_bounds(&scene.nodes[node]),
+        )
+    };
+    let on = links.0;
+    let mut link = |scene: &Scene, node: usize, alias: usize| {
+        if on {
+            scene.alias_reach(node, alias, &gate)
+        } else {
+            crate::scene_nodes::AliasLink::default()
+        }
+    };
     let events = scene.frame_with(
         dt_ms,
         eye,
         std::slice::from_ref(&view),
         &project,
-        &mut no_link,
+        &mut link,
         &mut flood,
     );
     live.camera = Some(camera_entity);
+    // The original's scene manager warns of a deleted node that hung from
+    // the world sector (a node removed before it joined a scene).
+    for &node in &events.world_deleted {
+        warn!(
+            "World sector object deleted: node {node} ({:?})",
+            live.entity_of.get(node).copied().flatten()
+        );
+    }
 
     // Slots taken out this frame are free again.
     let freeing = std::mem::take(&mut live.freeing);
@@ -882,6 +1019,7 @@ pub fn run_scene(
     let done = std::time::Instant::now();
     live.timing[0] += (frame_started - started).as_secs_f32() * 1000.0;
     live.timing[1] += (frame_done - frame_started).as_secs_f32() * 1000.0;
+    live.last_frame_ms = (frame_done - frame_started).as_secs_f32() * 1000.0;
     live.timing[2] += (done - frame_done).as_secs_f32() * 1000.0;
     live.timing_frames += 1;
 }
@@ -1096,6 +1234,281 @@ mod tests {
         assert_eq!(scene.sectors[2].aliases.len(), 1);
     }
 
+    /// The live link pass: the activation's alias sync gives each alias its
+    /// light's values, and the node passes run the alias link methods on
+    /// the real lights and materials (the gated reach for a ranged light
+    /// with the walls' answer as its gate, the plain luma test for an
+    /// unranged one), so a mesh's buckets carry the original's weights and
+    /// are ordered heaviest first.
+    #[test]
+    fn the_live_link_pass_weighs_a_room_mesh_by_its_lights() {
+        use crate::light_alias::{AliasNode, reach, reach_plain};
+        let (rooms, grid) = two_rooms();
+        let a = rooms.cell_centre(6 + 1);
+        let mut app = light_app(rooms, &grid);
+        app.init_resource::<Assets<ExaMaterial>>();
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<ExaMaterial>>()
+            .add(ExaMaterial {
+                params: exa_render::material::ExaParams {
+                    diffuse: Vec4::new(0.4, 0.3, 0.2, 1.0),
+                    specular: Vec4::new(0.1, 0.1, 0.1, 8.0),
+                    ..default()
+                },
+                ..default()
+            });
+        let ranged = spawn_light(&mut app, 1, Vec3::new(a.x + 1.0, 2.0, a.y), 12.0);
+        let mut unranged = ShadowReach::new(Vec3::ONE, 1.0, 5.0);
+        unranged.ranged = false;
+        app.world_mut().spawn((
+            PointLight {
+                intensity: 0.5 * crate::LUMENS_PER_INTENSITY,
+                range: 5.0,
+                ..default()
+            },
+            unranged,
+            LightId(2),
+            Transform::from_xyz(a.x - 1.0, 2.0, a.y),
+        ));
+        let mesh = app
+            .world_mut()
+            .spawn((
+                Mesh3d::default(),
+                MeshMaterial3d(material),
+                Aabb::from_min_max(Vec3::splat(-0.5), Vec3::splat(0.5)),
+                Transform::from_xyz(a.x, 0.5, a.y + 1.0),
+                InRoom(0),
+            ))
+            .id();
+        app.update();
+        app.update();
+        let live = app.world().resource::<LiveScene>();
+        let scene = live.scene.as_ref().unwrap();
+        let node = live.node_of[&mesh];
+        let n = &scene.nodes[node];
+        // The colour bound is the material's specular plus diffuse, which
+        // asks for buckets even of a mesh that casts nothing.
+        assert_eq!(n.colour, Vec3::new(0.5, 0.4, 0.3));
+        assert_ne!(n.flags & HAS_COLOUR, 0);
+        assert_eq!(scene.sectors[1].aliases.len(), 2);
+        let (obb, radius) = n.obb();
+        let target = AliasNode {
+            centre: obb.centre,
+            radius,
+            half: obb.half_extents,
+            axes: obb.axes,
+            colour: n.colour,
+            mask: 0,
+        };
+        let mut expected = Vec::new();
+        for (at, alias) in scene.sectors[1].aliases.iter().enumerate() {
+            let link = alias.link.expect("synced");
+            let light_node = alias.light;
+            assert_eq!(link.position, scene.nodes[light_node].world);
+            let hit = if scene.nodes[light_node].flags & LIGHT_RANGED != 0 {
+                reach(&link, &target, true)
+            } else {
+                reach_plain(&link, &target)
+            };
+            assert!(hit.lit && hit.weight > 0.0, "alias {at}: {hit:?}");
+            assert_eq!(n.buckets[at].weight, hit.weight, "alias {at}");
+            expected.push((hit.weight, at));
+        }
+        expected.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let mut chain = Vec::new();
+        let mut at = n.bucket_head;
+        while at >= 0 {
+            chain.push(at as usize);
+            at = n.buckets[at as usize].next;
+        }
+        assert_eq!(chain, expected.iter().map(|e| e.1).collect::<Vec<_>>());
+        // The ranged light's alias reaches the mesh by the falloff: moved
+        // farther off, its weight falls.
+        let ranged_of = |scene: &Scene| {
+            scene.sectors[1]
+                .aliases
+                .iter()
+                .position(|al| scene.nodes[al.light].flags & LIGHT_RANGED != 0)
+                .unwrap()
+        };
+        let before = n.buckets[ranged_of(scene)].weight;
+        app.world_mut()
+            .entity_mut(ranged)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation = Vec3::new(a.x + 1.0, 2.0, a.y - 2.5);
+        app.update();
+        let live = app.world().resource::<LiveScene>();
+        let scene = live.scene.as_ref().unwrap();
+        let after = scene.nodes[node].buckets[ranged_of(scene)].weight;
+        assert!(after < before, "{after} < {before}");
+    }
+
+    /// A headless app with the scene and light-link plugins on shipped
+    /// level `name`, its lights given ids in spawn order as the renderer
+    /// gives them, the alias link tests on or off.
+    fn shipped_level(game: &exa_assets::GameData, name: &str, links: bool) -> (App, Vec<Entity>) {
+        use exa_assets::{ModelCache, ModelLoader};
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin))
+            .init_resource::<DrawSectors>()
+            .init_resource::<SectorScissors>()
+            .init_resource::<exa_render::cube_shadows::PointShadows>()
+            .insert_resource(AliasLinks(links))
+            .add_plugins((SceneLivePlugin, crate::shadow_links::ShadowLinksPlugin));
+        app.world_mut().spawn((
+            Camera3d::default(),
+            Projection::Perspective(PerspectiveProjection::default()),
+            Transform::from_xyz(0.0, 1.5, 0.0),
+        ));
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        {
+            let mut loader = ModelLoader {
+                game,
+                cache: &mut cache,
+                meshes: &mut meshes,
+                materials: &mut materials,
+                images: &mut images,
+                bc_supported: true,
+            };
+            let mut commands = Commands::new(&mut queue, app.world());
+            crate::spawn_level(&mut commands, &mut loader, name)
+                .unwrap_or_else(|| panic!("{name} is in Resource.rpk"));
+        }
+        queue.apply(app.world_mut());
+        // The bounds Bevy's visibility plugin would compute from the meshes.
+        let parts: Vec<(Entity, Handle<Mesh>)> = app
+            .world_mut()
+            .query::<(Entity, &Mesh3d)>()
+            .iter(app.world())
+            .map(|(e, m)| (e, m.0.clone()))
+            .collect();
+        for (entity, mesh) in parts {
+            use bevy::camera::primitives::MeshAabb;
+            if let Some(aabb) = meshes.get(&mesh).and_then(MeshAabb::get_aabb) {
+                app.world_mut().entity_mut(entity).insert(aabb);
+            }
+        }
+        app.insert_resource(materials).insert_resource(meshes);
+        let mut lights: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<PointLight>>()
+            .iter(app.world())
+            .collect();
+        lights.sort();
+        for (id, &entity) in lights.iter().enumerate() {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(LightId(id as u32));
+        }
+        (app, lights)
+    }
+
+    /// The live link pass's cost on the shipped levels, in release builds
+    /// (`cargo test --release -p exa_world -- --ignored link_pass_cost
+    /// --nocapture`): a carried torch circles in the first light's room
+    /// with the camera, every frame, with the alias link tests on and off;
+    /// the scene's frame and the whole update are timed. Skipped without
+    /// `EXANIMA_DIR`.
+    #[test]
+    #[ignore]
+    fn shipped_level_link_pass_cost() {
+        use exa_assets::GameData;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        for name in ["exanima01", "exanima02", "exanima06"] {
+            let mut report = Vec::new();
+            for links in [false, true, false, true] {
+                let (mut app, lights) = shipped_level(&game, name, links);
+                let start = app
+                    .world()
+                    .get::<Transform>(lights[0])
+                    .map_or(Vec3::ZERO, |t| t.translation);
+                let torch = app
+                    .world_mut()
+                    .spawn((
+                        PointLight {
+                            intensity: 2.0 * crate::LUMENS_PER_INTENSITY,
+                            range: 8.0,
+                            ..default()
+                        },
+                        ShadowReach::new(Vec3::new(1.0, 0.6, 0.3), 2.0, 8.0),
+                        LightId(lights.len() as u32),
+                        Transform::from_translation(start),
+                    ))
+                    .id();
+                let camera = app
+                    .world_mut()
+                    .query_filtered::<Entity, With<Camera3d>>()
+                    .single(app.world())
+                    .unwrap();
+                for _ in 0..3 {
+                    app.update();
+                }
+                let frames = 300;
+                let mut update = Vec::with_capacity(frames);
+                let mut scene_ms = 0.0;
+                for frame in 0..frames {
+                    let angle = frame as f32 * 0.05;
+                    let at = start + Vec3::new(angle.cos(), 0.0, angle.sin()) * 1.5;
+                    app.world_mut()
+                        .get_mut::<Transform>(torch)
+                        .unwrap()
+                        .translation = at;
+                    *app.world_mut().get_mut::<Transform>(camera).unwrap() =
+                        Transform::from_translation(at + Vec3::Y * 0.2)
+                            .looking_at(at + Vec3::new(-angle.sin(), 0.0, angle.cos()), Vec3::Y);
+                    let t = std::time::Instant::now();
+                    app.update();
+                    update.push(t.elapsed().as_secs_f64() * 1e3);
+                    let live = app.world().resource::<LiveScene>();
+                    scene_ms += f64::from(live.last_frame_ms);
+                }
+                update.sort_by(f64::total_cmp);
+                let live = app.world().resource::<LiveScene>();
+                let scene = live.scene.as_ref().unwrap();
+                let buckets: usize = scene.nodes.iter().filter(|n| !n.buckets.is_empty()).count();
+                let coloured = scene
+                    .nodes
+                    .iter()
+                    .filter(|n| n.kind == NodeKind::Mesh && n.colour != Vec3::ZERO)
+                    .count();
+                let torch_node = live.light_node[&torch];
+                let torch_aliases = &scene.nodes[torch_node].aliases;
+                let torch_meshes: usize = torch_aliases
+                    .iter()
+                    .map(|&s| scene.sectors[s].meshes.len())
+                    .sum();
+                let lit = scene
+                    .nodes
+                    .iter()
+                    .filter(|n| n.buckets.iter().any(|b| b.weight > 0.0))
+                    .count();
+                report.push(format!(
+                    "links {links}: update median {:.3} ms, p95 {:.3} ms; scene frame mean {:.3} ms; {} meshes ({} coloured), {} bucket meshes, {} with a weight; torch in {} sectors holding {} meshes",
+                    update[frames / 2],
+                    update[frames * 95 / 100],
+                    scene_ms / frames as f64,
+                    live.node_of.len(),
+                    coloured,
+                    buckets,
+                    lit,
+                    torch_aliases.len(),
+                    torch_meshes,
+                ));
+            }
+            println!("{name}:\n  {}", report.join("\n  "));
+        }
+    }
+
     /// The shipped tile-grid levels: every level light is a light node of
     /// the live scene, and the scene's sector aliases — the lights a mesh
     /// in each sector may take — are the room lists the link pass read
@@ -1106,56 +1519,13 @@ mod tests {
     /// are the flood's, unchanged. Skipped without `EXANIMA_DIR`.
     #[test]
     fn shipped_level_light_aliases_follow_the_floods() {
-        use exa_assets::{GameData, ModelCache, ModelLoader};
+        use exa_assets::GameData;
         let Some(dir) = exa_assets::locate_install(None) else {
             return;
         };
         let game = GameData::open(&dir).unwrap();
-        bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
         for name in ["exanima01", "exanima02", "exanima06"] {
-            let mut app = App::new();
-            app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin))
-                .init_resource::<DrawSectors>()
-                .init_resource::<SectorScissors>()
-                .init_resource::<exa_render::cube_shadows::PointShadows>()
-                .init_resource::<Assets<Mesh>>()
-                .add_plugins((SceneLivePlugin, crate::shadow_links::ShadowLinksPlugin));
-            app.world_mut().spawn((
-                Camera3d::default(),
-                Projection::Perspective(PerspectiveProjection::default()),
-                Transform::from_xyz(0.0, 1.5, 0.0),
-            ));
-            let mut cache = ModelCache::default();
-            let mut meshes = Assets::<Mesh>::default();
-            let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
-            let mut images = Assets::<Image>::default();
-            let mut queue = bevy::ecs::world::CommandQueue::default();
-            {
-                let mut loader = ModelLoader {
-                    game: &game,
-                    cache: &mut cache,
-                    meshes: &mut meshes,
-                    materials: &mut materials,
-                    images: &mut images,
-                    bc_supported: true,
-                };
-                let mut commands = Commands::new(&mut queue, app.world());
-                crate::spawn_level(&mut commands, &mut loader, name)
-                    .unwrap_or_else(|| panic!("{name} is in Resource.rpk"));
-            }
-            queue.apply(app.world_mut());
-            // The light ids, in spawn order, as the renderer gives them.
-            let mut lights: Vec<Entity> = app
-                .world_mut()
-                .query_filtered::<Entity, With<PointLight>>()
-                .iter(app.world())
-                .collect();
-            lights.sort();
-            for (id, &entity) in lights.iter().enumerate() {
-                app.world_mut()
-                    .entity_mut(entity)
-                    .insert(LightId(id as u32));
-            }
+            let (mut app, lights) = shipped_level(&game, name, true);
             app.update();
             app.update();
             let world = app.world();
