@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 58.7% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 58.9% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.7% closed**, of which 46.4% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 34.9% partial and 6.4% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.9% closed**, of which 46.5% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 34.8% partial and 6.3% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -23,7 +23,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 39% | 19% | 2% | 32% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 34% | 7% |  |
-| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 33% | 10% |  |
+| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 59% | 51% | 5% | 3% | 32% | 9% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 58% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 49% | 41% | 4% | 4% | 43% | 8% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
@@ -236,7 +236,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TShaderFactory | Rendering & GPU | 0 | 90% engine | 100% | 0% | 0% | 100% | 0% | 0% |
 | TGIEmissive | Rendering & GPU | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | RF_SceneNodes | World, levels & terrain | 24 | 92% | 71% | 59% | 11% | 1% | 28% | 1% |
-| TStaticTerrain | World, levels & terrain | 20 | 82% | 45% | 36% | 5% | 5% | 52% | 3% |
+| TStaticTerrain | World, levels & terrain | 20 | 82% | 54% | 45% | 5% | 5% | 43% | 3% |
 | RFE_GridEnvs | World, levels & terrain | 15 | 81% | 56% | 50% | 0% | 5% | 44% | 0% |
 | TGridEnvManager | World, levels & terrain | 15 | 83% | 86% | 76% | 3% | 7% | 14% | 0% |
 | TkdTree | World, levels & terrain | 14 | 85% | 86% | 75% | 1% | 10% | 12% | 2% |
@@ -244,7 +244,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TSceneEnvironment | World, levels & terrain | 10 | 94% | 81% | 81% | 0% | 0% | 19% | 0% |
 | TRBDDoor | World, levels & terrain | 9 | 91% | 16% | 16% | 0% | 0% | 84% | 0% |
 | RF_Terrain | World, levels & terrain | 7 | 71% | 52% | 50% | 1% | 0% | 9% | 40% |
-| RF_Terrain_Materials | World, levels & terrain | 6 | 90% | 30% | 30% | 0% | 0% | 52% | 18% |
+| RF_Terrain_Materials | World, levels & terrain | 6 | 90% | 49% | 49% | 0% | 0% | 43% | 8% |
 | RF_Dynamics_Game | World, levels & terrain | 5 | 93% | 57% | 56% | 1% | 0% | 35% | 8% |
 | TTerrainManager | World, levels & terrain | 5 | 71% | 21% | 14% | 5% | 2% | 61% | 19% |
 | T3DNode | World, levels & terrain | 5 | 48% | 43% | 24% | 19% | 0% | 25% | 32% |
@@ -261,7 +261,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TSector | World, levels & terrain | 1 | 45% | 0% | 0% | 0% | 0% | 30% | 70% |
 | RF_Environment | World, levels & terrain | 1 | 90% | 25% | 25% | 0% | 0% | 0% | 75% |
 | Scene node despawn and viewport step (TSceneTaskInt by address) | World, levels & terrain | 1 | 30% | 0% | 0% | 0% | 0% | 0% | 100% |
-| RF_Terrain_Static | World, levels & terrain | 0 | 50% | 8% | 0% | 8% | 0% | 0% | 92% |
+| RF_Terrain_Static | World, levels & terrain | 0 | 50% | 8% | 0% | 8% | 0% | 92% | 0% |
 | TTerrainBrushMgr | World, levels & terrain | 0 | 90% | 100% | 54% | 46% | 0% | 0% | 0% |
 | RF_Terrain_Vegetation2 | World, levels & terrain | 0 | 90% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TTerrainPlugin | World, levels & terrain | 0 | 85% | 0% | 0% | 0% | 0% | 0% | 100% |
@@ -271,7 +271,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TSimSector | Physics, bodies & cloth | 28 | 94% | 27% | 26% | 1% | 0% | 73% | 0% |
 | TTetraRBD | Physics, bodies & cloth | 15 | 80% | 42% | 40% | 1% | 1% | 54% | 4% |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 14 | 90% | 37% | 37% | 0% | 0% | 45% | 18% |
-| RF_Intersection | Physics, bodies & cloth | 14 | 93% | 72% | 70% | 3% | 0% | 2% | 26% |
+| RF_Intersection | Physics, bodies & cloth | 14 | 93% | 75% | 72% | 3% | 0% | 2% | 23% |
 | RF_Dynamics | Physics, bodies & cloth | 9 | 76% | 31% | 30% | 1% | 0% | 22% | 47% |
 | Rigid-body shape builders (RF_GUI_Controls_Ex by address) | Physics, bodies & cloth | 8 | 85% | 39% | 37% | 2% | 0% | 0% | 61% |
 | TSimulation | Physics, bodies & cloth | 2 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |

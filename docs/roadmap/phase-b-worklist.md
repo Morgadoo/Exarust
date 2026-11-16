@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 604 | 150,416 | B1 wire (or prove unreachable) |
-| partial | 1,390 | 876,060 | B4 complete the port |
+| uncalled | 600 | 149,021 | B1 wire (or prove unreachable) |
+| partial | 1,388 | 874,139 | B4 complete the port |
 | missing | 52 | 10,114 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,14 +14,14 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 143,795 | 18,075 | 276 |
+| physics | 143,795 | 17,693 | 276 |
 | render | 115,117 | 21,704 | 3,232 |
 | ui | 87,272 | 40,819 | 288 |
 | powers | 105,027 | 2,271 | 2,321 |
 | characters | 86,280 | 14,220 | 1,943 |
 | ai | 89,630 | 1,725 | 28 |
 | modes | 65,851 | 9,978 | 363 |
-| world | 58,664 | 16,887 | 563 |
+| world | 56,743 | 15,874 | 563 |
 | items | 54,650 | 7,741 | 525 |
 | data | 28,925 | 9,435 | 0 |
 | runtime | 18,517 | 2,355 | 516 |
@@ -49,8 +49,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
 | XA_SaveGames (unit routines) | modes | 20 / 11,771 | 1 / 128 | 0 / 0 | 11,899 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
-| TStaticTerrain | world | 12 / 10,617 | 3 / 522 | 0 / 0 | 11,139 |
 | TForceTorrentEffect | powers | 5 / 10,453 | 0 / 0 | 0 / 0 | 10,453 |
+| TStaticTerrain | world | 10 / 8,748 | 3 / 522 | 0 / 0 | 9,270 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
 | Character equipment & inventory routines (TCharacterView by address) | items | 20 / 9,135 | 0 / 0 | 0 / 0 | 9,135 |
@@ -114,7 +114,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceWaveEffect | powers | 4 / 4,246 | 0 / 0 | 0 / 0 | 4,246 |
 | TTerrainGrass | world | 4 / 4,208 | 0 / 0 | 0 / 0 | 4,208 |
 | RF_GUI_Controls_Ex (unit routines) | ui | 11 / 4,129 | 0 / 0 | 0 / 0 | 4,129 |
-| RF_Terrain_Materials (unit routines) | world | 2 / 2,994 | 5 / 1,029 | 0 / 0 | 4,023 |
 | SG_Thaum_Force (unit routines) | powers | 8 / 3,829 | 0 / 0 | 1 / 181 | 4,010 |
 | Texture compression formats (DXT/LATC) | render | 8 / 3,532 | 0 / 0 | 1 / 473 | 4,005 |
 | TLightSource | render | 8 / 3,486 | 1 / 494 | 0 / 0 | 3,980 |
@@ -122,17 +121,18 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TDivCardForm | modes | 4 / 3,878 | 1 / 80 | 0 / 0 | 3,958 |
 | RF_DataIO (unit routines) | data | 1 / 823 | 15 / 3,123 | 0 / 0 | 3,946 |
 | RF_Materials (unit routines) | render | 2 / 3,866 | 0 / 0 | 0 / 0 | 3,866 |
-| RF_Intersection (unit routines) | physics | 2 / 288 | 10 / 3,570 | 0 / 0 | 3,858 |
 | RFT_BoundSphere (unit routines) | core | 2 / 3,851 | 0 / 0 | 0 / 0 | 3,851 |
 | TShellEffect | powers | 5 / 2,730 | 0 / 0 | 1 / 1,070 | 3,800 |
 | TGUIItemContainer | items | 3 / 2,250 | 1 / 1,476 | 0 / 0 | 3,726 |
 | FLX_Character_Motions (unit routines) | characters | 1 / 1,612 | 8 / 2,034 | 0 / 0 | 3,646 |
+| RF_Intersection (unit routines) | physics | 2 / 288 | 9 / 3,188 | 0 / 0 | 3,476 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
 | RF_Terrain (unit routines) | world | 1 / 609 | 2 / 2,801 | 0 / 0 | 3,410 |
 | TShadowCubeMap | render | 8 / 3,310 | 0 / 0 | 0 / 0 | 3,310 |
 | RF_DBObjects (unit routines) | data | 4 / 2,779 | 3 / 524 | 0 / 0 | 3,303 |
 | TShadowMapDirect | render | 4 / 3,259 | 0 / 0 | 0 / 0 | 3,259 |
 | TGeometry | render | 6 / 2,254 | 0 / 0 | 1 / 804 | 3,058 |
+| RF_Terrain_Materials (unit routines) | world | 1 / 2,474 | 3 / 484 | 0 / 0 | 2,958 |
 | TItemGUIManager | items | 8 / 1,889 | 7 / 1,052 | 0 / 0 | 2,941 |
 | TCharCreation | modes | 6 / 2,108 | 5 / 818 | 0 / 0 | 2,926 |
 | RF_Polyhedra (unit routines) | render | 2 / 2,831 | 0 / 0 | 0 / 0 | 2,831 |
@@ -276,7 +276,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPwrLoyalty_E | powers | 2 / 484 | 0 / 0 | 0 / 0 | 484 |
 | TTaskInterface | ui | 0 / 0 | 3 / 476 | 0 / 0 | 476 |
 | FLX_GUI_Graphics (unit routines) | ui | 5 / 470 | 0 / 0 | 0 / 0 | 470 |
-| RF_Terrain_Static (unit routines) | world | 0 / 0 | 1 / 468 | 0 / 0 | 468 |
+| RF_Terrain_Static (unit routines) | world | 1 / 468 | 0 / 0 | 0 / 0 | 468 |
 | TDropDownList | ui | 2 / 210 | 1 / 256 | 0 / 0 | 466 |
 | TCharViewBehaviour | ai | 1 / 466 | 0 / 0 | 0 / 0 | 466 |
 | TTextBox | ui | 1 / 230 | 2 / 235 | 0 / 0 | 465 |
