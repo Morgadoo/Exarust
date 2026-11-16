@@ -9,7 +9,12 @@ renderer) with the simulation bridge in lockstep and fails on any system of
 either world that Bevy did not run for a missing resource or message
 (`exa_physics::skip_watch`): the arena without game data everywhere, and
 with `EXANIMA_DIR` the arena with a duellist and a Shock cast and the first
-level, each 300 ticks past its load.
+level, each 300 ticks past its load. `headless_trace_test` holds a debug
+tool (ignored by default): `EXA_HEADLESS_TRACE="<ticks>|<command line>"`
+runs the game's command line headless for that many ticks past the load,
+so `--fixed-frames --trace-all --trace <file>` body traces of two builds can
+be compared without a graphics card; and the check that the armour pass's
+head height comes first in the fixed step.
 `exarust grid <scene>…` (`src/grid.rs`) opens one window split into four
 quadrants, each a separate game in a child process started with
 `--offscreen <file>` (`src/offscreen.rs`): no OS window, its cameras

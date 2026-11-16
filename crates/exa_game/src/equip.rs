@@ -707,16 +707,26 @@ impl Plugin for EquipPlugin {
             .add_systems(Update, refresh_worn_specials.after(refresh_encumbrance))
             .add_message::<exa_physics::grip::CameLoose>()
             .add_systems(Update, forget_loose_hands.before(refresh_encumbrance))
+            // The armour pass's head height, first in the fixed step (before
+            // the tick's blows are dealt): the original measures it when the
+            // character is dressed, before any tick reads the grips, so the
+            // tick's stages and solver always see the raised arm link. Left
+            // unordered against the tick's stages, it ran before or after
+            // some of them by the schedule's layout: adding the fires'
+            // systems (round 280) moved it and changed the armed characters'
+            // bodies from the first tick (F560).
             .add_systems(
                 FixedUpdate,
-                apply_head_height.before(exa_physics::grip_solve::GripSolveSet::Build),
-            )
-            .add_systems(
-                FixedUpdate,
-                crate::item_effects::run_worn_effects
-                    .after(exa_combat::regen::HealthTick)
-                    .before(exa_physics::body::CharacterTicks),
+                apply_head_height
+                    .before(exa_physics::body::deal_shoves)
+                    .before(exa_physics::grip_solve::GripSolveSet::Build),
             );
+        app.add_systems(
+            FixedUpdate,
+            crate::item_effects::run_worn_effects
+                .after(exa_combat::regen::HealthTick)
+                .before(exa_physics::body::CharacterTicks),
+        );
     }
 }
 
