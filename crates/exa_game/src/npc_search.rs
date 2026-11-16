@@ -226,6 +226,10 @@ pub struct SearchWorld {
     effects: Effects,
     /// Screenshots asked for ([`SearchShots`]): frames to wait and a label.
     shots: Vec<(u32, String)>,
+    /// The object each searching brain held after the last tick, which the
+    /// removal hook lets go when the brain leaves the scene
+    /// ([`release_removed_searches`]).
+    held: HashMap<Entity, usize>,
 }
 
 /// A screenshot the search asked for: frames to wait and a label. The
@@ -1804,6 +1808,33 @@ pub fn follow_and_search(
     }
 }
 
+/// The brain's removal hook: a brain that left the scene stops its idle
+/// activity, and a search's stop lets the object it held go (its
+/// reservation count falls by one). Exarust's despawn drops the brain with
+/// its search, so the object each searcher held is kept after every tick
+/// and a searcher no longer there lets its object go.
+pub fn release_removed_searches(mut world: ResMut<SearchWorld>, brains: Query<(Entity, &Npc)>) {
+    let gone: Vec<(Entity, usize)> = world
+        .held
+        .iter()
+        .filter(|(e, _)| !brains.contains(**e))
+        .map(|(e, o)| (*e, *o))
+        .collect();
+    for (brain, object) in gone {
+        if let Some(o) = world.scene.objects.get_mut(object) {
+            o.reserved -= 1;
+            info!(
+                "search: {brain:?} left the scene: object {} is let go ({} reservations left)",
+                o.id, o.reserved
+            );
+        }
+    }
+    world.held = brains
+        .iter()
+        .filter_map(|(e, npc)| npc.search.as_ref()?.target.map(|t| (e, t)))
+        .collect();
+}
+
 /// What re-dressing reads of the bodies the search changed.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Wardrobe<'w, 's> {
@@ -2128,7 +2159,12 @@ impl Plugin for NpcSearchPlugin {
             // carried out right after.
             .add_systems(
                 exa_ai::BrainChain,
-                (follow_and_search, carry_out_search, send_search_shots)
+                (
+                    follow_and_search,
+                    release_removed_searches,
+                    carry_out_search,
+                    send_search_shots,
+                )
                     .chain()
                     .after(exa_ai::brain::idle_walk)
                     .before(exa_ai::route_walk::walk_routes),
