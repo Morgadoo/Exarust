@@ -17,6 +17,7 @@ members = [
     "crates/exa_ui",
     "crates/exa_game",
     "crates/exa_tool",
+    "crates/exa_oracle",
     "crates/exarust",
 ]
 # Patched dependencies (see [patch.crates-io]) are not members.
