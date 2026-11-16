@@ -1549,6 +1549,8 @@ Vanish and the Long Door take the body out of the world the original way: the va
 
 the arena stagings run behind the transition screen as the original runs them: the end menu Continue's next round and bracket round with the music fade off, the rematch and the hub Begin with it on and the launch sent at black, the screen black over the arena load; a staging callback raises the pause counter for its three frames at black (the lockstep loop holds too), and the screen's close ends the AI staging freeze (the 92-tick count stays only for stagings with no screen). Left: the Continue's hub return and the dead manager's exit still run without the screen, the practice start's creator commit opens no screen, the screen's other close-time writes. Arena and practice scenes owed while the GPU is on hold.
 
+fourth TMotileDynamics pass: the swing's opening block (a counter keeps its armed hold while the target plays the countered motion; a shield without Ward clears it at 0.4 of the clip; two weapons guard the off hand and leaving the attack releases the guard), the swing rate's NaN branches, the supported locomotion tilt, the ground placement's opening clinch clear, and the get-up tick's step and posture-wait clears; the muscles-off sampler proven unreachable. Finding F545: the ground placement samples through the living sampler in its placement mode, not the pose-only one; held for a GPU check of placed heights. Traces change in every scene with walking bodies; determinism runs owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
