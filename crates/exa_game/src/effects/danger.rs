@@ -40,7 +40,9 @@
 //! a barricade carries one while it rises or stands (its wall published by
 //! its tick, dropped when it falls), so a sight pass can walk the scene's
 //! hazards and ask each for its [`Seen`] ([`nearest_barricade`] picks the
-//! nearest wall in sight). No AI system reads them yet.
+//! nearest wall in sight). The hazards are the simulation's watch list
+//! ([`HazardWatch`], [`watch_hazards`]): one that leaves it is forgotten by
+//! every brain.
 //!
 //! Evidence: the blast, wave and barricade entities' place, assessment and
 //! avoidance routines, read from `Exanima.exe`.
@@ -143,6 +145,66 @@ pub fn nearest_barricade<'a>(
         }
     }
     best.map(|(entity, seen, _)| (entity, seen))
+}
+
+/// The simulation's watch list of the force effects' sight entities, by
+/// entity bits: an effect's [`Hazard`] joins it as the effect starts and
+/// leaves it when the effect stops being seen (a blast or wave that fizzled
+/// or spent its chunks, a barricade whose fall finished).
+#[derive(Resource, Debug, Default, Clone, PartialEq)]
+pub struct HazardWatch(pub Vec<u64>);
+
+/// The watch list's step, after the effects tick: every hazard removed
+/// since the last step leaves the watch list
+/// ([`exa_physics::dynamics::watch_remove`]) and, when it was there, every
+/// brain forgets it (the original's listeners are the scene's characters,
+/// each told to forget the entity: its contact record and every reference
+/// to it); then every new hazard joins it
+/// ([`exa_physics::dynamics::watch_add`]).
+pub fn watch_hazards(
+    mut watch: ResMut<HazardWatch>,
+    added: Query<Entity, Added<Hazard>>,
+    mut removed: RemovedComponents<Hazard>,
+    mut brains: Query<(
+        &mut exa_ai::brain::Npc,
+        Option<&mut exa_ai::combatant::Combatant>,
+    )>,
+) {
+    for entity in removed.read() {
+        let id = entity.to_bits();
+        if !exa_physics::dynamics::watch_remove(&mut watch.0, &id) {
+            continue;
+        }
+        for (mut npc, combatant) in &mut brains {
+            npc.forget(id);
+            if let Some(mut combatant) = combatant {
+                combatant.forget(entity);
+            }
+        }
+    }
+    for entity in &added {
+        exa_physics::dynamics::watch_add(&mut watch.0, entity.to_bits());
+    }
+}
+
+/// Adds the watch list and its step once, for whichever of the plugins
+/// that raise force effects comes first: after the effects' ticks
+/// (`sync_hazards` closes the cast's chain of effect ticks; the barricade
+/// ticks with the other effects).
+pub fn add_hazard_watch(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_move_resource::<HazardWatch>()
+        .bridge_copy::<Hazard>();
+    if app.world().contains_resource::<HazardWatch>() {
+        return;
+    }
+    app.init_resource::<HazardWatch>().add_systems(
+        FixedUpdate,
+        watch_hazards
+            .after(sync_hazards)
+            .after(crate::thaum::torrent_live::tick_torrents)
+            .after(crate::thaum::live::tick_barricades),
+    );
 }
 
 /// Keeps every hazard's place and release word in step with its effect after

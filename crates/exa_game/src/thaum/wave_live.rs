@@ -20,9 +20,12 @@
 //!   and loosened pins, and a body met is woken. The entity leaves the
 //!   scene when the wave is spent or fizzled.
 //!
-//! Not wired, as for the blast: the alert at the throw (reach 1200 cm), the
-//! sounds, the light, the stun and the draw; and the contact's wear, which
-//! the wave's chunks do not keep.
+//! The throw alerts the caster's AI's known characters within 1800 cm as
+//! the blast's does ([`super::blast_live::alert_known`]; the aim is cleared
+//! first, so only the distance weighs it).
+//!
+//! Not wired: the sounds, the light, the stun and the draw; and the
+//! contact's wear, which the wave's chunks do not keep.
 //!
 //! Evidence: the wave's start and tick, which share the blast's hook and
 //! contact handlers, read from `Exanima.exe`.
@@ -242,6 +245,17 @@ pub(crate) fn tick_waves(
         let event = tick_wave(live, body, root, &mut draws);
         if let Some((caster, _)) = caster.as_mut() {
             caster.sync_body();
+        }
+        if let WaveEvent::Release { .. } = event {
+            // The throw alerts the caster's AI's known characters as the
+            // blast's does, its aim already cleared.
+            super::blast_live::alert_known(
+                live.caster,
+                live.wave.aim,
+                &bodies,
+                &mut combatants,
+                &npcs,
+            );
         }
         if live.wave.state == WaveState::Thrown {
             // The blast's contact slots, in the sector's order: the level,

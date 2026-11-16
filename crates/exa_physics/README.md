@@ -1459,7 +1459,9 @@ pair rule as the original compares it), the update's flag order (dead,
 reset, scene left, shared scene, sub-scene, pending registration) before
 the clock advances, the placement overlap query (bound spheres apart,
 same root, layers keeping them apart or disabled skip a body; the lower
-sector index first; the child bodies after) and the watch list. Nothing in
+sector index first; the child bodies after) and the watch list (its add
+and swap-remove, `dynamics::{watch_add, watch_remove}`, are live: the force
+effects' sight entities use them). Nothing else in
 the running game drives these records yet: Bevy's fixed step stands in for
 the driver and the body solver keeps its own sleep and pair state.
 

@@ -597,15 +597,25 @@ nodes only. A wave cast runs its wave round the caster's body root
 (`thaum::wave_live`): charging on the blast's hook, paying its drain each
 tick, and thrown through the blast's contact slots, which its class shares
 (the level's meshes, the cloths, each other body part by part with the
-character knock). A torrent cast runs its streams from
+character knock); its throw alerts the caster's known characters as the
+blast's release does (`thaum::blast_live::alert_known`). A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
 its hook until the caster lets go or runs out, its points walking the
 level's meshes and each other body's part meshes with the two-sided query
 (`walk_torrent_mesh`: the surface points and pushes gathered per stream,
 the point eased toward its pushed place, the stream loop's bump; the limb
 callback pushing the part at the gathered surface's weights), the knock,
-counter, concern and pins a struck character takes per part, its ribbon drawn with the glow material, and
-leaving once its frame would draw nothing. Cast hooks answer by event
+counter, concern and pins a struck character takes per part, the level's
+cloths stirred by its live points at the reach scale the last contact left
+(`stir_torrent_cloth`), its ribbon drawn with the glow material, its charge
+loop `thmfrc_cu01` and stream loop `thmfrc_trntdr` playing at the tick's
+volumes and pitch (`thaum::torrent_sound`), and leaving once its frame
+would draw nothing. The barricade's hum `thmfrc_bc01` follows its frame's
+words and its impacts play `thmfrc_bi` at the struck sphere
+(`thaum::barricade_sound`, which also plays Force Strikes' end set); the
+blast's, wave's and barricade's sight entities form the simulation's
+watch list (`effects::danger::HazardWatch`): one that leaves it is
+forgotten by every brain. Cast hooks answer by event
 (`thaum::casting::CastHook`): the shell's and the bubble's refuse another
 cast until their raise clip ends, and a caster's animator leaving its cast
 action asks the hook with event 4 (`thaum::cast::call_motion_hooks`). The

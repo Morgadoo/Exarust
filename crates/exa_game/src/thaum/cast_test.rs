@@ -77,6 +77,12 @@ fn the_barricade_casts_and_raises_a_wall() {
     assert!((state.body.spent - 0.25).abs() < 1e-6);
     assert!(state.active[0].entity.is_some());
     assert_eq!(count::<LiveBarricade>(&mut app), 1);
+    // The entry kept the process stream's draw for the hum's start.
+    let roll = {
+        let mut q = app.world_mut().query::<&LiveBarricade>();
+        q.iter(app.world()).next().unwrap().wall.hum_roll
+    };
+    assert!(0.0 < roll && roll < 1.0, "{roll}");
 }
 
 /// Energy: the shock makes its class, starts cast motion 0x27, spawns the
@@ -2248,4 +2254,372 @@ fn a_not_now_cast_is_held_and_retried_by_the_controls() {
     assert_eq!(state.last_result, code::STARTED);
     assert!(matches!(state.active[0].class, ActiveClass::Shock(_)));
     assert_eq!(app.world().resource::<PlayerControl>().power_hold.slot, 0);
+}
+
+/// A duellist's running torrent stirs a cloth its streams pour through:
+/// the cloth's particles move, its rustle envelope takes the stir and it
+/// is woken to 256 ticks (the torrent's simulated-object contact).
+#[test]
+fn a_duellists_torrent_stirs_a_cloth_in_its_way() {
+    use crate::effects::torrent::{CHARGING, RUNNING};
+    use crate::thaum::torrent_live::{LiveTorrent, TORRENT};
+    use exa_physics::cloth::{Cloth, Particle};
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 3.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let particles: Vec<Particle> = [30.0, 45.0, 60.0]
+        .into_iter()
+        .map(|z| Particle {
+            position: Vec3::new(5.0, 0.0, z),
+            previous: Vec3::new(5.0, 0.0, z),
+        })
+        .collect();
+    let mut cloth = exa_world::cloth::ClothInstance::new(
+        Cloth::new(particles.clone()),
+        Handle::default(),
+        vec![0, 1, 2],
+    );
+    cloth.cloth.sleep = 0;
+    let cloth = app.world_mut().spawn(cloth).id();
+    let mut caster = PowerCaster::new(&[TORRENT]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(TORRENT);
+    duel_tick(&mut app);
+    let state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveTorrent>();
+        q.iter(app.world()).next().map(|t| t.torrent.state)
+    };
+    let mut ticks = 0;
+    while state(&mut app) == Some(CHARGING) {
+        // Charging walks no contact: the cloth is as it was.
+        let still = app
+            .world()
+            .get::<exa_world::cloth::ClothInstance>(cloth)
+            .unwrap();
+        assert_eq!(still.cloth.particles, particles);
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 200);
+    }
+    assert_eq!(state(&mut app), Some(RUNNING));
+    for _ in 0..10 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    let stirred = app
+        .world()
+        .get::<exa_world::cloth::ClothInstance>(cloth)
+        .unwrap();
+    assert_ne!(stirred.cloth.particles, particles);
+    assert!(stirred.cloth.rustle_tail > 0.0);
+    assert_eq!(stirred.cloth.sleep, crate::thaum::blast_live::BODY_WAKE);
+    assert!(stirred.stale_mesh);
+}
+
+/// A blast's sight entity joins the simulation's watch list as it starts
+/// and leaves it when its chunks are spent: every brain then forgets it
+/// (its contact record goes, the others stay).
+#[test]
+fn a_spent_blast_leaves_the_watch_list_and_every_brain_forgets_it() {
+    use crate::effects::danger::HazardWatch;
+    use crate::thaum::blast_live::LiveBlast;
+    use exa_ai::brain::Npc;
+    use exa_ai::contacts::ContactRecord;
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 0.35)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[0x201]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(0x201);
+    duel_tick(&mut app);
+    app.world_mut().run_schedule(FixedUpdate);
+    let blast = {
+        let mut q = app.world_mut().query_filtered::<Entity, With<LiveBlast>>();
+        q.iter(app.world()).next().expect("a blast")
+    };
+    assert_eq!(app.world().resource::<HazardWatch>().0, [blast.to_bits()]);
+    // A brain that has the blast among its contacts, and someone else.
+    let mut brain = Npc::new([0.5; 4]);
+    for id in [blast.to_bits(), target.to_bits()] {
+        brain.contacts.push(ContactRecord {
+            id,
+            object: id == blast.to_bits(),
+            ..ContactRecord::default()
+        });
+    }
+    let watcher = app.world_mut().spawn(brain).id();
+    let mut ticks = 0;
+    while count::<LiveBlast>(&mut app) == 1 {
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 400);
+        if count::<LiveBlast>(&mut app) == 1 {
+            // Charging or flying, it is watched and kept.
+            assert_eq!(app.world().resource::<HazardWatch>().0.len(), 1);
+            let ids: Vec<u64> = app
+                .world()
+                .get::<Npc>(watcher)
+                .unwrap()
+                .contacts
+                .iter()
+                .map(|c| c.id)
+                .collect();
+            assert!(ids.contains(&blast.to_bits()));
+        }
+    }
+    assert!(ticks > 0);
+    assert!(app.world().resource::<HazardWatch>().0.is_empty());
+    let ids: Vec<u64> = app
+        .world()
+        .get::<Npc>(watcher)
+        .unwrap()
+        .contacts
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, [target.to_bits()]);
+}
+
+/// A duellist's torrent keeps its two loops' words as its tick writes them
+/// on the voices: the start's two draws (the charge loop's first), the
+/// charge loop at `0.4·(2 − c)·c` while it charges, then falling 0.01 a
+/// tick until it stops, and the stream loop easing from volume 0 and pitch
+/// 6 toward 0.5 and 0.6 while it runs.
+#[test]
+fn a_duellists_torrent_keeps_its_loops_words() {
+    use crate::effects::torrent::{CHARGING, RUNNING};
+    use crate::thaum::torrent_live::{LiveTorrent, TORRENT};
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 3.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[TORRENT]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(TORRENT);
+    duel_tick(&mut app);
+    let torrent = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveTorrent>();
+        q.iter(app.world()).next().cloned()
+    };
+    let start = torrent(&mut app).expect("a torrent");
+    let rolls = start.rolls;
+    assert!((0.0..1.0).contains(&rolls.charge) && (0.0..1.0).contains(&rolls.stream));
+    assert_ne!(rolls.charge, rolls.stream);
+    let sounds = start.torrent.sounds;
+    assert_eq!((sounds.loop_volume, sounds.loop_pitch), (0.0, 6.0));
+    assert!(sounds.charge_playing);
+    while torrent(&mut app).map(|t| t.torrent.state) == Some(CHARGING) {
+        let c = torrent(&mut app).unwrap().torrent.charge;
+        app.world_mut().run_schedule(FixedUpdate);
+        let after = torrent(&mut app).unwrap().torrent.sounds;
+        assert_eq!(after.charge_volume, (f64::from((2.0 - c) * c) * 0.4) as f32);
+        assert_eq!((after.loop_volume, after.loop_pitch), (0.0, 6.0));
+    }
+    let running = torrent(&mut app).unwrap();
+    assert_eq!(running.torrent.state, RUNNING);
+    let mut last = running.torrent.sounds;
+    for _ in 0..200 {
+        app.world_mut().run_schedule(FixedUpdate);
+        let Some(now) = torrent(&mut app) else {
+            break;
+        };
+        let now = now.torrent.sounds;
+        if last.charge_playing {
+            let falling = (f64::from(last.charge_volume) - 0.01) as f32;
+            assert_eq!(now.charge_volume, falling);
+            assert_eq!(now.charge_playing, f64::from(falling) >= 0.02);
+        }
+        last = now;
+    }
+    // The charge loop stopped; the stream loop came down from pitch 6
+    // toward 0.6 and up toward volume 0.5.
+    assert!(!last.charge_playing);
+    assert!(last.loop_pitch < 2.0, "{}", last.loop_pitch);
+    assert!(last.loop_volume > 0.3, "{}", last.loop_volume);
+}
+
+/// A duellist's wave alerts the characters its AI knows as it is thrown:
+/// one 3 m off takes concern toward the caster at the blast's weight with
+/// the aim cleared, `0.25·(1 − (d/1800)⁴)·3`, at the gain 3.
+#[test]
+fn a_thrown_wave_alerts_the_characters_its_caster_knows() {
+    use crate::effects::force_wave::WaveState;
+    use crate::thaum::wave_live::{LiveWave, WAVE};
+    use exa_ai::combatant::{Combatant, Contact, add_concern};
+    let mut app = new_app();
+    let chest = |at: Vec3| {
+        Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }])
+    };
+    let target = app.world_mut().spawn(chest(Vec3::new(0.0, 0.0, 9.0))).id();
+    let mut caster = PowerCaster::new(&[WAVE]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            chest(Vec3::ZERO),
+        ))
+        .id();
+    // The witness stands 3 m off; the caster's AI knows it, and it knows
+    // the caster.
+    let mut witness_mind = Combatant::default();
+    witness_mind.contacts.push(Contact::new(npc));
+    let witness = app
+        .world_mut()
+        .spawn((chest(Vec3::new(3.0, 0.0, 0.0)), witness_mind))
+        .id();
+    let mut caster_mind = Combatant::default();
+    caster_mind.contacts.push(Contact::new(witness));
+    app.world_mut().entity_mut(npc).insert(caster_mind);
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(WAVE);
+    duel_tick(&mut app);
+    let state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveWave>();
+        q.iter(app.world()).next().map(|w| w.wave.state)
+    };
+    let mut ticks = 0;
+    while state(&mut app) == Some(WaveState::Charging) {
+        let concern = app.world().get::<Combatant>(witness).unwrap().contacts[0].concern;
+        assert_eq!(concern, 0.0, "no alert while it charges");
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 200);
+    }
+    assert_eq!(state(&mut app), Some(WaveState::Thrown));
+    // The caster's chest at the origin, 300 cm from the witness's.
+    let f = (300.0f32 / 1800.0) * (300.0 / 1800.0);
+    let amount = 0.25 * (1.0 - f * f) * 3.0;
+    let mut expect = Contact::new(npc);
+    let concern = add_concern(&mut expect, 0.0, amount, 3.0);
+    let got = app.world().get::<Combatant>(witness).unwrap().contacts[0].concern;
+    assert_eq!(got, concern);
+}
+
+/// Force Strikes told to end plays its end set at the caster, volume 0.3
+/// and pitch `0.6 + 0.4·r` from the engine generator's next draw.
+#[test]
+fn ending_strikes_plays_the_end_set() {
+    use crate::thaum::barricade_sound::ForceSounded;
+    use crate::thaum::force::STRIKES;
+    use crate::thaum::power::force::{STRIKES_END_SOUND, STRIKES_END_VOLUME, strikes_end_pitch};
+    let mut app = new_app();
+    let armed = caster(&mut app, &[STRIKES]);
+    app.world_mut().entity_mut(armed).insert(HeldMoveset {
+        weapon_class: 0x10,
+        ..HeldMoveset::default()
+    });
+    app.world_mut()
+        .get_mut::<PowerCaster>(armed)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    cast(&mut app, armed);
+    app.world_mut().run_schedule(FixedUpdate);
+    let drained = |app: &mut App| -> Vec<ForceSounded> {
+        app.world_mut()
+            .resource_mut::<Messages<ForceSounded>>()
+            .drain()
+            .collect()
+    };
+    assert!(drained(&mut app).is_empty(), "running, it plays nothing");
+    {
+        let mut caster = app.world_mut().get_mut::<PowerCaster>(armed).unwrap();
+        let ActiveClass::Strikes(power) = &mut caster.active[0].class else {
+            panic!("strikes");
+        };
+        power.state = 2;
+    }
+    let mut roll = app.world().resource::<EffectRoll>().0;
+    app.world_mut().run_schedule(FixedUpdate);
+    let sounds = drained(&mut app);
+    assert_eq!(sounds.len(), 1);
+    assert_eq!(sounds[0].set, STRIKES_END_SOUND);
+    assert_eq!(sounds[0].volume, STRIKES_END_VOLUME);
+    assert_eq!(sounds[0].pitch, strikes_end_pitch(roll.unit()));
+    assert_eq!(sounds[0].at, Vec3::ZERO);
 }

@@ -95,7 +95,9 @@ impl Plugin for ThaumEffectsPlugin {
     fn build(&self, app: &mut App) {
         bridge_thaum_effects_types(app);
         exa_physics::sim_app::add_frame_commands(app);
+        crate::effects::danger::add_hazard_watch(app);
         app.add_message::<ArcShocked>()
+            .add_message::<super::barricade_sound::ForceSounded>()
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
             .init_resource::<FrameEffectDraws>()
@@ -124,7 +126,7 @@ impl Plugin for ThaumEffectsPlugin {
                 PostUpdate,
                 (
                     (drop_orphan_arc_voxels, draw_arcs).chain(),
-                    draw_barricades,
+                    (draw_barricades, super::barricade_sound::sound_barricades).chain(),
                     draw_wisps,
                     (
                         super::effect_draw::tick_force_noise
@@ -132,6 +134,7 @@ impl Plugin for ThaumEffectsPlugin {
                         (
                             super::blast_live::draw_blasts,
                             super::blast_sound::sound_blasts,
+                            super::torrent_sound::sound_torrents,
                             super::torrent_live::draw_torrents,
                             super::effect_draw::draw_shell_auras,
                             super::effect_draw::draw_rigid_auras,
@@ -190,6 +193,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_message::<crate::thaum::hold_live::HoldEnd>()
         .bridge_message::<crate::thaum::kinesis_live::KinesisPicked>()
         .bridge_message::<crate::thaum::live::ArcShocked>()
+        .bridge_message::<crate::thaum::barricade_sound::ForceSounded>()
         .bridge_message::<crate::thaum::throw_live::ThrowFade>()
         .bridge_copy::<exa_ai::DuelPowers>()
         .bridge_copy_opaque_resource::<exa_assets::Game>()
@@ -1104,7 +1108,7 @@ pub fn energy_after_knocks(energy: f32, losses: &[f64]) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn tick_barricades(
+pub(crate) fn tick_barricades(
     mut commands: Commands,
     mut walls: Query<(Entity, &mut LiveBarricade, Option<&NavStamped>)>,
     mut bodies: Query<(Entity, &mut Ragdoll, Option<&mut SwingState>)>,
@@ -1113,6 +1117,7 @@ fn tick_barricades(
     mut nav: Option<ResMut<NavGrid>>,
     mut minds: Query<&mut Npc>,
     mut routes: Query<&mut exa_ai::route_walk::AiRoute>,
+    mut sounded: MessageWriter<super::barricade_sound::ForceSounded>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live, stamped) in &mut walls {
@@ -1201,6 +1206,14 @@ fn tick_barricades(
                     }
                 }
                 touched |= shove.touched;
+                if let Some(sound) = shove.sound {
+                    sounded.write(super::barricade_sound::ForceSounded {
+                        set: super::force::DOME_SOUND,
+                        at: live.wall.frame.world(sound.at),
+                        volume: sound.volume,
+                        pitch: sound.pitch,
+                    });
+                }
                 if shove.alarm {
                     noticed.push(who);
                 }
@@ -1821,7 +1834,8 @@ mod tests {
     use super::*;
 
     /// The plugin's systems run with a barricade standing on a navigation
-    /// grid (their parameters resolve, the stamp goes on and comes off).
+    /// grid (their parameters resolve, the stamp goes on and comes off, and
+    /// its sight entity joins the watch list and leaves it when it falls).
     #[test]
     fn the_effects_run_with_a_barricade_on_a_grid() {
         use bevy::asset::AssetPlugin;
@@ -1850,14 +1864,31 @@ mod tests {
         app.insert_resource(grid);
         let frame = WallFrame::facing(Vec3::new(0.0, 50.0, 0.0), Vec3::Z);
         let mut draws = Mt19937::new(5489);
-        let wall = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
+        let mut wall = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
+        // Its entry into the world made its AI entity.
+        wall.entity = true;
         let wall = app
             .world_mut()
             .spawn(LiveBarricade { wall, caster: None })
             .id();
+        // A brain that keeps the wall among its contacts.
+        let mut brain = Npc::new([0.5; 4]);
+        brain.contacts.push(exa_ai::contacts::ContactRecord {
+            id: wall.to_bits(),
+            object: true,
+            ..Default::default()
+        });
+        let watcher = app.world_mut().spawn(brain).id();
         app.world_mut().run_schedule(FixedUpdate);
         app.update();
         assert!(app.world().get::<NavStamped>(wall).is_some());
+        // Standing, the wall's sight entity is on the watch list.
+        assert_eq!(
+            app.world()
+                .resource::<crate::effects::danger::HazardWatch>()
+                .0,
+            [wall.to_bits()]
+        );
         let stamped: u32 = {
             let grid = app.world().resource::<NavGrid>();
             (0..40)
@@ -1877,6 +1908,14 @@ mod tests {
             (0..40).all(|z| (0..40).all(|x| grid.cell(x, z, Layer::Lower).penalty == 0)),
             "the fall takes it back"
         );
+        // The finished fall takes it off the watch list: the brain forgets it.
+        assert!(
+            app.world()
+                .resource::<crate::effects::danger::HazardWatch>()
+                .0
+                .is_empty()
+        );
+        assert!(app.world().get::<Npc>(watcher).unwrap().contacts.is_empty());
     }
 
     /// A looping hum takes the frame's gain, and its pitch only when the
@@ -2105,6 +2144,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(BodyTicks(5_000))
             .init_resource::<EffectRoll>()
+            .add_message::<super::super::barricade_sound::ForceSounded>()
             .add_systems(Update, tick_barricades);
         app.world_mut().spawn(LiveBarricade { wall, caster: None });
         let holder = app
@@ -2167,6 +2207,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(BodyTicks(5_000))
             .init_resource::<EffectRoll>()
+            .add_message::<super::super::barricade_sound::ForceSounded>()
             .add_systems(Update, tick_barricades);
         let wall_id = app
             .world_mut()
@@ -2212,6 +2253,21 @@ mod tests {
         .with_drive();
         let who = app.world_mut().spawn((body, npc)).id();
         app.update();
+        // The impact sound goes out at the struck sphere, 15 cm in front of
+        // the wall's middle along its facing (+x), carried into the world.
+        let sounds: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<super::super::barricade_sound::ForceSounded>>()
+            .drain()
+            .collect();
+        assert_eq!(sounds.len(), 1);
+        assert!(
+            sounds[0].at.abs_diff_eq(Vec3::new(0.0, 100.0, 0.0), 1e-3),
+            "{:?}",
+            sounds[0].at
+        );
+        assert!((0.3..=0.5).contains(&sounds[0].volume));
+        assert!((0.6..=1.0).contains(&sounds[0].pitch));
         let now = BodyTicks(5_000).millis() as u32;
         let npc = app.world().get::<Npc>(who).unwrap();
         assert_eq!((npc.alert_count, npc.alert_until_ms), raise_alert(4, now));
@@ -2225,6 +2281,11 @@ mod tests {
         app.update();
         let npc = app.world().get::<Npc>(who).unwrap();
         assert_eq!(npc.alert_count, 5, "the sound's gap has not passed");
+        assert!(
+            app.world()
+                .resource::<Messages<super::super::barricade_sound::ForceSounded>>()
+                .is_empty()
+        );
     }
 
     /// A brain within sight of a barricade, a blast and a wave sees each of

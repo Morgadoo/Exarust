@@ -502,6 +502,11 @@ impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         exa_physics::sim_app::add_frame_commands(app);
         super::veil_live::bridge_veil_types(app);
+        {
+            use exa_physics::sim_bridge::SimBridgeAppExt;
+            app.bridge_message::<super::barricade_sound::ForceSounded>();
+        }
+        crate::effects::danger::add_hazard_watch(app);
         super::summon_live::bridge_summon_types(app);
         app.add_message::<BarCommand>()
             .add_message::<exa_combat::veto::BlowPhased>()
@@ -569,6 +574,7 @@ impl Plugin for CastPlugin {
             .init_resource::<crate::mind::runtime::MindPick>()
             .init_resource::<crate::mind::runtime::MindDeadPick>()
             .add_message::<exa_audio::PointSounded>()
+            .add_message::<super::barricade_sound::ForceSounded>()
             .add_message::<exa_audio::MusicOverlay>()
             .init_resource::<crate::mind::runtime::MindAim>()
             .init_resource::<crate::mind::runtime::MindControl>()
@@ -2072,7 +2078,9 @@ fn create_force(
                     .map(|d| d * CM)
             };
             let mut wall = Barricade::raise(frame, cost, now, trim, None, &mut draws.0);
-            let add = wall.add_to_world(&mut caster.body, None, None, f64::from(roll.0.unit()));
+            // The hum's start takes the process stream's next draw (the
+            // frame starts the voice once its buffer loads).
+            let add = wall.add_to_world(&mut caster.body, None, None, draws.0.unit());
             let entity = commands
                 .spawn((
                     Name::new("_ForceBarricade"),
@@ -3051,9 +3059,11 @@ pub(crate) fn tick_casters(
     mut moves: MessageWriter<Otherwhere>,
     mut holds: MessageWriter<super::hold_live::HoldEnd>,
     mut draws: ResMut<EffectDraws>,
-    (mut arcs, control): (
+    (mut arcs, control, mut roll, mut sounded): (
         Query<&mut LiveArcs>,
         Option<Res<crate::player_controls::PlayerControl>>,
+        ResMut<EffectRoll>,
+        MessageWriter<super::barricade_sound::ForceSounded>,
     ),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
@@ -3258,6 +3268,19 @@ pub(crate) fn tick_casters(
                                 }
                             }
                             debug!("force strikes ends: its auras close");
+                            // The end sound at the caster's place, its
+                            // pitch from the engine generator's draw.
+                            let at = ragdoll
+                                .and_then(|body| body.parts.first())
+                                .map_or(Vec3::ZERO, |part| {
+                                    Vec3::from(part.transform().translation) * CM
+                                });
+                            sounded.write(super::barricade_sound::ForceSounded {
+                                set: super::power::force::STRIKES_END_SOUND,
+                                at,
+                                volume: super::power::force::STRIKES_END_VOLUME,
+                                pitch: super::power::force::strikes_end_pitch(roll.0.unit()),
+                            });
                         }
                     }
                     ActiveClass::Remote(power) => {

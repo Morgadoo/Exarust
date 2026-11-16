@@ -265,8 +265,10 @@ step, and a shortfall fizzles it and ends the cast through the shared
 cast end. The release clears the hook and the power id itself, the cast
 motion playing on, and a thrown wave pushes other bodies' limbs through
 the blast's contact arithmetic (its chunks keep no wear, an Exarust
-reading). Its alert (1200 reach, within 18 m, under 150 cm of height), sounds and
-draw are not wired. A torrent cast makes its torrent entity
+reading). Its throw runs the blast's release alert (within 18 m, under
+150 cm of height flattened; the 1200 the tick passes is not read, and the
+aim is cleared first, so only the distance weighs it). Its sounds and draw
+are not wired. A torrent cast makes its torrent entity
 (`thaum::torrent_live`) at the caster's right hand: its creator gives the
 cost a second and id 0x10203, and its start plays cast motion 0x26 and
 takes a hook answering −1 that fizzles a charging torrent and ends a
@@ -281,15 +283,28 @@ the torrent's support-pin gain, loses the torrent's energy once a tick,
 raises its instability counter by one and its concern
 toward the caster by 1 at gain 0.01, and it leaves the scene on the first
 frame that would build no triangles: fizzled, or no stream with more than
-two samples. Its stream ribbons are built each frame with the eye as the
+two samples. Running, it also stirs the level's cloths after its level
+contact: each live point within `width·scale + margin + 40` (the reach
+scale the last contact left: 0.25 after the level, a part's own after a
+part) moves the cloth's points along its last move by `(1 − d²/r²)·0.01`
+and adds `(1 − d²/r²)·0.00001` to the cloth's stir, waking it to 256 ticks.
+Its stream ribbons are built each frame with the eye as the
 normal reference and drawn with the glow material
 (`thaum::torrent_live::draw_torrents`). The turned aim (the blast aim
 here) and the sphere test are Exarust's. A blast or torrent hit writes
 the knock's pin gain over the body's (`Drive::pin_gain`, recovering 0.001
 a tick) and gives its balance the full landing momentum weight 5 (the
 field earlier notes called a 5 s recoil); both effects register their GI
-multi-point light while they live (`thaum::effect_light`). The sounds are
-not wired. A cast motion is played through
+multi-point light while they live (`thaum::effect_light`). The torrent's
+two loops play (`thaum::torrent_sound`): its start takes two process-stream
+draws for their starts (`length·0.8·r` in double, the charge loop first),
+the charge loop follows the hand at the tick's volume until the tick stops
+it, and the stream loop follows the node from pitch 6. The blast's, wave's
+and barricade's sight entities form the simulation's watch list
+(`effects::danger::HazardWatch`); one that leaves it (a spent or fizzled
+blast or wave, a fallen barricade) is forgotten by every brain. The
+barricade's hum follows its frame's words and its impacts sound the
+`thmfrc_bi` set at the struck sphere (`thaum::barricade_sound`). A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form),
 looping when its clip's mode has bit 0 (Force Barrier, Force Torrent). A
 cast hook answers by the event's bits (`casting::CastHook`): the engine

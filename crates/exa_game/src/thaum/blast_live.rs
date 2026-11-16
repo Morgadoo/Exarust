@@ -532,8 +532,7 @@ pub(crate) fn stir_cloth(
     scale: f32,
     cloth: &mut exa_world::cloth::ClothInstance,
 ) -> bool {
-    let frame = cloth.frame.unwrap_or(bevy::math::Affine3A::IDENTITY);
-    let to_cloth = frame.inverse();
+    let (mut object, to_cloth) = cloth_object(cloth);
     let local: Vec<BlastChunk> = set
         .chunks
         .iter()
@@ -543,19 +542,36 @@ pub(crate) fn stir_cloth(
             ..*chunk
         })
         .collect();
+    if !hit_sim_points(&local, &set.setup, &mut object, scale) {
+        return false;
+    }
+    take_stir(cloth, &object);
+    true
+}
+
+/// A cloth as the effects' simulated-object walks take it: its particles
+/// (cm, in its node's frame) with the particles' box as the node's bounds,
+/// and the map from the world (m) into that frame.
+pub(crate) fn cloth_object(
+    cloth: &exa_world::cloth::ClothInstance,
+) -> (SimPoints, bevy::math::Affine3A) {
+    let frame = cloth.frame.unwrap_or(bevy::math::Affine3A::IDENTITY);
     let (low, high) = exa_physics::cloth::bounds(&cloth.cloth.particles);
     let centre = (low + high) * 0.5;
     let half = high - centre;
-    let mut object = SimPoints {
+    let object = SimPoints {
         points: cloth.cloth.particles.iter().map(|p| p.position).collect(),
         stir: cloth.cloth.rustle_tail,
         centre,
         radius: half.length(),
         half,
     };
-    if !hit_sim_points(&local, &set.setup, &mut object, scale) {
-        return false;
-    }
+    (object, frame.inverse())
+}
+
+/// A cloth an effect's walk met takes the moved points and the stir, and
+/// is woken to 256 ticks (the object's wake slot).
+pub(crate) fn take_stir(cloth: &mut exa_world::cloth::ClothInstance, object: &SimPoints) {
     for (particle, point) in cloth.cloth.particles.iter_mut().zip(&object.points) {
         particle.position = *point;
     }
@@ -564,7 +580,6 @@ pub(crate) fn stir_cloth(
         cloth.cloth.sleep = BODY_WAKE;
     }
     cloth.stale_mesh = true;
-    true
 }
 
 /// One static mesh of the level as the effect's static contact takes it:
@@ -836,6 +851,58 @@ pub(crate) fn knock_character(
     }
 }
 
+/// The release's alert, which the blast and the wave share: every
+/// character the caster's AI knows (contact kind 1) other than the caster,
+/// within 1800 cm of the caster's chest, is told of the caster by
+/// [`alert_amount`] (the effect's aim weighing it; the wave's is cleared
+/// first) at the gain 3.
+pub(crate) fn alert_known(
+    caster: Entity,
+    aim: Vec3,
+    bodies: &Query<(Entity, &mut Ragdoll)>,
+    combatants: &mut Query<&mut Combatant>,
+    npcs: &Query<&Npc>,
+) {
+    let known: Vec<Entity> = combatants.get(caster).map_or_else(
+        |_| Vec::new(),
+        |combatant| {
+            combatant
+                .contacts
+                .iter()
+                .filter(|contact| contact.kind == 1)
+                .map(|contact| contact.character)
+                .collect()
+        },
+    );
+    let Some(origin) = bodies
+        .get(caster)
+        .ok()
+        .and_then(|(_, body)| chest_point(body))
+    else {
+        return;
+    };
+    for other in known {
+        if other == caster {
+            continue;
+        }
+        let at = bodies
+            .get(other)
+            .ok()
+            .and_then(|(_, body)| chest_point(body));
+        let Some(amount) = at.and_then(|at| alert_amount(origin, at, aim)) else {
+            continue;
+        };
+        if let Ok(mut combatant) = combatants.get_mut(other) {
+            let aggression = npcs
+                .get(other)
+                .ok()
+                .and_then(|npc| npc.personality)
+                .map_or(0.0, |personality| personality.restraint);
+            combatant.add_concern(caster, aggression, amount, ALERT_GAIN);
+        }
+    }
+}
+
 /// Ticks every blast in the scene.
 #[allow(
     clippy::too_many_arguments,
@@ -929,46 +996,7 @@ pub(crate) fn tick_blasts(
         if let Some(pitch) = events.released {
             debug!("blast {entity:?} thrown, release pitch {pitch:.3}");
             live.sounds.release_pitch = Some(pitch);
-            // The release alerts the caster's AI's known characters: each
-            // within 1800 cm is told of the caster by the draw's weight.
-            let known: Vec<Entity> = combatants.get(live.caster).map_or_else(
-                |_| Vec::new(),
-                |combatant| {
-                    combatant
-                        .contacts
-                        .iter()
-                        .filter(|contact| contact.kind == 1)
-                        .map(|contact| contact.character)
-                        .collect()
-                },
-            );
-            let origin = bodies
-                .get(live.caster)
-                .ok()
-                .and_then(|(_, body)| chest_point(body));
-            if let Some(origin) = origin {
-                for other in known {
-                    if other == live.caster {
-                        continue;
-                    }
-                    let at = bodies
-                        .get(other)
-                        .ok()
-                        .and_then(|(_, body)| chest_point(body));
-                    let Some(amount) = at.and_then(|at| alert_amount(origin, at, live.blast.aim))
-                    else {
-                        continue;
-                    };
-                    if let Ok(mut combatant) = combatants.get_mut(other) {
-                        let aggression = npcs
-                            .get(other)
-                            .ok()
-                            .and_then(|npc| npc.personality)
-                            .map_or(0.0, |personality| personality.restraint);
-                        combatant.add_concern(live.caster, aggression, amount, ALERT_GAIN);
-                    }
-                }
-            }
+            alert_known(live.caster, live.blast.aim, &bodies, &mut combatants, &npcs);
         }
         if let Some(caster) = caster.as_deref_mut() {
             caster.sync_body();
