@@ -307,9 +307,13 @@ pub struct PartyChange {
 /// through the behaviour (method slot 25) just before the condition
 /// becomes dead: a follower (activity 4) stops following, its activity word
 /// 0, and leaves the party. Exarust runs it on the tick the condition turns
-/// dead. The hook's other branch fades a golem body's glow material
-/// (record flag 0x1000, material `go`); Exarust draws no live skin
-/// material for it yet (`exa_game::item_effects::fade_material`).
+/// dead. The hook first fades the glow of a body whose record's race word
+/// carries the AI bit `0x1000` (the golems, [`Npc::race_ai`]): its skin's
+/// first material with the parameter word `go`
+/// ([`crate::golem::GLOW_MATERIAL`]) goes to 0 (the square of 0), before
+/// the follower branch. Exarust draws no live skin material with that
+/// parameter yet (`exa_game::item_effects::fade_material`), so the fade is
+/// logged, as the golem wake's and sleep's are.
 pub fn death_hook(
     mut brains: Query<(Entity, &Condition, &mut Npc), Changed<Condition>>,
     mut party: MessageWriter<PartyChange>,
@@ -318,11 +322,23 @@ pub fn death_hook(
         if *condition != Condition::DEAD {
             continue;
         }
+        if let Some(value) = death_glow(&npc) {
+            info!(
+                "{body:?} dies: glow '{}' to {value} (not faded live)",
+                String::from_utf8_lossy(&crate::golem::GLOW_MATERIAL.to_le_bytes())
+            );
+        }
         if npc.death_hook() {
             info!("a follower died: it stops following and leaves the party");
             party.write(PartyChange { body, joins: false });
         }
     }
+}
+
+/// The glow the death hook fades a body's `go` material to: 0 for a body
+/// whose race word carries the AI bit, none otherwise.
+pub fn death_glow(npc: &Npc) -> Option<f32> {
+    npc.race_ai.then_some(0.0)
 }
 
 impl Npc {
@@ -5568,5 +5584,8 @@ mod race_word_tests {
         // mere presence of a brain: a human has none.
         assert!(Npc::of_record(&guard, &mut roll).race_ai);
         assert!(!Npc::of_record(&human, &mut roll).race_ai);
+        // The death hook fades a golem's glow to 0, and nobody else's.
+        assert_eq!(death_glow(&Npc::of_record(&guard, &mut roll)), Some(0.0));
+        assert_eq!(death_glow(&Npc::of_record(&human, &mut roll)), None);
     }
 }

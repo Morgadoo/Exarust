@@ -1771,8 +1771,10 @@ fn duellist(
             breaking_tangle: anim.action == exa_combat::strike_body::BREAK_TANGLE,
         };
         let ready = attack::execute(attack::Request::default(), busy).is_some();
-        // The foe's own combat skill: a brain's personality, else 0 (the
-        // player's behaviour skill is not modelled) [Exarust's default].
+        // The foe's own combat skill: a brain's personality, else 0. The
+        // player's behaviour keeps 0 there too: only the AI's constructor
+        // and the companion conversion write the skill, and the player's
+        // behaviour starts zeroed.
         let foe_skill = brains
             .get(foe_key)
             .ok()
@@ -2483,13 +2485,19 @@ fn duellist(
                     ai.leave();
                     route.stop_if(route_walk::Walker::Chase);
                     combatant.in_combat = false;
+                    // Before the idle return the chase clears the body's
+                    // target and its focus (an object or force it aimed
+                    // at), as the plain leave does: the combatant's target
+                    // goes and the duellist's focus with it (its fixed foe
+                    // is kept for a later entry).
+                    combatant.target = None;
+                    ai.focus = None;
+                    ai.dropped = false;
                     // The chase leaves through the idle return: the AI's
                     // look, heading and eased offset take the body's look
                     // yaw, the idle state's step restarts at 1, the idle
                     // state becomes the current state and the body's
-                    // in-combat mark clears (no leave timers). The body's
-                    // target and focus words it clears first are the
-                    // duellist's fixed foe here [not modelled].
+                    // in-combat mark clears (no leave timers).
                     if let Ok(mut brain) = brains.get_mut(entity) {
                         let body_look = crate::motion::yaw_of(t.rotation * Vec3::Z);
                         let brain = &mut *brain;
