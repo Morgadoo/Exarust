@@ -2254,13 +2254,7 @@ pub(crate) fn hold_counter_parries(
                     fighter.parry.point_cm = point.point.to_array();
                 }
                 if let Some(key) = key {
-                    hold_parry_links(
-                        &mut grips,
-                        key,
-                        Some((grip, point.point)),
-                        true,
-                        forward,
-                    );
+                    hold_parry_links(&mut grips, key, Some((grip, point.point)), true, forward);
                 }
             }
             Some(CounterHold::Unarmed) => {}
@@ -2693,7 +2687,14 @@ mod wiring_tests {
                 .unwrap();
         };
         let link = |world: &World, e: Entity| {
-            world.get::<HeldGrip>(e).unwrap().links.as_ref().unwrap().links[2].clone()
+            world
+                .get::<HeldGrip>(e)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap()
+                .links[2]
+                .clone()
         };
         let plane = grip(0.9, 0.12, 0, SHIELD_PLANE, true, true);
         run(&mut world, Some((plane, Vec3::new(10.0, 20.0, 30.0))), true);
@@ -2702,7 +2703,15 @@ mod wiring_tests {
         assert_eq!(laid.anchor, Some(Vec3::new(0.1, 0.2, 0.3)));
         assert_eq!(laid.strength, 0.12);
         assert_eq!(laid.normal, forward);
-        assert!(world.get::<HeldGrip>(shield).unwrap().links.as_ref().unwrap().parry_held());
+        assert!(
+            world
+                .get::<HeldGrip>(shield)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap()
+                .parry_held()
+        );
         // The other slot is the held list's second (1 − 0): the lone
         // weapon is its first, so its link is left as it was.
         assert_eq!(link(&world, weapon).flags, 0);
@@ -3110,7 +3119,10 @@ mod wiring_tests {
                 held_blade_point(foe2, &blades, Vec3::ZERO, Vec3::ZERO, 100.0)
             })
             .unwrap();
-        assert_eq!((now, before), (Vec3::new(0.0, 0.9, 0.5), Vec3::new(0.0, 0.9, 0.5)));
+        assert_eq!(
+            (now, before),
+            (Vec3::new(0.0, 0.9, 0.5), Vec3::new(0.0, 0.9, 0.5))
+        );
     }
 
     /// The combat idle's check needs its gates: the auto-parry deadline
@@ -3402,15 +3414,18 @@ mod wiring_tests {
             ..damage::ShieldGuard::default()
         });
         d.edit::<Fighter>(|f| f.guard = shield);
-        d.app
-            .world_mut()
-            .get_mut::<HeldGrip>(d.grip)
-            .unwrap()
-            .kind = HeldKind::Shield;
+        d.app.world_mut().get_mut::<HeldGrip>(d.grip).unwrap().kind = HeldKind::Shield;
         d.tick();
         assert!(d.parrying());
         let link = |d: &Duel| {
-            d.app.world().get::<HeldGrip>(d.grip).unwrap().links.as_ref().unwrap().links[2]
+            d.app
+                .world()
+                .get::<HeldGrip>(d.grip)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap()
+                .links[2]
                 .clone()
         };
         let laid = link(&d);
