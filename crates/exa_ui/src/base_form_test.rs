@@ -58,9 +58,12 @@ fn base(task: &GuiTask, id: FormId) -> &BaseForm {
 #[test]
 fn the_line_skin_marks_the_title_band_the_close_corner_and_the_bar() {
     let w = window();
-    // Four units down: the close corner within four units of the right.
+    // The wide title band: the close corner within six units of the
+    // right and of the top, the band above six units.
     assert_eq!(w.hit_local(195, 3), -4);
     assert_eq!(w.hit_local(100, 3), -3);
+    assert_eq!(w.hit_local(178, 22), -4);
+    assert_eq!(w.hit_local(100, 22), -3);
     // Inside the client with no record: -1 (the 0x30 bits are set).
     assert_eq!(w.hit_local(100, 100), -1);
     let p = page();

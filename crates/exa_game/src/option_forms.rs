@@ -63,7 +63,7 @@ use exa_ui::record_form::RecordForm;
 use exa_ui::settings::Rect;
 use exa_ui::text_edit::{EditAction, EditView};
 
-use crate::gui_paint::Painted;
+use crate::gui_paint::{LineFormLayers, Painted};
 use crate::hub_forms::FormWindow;
 use crate::hub_windows::{ArenaCareer, HubWindows, Look};
 
@@ -353,12 +353,22 @@ impl HubWindows {
             return;
         }
         let c = &form.controls()[record];
-        let rect = on_screen(form, c);
+        let mut rect = on_screen(form, c);
         let mut list = DropDownList::new(
             items.iter().map(|item| item.as_bytes().to_vec()).collect(),
             c.w,
             unit,
         );
+        // The list takes its opener's form skin. The hub's forms keep the
+        // line skin, whose opening sets bit 1 of its mark word: the opener
+        // then clears the list's panel frame style (0x80), so the line
+        // skin draws only its wide window frame, and lifts the list by a
+        // unit less one.
+        let mark = exa_ui::skin::open_skin(unit, 0, true).map_or(0, |skin| skin.mark);
+        if mark & 1 != 0 {
+            list.style &= !0x80;
+            rect.top -= unit - 1;
+        }
         let layout = list.lay_out();
         let place = exa_ui::controls::drop_down_place(
             (rect.left, rect.top, c.w, c.h),
@@ -1392,16 +1402,7 @@ pub(crate) fn paint_extended(
             true
         }
         COLOUR_SWATCH => {
-            crate::hub_windows::paint_panel(painted, rect, look);
-            if let Some([r, g, b, _]) = c.colour {
-                let inner = [
-                    rect.left + 2,
-                    rect.top + 2,
-                    (rect.width() - 4).max(0),
-                    (rect.height() - 4).max(0),
-                ];
-                painted.push(exa_ui::loadout::solid_layer(inner, [r, g, b, 0xff]));
-            }
+            paint_swatch_back(painted, c, rect, look);
             true
         }
         SPINNER => {
@@ -1474,14 +1475,107 @@ pub(crate) fn paint_extended(
     }
 }
 
-/// Paints the open popup over the forms: a drop-down list's panel, its
-/// selection band and rows, or the palette swatch popup's cells and its
-/// selection's frame.
+/// A colour swatch's back: its draw message calls the current skin's
+/// control fill. The draw skin's own instance (the colour picker) draws
+/// the style frames and the colour inset by the margin
+/// ([`exa_ui::skin::draw_control_fill`]); the line skin (the emblem form)
+/// its shade: six atlas quads a unit either side of the top and bottom
+/// edges in the on ink (the highlight ink under the pointer), then the
+/// colour a unit in ([`exa_ui::skin::draw_line_shade`]). Both take the
+/// GUI's alpha.
+fn paint_swatch_back(painted: &mut Painted, c: &Control, rect: GuiRect, look: &Look) {
+    use exa_ui::gui_draw::{GuiLayer, LayerTexture, SKIN_TEXTURE};
+    use exa_ui::skin::SkinBatch;
+    let colour = c.colour.unwrap_or_default();
+    let alpha = exa_ui::line_skin::hover_alpha(look.fade);
+    if look.base_skin {
+        let mut batch = SkinBatch::new();
+        exa_ui::skin::draw_control_fill(
+            &mut batch,
+            exa_ui::skin::GuiRect::sized(
+                rect.left as f32,
+                rect.top as f32,
+                rect.width() as f32,
+                rect.height() as f32,
+            ),
+            c.style,
+            c.margin,
+            colour,
+            alpha,
+            &look.palette,
+        );
+        painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+        return;
+    }
+    let shade = exa_ui::skin::draw_line_shade(
+        look.unit,
+        exa_ui::skin::LineShadePlace {
+            x: rect.left as i16,
+            y: rect.top as i16,
+            w: rect.width() as i16,
+            h: rect.height() as i16,
+            state: c.state,
+            inner_ink: colour,
+            side_inset: look.unit * 2,
+            alpha,
+        },
+        exa_ui::skin::LineShadeInks {
+            normal: exa_ui::line_skin::line_control_inks(look.fade)[2],
+            special: look.palette.highlight[7],
+        },
+        exa_ui::skin::SPAN_VIEW_UNSET,
+    );
+    let mut batch = exa_ui::skin::line_skin_batch();
+    batch.set_ink(shade.outer_ink);
+    for quad in &shade.outer {
+        let uv = quad
+            .sample
+            .map(|s| s.map(f32::from_bits))
+            .unwrap_or_default();
+        for (k, (x, y)) in quad.corners.iter().enumerate() {
+            batch.set_uv(uv[k * 2], uv[k * 2 + 1]);
+            batch.vertex(*x, *y);
+        }
+    }
+    batch.end_quads();
+    painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+    let mut fill = SkinBatch::new();
+    fill.select(1, 0, false);
+    fill.set_ink(shade.inner.ink);
+    fill.begin();
+    for (x, y) in shade.inner.corners {
+        fill.vertex(x, y);
+    }
+    fill.end_quads();
+    painted.push(GuiLayer::new(fill, LayerTexture::None));
+}
+
+/// The line skin's form draw for a popup that took its owner's line skin
+/// (the drop-down list and the palette swatch popup both copy their
+/// opener's form skin): its words as its show commits them, the shadow
+/// and the backdrop under its content, the wide window frame over it.
+fn popup_frame(rect: GuiRect, look: &Look, style: u32, attributes: u32) -> LineFormLayers {
+    crate::gui_paint::paint_top_form(
+        rect,
+        look.unit,
+        &look.palette,
+        look.fade,
+        crate::gui_paint::FormWords { style, attributes },
+        None,
+    )
+    .0
+}
+
+/// Paints the open popup over the forms through the line skin's form
+/// draw: a drop-down list's shadow, backdrop, selection band and rows and
+/// wide window frame, or the palette swatch popup's, with its cells and
+/// its selection's frame.
 pub(crate) fn paint_popup(painted: &mut Painted, popup: &Popup, look: &Look) {
     match popup {
         Popup::List { list, rect, .. } => {
             let r = GuiRect::new(rect.x, rect.y, rect.w, rect.h);
-            crate::hub_windows::paint_panel(painted, r, look);
+            let mut frame = popup_frame(r, look, list.style, list.attributes);
+            painted.layers.extend(frame.under());
             let mut batch = exa_ui::skin::SkinBatch::new();
             list.paint(&mut batch, &look.palette, 0);
             crate::gui_paint::offset_batch(&mut batch, rect.x, rect.y);
@@ -1509,10 +1603,17 @@ pub(crate) fn paint_popup(painted: &mut Painted, popup: &Popup, look: &Look) {
                     ));
                 }
             }
+            painted.layers.extend(frame.over());
         }
         Popup::Palette { swatch, rect, .. } => {
             let r = GuiRect::new(rect.x, rect.y, rect.w, rect.h);
-            crate::hub_windows::paint_panel(painted, r, look);
+            let mut frame = popup_frame(
+                r,
+                look,
+                col_swatch::SWATCH_STYLE_BITS,
+                col_swatch::SWATCH_ATTRIBUTES,
+            );
+            painted.layers.extend(frame.under());
             let unit = look.unit;
             let (ox, oy) = (rect.x + col_swatch::BORDER, rect.y + col_swatch::BORDER);
             let mut batch = exa_ui::skin::SkinBatch::new();
@@ -1549,6 +1650,7 @@ pub(crate) fn paint_popup(painted: &mut Painted, popup: &Popup, look: &Look) {
                     painted.push(exa_ui::loadout::solid_layer(edge, ink));
                 }
             }
+            painted.layers.extend(frame.over());
         }
     }
 }
@@ -2034,5 +2136,230 @@ mod tests {
         let close = centre(form, picker_records::CLOSE);
         click(&mut windows, &mut career, close);
         assert!(windows.forms.get(FormWindow::Picker).is_none());
+    }
+
+    /// The hub draw's layers after a few updates of a headless App with
+    /// the real game-screen and hub draw systems over `windows`, with the
+    /// interface level's glyph atlas at unit 4.
+    fn drawn_layers(windows: HubWindows) -> Vec<exa_ui::gui_draw::GuiLayer> {
+        use exa_ui::gui_draw::GuiFrames;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GuiFrames>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .init_resource::<crate::item_panel_draw::PanelIcons>()
+            .init_resource::<crate::gui_screens::DebugGuiForm>()
+            .insert_resource(exa_ui::GuiLevelState::at(1))
+            .insert_resource(windows);
+        app.add_systems(Update, crate::gui_screens::draw_screens);
+        crate::hub_windows::add_hub_draw(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world()
+            .resource::<GuiFrames>()
+            .frames
+            .iter()
+            .flat_map(|f| f.layers.iter().cloned())
+            .collect()
+    }
+
+    /// The picker's close mark: its frame code under a point of its title
+    /// band's right end.
+    fn picker_close_mark(windows: &HubWindows) -> (i32, i32) {
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        let r = form.rect();
+        (r.x + r.w / 2..r.x + r.w)
+            .flat_map(|x| (r.y..r.y + 26).map(move |y| (x, y)))
+            .find(|&at| crate::base_form::frame_code(form, at) == -4)
+            .expect("the close mark")
+    }
+
+    #[test]
+    fn the_pickers_close_mark_lights_draws_its_icon_and_closes_the_picker() {
+        let picker = |hovered: bool| {
+            let mut windows = windows();
+            windows.open_picker([255, 0, 0, 255], "Global Tint");
+            let mark = picker_close_mark(&windows);
+            if hovered {
+                hover(&mut windows, mark);
+            }
+            (windows, mark)
+        };
+        let palette = exa_ui::skin::shown_base_palette(1.0);
+        let icon_ink = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .filter(|l| matches!(l.texture, exa_ui::gui_draw::LayerTexture::Owned(_)))
+                .filter_map(|l| l.batch.vertices.first().map(|v| v.ink))
+                .collect::<Vec<_>>()
+        };
+        let bevels = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .flat_map(|l| l.batch.vertices.iter())
+                .filter(|v| v.ink == palette.form_hot[6])
+                .count()
+        };
+        // Away from the mark its icon draws plain in the label ink.
+        let idle = drawn_layers(picker(false).0);
+        assert!(icon_ink(&idle).contains(&palette.text[6]));
+        let (windows, _) = picker(true);
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        assert_eq!(form.frame.hover, -4);
+        // Under the pointer: the hot box (its outer bevel in the hot form
+        // group's seventh shade) and the outlined icon in the skin's face
+        // ink.
+        let hot = drawn_layers(windows);
+        assert!(icon_ink(&hot).contains(&exa_ui::hud_status::status_inks(&palette).face));
+        assert!(bevels(&hot) > bevels(&idle));
+        // Held down: the pressed box and its faded face, from the form
+        // group's fourth shade up to its third, a pixel in.
+        let (mut windows, mark) = picker(true);
+        windows.forms.input(mark, true, false);
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        assert_eq!((form.frame.held, form.frame.down), (-4, true));
+        let faces = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .flat_map(|l| l.batch.vertices.iter())
+                .filter(|v| v.ink == palette.form[2])
+                .count()
+        };
+        let pressed = drawn_layers(windows);
+        assert!(faces(&pressed) > faces(&hot));
+        // A press and release on the mark closes the picker.
+        let (mut windows, mark) = picker(true);
+        let mut career = ArenaCareer::default();
+        click(&mut windows, &mut career, mark);
+        assert!(windows.forms.get(FormWindow::Picker).is_none());
+        assert!(windows.forms.options.picker.is_none());
+    }
+
+    #[test]
+    fn the_emblem_swatches_draw_the_line_shade_and_the_pickers_the_control_fill() {
+        let vertices = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .flat_map(|l| l.batch.vertices.as_chunks::<4>().0.to_vec())
+                .collect::<Vec<_>>()
+        };
+        let mut windows = windows();
+        windows.open_company();
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        let c = form.controls()[emblem_records::SWATCHES[0]].clone();
+        let rect = on_screen(form, &c);
+        let [r, g, b, _] = c.colour.expect("a swatch colour");
+        let quads = vertices(&drawn_layers(windows));
+        let unit = 4;
+        // The colour a unit in, at the GUI's alpha.
+        assert!(quads.iter().any(|q| q[1].ink == [r, g, b, 0xff]
+            && (q[1].x, q[1].y) == ((rect.left + unit) as f32, (rect.top + unit) as f32)
+            && q[2].y == (rect.bottom - unit) as f32));
+        // The shade's top-left cap: the cap record from two units in, a
+        // unit either side of half a unit above the top, in the on ink.
+        let top = rect.top - unit / 2;
+        assert!(quads.iter().any(|q| (q[0].u, q[0].v) == (0.7, 0.1)
+            && (q[0].x, q[0].y) == ((rect.left + 2 * unit) as f32, (top + unit) as f32)
+            && q[2].x == rect.left as f32
+            && q[0].ink == exa_ui::line_skin::line_control_inks(1.0)[2]));
+
+        let mut windows = super::tests::windows();
+        windows.open_picker([10, 200, 30, 255], "Tint");
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        let (i, c) = form
+            .controls()
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.class == COLOUR_SWATCH && c.colour.is_some())
+            .map(|(i, c)| (i, c.clone()))
+            .expect("a picker swatch");
+        let rect = on_screen(form, &c);
+        let [r, g, b, _] = form.controls()[i].colour.unwrap();
+        let quads = vertices(&drawn_layers(windows));
+        let m = c.margin;
+        // The draw skin's fill: the colour inset by the margin, the solid
+        // rectangle's top-right first.
+        assert!(quads.iter().any(|q| q[0].ink == [r, g, b, 0xff]
+            && (q[0].x, q[0].y) == ((rect.right - m) as f32, (rect.top + m) as f32)
+            && (q[2].x, q[2].y) == ((rect.left + m) as f32, (rect.bottom - m) as f32)));
+    }
+
+    /// The hub draw's frames after a few updates of a headless App with
+    /// the real game-screen and hub draw systems over `windows`.
+    fn drawn_quads(windows: HubWindows) -> Vec<[exa_ui::skin::GuiVertex; 4]> {
+        use exa_ui::gui_draw::GuiFrames;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GuiFrames>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .init_resource::<crate::item_panel_draw::PanelIcons>()
+            .init_resource::<crate::gui_screens::DebugGuiForm>()
+            .insert_resource(windows);
+        app.add_systems(Update, crate::gui_screens::draw_screens);
+        crate::hub_windows::add_hub_draw(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world()
+            .resource::<GuiFrames>()
+            .frames
+            .iter()
+            .flat_map(|f| f.layers.iter())
+            .flat_map(|l| l.batch.vertices.as_chunks::<4>().0.to_vec())
+            .collect()
+    }
+
+    /// Whether a quad of the line skin's wide window frame corner record
+    /// (0.15, 0.2 first, 0.35, 0.5 third) starts at `at`.
+    fn window_corner_at(quads: &[[exa_ui::skin::GuiVertex; 4]], at: (i32, i32)) -> bool {
+        quads.iter().any(|q| {
+            (q[0].u, q[0].v, q[2].u, q[2].v) == (0.15, 0.2, 0.35, 0.5)
+                && (q[0].x, q[0].y) == (at.0 as f32, at.1 as f32)
+        })
+    }
+
+    #[test]
+    fn the_combo_list_and_the_palette_popup_draw_the_line_skins_wide_frame() {
+        let mut windows = windows();
+        let mut career = ArenaCareer::default();
+        windows.open_merchant_options(&career);
+        let form = windows.forms.get(FormWindow::Merchant).unwrap();
+        let combo = {
+            let c = &form.controls()[merchant::LOOK_FOR];
+            on_screen(form, c)
+        };
+        let at = centre(form, merchant::LOOK_FOR);
+        click(&mut windows, &mut career, at);
+        let Some(Popup::List { rect, list, .. }) = windows.forms.options.popup.clone() else {
+            panic!("no list");
+        };
+        // The line skin's opener cleared the panel style and lifted the
+        // list by a unit less one.
+        assert_eq!(list.style, 0x18);
+        assert_eq!(rect.y, combo.top - 3 + combo.height());
+        let quads = drawn_quads(windows);
+        // The window frame's top-left corner arm reaches two units out.
+        assert!(window_corner_at(&quads, (rect.x - 8, rect.y - 8)));
+        assert!(window_corner_at(&quads, (rect.x + rect.w + 8, rect.y - 8)));
+        // No wide panel arm: no bar straddles the top edge a unit up.
+        assert!(!quads.iter().any(|q| q[0].y == (rect.y + 4) as f32
+            && q[1].y == (rect.y - 4) as f32
+            && q[0].x == (rect.x + 8) as f32));
+
+        let mut windows = super::tests::windows();
+        windows.open_company();
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        let swatch = centre(form, emblem_records::SWATCHES[0]);
+        click(&mut windows, &mut career, swatch);
+        let Some(Popup::Palette { rect, .. }) = windows.forms.options.popup.clone() else {
+            panic!("no palette");
+        };
+        let quads = drawn_quads(windows);
+        assert!(window_corner_at(&quads, (rect.x - 8, rect.y - 8)));
+        assert!(window_corner_at(
+            &quads,
+            (rect.x + rect.w + 8, rect.y + rect.h + 8)
+        ));
     }
 }

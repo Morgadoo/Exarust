@@ -314,10 +314,16 @@ alpha raised by 0x40, and bit 0x40000000 picking the mirrored draw), the
 scroll refresh that places a bar window's thumb, the progress strip that
 the dispatcher draws for a titled window (split at the title's gap) and an
 untitled open bar, the compact skill screen's integer span bar, and the
-maximised window's frame, which the dispatcher now draws. At unit 5 a
-100-wide window with a 40-wide title splits its strip at 17, and a
-maximised 100 by 80 window draws eight quads, its top bar from 30, 0 to
-70, 10. None of it is drawn in the running game yet.
+wide window frame (`draw_window_frame`, read on the form's state word:
+bit 4 held, 0x40 hot). At unit 5 a 100-wide window with a 40-wide title
+splits its strip at 17, and a free 100 by 80 wide window draws eight quads,
+its top bar from 30, 0 to 70, 10. The running game draws the line form
+draw's wide arms (the drop-down list and the palette swatch popup), the
+line shade on the emblem form's colour swatches, the span bar as the table
+views' header line, and its hit test with the six-unit title band; the
+colour picker's frame marks answer through the draw skin's hit test
+(`hit_form_background`) and draw their hot and pressed boxes and their
+icons.
 
 ## Character view
 
@@ -435,7 +441,10 @@ and a child's panel frame, free (two units in) or held (on its edges, with
 an edge mask against the owner's client choosing joints or curled
 corners), with its scroll bar when the panel has one (`LineFormScroll`: the
 arrows, the thumb at `refresh_line_scroll`'s place, the moved right bar,
-the rail and the bar's corner pieces). The line skin's own control draws are in
+the rail and the bar's corner pieces); a form with the wide attribute
+(0x40_0000) takes the wide window frame for the corner style and twelve
+bars straddling its edges for the panel style (`LineForm::corner_ink`,
+`panel_from` split the two arms' inks). The line skin's own control draws are in
 `skin` too: each quad's eight-float sample record (`sample_corners`, from
 the skin's whole record table `LINE_SAMPLE_RECORDS`), the
 check box and its mark (`check_box_quads`) and the textured batch they go

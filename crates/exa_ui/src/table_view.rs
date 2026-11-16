@@ -872,7 +872,7 @@ impl TableView {
         let mut out = TableDraw::default();
         let n = self.columns.len();
         if skin_flat {
-            out.flat_header = Some([0, self.row_height - (u >> 1) - 1, width]);
+            out.flat_header = Some(self.flat_header(0));
         } else {
             let mut x0 = 0;
             for (i, c) in self.columns.iter().enumerate() {
@@ -975,6 +975,25 @@ impl TableView {
             );
         }
         selection_band(batch, rect, &palette.highlight, filled, self.unit);
+    }
+
+    /// The one header line a skin with its first flag bit (the line skin)
+    /// draws instead of the header boxes: x 0, y the row height less half a
+    /// unit and one, the client's width, moved down by `offset`.
+    fn flat_header(&self, offset: i32) -> [i32; 3] {
+        [
+            0,
+            self.row_height - (self.unit >> 1) - 1 + offset,
+            self.client.width(),
+        ]
+    }
+
+    /// [`TableView::flat_header`] at the scroll, as the table's draw puts
+    /// it in its client: the line skin's span bar along it.
+    pub fn header_rule(&self) -> [i32; 3] {
+        self.flat_header(-round_i32(f64::from(
+            (self.content_height - self.client.height()) as f32 * self.scroll,
+        )))
     }
 
     /// The selection's band and whether it is filled ([`TableDraw::selection`]),
