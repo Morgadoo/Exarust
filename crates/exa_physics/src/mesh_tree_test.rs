@@ -4,6 +4,7 @@
 use super::*;
 use crate::contact::{sphere_hit, swept_hit};
 use crate::kd_tree::Node;
+use crate::mesh_query::PUSH_FLOOR;
 
 /// A cube of side `2 · half` about `centre`, each face cut into `n × n`
 /// squares of two triangles, fronts facing out ((b − a) × (c − a)).
@@ -84,14 +85,14 @@ fn the_sphere_query_hits_what_the_brute_force_hits() {
         let c = Vec3::new(0.02, 0.15, -0.01) + point(&mut seed, 0.2);
         let r = 0.01 + rng(&mut seed) * 0.04;
         let mut brute: Vec<u32> = (0..mesh.len() as u32)
-            .filter(|&i| sphere_hit(&mesh[i as usize], c, r).is_some())
+            .filter(|&i| sphere_hit(&mesh[i as usize], c, r, PUSH_FLOOR).is_some())
             .collect();
         let mut found = Vec::new();
         let mut sphere = (c, r);
         tree.sphere(&mut sphere, |s, ids| {
             let mut hit = false;
             for &id in ids {
-                if sphere_hit(&mesh[id as usize], s.0, s.1).is_some() {
+                if sphere_hit(&mesh[id as usize], s.0, s.1, PUSH_FLOOR).is_some() {
                     found.push(id);
                     hit = true;
                 }
@@ -157,14 +158,14 @@ fn the_swept_query_hits_what_the_brute_force_hits() {
         let end = point(&mut seed, 0.4);
         let r = 0.005 + rng(&mut seed) * 0.03;
         let mut brute: Vec<u32> = (0..mesh.len() as u32)
-            .filter(|&i| swept_hit(&mesh[i as usize], start, end, r).is_some())
+            .filter(|&i| swept_hit(&mesh[i as usize], &SweptRecord::new(start, end, r)).is_some())
             .collect();
         let mut record = SweptRecord::new(start, end, r);
         let mut found = Vec::new();
         tree.sweep(&mut record, |rec, ids| {
             let mut hit = false;
             for &id in ids {
-                if swept_hit(&mesh[id as usize], rec.start, rec.end, rec.radius).is_some() {
+                if swept_hit(&mesh[id as usize], rec).is_some() {
                     found.push(id);
                     hit = true;
                 }
@@ -193,7 +194,7 @@ fn a_refreshed_sweep_keeps_the_shorter_length() {
     let hit = tree.sweep(&mut record, |rec, ids| {
         let mut hit = false;
         for &id in ids {
-            if let Some((_, delta)) = swept_hit(&mesh[id as usize], rec.start, rec.end, rec.radius)
+            if let Some((_, delta)) = swept_hit(&mesh[id as usize], rec)
                 && first
             {
                 first = false;

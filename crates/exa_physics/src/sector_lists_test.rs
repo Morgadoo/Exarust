@@ -327,3 +327,17 @@ fn a_held_out_body_wakes_to_the_release_count() {
     assert_eq!(body.countdown(), 128);
     assert!(!body.asleep());
 }
+
+/// The overlap query asks the other mesh's two-sided slot: a probe sphere
+/// whose centre lies 1 cm behind a face of the other crate's mesh (inside
+/// it, behind every face) touches it, as no front-only test would find.
+#[test]
+fn the_overlap_test_meets_a_face_from_behind() {
+    let probe = crate_at(Vec3::ZERO);
+    let other = crate_at(Vec3::new(2.0, 0.0, 0.0));
+    let inside = Affine3A::from_translation(Vec3::new(1.81, 0.0, 0.0));
+    let (a, b) = (&probe.parts[0], &other.parts[0]);
+    assert!(overlap_touch(a, inside, b, b.transform()));
+    let far = Affine3A::from_translation(Vec3::new(1.5, 0.0, 0.0));
+    assert!(!overlap_touch(a, far, b, b.transform()));
+}

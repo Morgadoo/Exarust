@@ -27,8 +27,8 @@
 //! sum `x + y`, then `z`, then subtract the plane's offset; squared lengths
 //! sum the same way; compares take the side the processor's unordered
 //! result takes (a NaN distance goes on to the next test). The closest
-//! point on a triangle is parry's projection, a representation difference
-//! from the original's own edge walk (the same point for a finite input).
+//! point on a triangle is the mesh record's own region test
+//! ([`crate::mesh_query`]), with exact reciprocals while DEC-7 is open.
 //!
 //! Evidence: the cloth's static-collider slot, its push callback, the
 //! segment builder it calls first, the mesh's sphere and sweep queries and
@@ -106,12 +106,12 @@ fn dot(a: Vec3, b: Vec3) -> f32 {
     xy + a.z * b.z
 }
 
-/// The closest point on the triangle to `x`.
+/// The closest point on the triangle to `x`: the mesh record's own region
+/// test ([`crate::volume::Face::nearest_exact`]), handed `x`'s distance to
+/// the record's plane.
 fn closest_point(t: &LevelTri, x: Vec3) -> Vec3 {
-    use rapier3d::parry::query::PointQuery;
-    rapier3d::parry::shape::Triangle::new(t.a, t.b, t.c)
-        .project_local_point(x, false)
-        .point
+    let face = crate::mesh_query::face(&[t.a, t.b, t.c]);
+    face.nearest_exact(x, dot(x, face.normal) - face.plane)
 }
 
 /// The mesh's sphere query for one triangle: a sphere at `centre` of

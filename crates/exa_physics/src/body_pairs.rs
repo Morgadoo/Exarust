@@ -49,6 +49,7 @@ use crate::contact::{self, evicted};
 use crate::engine_math::cosine;
 use crate::intersect;
 use crate::kd_tree;
+use crate::mesh_query;
 use crate::part::PartState;
 use crate::sector::{self, Bounds, Meeting};
 
@@ -592,13 +593,14 @@ pub fn swept_touches(p: &Part, start: Vec3, end: Vec3, r: f32) -> bool {
                 ids.iter().any(|&id| {
                     triangles
                         .get(id as usize)
-                        .is_some_and(|t| contact::swept_hit(t, rec.start, rec.end, r).is_some())
+                        .is_some_and(|t| contact::swept_hit(t, rec).is_some())
                 })
             });
         }
+        let record = kd_tree::SweptRecord::new(s, e, r);
         return triangles
             .iter()
-            .any(|t| contact::swept_hit(t, s, e, r).is_some());
+            .any(|t| contact::swept_hit(t, &record).is_some());
     }
     p.spheres
         .iter()
@@ -1679,7 +1681,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                         let Some(t) = triangles.get(id as usize) else {
                             continue;
                         };
-                        let Some((q, delta)) = contact::swept_hit(t, rec.start, rec.end, r) else {
+                        let Some((q, delta)) = contact::swept_hit(t, rec) else {
                             continue;
                         };
                         hit = true;
@@ -1698,7 +1700,9 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                         let Some(t) = triangles.get(id as usize) else {
                             continue;
                         };
-                        let Some((q, delta)) = contact::sphere_hit(t, s.0, r) else {
+                        let Some((q, delta)) =
+                            contact::sphere_hit(t, s.0, r, mesh_query::PUSH_FLOOR)
+                        else {
                             continue;
                         };
                         hit = true;
@@ -1715,11 +1719,14 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
         // fewer): every triangle in turn. A hit moves both parts and the
         // sphere is taken to where it now is in B's frame.
         if let Some(triangles) = triangles.as_deref() {
+            // The mesh's own brute-force callbacks, on the record the
+            // callback refreshes after a hit.
+            let mut record = kd_tree::SweptRecord::new(start, end, r);
             for t in triangles {
                 let hit = if swept {
-                    contact::swept_hit(t, start, end, r)
+                    contact::swept_hit(t, &record)
                 } else {
-                    contact::sphere_hit(t, end, r)
+                    contact::sphere_hit(t, end, r, mesh_query::BRUTE_PUSH_FLOOR)
                 };
                 let Some((q, delta)) = hit else {
                     continue;
@@ -1734,6 +1741,8 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                     a_now = pa.transform();
                     b_now = pb.transform();
                     end = sector::relative_frame(&a_now, &b_now).transform_point3(c);
+                    record.end = end;
+                    record.refresh();
                 }
             }
             continue;
