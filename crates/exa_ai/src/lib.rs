@@ -101,6 +101,7 @@ impl Plugin for AiPlugin {
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::BlowNoticed>()
             .add_message::<struck::Taught>()
+            .add_message::<brain::PartyChange>()
             // The brains' reaction to the tick's blows follows the hit
             // chain in the post-step: the original's damage routine calls
             // the struck behaviour once per contact.
@@ -200,6 +201,7 @@ fn bridge_ai_types(app: &mut App) {
     app.bridge_message::<crate::struck::Taught>()
         .bridge_copy::<crate::brain::RatedPlayer>()
         .bridge_message::<crate::brain::StatueByte>()
+        .bridge_message::<crate::brain::PartyChange>()
         .bridge_message::<exa_script::EndConversationsOf>()
         .bridge_message::<crate::presence::Entered>()
         .bridge_message::<exa_combat::AttackAskedHook>()

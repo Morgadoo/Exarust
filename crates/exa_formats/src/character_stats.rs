@@ -221,8 +221,10 @@ impl BodyRules {
     /// Bandages and potions work on it: living humans that are not feral,
     /// and the creatures.
     pub const TAKES_REMEDIES: u32 = 0x2;
-    /// Read only by the AI (what it changes there is not traced): over
-    /// half feral, the creatures and races with the second word's bit 1.
+    /// Read only by the AI: over half feral, the creatures and races with
+    /// the second word's bit 1. The apply of the roles starts its phase
+    /// word at −1 (its routes plan one size smaller); the other AI readers
+    /// are not traced.
     pub const FIERCE: u32 = 0x4;
     /// Blows take nothing from its red (lasting) health: feral humans,
     /// skeletons and ancients.

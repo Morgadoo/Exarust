@@ -81,6 +81,9 @@ pub struct StoryExperience {
     pub state: Experience,
     pub player: Learner,
     pub party: Vec<Learner>,
+    /// The companions' bodies, in the party's order (the original's
+    /// companion list holds the bodies).
+    pub party_bodies: Vec<Entity>,
     /// The player's body technique word after its last rise.
     pub technique_word: u32,
     /// Play started and the level-start hook ran.
@@ -96,6 +99,7 @@ impl Default for StoryExperience {
             state: Experience::default(),
             player: Learner::default(),
             party: Vec::new(),
+            party_bodies: Vec::new(),
             technique_word: 0,
             started: false,
             written_global: Some(0),
@@ -167,16 +171,91 @@ impl StoryExperience {
     /// Writes the player's converted state back to its record: the
     /// experience still to convert, the skills and the powers' words.
     pub fn write_player(&self, record: &mut CharacterRecord) {
-        record.experience = self.player.experience as i32;
-        record.skills = self.player.skills;
-        if let Some(powers) = record.powers.as_mut() {
-            powers.known.clone_from(&self.player.powers);
+        write_learner(&self.player, record);
+    }
+
+    /// A companion joins the party (a follower's apply of its roles): its
+    /// body is added once, its learner read from its record, and a learner
+    /// that never converted starts its clock at `now`. Returns whether it
+    /// was added.
+    pub fn join(&mut self, body: Entity, record: &CharacterRecord, now: u32) -> bool {
+        let mut learner = Learner::from_record(record);
+        if !crate::experience::join(&mut self.party_bodies, body, &mut learner, now) {
+            return false;
         }
+        self.party.push(learner);
+        true
+    }
+
+    /// A companion leaves the party: the last one takes its place. Returns
+    /// whether it was listed.
+    pub fn leave(&mut self, body: Entity) -> bool {
+        let Some(index) = self.party_bodies.iter().position(|b| *b == body) else {
+            return false;
+        };
+        crate::experience::leave(&mut self.party_bodies, &body);
+        self.party.swap_remove(index);
+        true
     }
 
     /// The story's discovery chunk, the format a save carries.
     pub fn discovery(&self) -> Vec<u8> {
         self.state.write_discovery()
+    }
+}
+
+/// A learner's converted state written to its record: the experience
+/// still to convert, the skills and the powers' words (the original
+/// converts the record itself).
+pub fn write_learner(learner: &Learner, record: &mut CharacterRecord) {
+    record.experience = learner.experience as i32;
+    record.skills = learner.skills;
+    if let Some(powers) = record.powers.as_mut() {
+        powers.known.clone_from(&learner.powers);
+    }
+}
+
+/// The party follows the brains: a follower whose roles were applied joins
+/// it, one that stopped following or died leaves it, and a companion whose
+/// body is gone leaves it (the original's AI destructor leaves the party
+/// when it was following).
+fn keep_party(
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    mut changes: MessageReader<exa_ai::brain::PartyChange>,
+    records: Query<&exa_character::record::CharacterData>,
+    alive: Query<()>,
+    mut live: ResMut<StoryExperience>,
+) {
+    let now = now_ms(ticks.as_deref());
+    for change in changes.read() {
+        if change.joins {
+            let Ok(data) = records.get(change.body) else {
+                continue;
+            };
+            if live.join(change.body, &data.record, now) {
+                info!(
+                    "experience: {:?} joins the party at {now} ms ({} companions)",
+                    change.body,
+                    live.party.len()
+                );
+            }
+        } else if live.leave(change.body) {
+            info!(
+                "experience: {:?} leaves the party ({} companions)",
+                change.body,
+                live.party.len()
+            );
+        }
+    }
+    let gone: Vec<Entity> = live
+        .party_bodies
+        .iter()
+        .copied()
+        .filter(|b| alive.get(*b).is_err())
+        .collect();
+    for body in gone {
+        live.leave(body);
+        info!("experience: {body:?} is gone and leaves the party");
     }
 }
 
@@ -290,6 +369,7 @@ fn tick_story_experience(
         ),
         With<PlayerBody>,
     >,
+    mut companions: Query<&mut exa_character::record::CharacterData, Without<PlayerBody>>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     source: Option<Res<exa_world::LevelSource>>,
     mut commands: Commands,
@@ -335,6 +415,11 @@ fn tick_story_experience(
             }
         }
         let changed = live.advance(pass.now);
+        for (body, learner) in live.party_bodies.iter().zip(&live.party) {
+            if let Ok(mut data) = companions.get_mut(*body) {
+                write_learner(learner, &mut data.record);
+            }
+        }
         if let Ok((player, _, mut data)) = players.single_mut() {
             live.write_player(&mut data.record);
             if changed {
@@ -412,10 +497,12 @@ impl Plugin for ExperienceLivePlugin {
         app.init_resource::<AccountExperience>()
             .init_resource::<StoryExperience>()
             .add_message::<DiscoveryTick>()
+            .add_message::<exa_ai::brain::PartyChange>()
             .add_systems(
                 Update,
                 (
                     load_account_experience,
+                    keep_party,
                     begin_story_experience,
                     tick_story_experience,
                     apply_technique_word,
@@ -454,6 +541,80 @@ mod tests {
         assert!(live.started);
         // The technique word is the skills' at the start.
         assert_eq!(live.technique_word, technique_bits(&live.player.skills));
+    }
+
+    /// A brain that follows (a Loyalty marker over its roles) joins the
+    /// party through the live apply of its roles, with its record's learner
+    /// and its clock started; a second apply does not add it again; its
+    /// death leaves the party, and a companion whose body is gone leaves.
+    #[test]
+    fn a_follower_joins_the_party_and_its_death_leaves_it() {
+        let mut app = App::new();
+        app.add_plugins(ExperienceLivePlugin)
+            .add_message::<SettingsEntry>()
+            .insert_resource(exa_physics::body::BodyTicks(100))
+            .insert_resource(exa_ai::brain::RoleDatabase {
+                book: exa_formats::roles::RoleDb::default(),
+                locale: 0,
+                registry: exa_ai::activity::IdleRegistry::shipped(),
+            })
+            .add_systems(
+                Update,
+                (exa_ai::brain::apply_new_roles, exa_ai::brain::death_hook).before(keep_party),
+            );
+        let marker = exa_ai::combatant::MindPowers {
+            effects: vec![exa_ai::combatant::Effect {
+                kind: 0x10_010A,
+                source: None,
+                target: None,
+                state: 1,
+            }],
+            resists_control: false,
+        };
+        let body = |app: &mut App| {
+            app.world_mut()
+                .spawn((
+                    exa_ai::roles::Roles::default(),
+                    exa_ai::brain::Npc::new([0.0; 4]),
+                    marker.clone(),
+                    exa_combat::Condition::NORMAL,
+                    exa_character::record::CharacterData::of_record(record(40)),
+                ))
+                .id()
+        };
+        let follower = body(&mut app);
+        app.update();
+        let live = app.world().resource::<StoryExperience>();
+        assert_eq!(live.party_bodies, vec![follower]);
+        assert_eq!(live.party.len(), 1);
+        assert_eq!(live.party[0].experience, 40);
+        let clock = live.party[0].clock;
+        assert_eq!(clock, exa_physics::body::BodyTicks(100).millis() as u32);
+        app.world_mut()
+            .get_mut::<exa_ai::brain::Npc>(follower)
+            .unwrap()
+            .reapply = true;
+        app.update();
+        assert_eq!(app.world().resource::<StoryExperience>().party.len(), 1);
+        app.world_mut()
+            .entity_mut(follower)
+            .insert(exa_combat::Condition::DEAD);
+        app.update();
+        assert!(app.world().resource::<StoryExperience>().party.is_empty());
+        let other = body(&mut app);
+        app.update();
+        assert_eq!(
+            app.world().resource::<StoryExperience>().party_bodies,
+            vec![other]
+        );
+        app.world_mut().despawn(other);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<StoryExperience>()
+                .party_bodies
+                .is_empty()
+        );
     }
 
     #[test]
