@@ -1886,6 +1886,8 @@ impl Plugin for GameScreensPlugin {
                 Update,
                 (close_on_right_release, close_changed_loot_windows).after(open_requested_screens),
             )
+            .add_message::<bevy::window::WindowFocused>()
+            .add_systems(Update, deactivate_on_focus_loss.before(screens_pointer))
             .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_systems(
                 Update,
@@ -1899,6 +1901,27 @@ impl Plugin for GameScreensPlugin {
                     .after(close_on_right_release)
                     .after(close_changed_loot_windows),
             );
+    }
+}
+
+/// The application's deactivation (the window procedure's focus loss): the
+/// window managers' focused forms deselect and the focus goes to their
+/// root, remembered for a later focus to no form
+/// ([`exa_ui::gui_core::GuiTask::deactivate`]). The in-game screens and the
+/// hub's windows hang from their own tasks in Exarust; each is told.
+pub fn deactivate_on_focus_loss(
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    screens: Option<ResMut<GameScreens>>,
+    hub: Option<ResMut<crate::hub_windows::HubWindows>>,
+) {
+    if !focus.read().any(|event| !event.focused) {
+        return;
+    }
+    if let Some(mut screens) = screens {
+        screens.task.deactivate();
+    }
+    if let Some(mut hub) = hub {
+        hub.task.deactivate();
     }
 }
 
@@ -4275,6 +4298,46 @@ mod tests {
             screens.task.find_by_tag(exa_ui::game_gui::JOURNAL_SCREEN),
             None
         );
+    }
+
+    /// Losing the system's focus moves the window manager's focus off the
+    /// journal's text box to the root (control -1), remembering the box; a
+    /// later focus to no form goes back to it.
+    #[test]
+    fn the_focus_loss_parks_the_focus_on_the_root_and_remembers_the_box() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .add_message::<bevy::window::WindowFocused>()
+            .add_systems(Update, deactivate_on_focus_loss);
+        let window = app.world_mut().spawn_empty().id();
+        let text_box = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.open_journal(true, true);
+            let text_box = screens.journal_box.as_ref().unwrap().form;
+            screens.task.focus_set(Some(text_box), NO_CONTROL);
+            assert!(screens.journal_box_focused());
+            text_box
+        };
+        app.world_mut()
+            .write_message(bevy::window::WindowFocused {
+                window,
+                focused: true,
+            });
+        app.update();
+        assert!(app.world().resource::<GameScreens>().journal_box_focused());
+        app.world_mut()
+            .write_message(bevy::window::WindowFocused {
+                window,
+                focused: false,
+            });
+        app.update();
+        let mut screens = app.world_mut().resource_mut::<GameScreens>();
+        assert!(!screens.journal_box_focused());
+        assert_eq!(screens.task.active, screens.task.root);
+        assert_eq!(screens.task.active_control, -1);
+        assert_eq!(screens.task.remembered, Some((text_box, NO_CONTROL)));
+        screens.task.focus_form(None, 0);
+        assert!(screens.journal_box_focused());
     }
 
     #[test]

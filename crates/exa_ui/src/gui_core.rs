@@ -770,6 +770,10 @@ pub struct GuiTask {
     pub cursor: i32,
     /// A redraw was asked for.
     pub redraw: bool,
+    /// The focus a visible form held when it lost the focus, and its
+    /// control then: a focus to no form returns to it
+    /// ([`GuiTask::focus_form`]).
+    pub remembered: Option<(FormId, i32)>,
 }
 
 impl Default for GuiTask {
@@ -799,6 +803,7 @@ impl GuiTask {
             drop: DropState::default(),
             cursor: -1,
             redraw: false,
+            remembered: None,
         }
     }
 
@@ -1073,6 +1078,7 @@ impl GuiTask {
                 if self.gamepad {
                     self.gamepad_leave(previous);
                 }
+                self.remember(previous);
                 result = self.select(previous, 0) | 1;
             }
             self.active_control = NO_CONTROL;
@@ -1116,6 +1122,75 @@ impl GuiTask {
         result
     }
 
+    /// Remembers a form losing the focus, with its selected control (read
+    /// before its deselect), when it is visible.
+    fn remember(&mut self, form: FormId) {
+        if self.form(form).is_some_and(FormHost::is_visible) {
+            self.remembered = Some((form, self.selected(form)));
+        }
+    }
+
+    /// The base form's focus routine. No form means the remembered focus
+    /// when it is still there, visible and not the focus already, else the
+    /// root with control -1. The focused form selects the control; a
+    /// change deselects the old form (remembered first when visible) and
+    /// moves the focus. An answer with both 3 bits asks for a redraw.
+    pub fn focus_form(&mut self, form: Option<FormId>, control: i32) -> u32 {
+        let (target, control) = match form {
+            Some(form) => (Some(form), control),
+            None => match self.remembered {
+                Some((kept, kept_control))
+                    if Some(kept) != self.active
+                        && self.form(kept).is_some_and(FormHost::is_visible) =>
+                {
+                    (Some(kept), kept_control)
+                }
+                _ => (self.root, -1),
+            },
+        };
+        let Some(target) = target else {
+            return 0;
+        };
+        let mut result = self.select(target, control);
+        if Some(target) != self.active {
+            if let Some(previous) = self.active {
+                let kept = self.selected(previous);
+                result |= self.select(previous, 0);
+                if self.form(previous).is_some_and(FormHost::is_visible) {
+                    self.remembered = Some((previous, kept));
+                }
+            }
+            self.active = Some(target);
+        }
+        self.active_control = control;
+        if result & 3 == 3 {
+            self.redraw = true;
+        }
+        result
+    }
+
+    /// The application lost the system's focus: the focused form deselects
+    /// (remembered when visible) and the focus moves to the root with
+    /// control -1. Nothing happens with no focus.
+    pub fn deactivate(&mut self) {
+        let Some(previous) = self.active else {
+            return;
+        };
+        let kept = self.selected(previous);
+        let mut result = self.select(previous, 0);
+        if self.form(previous).is_some_and(FormHost::is_visible) {
+            self.remembered = Some((previous, kept));
+        }
+        self.active = self.root;
+        self.active_control = -1;
+        if let Some(root) = self.root {
+            result |= self.select(root, -1);
+        }
+        if result & 3 == 3 {
+            self.redraw = true;
+        }
+    }
+
     /// The gamepad's leave check: a selected control whose state asks for
     /// it drops the focus altogether.
     fn gamepad_leave(&mut self, form: FormId) {
@@ -1123,7 +1198,7 @@ impl GuiTask {
         if selected > 0 && self.form(form).is_some_and(|f| f.drops_focus(selected)) {
             // The forms' own focus call; it does not check the gamepad again.
             self.gamepad = false;
-            self.focus_set(None, 0);
+            self.focus_form(None, 0);
             self.gamepad = true;
         }
     }

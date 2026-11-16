@@ -209,3 +209,33 @@ fn an_added_window_takes_its_layers_place_and_the_tag_search_finds_it() {
     task.form_mut(a).unwrap().base_mut().unwrap().visible = false;
     assert_eq!(task.find_by_tag(0xce1c_2030), None);
 }
+
+/// The base form's focus routine with no form: the remembered focus while
+/// it is visible and not the focus, else the root with control -1; a focus
+/// change remembers the visible form it leaves.
+#[test]
+fn a_focus_to_no_form_returns_to_the_remembered_one_or_the_root() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let mut a = window();
+    a.parent = Some(root);
+    let mut b = window();
+    b.parent = Some(root);
+    let a = task.add(Box::new(a));
+    let b = task.add(Box::new(b));
+    task.focus_form(Some(a), 0);
+    task.focus_form(Some(b), 0);
+    assert_eq!(task.remembered, Some((a, 0)));
+    task.focus_form(None, 0);
+    assert_eq!(task.active, Some(a));
+    assert_eq!(task.remembered, Some((b, 0)));
+    // A hidden remembered form is passed over for the root.
+    task.form_mut(b).unwrap().base_mut().unwrap().visible = false;
+    task.focus_form(None, 0);
+    assert_eq!((task.active, task.active_control), (Some(root), -1));
+    // The deactivation parks the focus on the root, remembering the form.
+    task.focus_form(Some(a), 0);
+    task.deactivate();
+    assert_eq!((task.active, task.active_control), (Some(root), -1));
+    assert_eq!(task.remembered, Some((a, 0)));
+}
