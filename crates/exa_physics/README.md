@@ -417,7 +417,16 @@ denormal as zero), the `RSQRTSS` length and distance, the frame and 4×4
 products, the rigid inverse and relative frame, the 4×4 point transform and
 row dots (none of these yet replacing the glam calls at their call sites),
 and the library sine and cosine through the x87 unit, which keeps a
-denormal angle's sine denormal.
+denormal angle's sine denormal. The third pass switched the call sites
+whose original calls these routines: the level detection's static-only
+spheres (`point_out_of_frame`), the placement and overlap touches
+(`frame_into` and `point_out_of_frame`), the box meet tests (each side's
+world centre into the other's frame by `point_into_frame`), the weapon
+grabs and grip links (`push_weighted`'s `c·(w·share)`; the limit pushes
+take the original's plain push, which `Part::push` already is), the
+in-place negations of the placed pair and hit and the level rub
+(`negate3`), and the head look's angles (`head_look_angles`, with the
+original's pitch offset added after the negation).
 
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the

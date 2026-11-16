@@ -160,12 +160,20 @@ impl SolverStage for GripSolver {
                 else {
                     continue;
                 };
-                bodies[item_body].push_weights(link.item, &link.on_item, correction * item_share);
+                // The original's weighted push scales the weights by the
+                // share: c·(w·share).
+                bodies[item_body].push_weights_scaled(
+                    link.item,
+                    &link.on_item,
+                    correction,
+                    item_share,
+                );
                 if let Some(part) = link.hand {
-                    bodies[holder_body].push_weights(
+                    bodies[holder_body].push_weights_scaled(
                         part,
                         &link.on_hand,
-                        -correction * holder_share,
+                        correction,
+                        -holder_share,
                     );
                 }
             }

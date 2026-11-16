@@ -25,7 +25,9 @@ functions by name only.
   restore, health), `batch_c.rs` (colours, render maths, popups, effect
   danger, AI steps, key tracks, light flicker) and `batch_d.rs` (the fight
   AI's and the force powers' routines with a few helpers, the made item's
-  condition roll). 112 ports; two of them (the sun view matrix with
+  condition roll), and the third lane's in `batch_e.rs` (the head look
+  with its Euler routines stubbed, the light update; the barricade's place
+  score joined `batch_d.rs`). 115 ports; two of them (the sun view matrix with
   `RSQRTSS`, the colour decode by `powf`) are recorded differences whose
   case files are kept aside.
 - `replay()` runs every case of a file under

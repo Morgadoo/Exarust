@@ -578,7 +578,8 @@ fn level_rub(slip: Vec3, n: Vec3, friction: f32) -> Vec3 {
     let mu = friction * 0.5;
     let limit = ((f64::from(n.y * n.y) * 0.99 + 0.01) * f64::from(mu)) as f32;
     let correction = if limit > t2 {
-        -t
+        // The engine's negation in place, 0 − v.
+        crate::engine_math::negate3(t)
     } else {
         t * ((f64::from(limit) * -0.01) as f32)
     };
@@ -1338,8 +1339,10 @@ fn pull_grab(weapon: &mut Part, struck: &mut Part, grab: &mut GrabPull, disabled
     let len2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
     if len2 > GENERAL_EPSILON {
         let f = (f64::from(grab.strength) / (f64::from(len2.sqrt()) * 0.001 + 1.0)) as f32;
-        weapon.push(&grab.on_weapon, gap * (grab.shares.0 * f));
-        struck.push(&grab.on_struck, gap * (grab.shares.1 * f));
+        // The original's weighted push: the raw gap, each weight scaled by
+        // the share times the law's factor, c·(w·(share·f)).
+        weapon.push_scaled(&grab.on_weapon, gap, grab.shares.0 * f);
+        struck.push_scaled(&grab.on_struck, gap, grab.shares.1 * f);
     }
     false
 }
@@ -4905,6 +4908,14 @@ impl Ragdoll {
         }
     }
 
+    /// [`push_weighted`] on one part: `delta` times each weight scaled by
+    /// `scale` first, `delta·(w·scale)`, the original's link push.
+    pub fn push_weights_scaled(&mut self, part: usize, w: &[f32; 4], delta: Vec3, scale: f32) {
+        if let Some(p) = self.parts.get_mut(part) {
+            p.push_scaled(w, delta, scale);
+        }
+    }
+
     /// Where the part's own origin is now (m).
     pub fn origin_at(&self, part: usize) -> Option<Vec3> {
         self.parts.get(part).map(|p| p.point(&p.own_origin))
@@ -5915,7 +5926,18 @@ impl Ragdoll {
                 for k in 0..p.spheres.len() {
                     let (centre, r) = p.spheres[k];
                     let start = before.transform_point3(centre);
-                    let mut end = p.transform().transform_point3(centre);
+                    // A static-only part's spheres go through the original's
+                    // sector point routine, summed (x·X + y·Y) + (z·Z + T)
+                    // (the moving parts' sweep set-up sums glam's way).
+                    let static_only = p.static_only;
+                    let place = |frame: &Affine3A| {
+                        if static_only {
+                            crate::engine_math::point_out_of_frame(centre, frame)
+                        } else {
+                            frame.transform_point3(centre)
+                        }
+                    };
+                    let mut end = place(&p.transform());
                     let swept = !p.static_only && start.distance_squared(end) > SWEEP_TRAVEL2;
                     let mut record = crate::kd_tree::SweptRecord::new(start, end, r);
                     // Room for the pushes of earlier triangles.
@@ -5938,7 +5960,7 @@ impl Ragdoll {
                         if let Some((q, delta)) = hit
                             && p.hit(centre, q, delta)
                         {
-                            end = p.transform().transform_point3(centre);
+                            end = place(&p.transform());
                             record.end = end;
                             record.refresh();
                         }

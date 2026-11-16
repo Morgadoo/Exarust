@@ -1913,16 +1913,19 @@ fn on_placed_hit(
     let (placed, weights, move_by) = if a_placed {
         (pa, wa, push)
     } else {
-        (pb, wb, -push)
+        // The engine's negation, 0 − v (a zero comes out +0).
+        (pb, wb, crate::engine_math::negate3(push))
     };
     if let Some(wn) = sector::normalise_sum(weights) {
         // The callback's offset record takes the normalised weights as
         // they are (the pass's record clamps them at zero).
+        // The original negates the push in place between the two writes
+        // (the engine's 0 − v).
         if a_placed {
             shove(placed, &wn, move_by);
-            placed.offset_push(&wn, -move_by);
+            placed.offset_push(&wn, crate::engine_math::negate3(move_by));
         } else {
-            placed.offset_push(&wn, -move_by);
+            placed.offset_push(&wn, push);
             shove(placed, &wn, move_by);
         }
     }
@@ -2027,13 +2030,16 @@ fn solve_placed_pair(pa: &mut Part, pb: &mut Part, a_placed: bool, points: &[Poi
         ) else {
             continue;
         };
+        // The original negates the correction in place between its two
+        // writes (the engine's 0 − v).
+        let negated = crate::engine_math::negate3(c);
         if a_placed {
             let w = p.a.map(|w| w.max(0.0));
             pa.push(&w, c);
-            pa.offset_push(&w, -c);
+            pa.offset_push(&w, negated);
         } else {
             let w = p.b.map(|w| w.max(0.0));
-            pb.push(&w, -c);
+            pb.push(&w, negated);
             pb.offset_push(&w, c);
         }
         work = true;

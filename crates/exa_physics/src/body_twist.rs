@@ -204,7 +204,31 @@ const LOOK_ROLL: f64 = 0.1;
 /// condition is `helpless` the kept yaw decays × 0.09 and the pitch is 0.
 /// Each of the head's angles moves `weight` of the way to the look's.
 pub fn head_look(head: &Mat3A, dir: Vec3, weight: f32, yaw: &mut f32, helpless: bool) -> Mat3A {
-    let clip = euler_of(head);
+    from_euler(head_look_angles(
+        euler_of(head),
+        dir,
+        weight,
+        yaw,
+        helpless,
+        HEAD_PITCH_OFFSET,
+    ))
+}
+
+/// The head pitch offset the original adds to the look's pitch (a body
+/// word nothing writes: 0).
+pub const HEAD_PITCH_OFFSET: f32 = 0.0;
+
+/// [`head_look`]'s angles: the head's Euler angles `clip` moved `weight`
+/// of the way to the look's (its pitch `−asin(dir.y) + pitch_offset`,
+/// the offset added after the negation, so a level look's pitch is +0).
+pub fn head_look_angles(
+    clip: Vec3,
+    dir: Vec3,
+    weight: f32,
+    yaw: &mut f32,
+    helpless: bool,
+    pitch_offset: f32,
+) -> Vec3 {
     let pitch = if helpless {
         *yaw = (f64::from(*yaw) * LOOK_DECAY) as f32;
         0.0
@@ -219,15 +243,15 @@ pub fn head_look(head: &Mat3A, dir: Vec3, weight: f32, yaw: &mut f32, helpless: 
             look = (f64::from(sign(change)) * LOOK_RATE + f64::from(*yaw)) as f32;
         }
         *yaw = look;
-        -asin_approx(dir.y)
+        -asin_approx(dir.y) + pitch_offset
     };
     let roll = (f64::from(*yaw) * LOOK_ROLL) as f32;
     let rest = 1.0 - weight;
-    from_euler(Vec3::new(
+    Vec3::new(
         rest * clip.x + pitch * weight,
         rest * clip.y + *yaw * weight,
         rest * clip.z + roll * weight,
-    ))
+    )
 }
 
 #[cfg(test)]
