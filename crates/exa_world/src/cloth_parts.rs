@@ -10,7 +10,9 @@
 //! gives the same cells as a full re-bucket. The stage then reads only the
 //! cells around its cloths, each cell's parts in the order a full re-bucket
 //! would have linked them (the bodies' walk order this tick, then each
-//! body's part order).
+//! body's part order). A changed body whose parts all stay in their cells
+//! (an awake body moves a few centimetres a tick) keeps its links, since
+//! linking it again would leave every cell with the same parts.
 
 use bevy::ecs::entity::EntityHashMap;
 use bevy::platform::collections::HashMap;
@@ -29,6 +31,8 @@ struct BodyCells {
     linked: Vec<(usize, (i32, i32))>,
     /// Every part's entity (linked or not), for the owner lookup.
     entities: Vec<Entity>,
+    /// The body's place in the sector's list (0: none).
+    place: u64,
 }
 
 /// A linked part in a cell: its body, the body's walk rank and the part's
@@ -40,17 +44,93 @@ pub struct LinkedPart {
     pub body: Entity,
 }
 
+/// How the cloth stage keys its cells: the object list's and the body
+/// parts' alike, so a cloth's nine neighbours are found among the parts'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClothGrid {
+    /// No scene grid (tests, tools, a scene without one): Exarust's
+    /// stand-in, unbounded (x, z) cells of 600 cm with `origin` added, and
+    /// the nine neighbours by [`sector::NEAR_OFFSETS`].
+    Cells { origin: (i32, i32) },
+    /// The scene's grid, as the sector's: a cell is its flat index
+    /// `z · columns + x` (keyed `(index, 0)`), and the nine around one are
+    /// the flat offsets of [`sector::GridShape::offsets`], so an x past
+    /// either edge wraps into the next or the previous row.
+    Scene(sector::GridShape),
+}
+
+impl Default for ClothGrid {
+    fn default() -> Self {
+        Self::Cells {
+            origin: crate::cloth::ClothObjects::ORIGIN,
+        }
+    }
+}
+
+impl ClothGrid {
+    /// The keys for a scene's grid ([`exa_physics::SceneGrid`]): its shape,
+    /// or the stand-in when it gave none (an all-pairs scene keeps the
+    /// stand-in too: no 0.9.5 level is one).
+    pub fn of_scene(scene: Option<exa_physics::SceneGrid>) -> Self {
+        match scene.and_then(|s| s.shape()) {
+            Some(shape) => Self::Scene(shape),
+            None => Self::default(),
+        }
+    }
+
+    /// The origin cell a point's cell is computed with.
+    pub fn origin(&self) -> (i32, i32) {
+        match *self {
+            Self::Cells { origin } => origin,
+            Self::Scene(shape) => shape.origin,
+        }
+    }
+
+    /// A world point's (cm) cell, before keying.
+    pub fn cell_of(&self, centre_cm: Vec3) -> (i32, i32) {
+        sector::cell_of(centre_cm, self.origin())
+    }
+
+    /// The key of a cell.
+    pub fn key_of_cell(&self, cell: (i32, i32)) -> (i32, i32) {
+        match *self {
+            Self::Cells { .. } => cell,
+            Self::Scene(shape) => (sector::cell_index(cell, shape.columns), 0),
+        }
+    }
+
+    /// The key of a world point (cm).
+    pub fn key_of(&self, centre_cm: Vec3) -> (i32, i32) {
+        self.key_of_cell(self.cell_of(centre_cm))
+    }
+
+    /// The nine keys around `key`, its own first, in the original's scan
+    /// order.
+    pub fn around(&self, key: (i32, i32)) -> [(i32, i32); 9] {
+        match *self {
+            Self::Cells { .. } => sector::NEAR_OFFSETS
+                .map(|(dx, dz)| (key.0.wrapping_add(dx), key.1.wrapping_add(dz))),
+            Self::Scene(shape) => shape.offsets().map(|o| (key.0.wrapping_add(o), 0)),
+        }
+    }
+}
+
 /// The incremental cell index of the bodies' parts (see the module).
 #[derive(Debug, Default)]
 pub struct PartCells {
     bodies: EntityHashMap<BodyCells>,
     /// Every part's body, by the part's entity.
     owners: EntityHashMap<Entity>,
+    /// Every placed body, by its place in the sector's list.
+    places: HashMap<u64, Entity>,
     /// Each cell's linked parts as (body, part index), unordered.
     cells: HashMap<(i32, i32), Vec<(Entity, usize)>>,
     refresh: u32,
     /// Bodies re-bucketed by the last refresh.
     pub rebucketed: usize,
+    /// The keys the cells were made with: another grid buckets every body
+    /// afresh.
+    grid: Option<ClothGrid>,
 }
 
 impl PartCells {
@@ -64,8 +144,10 @@ impl PartCells {
     pub fn clear(&mut self) {
         self.bodies.clear();
         self.owners.clear();
+        self.places.clear();
         self.cells.clear();
         self.rebucketed = 0;
+        self.grid = None;
     }
 
     /// Walks this tick's bodies in their order, each with whether it was
@@ -74,8 +156,12 @@ impl PartCells {
     pub fn refresh<'a>(
         &mut self,
         bodies: impl Iterator<Item = (Entity, bool, &'a Ragdoll)>,
-        origin: (i32, i32),
+        grid: ClothGrid,
     ) {
+        if self.grid != Some(grid) {
+            self.clear();
+            self.grid = Some(grid);
+        }
         self.refresh = self.refresh.wrapping_add(1);
         let refresh = self.refresh;
         let mut walked = 0usize;
@@ -89,22 +175,9 @@ impl PartCells {
                 continue;
             }
             let mut entry = self.bodies.remove(&entity).unwrap_or_default();
-            self.unlink(entity, &mut entry);
             entry.rank = rank;
             entry.seen = refresh;
-            for (index, part) in body.parts.iter().enumerate() {
-                self.owners.insert(part.entity, entity);
-                entry.entities.push(part.entity);
-                if part.pairing.out || part.spheres.is_empty() {
-                    continue;
-                }
-                let now = part.transform();
-                let box_centre = part.pairing.mesh.world_centre(&now) * 100.0;
-                let cell = sector::cell_of(box_centre, origin);
-                entry.linked.push((index, cell));
-                self.cells.entry(cell).or_default().push((entity, index));
-            }
-            self.bodies.insert(entity, entry);
+            self.link(entity, entry, body, grid);
             self.rebucketed += 1;
         }
         if self.bodies.len() > walked {
@@ -122,6 +195,78 @@ impl PartCells {
         }
     }
 
+    /// Buckets a body's parts afresh where they are now, keeping its walk
+    /// rank (the solver's object stage, for the bodies it moved this tick).
+    /// A body the index does not know is left out.
+    pub fn rebucket(&mut self, entity: Entity, body: &Ragdoll, grid: ClothGrid) {
+        if self.grid != Some(grid) {
+            return;
+        }
+        let Some(entry) = self.bodies.remove(&entity) else {
+            return;
+        };
+        self.link(entity, entry, body, grid);
+    }
+
+    /// Links `body`'s parts in their cells under `entry` (unlinking what it
+    /// held first) and records it.
+    fn link(&mut self, entity: Entity, mut entry: BodyCells, body: &Ragdoll, grid: ClothGrid) {
+        // A body whose parts all stay in their cells (an awake body moves a
+        // few centimetres a tick) keeps its links: unlinking and linking it
+        // again would leave every list holding the same parts, and a cell's
+        // parts are read sorted, so their order in the list does not count.
+        if Self::same_cells(&entry, body, grid) {
+            self.bodies.insert(entity, entry);
+            return;
+        }
+        self.unlink(entity, &mut entry);
+        entry.place = body.list_place();
+        if entry.place != 0 {
+            self.places.insert(entry.place, entity);
+        }
+        for (index, part) in body.parts.iter().enumerate() {
+            self.owners.insert(part.entity, entity);
+            entry.entities.push(part.entity);
+            if part.pairing.out || part.spheres.is_empty() {
+                continue;
+            }
+            let now = part.transform();
+            let box_centre = part.pairing.mesh.world_centre(&now) * 100.0;
+            let cell = grid.key_of(box_centre);
+            entry.linked.push((index, cell));
+            self.cells.entry(cell).or_default().push((entity, index));
+        }
+        self.bodies.insert(entity, entry);
+    }
+
+    /// Whether linking `body` afresh would give `entry` exactly what it
+    /// holds: the same place, the same part entities and every linked part
+    /// in the same cell. An entry that holds nothing yet (a new body) never
+    /// matches.
+    fn same_cells(entry: &BodyCells, body: &Ragdoll, grid: ClothGrid) -> bool {
+        if entry.entities.is_empty()
+            || entry.place != body.list_place()
+            || entry.entities.len() != body.parts.len()
+        {
+            return false;
+        }
+        let mut linked = entry.linked.iter();
+        for (index, part) in body.parts.iter().enumerate() {
+            if entry.entities[index] != part.entity {
+                return false;
+            }
+            if part.pairing.out || part.spheres.is_empty() {
+                continue;
+            }
+            let now = part.transform();
+            let cell = grid.key_of(part.pairing.mesh.world_centre(&now) * 100.0);
+            if linked.next() != Some(&(index, cell)) {
+                return false;
+            }
+        }
+        linked.next().is_none()
+    }
+
     /// Takes a body's parts out of the cells and the owner lookup, leaving
     /// its entry's lists empty for reuse.
     fn unlink(&mut self, entity: Entity, entry: &mut BodyCells) {
@@ -137,6 +282,24 @@ impl PartCells {
                 self.owners.remove(&part);
             }
         }
+        if entry.place != 0 && self.places.get(&entry.place) == Some(&entity) {
+            self.places.remove(&entry.place);
+        }
+    }
+
+    /// The body the solver holds as `body`: by its place in the sector's
+    /// list (read from the body itself, so a sleeper's parts are not
+    /// touched), or for a body never placed by its first part's entity.
+    pub fn body_of(&self, body: &Ragdoll) -> Option<Entity> {
+        match body.list_place() {
+            0 => body.parts.first().and_then(|p| self.owner_of(p.entity)),
+            place => self.places.get(&place).copied(),
+        }
+    }
+
+    /// The place of a body the index knows (0: none).
+    pub fn place_of(&self, body: Entity) -> u64 {
+        self.bodies.get(&body).map_or(0, |entry| entry.place)
     }
 
     /// The body a part entity belongs to, whether its part is linked or not.
@@ -244,21 +407,30 @@ mod tests {
         ];
         let cells: Vec<(i32, i32)> = (-1..4).flat_map(|x| (-1..2).map(move |z| (x, z))).collect();
         let mut index = PartCells::new();
-        index.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), (0, 0));
+        index.refresh(
+            walk(&ids, &bodies, [true; 3]).into_iter(),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(index.rebucketed, 3);
         assert_eq!(index.linked(), 7);
         // An unchanged tick re-buckets nothing.
-        index.refresh(walk(&ids, &bodies, [false; 3]).into_iter(), (0, 0));
+        index.refresh(
+            walk(&ids, &bodies, [false; 3]).into_iter(),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(index.rebucketed, 0);
         // The first body moves 6 m on (changed); the others stay.
         bodies[0].translate(Vec3::new(6.0, 0.0, 0.0));
         index.refresh(
             walk(&ids, &bodies, [true, false, false]).into_iter(),
-            (0, 0),
+            ClothGrid::Cells { origin: (0, 0) },
         );
         assert_eq!(index.rebucketed, 1);
         let mut fresh = PartCells::new();
-        fresh.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), (0, 0));
+        fresh.refresh(
+            walk(&ids, &bodies, [true; 3]).into_iter(),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(snapshot(&index, &cells), snapshot(&fresh, &cells));
         // A cell's parts come by walk rank, then part index.
         let mut first = Vec::new();
@@ -268,9 +440,51 @@ mod tests {
         // A body that is gone leaves the index and the owner lookup.
         let gone = bodies[2].parts[0].entity;
         assert_eq!(index.owner_of(gone), Some(ids[2]));
-        index.refresh(walk(&ids, &bodies, [false; 3]).into_iter().take(2), (0, 0));
+        index.refresh(
+            walk(&ids, &bodies, [false; 3]).into_iter().take(2),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(index.owner_of(gone), None);
         assert_eq!(index.linked(), 5);
+    }
+
+    /// A changed body whose parts stay in their cells keeps its links: the
+    /// cells' lists stay as they were, and the index still matches a fresh
+    /// one; one that leaves its cell is linked afresh.
+    #[test]
+    fn a_body_that_stays_in_its_cells_keeps_its_links() {
+        let mut world = World::new();
+        let ids: Vec<Entity> = (0..3).map(|_| world.spawn_empty().id()).collect();
+        let mut bodies = vec![
+            body(&mut world, Vec3::new(1.0, 0.0, 1.0), 3),
+            body(&mut world, Vec3::new(2.0, 0.0, 1.5), 2),
+            body(&mut world, Vec3::new(13.0, 0.0, 1.0), 2),
+        ];
+        let grid = ClothGrid::Cells { origin: (0, 0) };
+        let cells: Vec<(i32, i32)> = (-1..4).flat_map(|x| (-1..2).map(move |z| (x, z))).collect();
+        let mut index = PartCells::new();
+        index.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), grid);
+        type Raw = Vec<((i32, i32), Vec<(Entity, usize)>)>;
+        let raw = |index: &PartCells| {
+            let mut all: Raw = index.cells.iter().map(|(k, v)| (*k, v.clone())).collect();
+            all.sort_by_key(|(k, _)| *k);
+            all
+        };
+        let before = raw(&index);
+        // One centimetre on: every part stays in its cell.
+        bodies[0].translate(Vec3::new(0.01, 0.0, 0.0));
+        index.refresh(walk(&ids, &bodies, [true, false, false]).into_iter(), grid);
+        assert_eq!(raw(&index), before);
+        let mut fresh = PartCells::new();
+        fresh.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), grid);
+        assert_eq!(snapshot(&index, &cells), snapshot(&fresh, &cells));
+        // Six metres on: the body's parts leave their cell.
+        bodies[0].translate(Vec3::new(6.0, 0.0, 0.0));
+        index.rebucket(ids[0], &bodies[0], grid);
+        assert_ne!(raw(&index), before);
+        let mut fresh = PartCells::new();
+        fresh.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), grid);
+        assert_eq!(snapshot(&index, &cells), snapshot(&fresh, &cells));
     }
 
     /// The nine cells around each centre, once each.

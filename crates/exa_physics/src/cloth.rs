@@ -62,6 +62,39 @@ pub const FRICTION: [f32; 3] = [0.002, 0.01, 0.015];
 /// Sleep countdown does not count itself up past this (a body may hand it
 /// a higher one).
 pub const SLEEP_CAP: i32 = 32;
+
+/// A hold without a pin to measure from keeps this radius (cm).
+pub const GRAB_FREE_RADIUS: f32 = 5.0;
+
+/// The pin search's starting distance (the engine's large float).
+const GRAB_NO_DISTANCE2: f32 = f32::from_bits(0x7f7f_c99e);
+
+/// The share of the way to its target a hold's smoothed point adds to its
+/// motion each tick, and the share of that motion it then moves.
+pub const GRAB_PULL: f32 = 0.1;
+pub const GRAB_FOLLOW: f32 = 0.3;
+
+/// The countdown the hand's drag wakes the cloth to.
+pub const GRAB_WAKE: i32 = 32;
+
+/// The engine's small float (`0x33ffffd7`).
+const MOTION_FLOOR2: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// A hand's hold on the cloth (the original's grab record): the point at
+/// `weights` over the particles `corners`, the hand's `target` for it (cm,
+/// the cloth's frame), its `radius` from its `pin` (the nearest pinned
+/// particle, measured in the mesh when the hold was made), and its smoothed
+/// point now and a tick ago, which the constraint passes put the point on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GrabRecord {
+    pub corners: [usize; 3],
+    pub weights: [f32; 3],
+    pub target: Vec3,
+    pub radius: f32,
+    pub smoothed: Vec3,
+    pub last: Vec3,
+    pub pin: Option<usize>,
+}
 /// Rustle starts when the squared sum of the velocities exceeds this.
 pub const RUSTLE_SPEED_SQ: f32 = 400.0;
 /// The body's gravitational acceleration, metres per second squared.
@@ -383,9 +416,16 @@ pub struct Cloth {
     pub rustle_pitch: f32,
     /// The rustle's energy tail, which decays by 0.9 each awake tick.
     pub rustle_tail: f32,
-    /// The hand's grab: the vertex it holds and the point it is pulled to
-    /// (centimetres, the cloth's own frame).
-    pub grabbed: Option<(usize, Vec3)>,
+    /// The integrate slot's motion energy, 0 to 1 ([`motion_energy`]); no
+    /// reader of it was traced.
+    pub energy: f32,
+    /// The hands' holds on the cloth, oldest first ([`GrabRecord`]).
+    pub grabs: Vec<GrabRecord>,
+    /// Each particle's place in the mesh the cloth was built from (cm, its
+    /// frame): where a grab's distance to the nearest pin is measured. Empty
+    /// for a cloth built from bare particles, which measures from where its
+    /// particles are.
+    pub rest: Vec<Vec3>,
     /// The parameter record the cloth was set up from
     /// ([`crate::cloth_record`]): its drag, retention, gravity scale,
     /// padding, slide, pass count and constraint mode.
@@ -421,24 +461,103 @@ impl Cloth {
             rustle_volume: 0.0,
             rustle_pitch: 0.0,
             rustle_tail: 0.0,
-            grabbed: None,
+            energy: 0.0,
+            grabs: Vec::new(),
+            rest: Vec::new(),
             record: crate::cloth_record::ClothRecord::LEVEL,
             particle_bodies: Vec::new(),
         }
     }
 
-    /// The hand grabs vertex `index` and pulls it to `at` (centimetres, the
-    /// cloth's own frame). The item's own drag rules decide the point.
-    pub fn grab(&mut self, index: usize, at: Vec3) {
-        if index < self.particles.len() {
-            self.grabbed = Some((index, at));
-            self.sleep = self.sleep.max(2).max(self.owner_sleep);
+    /// Adds a hold on the cloth (the original's grab record, made when the
+    /// hand takes the cloth): the point at `weights` over the particles
+    /// `corners` (a triangle's), pulled toward `target` (cm, the cloth's
+    /// frame). Its radius is the distance from the point's place in the
+    /// mesh (`((r₀·w₀) + r₁·w₁) + r₂·w₂`) to the nearest pin's (the first
+    /// of equals; squared distances `(dx² + dy²) + dz²`): its square root
+    /// when over the engine's small float, 0 when not (or unordered), and
+    /// [`GRAB_FREE_RADIUS`] with no pin. Its smoothed point starts at the
+    /// target. Returns the record's index; a corner the cloth does not have
+    /// adds nothing.
+    pub fn add_grab(
+        &mut self,
+        corners: [usize; 3],
+        weights: [f32; 3],
+        target: Vec3,
+    ) -> Option<usize> {
+        let count = self.particles.len();
+        if corners.iter().any(|&c| c >= count) {
+            return None;
         }
+        let rest = |i: usize| {
+            self.rest
+                .get(i)
+                .copied()
+                .unwrap_or(self.particles[i].position)
+        };
+        let point = rest(corners[0]) * weights[0]
+            + rest(corners[1]) * weights[1]
+            + rest(corners[2]) * weights[2];
+        let mut best = GRAB_NO_DISTANCE2;
+        let mut pin = None;
+        for p in &self.pins {
+            if p.index >= count {
+                continue;
+            }
+            let d = point - rest(p.index);
+            let d2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+            if d2 < best {
+                best = d2;
+                pin = Some(p.index);
+            }
+        }
+        let radius = match pin {
+            None => GRAB_FREE_RADIUS,
+            Some(_) if best > MOTION_FLOOR2 => best.sqrt(),
+            Some(_) => 0.0,
+        };
+        self.grabs.push(GrabRecord {
+            corners,
+            weights,
+            target,
+            radius,
+            smoothed: target,
+            last: target,
+            pin,
+        });
+        Some(self.grabs.len() - 1)
     }
 
-    /// The hand lets go.
+    /// The hand's drag (the original's drag handler, on the cloth's side):
+    /// the newest hold takes `at` as its target (cm, the cloth's frame) and
+    /// the cloth is woken to [`GRAB_WAKE`]. The hand that took vertex
+    /// `index` without a hold yet makes one there (all its weight on the
+    /// vertex) first [Exarust's hand picks a vertex, not a point on a
+    /// triangle]. A vertex the cloth does not have is ignored.
+    pub fn grab(&mut self, index: usize, at: Vec3) {
+        if index >= self.particles.len() {
+            return;
+        }
+        if self.grabs.is_empty() && self.add_grab([index; 3], [1.0, 0.0, 0.0], at).is_none() {
+            return;
+        }
+        if let Some(last) = self.grabs.last_mut() {
+            last.target = at;
+        }
+        self.wake_to(GRAB_WAKE);
+    }
+
+    /// The hand lets go: the newest hold is dropped.
     pub fn release_grab(&mut self) {
-        self.grabbed = None;
+        self.grabs.pop();
+    }
+
+    /// Raises the countdown to `count` when it is higher (the cloth's wake
+    /// slot), never below the owner's.
+    pub fn wake_to(&mut self, count: i32) {
+        if self.sleep < count {
+            self.sleep = count;
+        }
     }
 
     /// Build a cloth from a triangle mesh. Each vertex is a particle, and
@@ -500,6 +619,7 @@ impl Cloth {
             }
         }
         cloth.distances = geodesic(vertices, triangles, pinned);
+        cloth.rest = vertices.to_vec();
         cloth
     }
 
@@ -786,12 +906,35 @@ pub struct WindAt<'a> {
 /// [`step_before_level`] in the world's wind: after the integrate and the
 /// countdown, while the wind is above [`WIND_FLOOR`] each particle moves
 /// along the wind by `(0.25 + n)·strength`, with `n` the tile's noise where
-/// the particle was a tick ago.
+/// the particle was a tick ago. The three parts are [`integrate`],
+/// [`touch_listed_bodies`] and [`after_bodies`]; the world's live stage runs
+/// the body stage between them inside the bodies' solver instead.
 pub fn step_before_level_in(
     cloth: &mut Cloth,
     gravity: Vec3,
     wind: Option<WindAt>,
 ) -> Option<(Vec<Vec3>, bool)> {
+    let Integrated { before, mut awake } = integrate(cloth, gravity, wind)?;
+    touch_listed_bodies(cloth, &mut awake);
+    after_bodies(cloth, awake);
+    Some((before, awake))
+}
+
+/// What the cloth's own step leaves for its body stage: the particles where
+/// the body stage begins (the reaction is measured from them) and whether
+/// the cloth is awake by then.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Integrated {
+    pub before: Vec<Vec3>,
+    pub awake: bool,
+}
+
+/// The cloth's own step, the original's integrate slot (the sector's object
+/// step, before its body contacts): integrate, countdown, wind, rustle,
+/// the step's constraint passes and the hand's grab; then the body stage's
+/// buffers are cleared. None when the tick changes nothing (non-finite
+/// input or no particles).
+pub fn integrate(cloth: &mut Cloth, gravity: Vec3, wind: Option<WindAt>) -> Option<Integrated> {
     if !gravity.is_finite() || !cloth.mean_velocity.is_finite() {
         return None;
     }
@@ -844,41 +987,42 @@ pub fn step_before_level_in(
             particle.position += direction * push;
         }
     }
-    // The rustle is the integrate slot's, which only an awake cloth runs.
+    // The motion energy and the rustle are the integrate slot's, which only
+    // an awake cloth runs.
     if awake {
+        cloth.energy = motion_energy(sum);
         settle_rustle(cloth, sum);
     }
     if awake {
-        // The triangle mode makes one pass here, the particle mode all.
+        // The holds' smoothed points move toward their targets, then the
+        // triangle mode makes one constraint pass here, the particle mode
+        // all.
+        smooth_grabs(cloth);
         for _ in 0..cloth.record.step_passes() {
             apply_constraints(cloth, &[]);
         }
     }
     // Whether the sector's object flags have the cloth awake this tick: set
     // at its start, and by a body that raises its countdown.
-    let mut awake = awake;
-    // The hand's grabbed vertex sits on its target after the tick's links,
-    // and wakes the cloth. [Exarust's own wake: the original's grab call
-    // writes no countdown; 2 is the least that outlasts the tick's end.]
-    if let Some((index, target)) = cloth.grabbed
-        && target.is_finite()
-        && index < count
-    {
-        let particle = &mut cloth.particles[index];
-        particle.previous = target;
-        particle.position = target;
-        cloth.sleep = cloth.sleep.max(2).max(cloth.owner_sleep);
-        awake = true;
-    }
     let before: Vec<Vec3> = cloth
         .particles
         .iter()
         .map(|particle| particle.position)
         .collect();
-    // The body stage: each body's spheres push the cloth's triangles into
-    // the push buffer, and a body that pushed trades countdowns with it.
     cloth.body_tests = 0;
     cloth.pushed_by.clear();
+    cloth.pushes.resize(count, Vec3::ZERO);
+    Some(Integrated { before, awake })
+}
+
+/// The body stage over the bodies handed to the cloth beforehand
+/// ([`Cloth::bodies`], [`Cloth::particle_bodies`]), with no body side: each
+/// body's spheres push the cloth's triangles into the push buffer (or the
+/// particle mode's particles directly), and a body that pushed trades
+/// countdowns with it, setting `awake` when the cloth's countdown rose. The
+/// live stage, which also pushes the bodies back, is the world's.
+pub fn touch_listed_bodies(cloth: &mut Cloth, awake: &mut bool) {
+    let count = cloth.particles.len();
     cloth.pushes.resize(count, Vec3::ZERO);
     let particle_mode = cloth.record.particle_mode();
     if particle_mode && !cloth.particle_bodies.is_empty() {
@@ -891,7 +1035,7 @@ pub fn step_before_level_in(
                 cloth.pushed_by.push(index);
                 if cloth.sleep < body.countdown {
                     cloth.sleep = body.countdown;
-                    awake = true;
+                    *awake = true;
                 }
             }
         }
@@ -913,16 +1057,23 @@ pub fn step_before_level_in(
                 cloth.pushed_by.push(index);
                 let (woke, _owed) =
                     crate::cloth_body::trade_countdowns(&mut cloth.sleep, body.countdown);
-                awake |= woke;
+                *awake |= woke;
             }
         }
         cloth.bodies = bodies;
     }
+}
+
+/// The cloth's pass after its body stage (the original's after-collisions
+/// slot): an awake triangle-mode cloth applies its push buffer, then the
+/// remaining constraint passes hold the pushed vertices on their planes;
+/// then the level planes push it (they never wake it).
+pub fn after_bodies(cloth: &mut Cloth, awake: bool) {
     // The awake cloth's pass after the body stage: the pushes, then the
     // remaining constraint passes holding the pushed vertices on their
     // planes.
     // (The particle mode's post-body pass returns at once.)
-    if awake && !particle_mode {
+    if awake && !cloth.record.particle_mode() {
         let planes = crate::cloth_body::apply_pushes(cloth);
         for _ in 0..cloth.record.post_body_passes() {
             apply_constraints(cloth, &planes);
@@ -937,7 +1088,6 @@ pub fn step_before_level_in(
             push_plane(particle, plane, padding);
         }
     }
-    Some((before, awake))
 }
 
 /// The end of the tick, after the level's meshes have pushed the cloth
@@ -960,6 +1110,64 @@ pub fn finish_step(cloth: &mut Cloth, before: &[Vec3], awake: bool) {
     cloth.reaction = Vec3::ZERO;
     for (particle, old) in cloth.particles.iter().zip(before) {
         cloth.reaction -= particle.position - *old;
+    }
+}
+
+/// The draw update's tangent rebuild for a normal-mapped first part (the
+/// original's, after the normals are rebuilt): each face's tangent from its
+/// corners' places `positions` and texture coordinates `uvs`,
+/// `t = (Δv₂·e₁ − Δv₁·e₂) · (1 / (Δu₁·Δv₂ − Δu₂·Δv₁))` with `e₁ = p₁ − p₀`,
+/// `e₂ = p₂ − p₀` and `Δ` the coordinates' differences from corner 0 (an
+/// exact reciprocal, no floor: a degenerate face gives infinities as the
+/// original's), summed unweighted into its three vertices; then each
+/// vertex's sum loses its part along its normal
+/// (`t + n·(−((tₓnₓ + t_yn_y) + t_zn_z))`) and is scaled by the
+/// processor's approximate reciprocal square root (zero stays zero), into
+/// the first three lanes of
+/// `tangents`. The fourth lane (the handedness sign the mesh was loaded
+/// with, Bevy's tangent sign) is left as it is: the original writes only
+/// three. Faces naming a missing vertex, and vertices past any of the
+/// arrays, are skipped.
+pub fn rebuild_tangents(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[u32],
+    tangents: &mut [[f32; 4]],
+) {
+    let count = positions.len().min(uvs.len());
+    let mut sums = vec![Vec3::ZERO; positions.len()];
+    for face in indices.as_chunks::<3>().0 {
+        let [a, b, c] = face.map(|i| i as usize);
+        if a >= count || b >= count || c >= count {
+            continue;
+        }
+        let p = |i: usize| Vec3::from_array(positions[i]);
+        let e1 = p(b) - p(a);
+        let e2 = p(c) - p(a);
+        let (u0, u1, u2) = (uvs[a], uvs[b], uvs[c]);
+        let du1 = u1[0] - u0[0];
+        let dv1 = u1[1] - u0[1];
+        let du2 = u2[0] - u0[0];
+        let dv2 = u2[1] - u0[1];
+        let r = 1.0 / (du1 * dv2 - du2 * dv1);
+        let t = Vec3::new(
+            (dv2 * e1.x - dv1 * e2.x) * r,
+            (dv2 * e1.y - dv1 * e2.y) * r,
+            (dv2 * e1.z - dv1 * e2.z) * r,
+        );
+        sums[a] += t;
+        sums[b] += t;
+        sums[c] += t;
+    }
+    for ((slot, t), n) in tangents.iter_mut().zip(&sums).zip(normals) {
+        let n = Vec3::from_array(*n);
+        let along = (t.x * n.x + t.y * n.y) + t.z * n.z;
+        let across = *t + n * -along;
+        let unit = crate::engine_math::normalize_approx(across);
+        slot[0] = unit.x;
+        slot[1] = unit.y;
+        slot[2] = unit.z;
     }
 }
 
@@ -1275,6 +1483,62 @@ pub fn walk_links(
     tree
 }
 
+/// The integrate slot's step of every hold, before the constraint passes:
+/// the hold's target, kept within its radius of its pin's particle where
+/// that is now (`pin + d·(radius/|d|)` when `|d|² > radius²`, else the
+/// target as it is; a hold without a pin takes its target), then its
+/// smoothed point moves on as a damped follower: the motion it made last
+/// tick, plus [`GRAB_PULL`] of the way to that target, times
+/// [`GRAB_FOLLOW`].
+// The original's compares send NaN down one branch.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn smooth_grabs(cloth: &mut Cloth) {
+    for index in 0..cloth.grabs.len() {
+        let grab = cloth.grabs[index];
+        let toward = match grab.pin.and_then(|p| cloth.particles.get(p)) {
+            None => grab.target,
+            Some(pin) => {
+                let d = grab.target - pin.position;
+                let d2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+                // Within the radius, or unordered: the target.
+                if !(grab.radius * grab.radius < d2) {
+                    grab.target
+                } else {
+                    pin.position + d * (grab.radius / d2.sqrt())
+                }
+            }
+        };
+        let mut motion = grab.smoothed - grab.last;
+        let g = &mut cloth.grabs[index];
+        g.last = g.smoothed;
+        motion += (toward - g.smoothed) * GRAB_PULL;
+        g.smoothed += motion * GRAB_FOLLOW;
+    }
+}
+
+/// Each constraint pass's holds, after the pins: the hold's point on its
+/// particles (`((p₀·w₀) + p₁·w₁) + p₂·w₂`) is moved onto its smoothed point,
+/// each corner by the gap times its weight over the largest weight
+/// (`MAXSS`).
+fn spread_grabs(cloth: &mut Cloth) {
+    let count = cloth.particles.len();
+    for index in 0..cloth.grabs.len() {
+        let grab = cloth.grabs[index];
+        let [a, b, c] = grab.corners;
+        if a >= count || b >= count || c >= count {
+            continue;
+        }
+        let [w0, w1, w2] = grab.weights;
+        let p = |i: usize| cloth.particles[i].position;
+        let at = p(a) * w0 + p(b) * w1 + p(c) * w2;
+        let gap = grab.smoothed - at;
+        let scale = 1.0 / crate::engine_math::max(crate::engine_math::max(w0, w1), w2);
+        cloth.particles[a].position += gap * (w0 * scale);
+        cloth.particles[b].position += gap * (w1 * scale);
+        cloth.particles[c].position += gap * (w2 * scale);
+    }
+}
+
 /// One constraint pass: pins, then edges, then (after the body push) the
 /// pushed vertices put back on their push planes.
 fn apply_constraints(cloth: &mut Cloth, planes: &[Option<(Vec3, f32)>]) {
@@ -1289,6 +1553,7 @@ fn apply_constraints(cloth: &mut Cloth, planes: &[Option<(Vec3, f32)>]) {
         let weight = pin.weight.clamp(0.0, 1.0);
         particle.position += (pin.rest - particle.position) * weight;
     }
+    spread_grabs(cloth);
     for index in 0..cloth.edges.len() {
         let edge = cloth.edges[index];
         correct_edge(&mut cloth.particles, edge);
@@ -1315,6 +1580,20 @@ fn settle_sleep(cloth: &mut Cloth, sum_sq: f32) {
     if cloth.sleep < cloth.owner_sleep {
         cloth.sleep = cloth.owner_sleep;
     }
+}
+
+/// The integrate slot's motion energy: the squared velocity sum
+/// `(x² + y²) + z²`, when over the engine's small float, as
+/// `min(√sum² · 0.001, 1)` (the product in double; a NaN root stays), else
+/// 0 (an unordered square included).
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn motion_energy(sum: Vec3) -> f32 {
+    let e2 = (sum.x * sum.x + sum.y * sum.y) + sum.z * sum.z;
+    if !(e2 > MOTION_FLOOR2) {
+        return 0.0;
+    }
+    let e = (f64::from(e2.sqrt()) * 0.001) as f32;
+    if e > 1.0 { 1.0 } else { e }
 }
 
 /// The integrate slot's rustle, for a cloth whose record names a rustle
@@ -2458,24 +2737,186 @@ mod tests {
         assert_eq!(base[0], Vec3::new(1.0, 2.0, 3.0));
     }
 
-    /// A grabbed vertex is put on the hand's target after the tick's
-    /// links and wakes the cloth; letting go leaves it to gravity.
+    /// The hand's drag makes a hold on the vertex it took (all the weight
+    /// on it), wakes the cloth to 32, and the hold's smoothed point follows
+    /// the target as a damped follower, the vertex put on it by each
+    /// constraint pass; letting go drops the hold and leaves the vertex to
+    /// gravity. A vertex the cloth does not have is ignored.
     #[test]
     fn a_grabbed_vertex_follows_the_hand() {
         let mut cloth = Cloth::new(vec![still(Vec3::ZERO), still(Vec3::new(10.0, 0.0, 0.0))]);
         cloth.sleep = 0;
         let target = Vec3::new(0.0, 0.0, 50.0);
         cloth.grab(0, target);
-        assert!(cloth.sleep > 0);
+        assert_eq!(cloth.sleep, GRAB_WAKE);
+        assert_eq!(cloth.grabs.len(), 1);
+        // Made at the drag's first target: the smoothed point is there.
         step(&mut cloth, Vec3::new(0.0, 0.0, 0.0));
         assert_eq!(cloth.particles[0].position, target);
+        // A new target: the follower moves 0.3 of a tenth of the way, then
+        // keeps its motion.
+        let next = Vec3::new(0.0, 0.0, 60.0);
+        cloth.grab(0, next);
+        assert_eq!(cloth.grabs.len(), 1);
+        step(&mut cloth, Vec3::ZERO);
+        let first = target + ((next - target) * GRAB_PULL) * GRAB_FOLLOW;
+        assert_eq!(cloth.grabs[0].smoothed, first);
+        assert_eq!(cloth.particles[0].position, first);
+        step(&mut cloth, Vec3::ZERO);
+        let motion = (first - target) + (next - first) * GRAB_PULL;
+        assert_eq!(cloth.grabs[0].smoothed, first + motion * GRAB_FOLLOW);
         cloth.release_grab();
+        assert!(cloth.grabs.is_empty());
         let at = cloth.particles[0].position;
         step(&mut cloth, Vec3::new(0.0, 0.0, -1.0));
         assert!(cloth.particles[0].position.z < at.z);
-        // A grab on a vertex the cloth does not have is ignored.
         cloth.grab(9, target);
-        assert!(cloth.grabbed.is_none());
+        assert!(cloth.grabs.is_empty());
+    }
+
+    /// The motion energy: the velocity sum's length a thousandth, capped
+    /// at 1, and 0 at or under the small float.
+    #[test]
+    fn the_motion_energy_follows_the_velocity_sum() {
+        assert_eq!(
+            motion_energy(Vec3::new(300.0, 0.0, 400.0)),
+            (500.0f64 * 0.001) as f32
+        );
+        assert_eq!(motion_energy(Vec3::new(3000.0, 0.0, 0.0)), 1.0);
+        assert_eq!(motion_energy(Vec3::splat(1.0e-4)), 0.0);
+        assert_eq!(motion_energy(Vec3::new(f32::NAN, 0.0, 0.0)), 0.0);
+        let mut cloth = Cloth::new(vec![Particle {
+            position: Vec3::new(3.0, 0.0, 4.0),
+            previous: Vec3::ZERO,
+        }]);
+        step(&mut cloth, Vec3::ZERO);
+        assert_eq!(cloth.energy, (5.0f64 * 0.001) as f32);
+    }
+
+    /// The tangent rebuild: a face's u-gradient through the exact
+    /// reciprocal, summed into its vertices, made perpendicular to each
+    /// vertex's normal and normalised by the approximate root, with the
+    /// fourth lane (the loaded handedness) kept.
+    #[test]
+    fn the_tangents_are_rebuilt_from_the_moved_faces() {
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [10.0, 10.0, 5.0],
+        ];
+        let uvs = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let tilted = Vec3::new(0.0, 0.6, 0.8);
+        let normals = [
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            tilted.to_array(),
+            [0.0, 0.0, 1.0],
+        ];
+        let indices = [0, 1, 2];
+        let mut tangents = [
+            [9.0, 9.0, 9.0, -1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0; 4],
+            [7.0, 7.0, 7.0, 1.0],
+        ];
+        rebuild_tangents(&positions, &normals, &uvs, &indices, &mut tangents);
+        // Δu₁ = 1, Δv₂ = 1: t = e₁ = (10, 0, 0) at each corner.
+        let unit = crate::engine_math::normalize_approx(Vec3::new(10.0, 0.0, 0.0));
+        assert_eq!(&tangents[0][..3], &unit.to_array());
+        assert_eq!(tangents[0][3], -1.0);
+        assert_eq!(tangents[1], [unit.x, unit.y, unit.z, 1.0]);
+        // Already across the tilted normal: unchanged but for the root.
+        assert_eq!(&tangents[2][..3], &unit.to_array());
+        // A vertex no face reaches: its zero sum stays zero.
+        assert_eq!(tangents[3], [0.0, 0.0, 0.0, 1.0]);
+        // A sum with a part along the normal loses it.
+        let uvs = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]];
+        let normals = [tilted.to_array(); 4];
+        let mut tangents = [[0.0; 4]; 4];
+        rebuild_tangents(&positions, &normals, &uvs, &[0, 1, 2], &mut tangents);
+        // Δu₂ = 1, Δv₁ = 1: r = −1, t = −(−1·e₂) = e₂ = (0, 10, 0).
+        let t = Vec3::new(0.0, 10.0, 0.0);
+        let along = (t.x * tilted.x + t.y * tilted.y) + t.z * tilted.z;
+        let want = crate::engine_math::normalize_approx(t + tilted * -along);
+        assert_eq!(&tangents[0][..3], &want.to_array());
+        assert!(Vec3::from_slice(&tangents[0][..3]).dot(tilted).abs() < 1e-3);
+    }
+
+    /// A hold made on a triangle point measures its radius in the mesh to
+    /// the nearest pin (the first of equals), 5 cm with no pin and 0 on the
+    /// pin itself; the constraint pass moves the point onto the smoothed
+    /// point, each corner by its weight over the largest; and a target
+    /// beyond the radius of the pin's particle is pulled back onto that
+    /// sphere.
+    #[test]
+    fn a_hold_spreads_over_its_triangle_within_its_pins_reach() {
+        let corners = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            Vec3::new(0.0, -30.0, 0.0),
+        ];
+        let mut cloth = Cloth::from_mesh_linked(&corners, &[[0, 1, 2]], &[], &[]);
+        // No pin: 5 cm.
+        let w = [0.5, 0.25, 0.25];
+        cloth.add_grab([0, 1, 2], w, Vec3::ZERO).unwrap();
+        assert_eq!(cloth.grabs[0].radius, GRAB_FREE_RADIUS);
+        assert_eq!(cloth.grabs[0].pin, None);
+        cloth.grabs.clear();
+        // Pins at 3 (30 cm below 0) and 2: the point (2.5, 2.5, 0) is
+        // √(2.5² + 7.5²) from 2's rest.
+        cloth.pins = vec![
+            Pin {
+                index: 3,
+                rest: corners[3],
+                weight: 1.0,
+            },
+            Pin {
+                index: 2,
+                rest: corners[2],
+                weight: 1.0,
+            },
+        ];
+        cloth.add_grab([0, 1, 2], w, Vec3::ZERO).unwrap();
+        let point = corners[0] * 0.5 + corners[1] * 0.25 + corners[2] * 0.25;
+        let d = point - corners[2];
+        assert_eq!(cloth.grabs[0].pin, Some(2));
+        assert_eq!(
+            cloth.grabs[0].radius,
+            ((d.x * d.x + d.y * d.y) + d.z * d.z).sqrt()
+        );
+        // On the pin itself: 0.
+        cloth.grabs.clear();
+        cloth
+            .add_grab([2, 0, 1], [1.0, 0.0, 0.0], Vec3::ZERO)
+            .unwrap();
+        assert_eq!(cloth.grabs[0].radius, 0.0);
+        cloth.grabs.clear();
+        // The spread: the point goes onto the smoothed point.
+        cloth.pins.clear();
+        cloth
+            .add_grab([0, 1, 2], w, Vec3::new(2.5, 2.5, 4.0))
+            .unwrap();
+        spread_grabs(&mut cloth);
+        let gap = Vec3::new(0.0, 0.0, 4.0);
+        assert_eq!(cloth.particles[0].position, corners[0] + gap * (0.5 * 2.0));
+        assert_eq!(cloth.particles[1].position, corners[1] + gap * (0.25 * 2.0));
+        assert_eq!(cloth.particles[2].position, corners[2] + gap * (0.25 * 2.0));
+        // Beyond the radius of the pin's particle: pulled onto the sphere.
+        let mut cloth = Cloth::from_mesh_linked(&corners, &[[0, 1, 2]], &[0], &[]);
+        cloth
+            .add_grab([1, 1, 1], [1.0, 0.0, 0.0], corners[1])
+            .unwrap();
+        assert_eq!(cloth.grabs[0].radius, 10.0);
+        cloth.grabs[0].target = Vec3::new(40.0, 0.0, 0.0);
+        smooth_grabs(&mut cloth);
+        let toward = Vec3::new(10.0, 0.0, 0.0);
+        assert_eq!(
+            cloth.grabs[0].smoothed,
+            corners[1] + ((toward - corners[1]) * GRAB_PULL) * GRAB_FOLLOW
+        );
+        assert_eq!(cloth.grabs[0].last, corners[1]);
     }
 
     /// The countdown reads the summed velocity, not the tick's step: a

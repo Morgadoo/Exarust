@@ -822,6 +822,26 @@ impl Part {
         now - before
     }
 
+    /// The part's motion record at the point with weights `w` (m a tick):
+    /// each particle's displacement over the last tick as this tick's
+    /// integration recorded it, summed `(w₀m₀ + w₁m₁) + (w₂m₂ + w₃m₃)` as
+    /// the original's weighted point does. A simulated object's contact
+    /// reads it for the body's slide.
+    pub fn motion_at(&self, w: &[f32; 4]) -> Vec3 {
+        let m = &self.moved;
+        (m[0] * w[0] + m[1] * w[1]) + (m[2] * w[2] + m[3] * w[3])
+    }
+
+    /// Adds `delta` times each raw weight of `w` to the motion record (the
+    /// original's weighted push on that record): a simulated object's slide
+    /// friction, which the next character tick reads before the next
+    /// integration records the motion again.
+    pub fn add_motion(&mut self, w: &[f32; 4], delta: Vec3) {
+        for (m, wi) in self.moved.iter_mut().zip(w) {
+            *m += delta * *wi;
+        }
+    }
+
     /// A level hit on sphere `centre` (part space): the closest point `q` on
     /// the triangle and the push `delta` that takes the sphere off it. The
     /// part is pushed at once and the contact kept for the next tick.

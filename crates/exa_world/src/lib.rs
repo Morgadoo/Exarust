@@ -8,6 +8,7 @@ pub mod bodies;
 pub mod cloth;
 pub mod cloth_draw;
 pub mod cloth_parts;
+pub mod cloth_stage;
 pub mod cut_away;
 pub mod db_objects;
 pub mod editor;
