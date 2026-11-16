@@ -18,10 +18,10 @@
 //! steady tick.
 
 use bevy::prelude::*;
-use exa_combat::Fighter;
 use exa_combat::collapse::Collapse;
+use exa_combat::{Condition, Fighter};
 use exa_formats::weapon_record::{self, race};
-use exa_physics::body::Ragdoll;
+use exa_physics::body::{Ragdoll, TickedCharacter};
 use exa_physics::grip::{
     HeldGrip, attack_hand_mobility, empty_hand_words, refreshed_hand_mobility,
 };
@@ -172,6 +172,93 @@ pub fn drop_collapsed_hands(mut bodies: Query<&mut Hands, (With<Fighter>, Added<
     }
 }
 
+/// The two-hand group's mode for a living body's tick, as the original's
+/// body tick picks it before its readiness block from last tick's
+/// condition and the behaviour's in-combat flag: in combat, mode 1 off its
+/// feet (bit 0x200) or walking, else 0; out of combat, 0 while attacking,
+/// else 1. The death's call clears it (mode 2).
+pub fn two_hand_mode(condition: Condition, in_combat: bool) -> i32 {
+    if in_combat {
+        if condition.0 & Condition::OFF_FEET_MASK != 0 || condition == Condition::WALKING {
+            1
+        } else {
+            0
+        }
+    } else if condition == Condition::ATTACKING {
+        0
+    } else {
+        1
+    }
+}
+
+/// Writes the two-hand group bit ([`exa_combat::strike_body::two_hand_group`])
+/// on the character's hands (right then left, the original's hand list),
+/// their parents and the second hand's grandparent, in their group masks:
+/// parts whose masks share it do not meet each other. A body with fewer
+/// than two hands is left alone; a missing parent is skipped.
+pub fn group_hands(body: &mut Ragdoll, mode: i32, armed: bool) {
+    let find = |body: &Ragdoll, bone| body.parts.iter().position(|p| p.bone == bone);
+    let hands: Vec<usize> = [RIGHT_HAND, LEFT_HAND]
+        .into_iter()
+        .filter_map(|bone| find(body, bone))
+        .collect();
+    let parent = |i: Option<usize>| i.and_then(|i| body.parts[i].parent);
+    let slots = match hands.as_slice() {
+        [first, second, ..] => [
+            Some(*first),
+            parent(Some(*first)),
+            Some(*second),
+            parent(Some(*second)),
+            parent(parent(Some(*second))),
+        ],
+        _ => return,
+    };
+    let read = |i: Option<usize>| i.map_or(0, |i| body.parts[i].pairing.group);
+    let masks = exa_combat::strike_body::TwoHandMasks(slots.map(read));
+    let class = if armed { HANDS_BITS } else { 0 };
+    let out = exa_combat::strike_body::two_hand_group(hands.len(), mode, class, masks);
+    for (slot, mask) in slots.into_iter().zip(out.0) {
+        if let Some(i) = slot {
+            body.parts[i].pairing.group = mask;
+        }
+    }
+}
+
+/// The body tick's two-hand group call, every tick of a living character,
+/// before its readiness block ([`two_hand_mode`], [`group_hands`]); the
+/// class's hands bits are the held weapon's ([`armed`]).
+pub fn group_two_hands(
+    ticked: Res<TickedCharacter>,
+    mut bodies: Query<(&Condition, Option<&Hands>, &mut Ragdoll)>,
+) {
+    let Ok((condition, hands, mut body)) = bodies.get_mut(ticked.body) else {
+        return;
+    };
+    let Some(in_combat) = body.drive.as_ref().map(|d| d.bearing.in_combat) else {
+        return;
+    };
+    if condition.is_dead() {
+        return;
+    }
+    group_hands(
+        &mut body,
+        two_hand_mode(*condition, in_combat),
+        armed(hands),
+    );
+}
+
+/// The death's two-hand call: a body whose condition becomes dead has the
+/// group cleared (mode 2) on its hands.
+pub fn ungroup_dead_hands(
+    mut bodies: Query<(&Condition, Option<&Hands>, &mut Ragdoll), Changed<Condition>>,
+) {
+    for (condition, hands, mut body) in &mut bodies {
+        if condition.is_dead() {
+            group_hands(&mut body, 2, armed(hands));
+        }
+    }
+}
+
 /// The body word systems, on the fixed tick before the solver.
 pub struct BodyWordsPlugin;
 
@@ -190,6 +277,18 @@ impl Plugin for BodyWordsPlugin {
                 .chain()
                 .after(exa_physics::body::TickBehaviour)
                 .before(exa_physics::grip_solve::GripSolveSet::Sync),
+        )
+        .add_systems(
+            exa_physics::body::CharacterTick,
+            group_two_hands
+                .in_set(exa_physics::body::CharacterStage::Upkeep)
+                .after(exa_combat::burn::burn_upkeep),
+        )
+        .add_systems(
+            FixedUpdate,
+            ungroup_dead_hands
+                .after(exa_physics::body::CharacterTicks)
+                .before(exa_physics::body::BodySystems),
         );
     }
 }
@@ -232,6 +331,84 @@ mod tests {
             setup(RIGHT_HAND, Some(0), Vec3::X * 0.3),
             setup(LEFT_HAND, Some(0), -Vec3::X * 0.3),
         ])
+    }
+
+    /// A pelvis with a right forearm and hand and a left humerus, forearm
+    /// and hand, living.
+    fn two_arms() -> Ragdoll {
+        Ragdoll::new(&[
+            setup(1, None, Vec3::ZERO),
+            setup(11, Some(0), Vec3::X * 0.2),
+            setup(RIGHT_HAND, Some(1), Vec3::X * 0.4),
+            setup(14, Some(0), -Vec3::X * 0.1),
+            setup(15, Some(3), -Vec3::X * 0.2),
+            setup(LEFT_HAND, Some(4), -Vec3::X * 0.4),
+        ])
+        .with_drive()
+    }
+
+    /// The parts carrying the two-hand bit, by index.
+    fn grouped(app: &App, e: Entity) -> Vec<usize> {
+        let body = app.world().get::<Ragdoll>(e).unwrap();
+        (0..body.parts.len())
+            .filter(|&i| body.parts[i].pairing.group & exa_combat::strike_body::TWO_HAND_GROUP != 0)
+            .collect()
+    }
+
+    /// The body tick's two-hand call, run as the character tick runs it
+    /// (the ticked body): armed and out of combat it keeps the bit on the
+    /// right hand and both forearms (mode 1); attacking, also on the left
+    /// hand and the left humerus (mode 0); in combat walking mode 1, in
+    /// combat standing mode 0; unarmed, the class forces mode 2 and clears
+    /// it; the death clears it.
+    #[test]
+    fn the_two_hand_group_follows_the_condition_and_the_combat_flag() {
+        let mut app = App::new();
+        app.add_systems(Update, (group_two_hands, ungroup_dead_hands).chain());
+        let e = app
+            .world_mut()
+            .spawn((
+                Condition::NORMAL,
+                Hands {
+                    main: Some(HeldItem::weapon(0x20)),
+                    ..Hands::default()
+                },
+                two_arms(),
+            ))
+            .id();
+        app.insert_resource(TickedCharacter {
+            body: e,
+            character: None,
+        });
+        app.update();
+        assert_eq!(grouped(&app, e), vec![1, 2, 4]);
+        *app.world_mut().get_mut::<Condition>(e).unwrap() = Condition::ATTACKING;
+        app.update();
+        assert_eq!(grouped(&app, e), vec![1, 2, 3, 4, 5]);
+        let in_combat = |app: &mut App, on: bool| {
+            let mut body = app.world_mut().get_mut::<Ragdoll>(e).unwrap();
+            body.drive.as_mut().unwrap().bearing.in_combat = on;
+        };
+        in_combat(&mut app, true);
+        *app.world_mut().get_mut::<Condition>(e).unwrap() = Condition::WALKING;
+        app.update();
+        assert_eq!(grouped(&app, e), vec![1, 2, 4]);
+        *app.world_mut().get_mut::<Condition>(e).unwrap() = Condition::COMBAT_IDLE;
+        app.update();
+        assert_eq!(grouped(&app, e), vec![1, 2, 3, 4, 5]);
+        *app.world_mut().get_mut::<Condition>(e).unwrap() = Condition::DOWN;
+        app.update();
+        assert_eq!(grouped(&app, e), vec![1, 2, 4]);
+        *app.world_mut().get_mut::<Condition>(e).unwrap() = Condition::DEAD;
+        app.update();
+        assert!(grouped(&app, e).is_empty());
+        // Unarmed (fists): the class has no hands bits, so mode 2.
+        *app.world_mut().get_mut::<Condition>(e).unwrap() = Condition::ATTACKING;
+        app.update();
+        assert_eq!(grouped(&app, e), vec![1, 2, 3, 4, 5]);
+        *app.world_mut().get_mut::<Hands>(e).unwrap() = Hands::default();
+        app.update();
+        assert!(grouped(&app, e).is_empty());
     }
 
     fn mobility(app: &App, e: Entity, part: usize) -> f32 {
