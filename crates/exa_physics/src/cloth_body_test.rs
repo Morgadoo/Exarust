@@ -458,15 +458,24 @@ fn a_pushing_sphere_rubs_the_bodys_motion() {
     // v = (3, 0, 4) cm, push (0, 0, −1) cm: v² = 25, push² = 1; across the
     // push (3, 0, 0), kept at −√(0.1/25).
     let mut tail = 0.5f32;
-    let slide = body_slide(Vec3::new(3.0, 0.0, 4.0), Vec3::new(0.0, 0.0, -1.0), &mut tail)
-        .expect("a moving body rubs");
+    let slide = body_slide(
+        Vec3::new(3.0, 0.0, 4.0),
+        Vec3::new(0.0, 0.0, -1.0),
+        &mut tail,
+    )
+    .expect("a moving body rubs");
     let keep = -(0.1f64 / 25.0).sqrt() as f32;
     assert_eq!(slide, Vec3::new(3.0 * keep, 0.0, 0.0));
     assert_eq!(tail, (25.0f64 * 2.0e-5 + 0.5f64) as f32);
     // 0.2 · 4 ≥ 0.25: the slide (0.3, 0, 0) is turned back whole (0 − v,
     // so the zero lanes stay +0).
     let mut tail = 0.0f32;
-    let back = body_slide(Vec3::new(0.3, 0.0, 0.4), Vec3::new(0.0, 0.0, -2.0), &mut tail).unwrap();
+    let back = body_slide(
+        Vec3::new(0.3, 0.0, 0.4),
+        Vec3::new(0.0, 0.0, -2.0),
+        &mut tail,
+    )
+    .unwrap();
     assert_eq!(back.x, -0.3);
     assert_eq!(back.y.to_bits(), 0);
     assert_eq!(back.z.to_bits(), 0);
@@ -474,7 +483,10 @@ fn a_pushing_sphere_rubs_the_bodys_motion() {
     // At or under the small float, or unordered: nothing, no rustle.
     let mut tail = 1.0f32;
     assert_eq!(body_slide(Vec3::splat(1.0e-4), Vec3::Y, &mut tail), None);
-    assert_eq!(body_slide(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::Y, &mut tail), None);
+    assert_eq!(
+        body_slide(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::Y, &mut tail),
+        None
+    );
     assert_eq!(tail, 1.0);
 }
 
@@ -545,7 +557,14 @@ fn a_live_body_takes_its_share_of_the_cloths_push() {
     let mut pushes = vec![Vec3::ZERO; 3];
     let mut tail = 0.0;
     let touch = touch_ragdoll(
-        &particles, &triangles, &bounds, &mut pushes, &mut tail, &mut body, 0, &contact,
+        &particles,
+        &triangles,
+        &bounds,
+        &mut pushes,
+        &mut tail,
+        &mut body,
+        0,
+        &contact,
     );
     assert!(touch.pushed);
     assert_eq!((touch.spheres, touch.swept), (1, 0));
@@ -571,7 +590,14 @@ fn a_live_body_takes_its_share_of_the_cloths_push() {
     let mut pushes = vec![Vec3::ZERO; 3];
     let mut tail = 0.0;
     touch_ragdoll(
-        &particles, &triangles, &bounds, &mut pushes, &mut tail, &mut body, 0, &contact,
+        &particles,
+        &triangles,
+        &bounds,
+        &mut pushes,
+        &mut tail,
+        &mut body,
+        0,
+        &contact,
     );
     let mut expected_tail = 0.0;
     let slide = body_slide(velocity, share, &mut expected_tail).unwrap();

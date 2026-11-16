@@ -58,7 +58,10 @@ fn sheet(app: &mut App, x: f32, y: f32) -> Entity {
     let cloth = cloth_of(&corners, &[[0, 1, 2], [0, 2, 3]], &pins);
     let drawn = (0..cloth.particles.len()).collect();
     app.world_mut()
-        .spawn((ClothInstance::new(cloth, mesh, drawn), GlobalTransform::default()))
+        .spawn((
+            ClothInstance::new(cloth, mesh, drawn),
+            GlobalTransform::default(),
+        ))
         .id()
 }
 
@@ -94,7 +97,11 @@ fn a_cloth_pushes_and_wakes_the_body_in_the_solver() {
     };
     let (body, moved, pushers, part, sleep) = run(true);
     assert!(!body.asleep(), "the cloth's trade woke the body");
-    assert!(body.countdown() >= 2 && sleep > 0, "{} {sleep}", body.countdown());
+    assert!(
+        body.countdown() >= 2 && sleep > 0,
+        "{} {sleep}",
+        body.countdown()
+    );
     assert_eq!(pushers.len(), 1);
     assert_eq!(pushers[0].0, part);
     // The sphere (10 cm, padded 12) stands 5 cm under the sheet: each of
@@ -161,7 +168,11 @@ fn the_cloths_meet_the_bodies_in_a_fixed_order() {
     assert_eq!(bits(&first.0), bits(&second.0));
     assert_eq!(first.1, second.1);
     assert_eq!(first.2, second.2);
-    assert!(first.2 >= 3, "the bodies met the sheets: {} pushes", first.2);
+    assert!(
+        first.2 >= 3,
+        "the bodies met the sheets: {} pushes",
+        first.2
+    );
 }
 
 /// A sheet like [`sheet`] at (x, z) in metres.
@@ -217,10 +228,16 @@ fn the_cloths_take_the_scene_grid() {
     };
     let (parts, parked) = offered(true);
     assert_eq!(parts, 1, "the next row's first cell is a neighbour");
-    assert_eq!(parked, Some(sector::cell_of_index(sector::overflow_cell(8), 8)));
+    assert_eq!(
+        parked,
+        Some(sector::cell_of_index(sector::overflow_cell(8), 8))
+    );
     let (parts, parked) = offered(false);
     assert_eq!(parts, 0);
-    assert_ne!(parked, Some(sector::cell_of_index(sector::overflow_cell(8), 8)));
+    assert_ne!(
+        parked,
+        Some(sector::cell_of_index(sector::overflow_cell(8), 8))
+    );
 }
 
 /// The draw update rebuilds a normal-mapped cloth mesh's tangents from its
@@ -242,12 +259,18 @@ fn the_draw_rebuilds_a_normal_mapped_cloths_tangents() {
         )
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 0.0, 1.0]; 3])
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            vec![[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        )
         .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[0.0f32, 0.0, 0.0, -1.0]; 3])
         .with_inserted_indices(bevy::mesh::Indices::U32(vec![0, 1, 2]));
         let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
         let cloth = cloth_of(
-            &positions.iter().map(|p| Vec3::from_array(*p)).collect::<Vec<_>>(),
+            &positions
+                .iter()
+                .map(|p| Vec3::from_array(*p))
+                .collect::<Vec<_>>(),
             &[[0, 1, 2]],
             &[],
         );
@@ -275,7 +298,9 @@ fn the_draw_rebuilds_a_normal_mapped_cloths_tangents() {
             previous: current.clone(),
             current: current.clone(),
         });
-        app.world_mut().run_system_cached(write_cloth_meshes).unwrap();
+        app.world_mut()
+            .run_system_cached(write_cloth_meshes)
+            .unwrap();
         let meshes = app.world().resource::<Assets<Mesh>>();
         let mesh = meshes.get(&handle).unwrap();
         let tangents = match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {

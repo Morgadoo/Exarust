@@ -188,7 +188,11 @@ pub trait SolverStage: Any + Send + Sync {
     /// Sim objects against each other, the bodies and the level: the
     /// object–body contacts see the `sleeping` bodies too (an awake object
     /// pushes and wakes a sleeper, as body–body detection does).
-    fn sim_object_contacts(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {
+    fn sim_object_contacts(
+        &mut self,
+        _bodies: &mut [&mut Ragdoll],
+        _sleeping: &mut [&mut Ragdoll],
+    ) {
     }
     /// Each of the 8 friction passes, before the bodies' level friction
     /// (the pair friction).

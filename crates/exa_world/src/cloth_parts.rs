@@ -369,11 +369,17 @@ mod tests {
         ];
         let cells: Vec<(i32, i32)> = (-1..4).flat_map(|x| (-1..2).map(move |z| (x, z))).collect();
         let mut index = PartCells::new();
-        index.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), ClothGrid::Cells { origin: (0, 0) });
+        index.refresh(
+            walk(&ids, &bodies, [true; 3]).into_iter(),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(index.rebucketed, 3);
         assert_eq!(index.linked(), 7);
         // An unchanged tick re-buckets nothing.
-        index.refresh(walk(&ids, &bodies, [false; 3]).into_iter(), ClothGrid::Cells { origin: (0, 0) });
+        index.refresh(
+            walk(&ids, &bodies, [false; 3]).into_iter(),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(index.rebucketed, 0);
         // The first body moves 6 m on (changed); the others stay.
         bodies[0].translate(Vec3::new(6.0, 0.0, 0.0));
@@ -383,7 +389,10 @@ mod tests {
         );
         assert_eq!(index.rebucketed, 1);
         let mut fresh = PartCells::new();
-        fresh.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), ClothGrid::Cells { origin: (0, 0) });
+        fresh.refresh(
+            walk(&ids, &bodies, [true; 3]).into_iter(),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(snapshot(&index, &cells), snapshot(&fresh, &cells));
         // A cell's parts come by walk rank, then part index.
         let mut first = Vec::new();
@@ -393,7 +402,10 @@ mod tests {
         // A body that is gone leaves the index and the owner lookup.
         let gone = bodies[2].parts[0].entity;
         assert_eq!(index.owner_of(gone), Some(ids[2]));
-        index.refresh(walk(&ids, &bodies, [false; 3]).into_iter().take(2), ClothGrid::Cells { origin: (0, 0) });
+        index.refresh(
+            walk(&ids, &bodies, [false; 3]).into_iter().take(2),
+            ClothGrid::Cells { origin: (0, 0) },
+        );
         assert_eq!(index.owner_of(gone), None);
         assert_eq!(index.linked(), 5);
     }

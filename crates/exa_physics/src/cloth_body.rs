@@ -37,14 +37,20 @@
 //! one), each of which ends by putting a vertex behind its plane back on
 //! it. The buffer is then cleared.
 //!
-//! What this port leaves out, and why: the body's share of the contact (the
-//! impulse and friction the cloth hands back to the body, 0.002, 0.01 or
-//! 0.015 of the summed push, and the rustle energy from the body's speed)
-//! needs a mutable body in the cloth stage, which the game does not give it
-//! yet; the cloth's own rules are complete. The original culls the cloth's
-//! triangles against the body's oriented box before the walk; this port
-//! culls them against the sphere about the body's sweeps, which keeps every
-//! triangle the walk could return (the walk's own tests decide).
+//! The body's side ([`touch_ragdoll`], the live stage inside the bodies'
+//! solver): after each sphere that pushed, the body takes a share of the
+//! summed push ([`body_share`]: 0.002, 0.01 or 0.015) at the sphere's
+//! centre by its weights in the part's rest tetrahedron, on its particles;
+//! its motion at that point loses its part along the push and is turned
+//! back or slowed on its motion record ([`body_slide`]), adding
+//! `v²·2e-5` to the cloth's rustle tail; and the next sphere meets the body
+//! where the push left it. A body that pushed then trades countdowns with
+//! the cloth ([`trade_body_countdowns`]): a sleeper the cloth reaches is
+//! touched awake. The original culls the cloth's triangles against the
+//! body's oriented box before the walk; this port culls them against the
+//! sphere about the body's sweeps, which keeps every triangle the walk
+//! could return (the walk's own tests decide), and culls again after a
+//! push moved the body.
 //!
 //! The arithmetic follows the instructions: dot products sum `x + y`, then
 //! `z`; the closest-point branches take the processor's unordered sides
@@ -53,10 +59,11 @@
 //! approximate reciprocal square root, and the circumscribed sphere with
 //! its approximate reciprocal, as the original does.
 //!
-//! Evidence: the cloth's body-contact slot, its triangle bound and plane
-//! builders, its swept triangle query, the post-body push pass and its
-//! constraint pass, and the sector's object stage that calls them (REA
-//! assembly).
+//! Evidence: the cloth's body-contact slot (its body side read in the
+//! assembly: the share words, the double-precision slide rules, the rustle
+//! factor), its triangle bound and plane builders, its swept triangle
+//! query, the post-body push pass and its constraint pass, and the sector's
+//! object stage that calls them (REA assembly).
 
 // The original's compares deliberately send NaN down one branch.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -325,7 +332,11 @@ pub struct BodyTouch {
 /// the sphere about the sweeps' coarse spheres, in triangle order, with
 /// their swept records (this port's stand-in for the original's cull
 /// against the body's box; see the module).
-fn cull(bounds: &[TriangleBound], count: usize, probes: &[SweptProbe]) -> (Vec<usize>, Vec<SweptProbe>) {
+fn cull(
+    bounds: &[TriangleBound],
+    count: usize,
+    probes: &[SweptProbe],
+) -> (Vec<usize>, Vec<SweptProbe>) {
     let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
     for p in probes {
         lo = lo.min(p.position - Vec3::splat(p.radius));
@@ -609,7 +620,16 @@ pub fn touch_ragdoll(
         let (now, previous) = (p.transform(), p.settled_transform());
         spheres[..upto]
             .iter()
-            .map(|&s| sphere_sweep(&contact.to_object, &now, &previous, s, contact.padding, contact.cloth_box))
+            .map(|&s| {
+                sphere_sweep(
+                    &contact.to_object,
+                    &now,
+                    &previous,
+                    s,
+                    contact.padding,
+                    contact.cloth_box,
+                )
+            })
             .collect()
     };
     let mut planned = sweeps(body, spheres.len());

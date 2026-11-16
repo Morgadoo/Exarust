@@ -708,9 +708,26 @@ character). An awake cloth applies the buffer after the body stage: the
 vertex's travel across its push is cancelled up to 0.2 cm² (else
 shortened by √0.1 cm), the vertex moves out by the push, and three more
 constraint passes (the shipped iteration count less the step's one) end
-by putting it back on its push plane. The body's share (0.002, 0.01 or
-0.015 of the push, the friction and rustle energy) is not handed back:
-the cloth stage has no mutable body.
+by putting it back on its push plane. The body takes its share back at
+once inside the solver (`cloth_body::touch_ragdoll`, called from the
+solver's `SolverStage::sim_object_contacts` hook after body–body
+detection, which now also gets the sleeping bodies): after each pushing
+sphere, 0.002 of its summed push (0.015 for an active striker part, 0.01
+for a cloth on a held chain, `body_share`) on the part's particles by the
+sphere centre's raw weights in its rest tetrahedron, the slide friction
+on its motion record (`body_slide`, `Part::motion_at`/`add_motion`: the
+part across the push turned back at `0.2·push² ≥ v²`, else scaled by
+`−√(0.1·push²/v²)`, in double) with `v²·2e-5` added to the cloth's rustle
+tail, the next sphere meeting the body where the push left it, and the
+countdown trade touching a sleeper awake (`trade_body_countdowns`). The
+step is split for that stage (`cloth::integrate`, `touch_listed_bodies`,
+`after_bodies`). A hand's hold is a grab record (`cloth::GrabRecord`,
+`Cloth::add_grab`): weights over three particles, a radius to the nearest
+pin in the mesh (`Cloth::rest`), a damped follower (0.1, 0.3) in the
+integrate and a spread by weight over the largest in every constraint
+pass; the hand's vertex grab makes one with all its weight on the vertex
+and wakes the cloth to 32. `cloth::rebuild_tangents` is the draw update's
+tangent rebuild, `cloth::motion_energy` the integrate's energy word.
 A cloth is set up from a parameter record (`cloth_record::ClothRecord`,
 the `3DD0C001` block the original's set-up copies): the built-in record
 every shipped marker falls back to (`LEVEL`: triangle mode `0x7208`, 0.05

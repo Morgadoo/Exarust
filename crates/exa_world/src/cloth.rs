@@ -16,13 +16,15 @@
 //! pins every vertex loosely instead [Exarust's own: nothing ships such a
 //! cloth].
 //!
-//! Each 83 Hz body tick advances the cloth ([`exa_physics::cloth::step`])
-//! with gravity; every cloth's contacts and step run at once (a cloth reads
-//! only the tick's shared body parts and the level and writes only itself,
-//! so each ends bit for bit where it would stepped alone), and the object
+//! Each 83 Hz body tick advances the cloth inside the bodies' tick, at the
+//! original's points in the sector step ([`crate::cloth_stage`]): every
+//! cloth's own step at once before the solver, its body contacts in the
+//! solver one cloth at a time (a cloth pushes the bodies back), its pass
+//! after the collisions and its level contact at once after it; the object
 //! list's re-buckets stay in its order. Once a frame, after its ticks, the
 //! mesh's positions take the particles' between their last two ticks and
-//! its normals are rebuilt ([`write_cloth_meshes`]; the mesh is in metres,
+//! its normals (and a normal-mapped mesh's tangents) are rebuilt
+//! ([`write_cloth_meshes`]; the mesh is in metres,
 //! the cloth in centimetres). The simulation is local to the
 //! mesh's node, so the node's own transform carries the cloth with the
 //! body. Evidence: the original's cloth construction (a particle per
@@ -154,7 +156,9 @@ impl ClothObjects {
     fn dimensions(keys: crate::cloth_parts::ClothGrid) -> (i32, i32, (i32, i32)) {
         match keys {
             crate::cloth_parts::ClothGrid::Cells { origin } => (Self::COLUMNS, Self::ROWS, origin),
-            crate::cloth_parts::ClothGrid::Scene(shape) => (shape.columns, shape.rows, shape.origin),
+            crate::cloth_parts::ClothGrid::Scene(shape) => {
+                (shape.columns, shape.rows, shape.origin)
+            }
         }
     }
 
@@ -364,7 +368,12 @@ impl ClothDebug {
     }
 
     /// Adds one tick and, once a second, logs and resets.
-    pub(crate) fn tick(&mut self, total: ClothWork, names: &Query<&Name>, parents: &Query<&ChildOf>) {
+    pub(crate) fn tick(
+        &mut self,
+        total: ClothWork,
+        names: &Query<&Name>,
+        parents: &Query<&ChildOf>,
+    ) {
         self.sum.add(&total);
         self.ticks += 1;
         if self.ticks < 83 {
@@ -778,7 +787,11 @@ pub fn write_cloth_meshes(
     mut updates: MessageReader<ClothMeshUpdate>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut debug: ResMut<ClothDebug>,
-    mut instances: Query<(&mut ClothInstance, Option<&ClothShading>, Option<&ClothSource>)>,
+    mut instances: Query<(
+        &mut ClothInstance,
+        Option<&ClothShading>,
+        Option<&ClothSource>,
+    )>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     time: Option<Res<Time<Fixed>>>,
     mut drawing: Local<bevy::platform::collections::HashMap<AssetId<Mesh>, ClothDraw>>,

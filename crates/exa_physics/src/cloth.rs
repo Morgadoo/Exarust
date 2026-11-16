@@ -416,6 +416,9 @@ pub struct Cloth {
     pub rustle_pitch: f32,
     /// The rustle's energy tail, which decays by 0.9 each awake tick.
     pub rustle_tail: f32,
+    /// The integrate slot's motion energy, 0 to 1 ([`motion_energy`]); no
+    /// reader of it was traced.
+    pub energy: f32,
     /// The hands' holds on the cloth, oldest first ([`GrabRecord`]).
     pub grabs: Vec<GrabRecord>,
     /// Each particle's place in the mesh the cloth was built from (cm, its
@@ -458,6 +461,7 @@ impl Cloth {
             rustle_volume: 0.0,
             rustle_pitch: 0.0,
             rustle_tail: 0.0,
+            energy: 0.0,
             grabs: Vec::new(),
             rest: Vec::new(),
             record: crate::cloth_record::ClothRecord::LEVEL,
@@ -475,7 +479,12 @@ impl Cloth {
     /// [`GRAB_FREE_RADIUS`] with no pin. Its smoothed point starts at the
     /// target. Returns the record's index; a corner the cloth does not have
     /// adds nothing.
-    pub fn add_grab(&mut self, corners: [usize; 3], weights: [f32; 3], target: Vec3) -> Option<usize> {
+    pub fn add_grab(
+        &mut self,
+        corners: [usize; 3],
+        weights: [f32; 3],
+        target: Vec3,
+    ) -> Option<usize> {
         let count = self.particles.len();
         if corners.iter().any(|&c| c >= count) {
             return None;
@@ -978,8 +987,10 @@ pub fn integrate(cloth: &mut Cloth, gravity: Vec3, wind: Option<WindAt>) -> Opti
             particle.position += direction * push;
         }
     }
-    // The rustle is the integrate slot's, which only an awake cloth runs.
+    // The motion energy and the rustle are the integrate slot's, which only
+    // an awake cloth runs.
     if awake {
+        cloth.energy = motion_energy(sum);
         settle_rustle(cloth, sum);
     }
     if awake {
@@ -1109,9 +1120,10 @@ pub fn finish_step(cloth: &mut Cloth, before: &[Vec3], awake: bool) {
 /// `e₂ = p₂ − p₀` and `Δ` the coordinates' differences from corner 0 (an
 /// exact reciprocal, no floor: a degenerate face gives infinities as the
 /// original's), summed unweighted into its three vertices; then each
-/// vertex's sum loses its part along its normal (`t + n·(−((tₓnₓ + t_yn_y)
-/// + t_zn_z))`) and is scaled by the processor's approximate reciprocal
-/// square root (zero stays zero), into the first three lanes of
+/// vertex's sum loses its part along its normal
+/// (`t + n·(−((tₓnₓ + t_yn_y) + t_zn_z))`) and is scaled by the
+/// processor's approximate reciprocal square root (zero stays zero), into
+/// the first three lanes of
 /// `tangents`. The fourth lane (the handedness sign the mesh was loaded
 /// with, Bevy's tangent sign) is left as it is: the original writes only
 /// three. Faces naming a missing vertex, and vertices past any of the
@@ -1125,8 +1137,8 @@ pub fn rebuild_tangents(
 ) {
     let count = positions.len().min(uvs.len());
     let mut sums = vec![Vec3::ZERO; positions.len()];
-    for face in indices.chunks_exact(3) {
-        let [a, b, c] = [face[0] as usize, face[1] as usize, face[2] as usize];
+    for face in indices.as_chunks::<3>().0 {
+        let [a, b, c] = face.map(|i| i as usize);
         if a >= count || b >= count || c >= count {
             continue;
         }
@@ -1478,6 +1490,8 @@ pub fn walk_links(
 /// smoothed point moves on as a damped follower: the motion it made last
 /// tick, plus [`GRAB_PULL`] of the way to that target, times
 /// [`GRAB_FOLLOW`].
+// The original's compares send NaN down one branch.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn smooth_grabs(cloth: &mut Cloth) {
     for index in 0..cloth.grabs.len() {
         let grab = cloth.grabs[index];
@@ -1566,6 +1580,20 @@ fn settle_sleep(cloth: &mut Cloth, sum_sq: f32) {
     if cloth.sleep < cloth.owner_sleep {
         cloth.sleep = cloth.owner_sleep;
     }
+}
+
+/// The integrate slot's motion energy: the squared velocity sum
+/// `(x² + y²) + z²`, when over the engine's small float, as
+/// `min(√sum² · 0.001, 1)` (the product in double; a NaN root stays), else
+/// 0 (an unordered square included).
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn motion_energy(sum: Vec3) -> f32 {
+    let e2 = (sum.x * sum.x + sum.y * sum.y) + sum.z * sum.z;
+    if !(e2 > MOTION_FLOOR2) {
+        return 0.0;
+    }
+    let e = (f64::from(e2.sqrt()) * 0.001) as f32;
+    if e > 1.0 { 1.0 } else { e }
 }
 
 /// The integrate slot's rustle, for a cloth whose record names a rustle
@@ -2746,18 +2774,52 @@ mod tests {
         assert!(cloth.grabs.is_empty());
     }
 
+    /// The motion energy: the velocity sum's length a thousandth, capped
+    /// at 1, and 0 at or under the small float.
+    #[test]
+    fn the_motion_energy_follows_the_velocity_sum() {
+        assert_eq!(
+            motion_energy(Vec3::new(300.0, 0.0, 400.0)),
+            (500.0f64 * 0.001) as f32
+        );
+        assert_eq!(motion_energy(Vec3::new(3000.0, 0.0, 0.0)), 1.0);
+        assert_eq!(motion_energy(Vec3::splat(1.0e-4)), 0.0);
+        assert_eq!(motion_energy(Vec3::new(f32::NAN, 0.0, 0.0)), 0.0);
+        let mut cloth = Cloth::new(vec![Particle {
+            position: Vec3::new(3.0, 0.0, 4.0),
+            previous: Vec3::ZERO,
+        }]);
+        step(&mut cloth, Vec3::ZERO);
+        assert_eq!(cloth.energy, (5.0f64 * 0.001) as f32);
+    }
+
     /// The tangent rebuild: a face's u-gradient through the exact
     /// reciprocal, summed into its vertices, made perpendicular to each
     /// vertex's normal and normalised by the approximate root, with the
     /// fourth lane (the loaded handedness) kept.
     #[test]
     fn the_tangents_are_rebuilt_from_the_moved_faces() {
-        let positions = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [10.0, 10.0, 5.0]];
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [10.0, 10.0, 5.0],
+        ];
         let uvs = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
         let tilted = Vec3::new(0.0, 0.6, 0.8);
-        let normals = [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], tilted.to_array(), [0.0, 0.0, 1.0]];
+        let normals = [
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            tilted.to_array(),
+            [0.0, 0.0, 1.0],
+        ];
         let indices = [0, 1, 2];
-        let mut tangents = [[9.0, 9.0, 9.0, -1.0], [0.0, 0.0, 0.0, 1.0], [0.0; 4], [7.0, 7.0, 7.0, 1.0]];
+        let mut tangents = [
+            [9.0, 9.0, 9.0, -1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0; 4],
+            [7.0, 7.0, 7.0, 1.0],
+        ];
         rebuild_tangents(&positions, &normals, &uvs, &indices, &mut tangents);
         // Δu₁ = 1, Δv₂ = 1: t = e₁ = (10, 0, 0) at each corner.
         let unit = crate::engine_math::normalize_approx(Vec3::new(10.0, 0.0, 0.0));
@@ -2820,15 +2882,22 @@ mod tests {
         let point = corners[0] * 0.5 + corners[1] * 0.25 + corners[2] * 0.25;
         let d = point - corners[2];
         assert_eq!(cloth.grabs[0].pin, Some(2));
-        assert_eq!(cloth.grabs[0].radius, ((d.x * d.x + d.y * d.y) + d.z * d.z).sqrt());
+        assert_eq!(
+            cloth.grabs[0].radius,
+            ((d.x * d.x + d.y * d.y) + d.z * d.z).sqrt()
+        );
         // On the pin itself: 0.
         cloth.grabs.clear();
-        cloth.add_grab([2, 0, 1], [1.0, 0.0, 0.0], Vec3::ZERO).unwrap();
+        cloth
+            .add_grab([2, 0, 1], [1.0, 0.0, 0.0], Vec3::ZERO)
+            .unwrap();
         assert_eq!(cloth.grabs[0].radius, 0.0);
         cloth.grabs.clear();
         // The spread: the point goes onto the smoothed point.
         cloth.pins.clear();
-        cloth.add_grab([0, 1, 2], w, Vec3::new(2.5, 2.5, 4.0)).unwrap();
+        cloth
+            .add_grab([0, 1, 2], w, Vec3::new(2.5, 2.5, 4.0))
+            .unwrap();
         spread_grabs(&mut cloth);
         let gap = Vec3::new(0.0, 0.0, 4.0);
         assert_eq!(cloth.particles[0].position, corners[0] + gap * (0.5 * 2.0));
@@ -2836,7 +2905,9 @@ mod tests {
         assert_eq!(cloth.particles[2].position, corners[2] + gap * (0.25 * 2.0));
         // Beyond the radius of the pin's particle: pulled onto the sphere.
         let mut cloth = Cloth::from_mesh_linked(&corners, &[[0, 1, 2]], &[0], &[]);
-        cloth.add_grab([1, 1, 1], [1.0, 0.0, 0.0], corners[1]).unwrap();
+        cloth
+            .add_grab([1, 1, 1], [1.0, 0.0, 0.0], corners[1])
+            .unwrap();
         assert_eq!(cloth.grabs[0].radius, 10.0);
         cloth.grabs[0].target = Vec3::new(40.0, 0.0, 0.0);
         smooth_grabs(&mut cloth);
