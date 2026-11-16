@@ -76,6 +76,7 @@ impl Plugin for ViewerPlugin {
                 (autowalk, press_keys)
                     .chain()
                     .after(bevy::input::InputSystems)
+                    .after(crate::frame_loop::clear_keys_on_focus_change)
                     .before(exa_game::gui_keys::GuiKeySet),
             )
             .add_systems(
@@ -4161,7 +4162,7 @@ fn typed_text(key: KeyCode) -> Option<&'static str> {
 /// load, holds it over its frames, and lets it go at the range's end (the
 /// frame after, for a tap or a click).
 #[allow(clippy::too_many_arguments)]
-fn press_keys(
+pub(crate) fn press_keys(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut keys: ResMut<ButtonInput<KeyCode>>,

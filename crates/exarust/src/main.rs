@@ -345,6 +345,8 @@ mod map_panel;
 mod message_box;
 mod offscreen;
 mod profiler;
+#[cfg(test)]
+mod schedule_ambiguity_test;
 mod sim_boundary;
 mod user_settings;
 mod viewer;
