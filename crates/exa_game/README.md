@@ -3167,3 +3167,11 @@ an item a searching character picks up is listed at the record's default
 cell `0x28, 4` (`npc_search::sync_possessions`); and a level-placed
 character's body takes its record's yellow and red shares
 (`save_live::restore_placed_pools`, called by the viewer's placed spawn).
+
+Round uiscreens (L14): `bindings::Bindings` keeps the saved rows and the
+file's controller word as read or captured (`set_row`, `rows`,
+`row_key_name` for the Controls page's cells); Apply writes `InputMode` 3
+for the controller; `player::reselect_on_mode_switch` forces the GUI's
+reselect on each game mode switch; the settings form shows the Controls
+view tabs while a pad is connected; icons render with
+`exa_items::item_icon::render_variant` (weapon light preset).

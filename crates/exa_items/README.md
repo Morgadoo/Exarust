@@ -105,3 +105,7 @@ the title). Without the executable the description is kept as it is. A
 corpus test (`desc_phrase_corpus`, with the game installed) describes every
 shipped item whose card builds a sentence (450 in 0.9.5) and checks each
 against the original's rules.
+
+Round uiscreens (L14): `item_icon::render_variant` builds an icon's render
+variant (the cache variant's top bits, the effect bit, the weapon bit from
+`catalogue::ItemModel::weapon_section`).
