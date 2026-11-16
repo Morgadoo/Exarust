@@ -1056,7 +1056,9 @@ in the walking condition (125 in any other, ×1000 unsupported) it ends the
 step and, once in the episode, moves the standing position to the feet's
 centre plus 100 × the jolt, at most 100·scale cm, telling the behaviour
 while the body locomotes (`steps::jolt`, `Ragdoll::jolt_told`); each jolt
-holds the latch 80 ticks, and a body off its feet takes none. The
+holds the latch 80 ticks, and a body off its feet takes none. A body in
+the walk's condition that stops seeds that term with its chest's slow
+velocity × −0.6 after the tick's jolt (`Ragdoll::walk_stopped`). The
 muscles-off sampler's rules are tested (`body_limp.rs`,
 `exa_game::limp::sample_limp`): 0.9 of the race's base rate, the clip's
 full root travel, the gait overlay by √run, the height target's (2·run + 2)·scale
@@ -1165,6 +1167,8 @@ single-precision 1/30, except under the squared epsilon where it stays 1
 spans unguarded, as the original's do. A recovery step starts
 when the chest is past 1.5 · R · E⁴ · S (45 cm for a settled human),
 compared squared as the original does, and not during a shock stagger;
+R's base is 60 cm on a new body, 65 off its feet, 30 while it locomotes,
+and otherwise narrows 0.5 cm a tick to 30 (`steps::next_base`);
 the balance keeps the support point and the feet's centre
 (`Balance::support_point`, `feet_centre`) and an imbalance accumulator
 that grows past the trigger and fades 0.01 a tick (nothing reads it). Its
