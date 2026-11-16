@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 672 | 162,328 | B1 wire (or prove unreachable) |
-| partial | 1,432 | 900,302 | B4 complete the port |
+| partial | 1,429 | 899,625 | B4 complete the port |
 | missing | 55 | 11,367 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,7 +14,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 144,341 | 18,075 | 276 |
+| physics | 143,795 | 18,075 | 276 |
 | render | 122,921 | 22,453 | 3,232 |
 | ui | 86,242 | 43,018 | 1,311 |
 | powers | 109,096 | 3,157 | 2,321 |
@@ -25,7 +25,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | items | 55,764 | 8,565 | 601 |
 | data | 31,939 | 12,138 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
-| core | 12,324 | 3,305 | 59 |
+| core | 12,193 | 3,305 | 59 |
 | script | 5,410 | 1,631 | 0 |
 | audio | 3,025 | 270 | 0 |
 | combat | 2,201 | 0 | 0 |
@@ -34,11 +34,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 47 / 98,866 | 3 / 558 | 1 / 38 | 99,462 |
+| TMotileDynamics | physics | 46 / 98,698 | 3 / 558 | 1 / 38 | 99,294 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 22 / 30,743 | 3 / 233 | 2 / 28 | 31,004 |
-| TSimSector | physics | 28 / 21,578 | 0 / 0 | 0 / 0 | 21,578 |
 | SG_PlayerControls (unit routines) | ai | 37 / 21,364 | 0 / 0 | 0 / 0 | 21,364 |
+| TSimSector | physics | 27 / 21,200 | 0 / 0 | 0 / 0 | 21,200 |
 | TMotilePart | characters | 37 / 17,208 | 5 / 1,341 | 2 / 1,370 | 19,919 |
 | XA_Arena (unit routines) | modes | 28 / 16,281 | 3 / 1,321 | 4 / 363 | 17,965 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
@@ -98,9 +98,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TCombatant | ai | 9 / 4,839 | 3 / 690 | 0 / 0 | 5,529 |
 | TNavCameraControl | render | 2 / 5,215 | 1 / 192 | 0 / 0 | 5,407 |
 | TSkinController2 | characters | 6 / 3,997 | 2 / 1,193 | 0 / 0 | 5,190 |
-| Engine math (vectors, matrices, fast trig) | core | 18 / 4,941 | 1 / 235 | 0 / 0 | 5,176 |
 | RF_Mesh (unit routines) | render | 3 / 2,922 | 1 / 2,210 | 0 / 0 | 5,132 |
 | RF_HW_Config (unit routines) | ui | 8 / 4,879 | 3 / 198 | 0 / 0 | 5,077 |
+| Engine math (vectors, matrices, fast trig) | core | 17 / 4,810 | 1 / 235 | 0 / 0 | 5,045 |
 | TForceShellEffect | powers | 6 / 4,985 | 0 / 0 | 0 / 0 | 4,985 |
 | SG_ItemGUI (unit routines) | items | 8 / 3,063 | 9 / 1,886 | 0 / 0 | 4,949 |
 | Item description phrases | items | 5 / 4,855 | 0 / 0 | 0 / 0 | 4,855 |
