@@ -53,6 +53,13 @@ The system SHALL grow grass and plants on terrain where the palette materials' v
 - **WHEN** an outdoor arena with grass materials is shown
 - **THEN** grass tufts and plants stand on its grassy areas and none grow on bare dirt or rock
 
+### Requirement: Vegetation only on built blocks
+The plant generator SHALL walk a tile's built blocks in chunk order (row by row) in both of its passes: a 6 m block with no block node SHALL grow no plants and SHALL draw no random numbers, so the blocks after it take the draws it would have taken. A built block whose points are all too sparse SHALL still draw its four numbers a point.
+
+#### Scenario: A missing block
+- **WHEN** a tile's first block has no node and the rest grow at full density
+- **THEN** nothing grows in that block and the next block's plants differ from those of a tile where the first block is built
+
 ### Requirement: Terrain shading
 The system SHALL shade terrain with the original's lighting: its lights and shadows, the sun, the GI or environment ambient and reflections, Fresnel F0 0.04, and a gloss taken from the ground's colour.
 

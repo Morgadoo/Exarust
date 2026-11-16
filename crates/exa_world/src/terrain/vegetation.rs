@@ -258,23 +258,39 @@ pub struct Growth {
     pub angle: f32,
 }
 
-/// What grows in each chunk of a tile. `density(at)` gives the vegetation
+/// What grows in each chunk of a tile. `present(k)` says whether chunk `k`'s
+/// 6 m block exists (has a block node); `density(at)` gives the vegetation
 /// density (−1 in holes); `variants` are the plant shapes in library order.
+///
+/// The original's generator walks the tile's block nodes (both passes), so
+/// a block without a node grows nothing and draws no random numbers: the
+/// blocks after it take the draws it would have taken. The nodes are taken
+/// in chunk order (row by row), the order the tile build adds them.
 ///
 /// The original sorts each chunk's growing points before it bakes them:
 /// small plants first (−1), grass next (0), large plants last by their
 /// average height times the instance's scale plus one. The order does not
 /// change the drawn image (the plants are alpha-tested and depth-written)
 /// but the buffer's order is the original's.
-pub fn grow(seed: u32, variants: &[Variant], density: impl Fn(Vec2) -> f32) -> Vec<Vec<Growth>> {
+pub fn grow(
+    seed: u32,
+    variants: &[Variant],
+    present: impl Fn(usize) -> bool,
+    density: impl Fn(Vec2) -> f32,
+) -> Vec<Vec<Growth>> {
     let chunks = points();
+    let present: Vec<bool> = (0..chunks.len()).map(present).collect();
     let mut rng = Lcg(seed);
     let grass = variants.iter().filter(|v| v.kind == Kind::Grass).count();
     let plants = variants.len() - grass;
     // First pass: what grows, two random steps per point.
     let chosen: Vec<Vec<Option<(usize, f32)>>> = chunks
         .iter()
-        .map(|chunk| {
+        .zip(&present)
+        .map(|(chunk, &present)| {
+            if !present {
+                return Vec::new();
+            }
             chunk
                 .iter()
                 .map(|&p| {
@@ -309,7 +325,11 @@ pub fn grow(seed: u32, variants: &[Variant], density: impl Fn(Vec2) -> f32) -> V
     chunks
         .iter()
         .zip(chosen)
-        .map(|(chunk, chosen)| {
+        .zip(&present)
+        .map(|((chunk, chosen), &present)| {
+            if !present {
+                return Vec::new();
+            }
             let mut growth: Vec<Growth> = chunk
                 .iter()
                 .zip(chosen)
@@ -679,23 +699,51 @@ mod tests {
     #[test]
     fn density_decides_what_grows() {
         let variants = sample_variants();
-        let none = grow(7, &variants, |_| 0.2);
+        let none = grow(7, &variants, |_| true, |_| 0.2);
         assert!(none.iter().all(|c| c.is_empty()));
-        let sparse = grow(7, &variants, |_| 0.4);
+        let sparse = grow(7, &variants, |_| true, |_| 0.4);
         let grass = sparse.iter().flatten().filter(|g| g.variant == 0).count();
         let total = sparse.iter().flatten().count();
         assert_eq!(grass, total, "low density is all grass");
-        let lush = grow(7, &variants, |_| 0.8);
+        let lush = grow(7, &variants, |_| true, |_| 0.8);
         let plants = lush.iter().flatten().filter(|g| g.variant > 0).count();
         assert!(plants > lush.iter().flatten().count() / 2);
         // Same seed, same growth.
-        assert_eq!(grow(7, &variants, |_| 0.8), lush);
+        assert_eq!(grow(7, &variants, |_| true, |_| 0.8), lush);
+    }
+
+    #[test]
+    fn a_chunk_without_a_block_grows_nothing_and_draws_nothing() {
+        let variants = sample_variants();
+        let all = grow(7, &variants, |_| true, |_| 0.8);
+        // Chunk 0 without a block: nothing grows there and the draws it
+        // would have taken go to the next chunks.
+        let absent = grow(7, &variants, |k| k != 0, |_| 0.8);
+        assert!(!all[0].is_empty() && absent[0].is_empty());
+        assert_ne!(absent[1], all[1]);
+        // A barren chunk with a block still draws its four numbers a point,
+        // so it differs from a missing one.
+        let in_chunk0 = |p: Vec2| p.x < CHUNK_SIDE && p.y < CHUNK_SIDE;
+        let barren = grow(
+            7,
+            &variants,
+            |_| true,
+            |p| if in_chunk0(p) { 0.0 } else { 0.8 },
+        );
+        assert!(barren[0].is_empty());
+        assert_eq!(barren[1..], all[1..]);
+        // With every chunk missing, nothing grows.
+        assert!(
+            grow(7, &variants, |_| false, |_| 0.8)
+                .iter()
+                .all(|c| c.is_empty())
+        );
     }
 
     #[test]
     fn each_chunk_is_sorted_small_grass_large() {
         let variants = sample_variants();
-        let growth = grow(11, &variants, |_| 0.9);
+        let growth = grow(11, &variants, |_| true, |_| 0.9);
         for chunk in &growth {
             for pair in chunk.windows(2) {
                 let kind = |g: &Growth| variants[g.variant].kind;
@@ -864,11 +912,19 @@ mod tests {
     fn the_density_threshold_is_the_double_0_35() {
         // The f32 nearest 0.35 is just below the double 0.35: nothing grows.
         let variants = sample_variants();
-        assert!(grow(5, &variants, |_| 0.35).iter().all(|c| c.is_empty()));
+        assert!(
+            grow(5, &variants, |_| true, |_| 0.35)
+                .iter()
+                .all(|c| c.is_empty())
+        );
         let above = f32::from_bits(0.35f32.to_bits() + 1);
-        assert!(grow(5, &variants, |_| above).iter().any(|c| !c.is_empty()));
+        assert!(
+            grow(5, &variants, |_| true, |_| above)
+                .iter()
+                .any(|c| !c.is_empty())
+        );
         // A NaN density takes the growing branch (unordered compare).
-        let nan = grow(5, &variants, |_| f32::NAN);
+        let nan = grow(5, &variants, |_| true, |_| f32::NAN);
         assert!(nan.iter().any(|c| !c.is_empty()));
     }
 

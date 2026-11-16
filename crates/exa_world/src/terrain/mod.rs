@@ -748,7 +748,14 @@ impl Plants {
             let (i, j) = vegetation::density_texel(p);
             built.density[j * TILE_MASK_SIDE + i]
         };
-        let growth = vegetation::grow(tile.vegetation_seed, &self.variants, density);
+        // The generator walks the tile's block nodes: a chunk whose block
+        // was not built grows nothing and draws no random numbers.
+        let growth = vegetation::grow(
+            tile.vegetation_seed,
+            &self.variants,
+            |k| block_at.get(k).is_some_and(Option::is_some),
+            density,
+        );
         let s = terrain.spacing;
         let half = (n - 1) as f32 * 0.5 * s;
         let place = |p: bevy::math::Vec2| {

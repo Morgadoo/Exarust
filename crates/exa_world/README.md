@@ -151,7 +151,9 @@ and the grid's rooms; portal clipping is next (see
   `vegetation::terrain_normal`), grass is drawn at 0.75
   size, the density mask is sampled on its
   240 × 240 texels, the two random draws of a plant's size and rotation use
-  the engine's double-precision unit, and each chunk's plants are ordered
+  the engine's double-precision unit, only the chunks of built blocks grow
+  and draw random numbers (the generator walks the tile's block nodes; a
+  block without one is skipped without drawing), and each chunk's plants are ordered
   small plants, grass, large plants by mean height as the original sorts
   them; the original's plant ground query with its diagonal test and plane
   solve is `vegetation::ground_on_grid` (through `ground_with_normal`, in
