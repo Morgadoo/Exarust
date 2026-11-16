@@ -29,7 +29,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 56% | 53% | 2% | 1% | 38% | 6% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 56% | 53% | 1% | 2% | 43% | 1% |  |
-| Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 63% | 62% | 1% | 0% | 35% | 2% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 64% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 86% | 84% | 2% | 0% | 10% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 61% | 59% | 2% | 0% | 33% | 5% |  |
@@ -364,7 +364,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TAIActivity | AI & behaviour | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TThaumTree | Thaumaturgy & effects | 38 | 91% | 95% | 92% | 0% | 3% | 5% | 1% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 21 | 96% | 93% | 93% | 0% | 0% | 5% | 2% |
-| TParticleSystem | Thaumaturgy & effects | 19 | 89% | 66% | 64% | 2% | 0% | 25% | 9% |
+| TParticleSystem | Thaumaturgy & effects | 19 | 89% | 70% | 68% | 2% | 0% | 25% | 5% |
 | TForceBlastEffect | Thaumaturgy & effects | 17 | 92% | 65% | 63% | 2% | 0% | 35% | 0% |
 | TForceTorrentEffect | Thaumaturgy & effects | 15 | 89% | 33% | 32% | 1% | 0% | 67% | 0% |
 | TTendrilEmitter | Thaumaturgy & effects | 15 | 90% | 41% | 39% | 2% | 0% | 59% | 0% |
