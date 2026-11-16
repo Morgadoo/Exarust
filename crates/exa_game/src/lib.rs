@@ -5,8 +5,8 @@
 pub mod archive_pass;
 pub mod arena;
 pub mod arena_board;
-pub mod arena_hub;
 pub mod arena_fade;
+pub mod arena_hub;
 pub mod arena_hub_live;
 pub mod arena_ids;
 pub mod arena_live;

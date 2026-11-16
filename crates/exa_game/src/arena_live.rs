@@ -732,11 +732,7 @@ pub(crate) fn stand_first_round(
     players: Query<(), With<crate::player::Player>>,
     clock: Option<Res<crate::effects::EffectClock>>,
     mut commands: MessageWriter<SceneCommand>,
-    (mut fixed, mut freeze, flow): (
-        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
-        Option<ResMut<exa_ai::freeze::StagingFreeze>>,
-        Option<Res<crate::flow::Flow>>,
-    ),
+    ((mut fixed, mut freeze), flow): (FreezeQueue<'_>, Option<Res<crate::flow::Flow>>),
 ) {
     let Some(mut scene) = scene else {
         return;
@@ -793,6 +789,20 @@ pub(crate) fn stand_first_round(
     }
 }
 
+/// The fixed queue and the staging freeze a staging posts to.
+type FreezeQueue<'w> = (
+    Option<ResMut<'w, exa_physics::sim_app::FixedCommands>>,
+    Option<ResMut<'w, exa_ai::freeze::StagingFreeze>>,
+);
+
+/// The flow, its queued steps and the arena's held stagings, which a
+/// Continue behind the transition screen uses.
+type StagingFlow<'w> = (
+    Option<ResMut<'w, crate::flow::Flow>>,
+    Option<ResMut<'w, crate::flow::FlowSteps>>,
+    Option<ResMut<'w, crate::arena_fade::ArenaStaging>>,
+);
+
 /// The end screen's Continue, the next round and the return.
 #[allow(clippy::too_many_arguments)]
 fn continue_round(
@@ -808,15 +818,8 @@ fn continue_round(
     mut level: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
-    (mut fixed, mut freeze): (
-        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
-        Option<ResMut<exa_ai::freeze::StagingFreeze>>,
-    ),
-    (mut flow, mut queued, mut staging): (
-        Option<ResMut<crate::flow::Flow>>,
-        Option<ResMut<crate::flow::FlowSteps>>,
-        Option<ResMut<crate::arena_fade::ArenaStaging>>,
-    ),
+    (mut fixed, mut freeze): FreezeQueue<'_>,
+    (mut flow, mut queued, mut staging): StagingFlow<'_>,
 ) {
     let (Some(arena), Some(scene)) = (arena.as_mut(), scene.as_mut()) else {
         return;
@@ -932,9 +935,9 @@ fn continue_round(
         let fighter_dead = fighters.iter().any(|(_, _, condition, body, player)| {
             (if entered { player } else { body.company }) && *condition == Condition::DEAD
         });
-        let opponent_present = fighters.iter().any(|(_, _, condition, body, _)| {
-            !body.company && *condition != Condition::DEAD
-        });
+        let opponent_present = fighters
+            .iter()
+            .any(|(_, _, condition, body, _)| !body.company && *condition != Condition::DEAD);
         let fight = regenerate_round(
             scene.level,
             scene.tier,
@@ -1929,7 +1932,11 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .release(KeyCode::Enter);
         // The screen opened over the round; the menu closed and stays closed.
-        assert!(app.world().resource::<crate::flow::Flow>().transition_running());
+        assert!(
+            app.world()
+                .resource::<crate::flow::Flow>()
+                .transition_running()
+        );
         assert!(
             app.world()
                 .resource::<crate::arena_fade::ArenaStaging>()
@@ -1975,7 +1982,11 @@ mod tests {
         assert_eq!(app.world().resource::<SimPause>().raised(), 0);
         // The hold and the fade back in: the freeze holds until the close.
         let mut frames = 0;
-        while app.world().resource::<crate::flow::Flow>().transition_running() {
+        while app
+            .world()
+            .resource::<crate::flow::Flow>()
+            .transition_running()
+        {
             run_fixed_commands(app.world_mut());
             assert!(
                 app.world()

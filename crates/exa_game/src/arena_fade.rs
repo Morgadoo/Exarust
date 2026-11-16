@@ -142,10 +142,7 @@ fn hold_match_launches(
 }
 
 /// The screen is black: the held launch goes out.
-fn start_held_match(
-    mut staging: ResMut<ArenaStaging>,
-    mut starts: MessageWriter<ArenaMatchStart>,
-) {
+fn start_held_match(mut staging: ResMut<ArenaStaging>, mut starts: MessageWriter<ArenaMatchStart>) {
     if let Some(launch) = staging.take_launch() {
         info!(
             "arena match start: template {} at the screen's black",
