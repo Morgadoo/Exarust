@@ -1085,19 +1085,12 @@ pub fn follow_and_search(
                 world.scene.containers.len()
             );
         }
-        world.scene.open = screens
-            .loot
-            .iter()
-            .filter_map(|&character| {
-                characters
-                    .iter()
-                    .find(|(entity, ..)| entity.index().index() as i32 == character)
-                    .map(|(entity, _, _, _, id)| {
-                        id.map_or(entity.index().index(), |id| id.0) | search::CORPSE_TAG
-                    })
-            })
-            .chain(screens.popups.iter().copied())
-            .collect();
+        world.scene.open = screens.search_ids(|character| {
+            characters
+                .iter()
+                .find(|(entity, ..)| entity.index().index() as i32 == character)
+                .map(|(entity, _, _, _, id)| id.map_or(entity.index().index(), |id| id.0))
+        });
         if world.generation != Some(items.generation) {
             world.generation = Some(items.generation);
             world.scene.items = items.all();
@@ -1769,15 +1762,35 @@ pub fn carry_out_search(
 /// The follow and the search in the running game.
 pub struct NpcSearchPlugin;
 
-/// What the search reads of the open screens: the characters whose loot
-/// windows are open (their record ids) and the open container popups'
-/// tagged ids. The frame keeps it from [`crate::gui_screens::GameScreens`]
-/// before each frame's fixed steps; the simulation reads this copy instead
-/// of the screens themselves.
+/// What the search reads of the open screens: the GUI's registry of open
+/// containers ([`exa_ui::game_gui::OpenContainers`]), the original's
+/// eight slots its search asks ([`exa_ui::game_gui::OpenContainers::is_open`]):
+/// the inventory's and the loot windows' characters (their record ids with
+/// the container bit) and the open container popups' ids. The frame keeps
+/// it from [`crate::gui_screens::GameScreens`] before each frame's fixed
+/// steps; the simulation reads this copy instead of the screens themselves.
 #[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpenSearchScreens {
-    pub loot: Vec<i32>,
-    pub popups: Vec<u32>,
+    pub containers: exa_ui::game_gui::OpenContainers,
+}
+
+impl OpenSearchScreens {
+    /// The open ids as the search names them: a character's (its entity
+    /// index in the GUI) through `character_id` with the corpse tag, a
+    /// container's as it is. An id is kept only while the registry holds it.
+    pub fn search_ids(&self, character_id: impl Fn(i32) -> Option<u32>) -> Vec<u32> {
+        use exa_ui::game_gui::CONTAINER_TAG;
+        self.containers
+            .ids()
+            .filter_map(|id| {
+                if id as u32 & CONTAINER_TAG != 0 {
+                    character_id(id & !(CONTAINER_TAG as i32)).map(|id| id | search::CORPSE_TAG)
+                } else {
+                    Some(id as u32)
+                }
+            })
+            .collect()
+    }
 }
 
 /// Keeps [`OpenSearchScreens`] from the open screens, before the frame's
@@ -1789,8 +1802,7 @@ fn keep_open_search_screens(
     let now = screens
         .as_deref()
         .map_or_else(OpenSearchScreens::default, |s| OpenSearchScreens {
-            loot: s.loot.iter().map(|w| w.character).collect(),
-            popups: s.popups.iter().map(|p| p.id).collect(),
+            containers: s.containers,
         });
     open.set_if_neq(now);
 }
