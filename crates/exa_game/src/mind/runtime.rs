@@ -1688,6 +1688,11 @@ pub fn enter_spirit(world: &mut World, body: Entity, spirit: Entity) {
     move_mind_list(world, body, spirit, left_status);
     move_root_marker::<Player>(world, body, spirit);
     info!("spirit form: the player takes the spirit {spirit:?}; {body:?} is left behind");
+    // Last, the controls' switch: a window holds them with only the
+    // powers' hotkeys (the controls are the frame's).
+    on_frame(world, |world: &mut World| {
+        crate::controls_live::spirit_controls(world, true)
+    });
 }
 
 /// Runs `change` to the power lists on the world that walks them. Behind
@@ -1811,6 +1816,10 @@ pub fn leave_spirit(world: &mut World, spirit: Entity, body: Entity) {
         world.entity_mut(body).insert(caster);
     }
     resume_player(world, body);
+    // The controls' switch lets them go, all five hotkey permissions back.
+    on_frame(world, |world: &mut World| {
+        crate::controls_live::spirit_controls(world, false)
+    });
     if world.get_entity(spirit).is_ok() {
         move_root_marker::<Player>(world, spirit, body);
         let root = root_of(world, spirit).unwrap_or(spirit);
@@ -2605,6 +2614,13 @@ mod tests {
         .bridge_copy::<SpiritOf>()
         .bridge_copy::<Player>()
         .bridge_copy::<MindBody>();
+        // The frame's controls, on as in play, and its screens.
+        app.init_resource::<crate::player_controls::PlayerControl>()
+            .init_resource::<crate::hand::Hand>()
+            .init_resource::<crate::gui_screens::GameScreens>();
+        app.world_mut()
+            .resource_mut::<crate::player_controls::PlayerControl>()
+            .set_off(false);
         let body = character(app.world_mut(), true);
         let spirit = character(app.world_mut(), false);
         let entry = MindPower::new(
@@ -2660,6 +2676,16 @@ mod tests {
             let root = root_of(world, spirit).unwrap();
             assert!(world.get::<Player>(root).is_some());
             assert_eq!(world.resource::<MindControl>().held, Some(body));
+            // The switch reached the frame's controls: a window holds them,
+            // only the powers' hotkeys are allowed and the hand keeps the
+            // left button off the world.
+            let control = world.resource::<crate::player_controls::PlayerControl>();
+            assert!(control.window_holds);
+            assert_eq!(
+                control.hotkey_mask,
+                crate::player_controls::PERMISSIONS_POWERS
+            );
+            assert!(world.resource::<crate::hand::Hand>().keeps_left);
         }
         // The transition's black, on the frame.
         spirit_home(app.world_mut(), spirit, body);
@@ -2673,6 +2699,14 @@ mod tests {
         assert_eq!(world.get::<MindBody>(body).unwrap().powers.len(), 1);
         let root = root_of(world, body).unwrap();
         assert!(world.get::<Player>(root).is_some());
+        // The way home let the controls go.
+        let control = world.resource::<crate::player_controls::PlayerControl>();
+        assert!(!control.window_holds);
+        assert_eq!(
+            control.hotkey_mask,
+            crate::player_controls::PERMISSIONS_PLAY
+        );
+        assert!(!world.resource::<crate::hand::Hand>().keeps_left);
         assert!(
             focus.windows(2).all(|w| w[1] >= w[0]),
             "the caster's focus went back: {focus:?}"

@@ -123,13 +123,41 @@ fn loadout_form_block(
 }
 
 /// The switch's effect on the hand: off clears its per-frame bytes (the
-/// out-of-reach one is the hand's here).
+/// out-of-reach one and the left button's keep are the hand's here).
 fn hand_bytes(control: Res<PlayerControl>, hand: Option<ResMut<crate::hand::Hand>>) {
     if control.is_changed()
         && control.off
         && let Some(mut hand) = hand
     {
         hand.out_of_reach = false;
+        hand.keeps_left = false;
+    }
+}
+
+/// The spirit form's switch on the frame's world
+/// ([`PlayerControl::set_spirit_form`]): a window holds the controls with
+/// only the powers' permission (on) or lets them go with all five (off),
+/// and the hand's left button is kept off the world while it holds. On,
+/// every game screen closes with the power bar (the GUI sweep with its bar
+/// bit) and the dialogue ends. Its callers are the spirit form's start and
+/// its way home ([`crate::mind::runtime`]).
+pub fn spirit_controls(world: &mut World, on: bool) {
+    if let Some(mut control) = world.get_resource_mut::<PlayerControl>() {
+        control.set_spirit_form(on);
+        info!(
+            "controls: spirit form {} (hotkey mask {:#x})",
+            if on { "holds them" } else { "lets them go" },
+            control.hotkey_mask
+        );
+    }
+    if let Some(mut hand) = world.get_resource_mut::<crate::hand::Hand>() {
+        hand.keeps_left = on;
+    }
+    if on {
+        crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::EveryAndBar);
+        if world.contains_resource::<Messages<exa_script::LeaveDialogue>>() {
+            world.write_message(exa_script::LeaveDialogue);
+        }
     }
 }
 

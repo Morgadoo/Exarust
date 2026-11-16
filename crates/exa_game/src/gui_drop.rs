@@ -136,8 +136,14 @@ pub fn claim_gui_drag(
     mut drag: ResMut<PanelDrag>,
     mut items: ResMut<ItemCursor>,
     mut drop: ResMut<GuiDrop>,
+    control: Option<Res<player_controls::PlayerControl>>,
 ) {
     if drag.source.is_none() {
+        return;
+    }
+    // The claim's first test: a window holding the controls (the spirit
+    // form) refuses it.
+    if player_controls::PlayerControl::window_holds(control.as_deref()) {
         return;
     }
     let pending = !items.drops.is_empty() || drop.taken.is_some();

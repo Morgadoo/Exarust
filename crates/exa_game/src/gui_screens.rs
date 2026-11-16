@@ -1791,13 +1791,16 @@ pub enum ScreenSweep {
     ContainerFamily,
     /// Every in-game screen; the bar stays (entering combat mode).
     Every,
+    /// Every in-game screen, and the shown power bar falls too (the spirit
+    /// form's start).
+    EveryAndBar,
 }
 
 impl ScreenSweep {
     /// The bar bit the sweep hands the power screen's part.
     pub fn bar_mask(self) -> u8 {
         match self {
-            ScreenSweep::ContainerFamily => 1,
+            ScreenSweep::ContainerFamily | ScreenSweep::EveryAndBar => 1,
             ScreenSweep::Every => 0,
         }
     }
@@ -1811,7 +1814,7 @@ pub fn sweep_screens(world: &mut World, sweep: ScreenSweep) {
     if let Some(mut screens) = world.get_resource_mut::<GameScreens>() {
         let closed = match sweep {
             ScreenSweep::ContainerFamily => screens.close_container_family(),
-            ScreenSweep::Every => screens.close_game_screens(),
+            ScreenSweep::Every | ScreenSweep::EveryAndBar => screens.close_game_screens(),
         };
         if closed > 0 {
             info!("GUI sweep {sweep:?}: {closed} screen(s) closed");

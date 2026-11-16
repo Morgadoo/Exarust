@@ -375,11 +375,12 @@ fn press_hotkeys(
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
     mut skills: MessageWriter<crate::skill_screen::OpenSkills>,
-    (mut dialogue, control, mut confirms, gui): (
+    (mut dialogue, control, mut confirms, gui, hub): (
         DialogueSide,
         Option<Res<PlayerControl>>,
         MessageWriter<crate::end_menu_screen::EndMenuConfirm>,
         Option<Res<crate::gui_screens::GameScreens>>,
+        Option<Res<crate::hub_windows::HubWindows>>,
     ),
 ) {
     // The controls off, the key-down handler and the pad routine (the
@@ -422,6 +423,15 @@ fn press_hotkeys(
                 .is_some_and(|c| c.engine.panel.open),
             power_bar: caster.is_some_and(|c| c.bar_open),
             powers: caster.map_or(0, |c| c.known.len() as i32),
+            // The controls' permission mask (the spirit form keeps only
+            // the powers'), and the byte a holding window sets: the
+            // spirit form's, or the shop's trade mode.
+            allowed: PlayerControl::hotkey_mask(control.as_deref()),
+            hides_inventory: PlayerControl::window_holds(control.as_deref())
+                || hub
+                    .as_deref()
+                    .and_then(|h| h.shop.as_ref())
+                    .is_some_and(|shop| shop.window.trading),
             ..Context::default()
         };
         let keyed = pressed.iter().filter_map(|&key| {
@@ -864,6 +874,65 @@ mod tests {
         };
         assert!(run(Condition::NORMAL));
         assert!(!run(Condition::DEAD));
+    }
+
+    /// The spirit form's switch leaves the hotkeys only the powers': the
+    /// inventory key asks for nothing while it holds the controls (and the
+    /// dialogue is ended), and asks again once the way home lets them go.
+    #[test]
+    fn the_spirit_form_keeps_only_the_powers_keys() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Bindings>()
+            .init_resource::<Hand>()
+            .init_resource::<PlayerControl>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .add_message::<ScreenRequest>()
+            .add_message::<crate::end_menu_screen::EndMenuConfirm>()
+            .add_message::<crate::skill_screen::OpenSkills>()
+            .add_message::<BarCommand>()
+            .add_message::<FlipWeaponRequest>()
+            .init_resource::<DialogueFocus>()
+            .add_message::<exa_script::Talk>()
+            .add_message::<exa_script::PickReply>()
+            .add_message::<exa_script::LeaveDialogue>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .add_systems(Update, press_hotkeys);
+        app.world_mut()
+            .resource_mut::<PlayerControl>()
+            .set_off(false);
+        app.world_mut()
+            .spawn((PlayerBody::new(0.0), Condition::NORMAL));
+        let inventory_requests = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyI);
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .release(KeyCode::KeyI);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .clear();
+            let mut messages = app.world_mut().resource_mut::<Messages<ScreenRequest>>();
+            let n = messages
+                .drain()
+                .filter(|r| r.screen == GameScreen::Inventory)
+                .count();
+            n
+        };
+        crate::controls_live::spirit_controls(app.world_mut(), true);
+        assert_eq!(
+            app.world()
+                .resource::<Messages<exa_script::LeaveDialogue>>()
+                .len(),
+            1,
+            "the switch ends the dialogue"
+        );
+        assert!(app.world().resource::<Hand>().keeps_left);
+        assert_eq!(inventory_requests(&mut app), 0);
+        crate::controls_live::spirit_controls(app.world_mut(), false);
+        assert_eq!(inventory_requests(&mut app), 1);
     }
 
     /// I and J ask for the inventory and the journal; a dead player asks

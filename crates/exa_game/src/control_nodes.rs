@@ -57,11 +57,15 @@ impl Frame {
     /// The rotation made orthonormal in the original's order: the second
     /// axis is normalised first, the first loses its share along it and is
     /// normalised, and the third is the first crossed with the second,
-    /// normalised.
+    /// normalised. Each normalisation is the engine's approximate one (the
+    /// processor's reciprocal square root, a zero axis staying zero) and
+    /// the share is its dot summed `(x + z) + y`, as the original's
+    /// helpers compute them.
     pub fn orthonormalized(self) -> Self {
-        let y = self.rotation.y_axis.normalize_or_zero();
-        let x = (self.rotation.x_axis - y * self.rotation.x_axis.dot(y)).normalize_or_zero();
-        let z = x.cross(y).normalize_or_zero();
+        use exa_physics::engine_math::{normalize_approx, remove_component};
+        let y = normalize_approx(self.rotation.y_axis);
+        let x = normalize_approx(remove_component(self.rotation.x_axis, y));
+        let z = normalize_approx(x.cross(y));
         Self {
             position: self.position,
             rotation: Mat3::from_cols(x, y, z),
@@ -382,14 +386,16 @@ mod tests {
         );
         let f = Frame::new(Vec3::new(1.0, 2.0, 3.0), sheared).orthonormalized();
         assert_eq!(f.position, Vec3::new(1.0, 2.0, 3.0));
-        assert!((f.rotation.x_axis.length() - 1.0).abs() < 1e-5);
-        assert!((f.rotation.y_axis.length() - 1.0).abs() < 1e-5);
-        assert!((f.rotation.z_axis.length() - 1.0).abs() < 1e-5);
-        assert!(f.rotation.x_axis.dot(f.rotation.y_axis).abs() < 1e-5);
-        assert!((f.rotation.x_axis.cross(f.rotation.y_axis) - f.rotation.z_axis).length() < 1e-5);
+        // The approximate reciprocal square root keeps about 12 bits.
+        let eps = 1e-3;
+        assert!((f.rotation.x_axis.length() - 1.0).abs() < eps);
+        assert!((f.rotation.y_axis.length() - 1.0).abs() < eps);
+        assert!((f.rotation.z_axis.length() - 1.0).abs() < eps);
+        assert!(f.rotation.x_axis.dot(f.rotation.y_axis).abs() < eps);
+        assert!((f.rotation.x_axis.cross(f.rotation.y_axis) - f.rotation.z_axis).length() < eps);
         // The second axis keeps its direction; the first is bent to it.
-        assert!((f.rotation.y_axis - Vec3::new(0.5, 3.0, 0.0).normalize()).length() < 1e-6);
-        assert!(f.rotation.x_axis.dot(Vec3::new(0.5, 3.0, 0.0)).abs() < 1e-5);
+        assert!((f.rotation.y_axis - Vec3::new(0.5, 3.0, 0.0).normalize()).length() < eps);
+        assert!(f.rotation.x_axis.dot(Vec3::new(0.5, 3.0, 0.0)).abs() < eps);
         // A frame with a zero axis stays finite.
         let flat = Mat3::from_cols(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
         let f = Frame::new(Vec3::ZERO, flat).orthonormalized();
