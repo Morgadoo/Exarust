@@ -4447,13 +4447,24 @@ mod tests {
             .world()
             .resource::<exa_assets::live_objects::LiveObjects>()
             .db();
-        let body = db.find(local | 1).unwrap().section(WEAPON).unwrap().to_vec();
+        let body = db
+            .find(local | 1)
+            .unwrap()
+            .section(WEAPON)
+            .unwrap()
+            .to_vec();
         let condition = exa_items::refresh::made_condition(&body).unwrap();
         assert_eq!(
             (condition.quality, condition.damage, condition.dirt),
             (0xFF, 0, 0)
         );
         assert_eq!(condition.spreads.0, 0);
-        assert_eq!(app.world().resource::<crate::hub_windows::ArenaCareer>().won_items.len(), 0);
+        assert_eq!(
+            app.world()
+                .resource::<crate::hub_windows::ArenaCareer>()
+                .won_items
+                .len(),
+            0
+        );
     }
 }

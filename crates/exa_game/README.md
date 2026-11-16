@@ -2318,13 +2318,18 @@ random-table children (every shipped chest's children are "DropTable"
 records) with the rows their tables give, through
 `exa_items::randomise::Fill` (292 children in exanima01; the chest of
 drawers 0x80000054 gets boots twice, a shirt, a belt and trousers): a
-picked child takes the row's item with zero flags, an empty slot id 0
+picked child takes, with zero flags, the row's item as the original's
+container instantiate makes it (`ContainerPicks`: the dispatcher copies an
+instance-on-use record into the local tier; an item body takes the palette
+roll on the row's wealth, the count byte's signed fraction, damage and dirt
+with their spreads and the apparel walker; a tagged weapon copy damage and
+dirt with their spreads and the weapon walker), an empty slot id 0
 with `0x100`. The filled children are also written into the level's own
 record in the live local tier, so a save's level section keeps them; a
 level read from a save's section is not filled (the original's import of a
-saved section runs only the tier migration). Stand-ins: the row's item id is used without the
-instance copy and condition word, only placed containers are walked
-and the generator starts from `FILL_SEED`. Opening a popup logs each
+saved section runs only the tier migration). Stand-ins: only placed containers are walked, the generator starts
+from `FILL_SEED` and the walkers' clock words are a fixed sequence from
+it; without a base tier (no game data) the child takes the row's id. Opening a popup logs each
 child's id, flags, model, icon slot, whether its icon has rendered and its
 pixel rect at debug level. `item_icon_render` keeps one GPU icon job in
 flight at a time (`start_budget`): every job's scene and sun sit on the one
