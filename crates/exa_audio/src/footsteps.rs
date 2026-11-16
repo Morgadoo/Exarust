@@ -189,7 +189,8 @@ pub(crate) fn foot_sounds(
                 if clock.rustle >= now {
                     continue;
                 }
-                let foley = exa_combat::sounds::foley(&fighter.armour, false, false, false);
+                let foley =
+                    exa_combat::sounds::PartSounds::of(&fighter.stats, suit).foley(&fighter.armour);
                 let g = bank.random_unit();
                 let p = bank.random_unit();
                 // The rustle's own clock is stepped after the play.

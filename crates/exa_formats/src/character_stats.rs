@@ -410,6 +410,9 @@ pub struct CharacterStats {
     /// Where the Mind sight draws the character's sphere, from its race
     /// ([`crate::races::MindSightPlace`]).
     pub mind_sight: crate::races::MindSightPlace,
+    /// The record's race byte (the race word's second byte the init and
+    /// the part sounds test: 1 the skeleton, bit 0x10 the golems).
+    pub race_byte: u8,
 }
 
 impl Default for CharacterStats {
@@ -534,7 +537,19 @@ impl CharacterStats {
             unarmed_reach: stats.unarmed_reach,
             mind: stats.mind,
             mind_sight: stats.mind_sight,
+            race_byte: byte,
         }
+    }
+
+    /// Its race byte is the skeleton's (its bare parts ring `SkelHit`).
+    pub fn skeleton(&self) -> bool {
+        self.race_byte == SKELETON
+    }
+
+    /// Its race word has the golem bit (0x1000; the race byte's 0x10): its
+    /// parts ring `HitGlm` and its golem body plays `Golem_Foley`.
+    pub fn golem_race(&self) -> bool {
+        self.race_byte & GOLEM_BIT != 0
     }
 
     /// These stats with the encumbrance the armour pass summed

@@ -1781,11 +1781,14 @@ fn equip_outfits(
         // whole fighter, which a free-running simulation's newer steps
         // would lose.
         if do_outfit && let Some(mut f) = fighter {
-            let layers = exa_combat::damage::armour_layers(
+            let mut layers = exa_combat::damage::armour_layers(
                 f.natural.as_ref(),
                 &protection,
                 f.stats.deflection,
             );
+            // The pass ends in the part-sound routine, which gives a golem
+            // race's covering layers the golem class.
+            exa_combat::sounds::mark_golem_layers(&mut layers, f.stats.golem_race());
             let wear = move |f: &mut exa_combat::Fighter| f.armour = layers;
             match fixed.as_deref_mut() {
                 Some(fixed) => fixed.write(body, &mut f, wear),

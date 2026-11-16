@@ -67,6 +67,69 @@ pub fn part_hit_sound(armour: &PartArmour, golem: bool, skeleton: bool) -> Optio
     None
 }
 
+/// The golem class a golem's first covering layer of each part takes
+/// ([`mark_golem_layers`]): the damage routine's layer ring then plays
+/// `HitGlm` ([`LAYER_SETS`]).
+pub const GOLEM_CLASS: u8 = 6;
+
+/// The race byte whose golems play `Golem_Foley` at volume 1 and base 1
+/// (the original tests the race word's 0x1200).
+const QUIET_GOLEM_RACE: u8 = 0x12;
+
+/// What a character's part sounds read of its race and gear, as the
+/// part-sound routine tests them: the race word's golem bit, the skeleton's
+/// race, the golem body byte (a golem race, or a worn golem suit) and the
+/// quiet golems' race.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PartSounds {
+    pub golem_race: bool,
+    pub skeleton: bool,
+    pub golem_body: bool,
+    pub quiet_golem: bool,
+}
+
+impl PartSounds {
+    /// The sounds of a character of `stats` that wears a golem suit or
+    /// not: the init marks a golem race's body (the race word's golem bit,
+    /// not the skeleton), the worn-effect registration a suit wearer's.
+    pub fn of(stats: &exa_formats::character_stats::CharacterStats, golem_suit: bool) -> Self {
+        Self {
+            golem_race: stats.golem_race(),
+            skeleton: stats.skeleton(),
+            golem_body: stats.golem_race() || golem_suit,
+            quiet_golem: stats.race_byte == QUIET_GOLEM_RACE,
+        }
+    }
+
+    /// A part's hit sound ([`part_hit_sound`]).
+    pub fn hit(&self, armour: &PartArmour) -> Option<HitSound> {
+        part_hit_sound(armour, self.golem_race, self.skeleton)
+    }
+
+    /// The character's foley ([`foley`]).
+    pub fn foley(&self, armour: &[PartArmour; 18]) -> Foley {
+        foley(armour, self.golem_body, self.golem_race, self.quiet_golem)
+    }
+}
+
+/// The part-sound routine's write for a golem race (the race word's golem
+/// bit): each part's first layer that covers at least half of it (outer,
+/// then inner; a NaN coverage counts) takes the golem class
+/// [`GOLEM_CLASS`]. The routine runs at the end of every armour pass, on
+/// the layers that pass rebuilt; other races' layers are left as they are.
+pub fn mark_golem_layers(armour: &mut [PartArmour; 18], golem_race: bool) {
+    if !golem_race {
+        return;
+    }
+    for part in armour.iter_mut() {
+        if let Some(outer) = part.outer.as_mut().filter(|l| !(l.coverage < 0.5)) {
+            outer.material = GOLEM_CLASS;
+        } else if !(part.inner.coverage < 0.5) {
+            part.inner.material = GOLEM_CLASS;
+        }
+    }
+}
+
 /// A bone's share of a foley loop, by the character's part order.
 pub const FOLEY_BONE_WEIGHTS: [f32; 18] = [
     0.5, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.5, 0.5, 0.1, 0.3, 0.2, 0.15, 0.3, 0.2, 0.15, 0.1,
@@ -354,6 +417,74 @@ mod tests {
             material,
             ..Layer::default()
         }
+    }
+
+    fn stats_of_race(race: u8) -> exa_formats::character_stats::CharacterStats {
+        let record = exa_formats::characters::CharacterRecord {
+            race,
+            ..Default::default()
+        };
+        exa_formats::character_stats::CharacterStats::derive(&record, None, Default::default())
+    }
+
+    /// The part-sound routine's race tests: the profession word's 0x1000
+    /// (race byte bit 0x10) makes the golem sounds, 0x100 alone the
+    /// skeleton's, 0x1200 the quiet golem foley; a worn suit makes a golem
+    /// body of any race.
+    #[test]
+    fn the_part_sounds_read_the_race_word() {
+        let human = PartSounds::of(&stats_of_race(0), false);
+        assert_eq!(human, PartSounds::default());
+        let skeleton = PartSounds::of(&stats_of_race(1), false);
+        assert!(skeleton.skeleton && !skeleton.golem_race && !skeleton.golem_body);
+        let golem = PartSounds::of(&stats_of_race(0x10), false);
+        assert!(golem.golem_race && golem.golem_body && !golem.quiet_golem);
+        let quiet = PartSounds::of(&stats_of_race(0x12), false);
+        assert!(quiet.golem_race && quiet.golem_body && quiet.quiet_golem);
+        let suited = PartSounds::of(&stats_of_race(0), true);
+        assert!(suited.golem_body && !suited.golem_race);
+
+        let bare = [PartArmour::default(); 18];
+        assert_eq!(skeleton.hit(&bare[0]), Some(HitSound::Skeleton));
+        assert_eq!(human.hit(&bare[0]), Some(HitSound::Flesh));
+        assert_eq!(golem.hit(&bare[0]), Some(HitSound::Golem));
+        // The golem body's foley: the suit wearer plays FoleyPlH (2, 1),
+        // a golem race Golem_Foley (6, 1.5), race 0x12 (1, 1).
+        let f = suited.foley(&bare);
+        assert_eq!((f.kind, f.volume, f.base), (FoleyKind::Player, 2.0, 1.0));
+        let f = golem.foley(&bare);
+        assert_eq!((f.kind, f.volume, f.base), (FoleyKind::Golem, 6.0, 1.5));
+        let f = quiet.foley(&bare);
+        assert_eq!((f.kind, f.volume, f.base), (FoleyKind::Golem, 1.0, 1.0));
+        assert_eq!(human.foley(&bare), Foley::NONE);
+    }
+
+    /// A golem race's first covering layer of each part takes class 6
+    /// (outer, then inner; under a half skips; a NaN coverage covers); the
+    /// part with no covering layer keeps its classes; other races are
+    /// untouched.
+    #[test]
+    fn a_golems_covering_layers_take_the_golem_class() {
+        let mut armour = [PartArmour::default(); 18];
+        armour[0].outer = Some(layer(0.6, 4));
+        armour[1].outer = Some(layer(0.4, 4));
+        armour[1].inner = layer(0.9, 2);
+        armour[2].outer = Some(layer(f32::NAN, 3));
+        armour[3].inner = layer(0.3, 1);
+        let mut other = armour;
+        mark_golem_layers(&mut other, false);
+        assert_eq!(format!("{other:?}"), format!("{armour:?}"));
+        mark_golem_layers(&mut armour, true);
+        assert_eq!(armour[0].outer.unwrap().material, GOLEM_CLASS);
+        assert_eq!(armour[0].inner.material, 0);
+        assert_eq!(armour[1].outer.unwrap().material, 4);
+        assert_eq!(armour[1].inner.material, GOLEM_CLASS);
+        assert_eq!(armour[2].outer.unwrap().material, GOLEM_CLASS);
+        assert_eq!(armour[3].inner.material, 1);
+        // A bare part's full inner layer.
+        assert_eq!(armour[4].inner.material, GOLEM_CLASS);
+        // The damage routine's ring then names HitGlm.
+        assert_eq!(LAYER_SETS[usize::from(GOLEM_CLASS)], "HitGlm");
     }
 
     #[test]
