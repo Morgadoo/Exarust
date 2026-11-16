@@ -2058,9 +2058,7 @@ fn duellist(
                     });
             // The integration's sight of the foe, which the chase's leave
             // reads [Exarust's: a fighter without a brain always sees it].
-            let foe_fresh = brains
-                .get(entity)
-                .map_or(true, |npc| npc.integration.fresh);
+            let foe_fresh = brains.get(entity).map_or(true, |npc| npc.integration.fresh);
             // The chase follows while the character's route is its own, and
             // plans again when the follower's line was blocked.
             ai.chase.following = route.follows(route_walk::Walker::Chase);

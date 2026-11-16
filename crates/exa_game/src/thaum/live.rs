@@ -3135,7 +3135,10 @@ mod tests {
         };
         let (app, entity) = run(Condition::ATTACKING);
         let now = app.world().resource::<BodyTicks>().millis();
-        assert_eq!(app.world().get::<Condition>(entity), Some(&Condition::SHOCKED));
+        assert_eq!(
+            app.world().get::<Condition>(entity),
+            Some(&Condition::SHOCKED)
+        );
         let swing = app.world().get::<SwingState>(entity).unwrap();
         assert_eq!((swing.stall, swing.strength), (1.0, 0.0));
         assert_eq!(

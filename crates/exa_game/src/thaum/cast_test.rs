@@ -1894,7 +1894,10 @@ fn a_cast_motion_ends_the_clinch_of_a_parrying_body() {
             .spawn((caster, Animator::new("Default", "Parry Left"), fighter))
             .id();
         app.update();
-        app.world().get::<Fighter>(entity).cloned().expect("a fighter")
+        app.world()
+            .get::<Fighter>(entity)
+            .cloned()
+            .expect("a fighter")
     };
     let cleared = run(true);
     assert!(!cleared.parry.active);
