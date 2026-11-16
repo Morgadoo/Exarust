@@ -27,7 +27,7 @@ use exa_world::{LevelRoot, PartBounds};
 
 use crate::arena_hub::{ARENA_MODE, HubAction, HubHook, HubTarget, enter_hub, hub_click, hub_fall};
 use crate::arena_spawn::manager_plan;
-use crate::flow::{Flow, Hook, Phase};
+use crate::flow::Flow;
 use crate::hand::WorldClick;
 use crate::hub_windows::{HubWindowKind, HubWindows};
 use crate::player::{Player, PlayerBody};
@@ -944,6 +944,12 @@ fn auto_rematch(
     };
     timers.free(id);
     rematch.timer = None;
+    // [inf] A session the hub's hook ended (a dead manager) is over: its end
+    // menu is up, and no match starts under it.
+    if hub.fall.is_some() {
+        info!("arena auto: no rematch, the session has ended");
+        return;
+    }
     let Some(mut board) = rematch.board.clone() else {
         return;
     };
@@ -2263,14 +2269,23 @@ fn hub_name(name: &str) -> [u8; 16] {
 
 /// The session hook each frame: a dead manager ends the hub session, and
 /// the wipe reaches [`Slots::drops_after_death`] when the host supplied the
-/// slot.
+/// slot. The end is the player's death as the game runs it everywhere
+/// ([`Flow::die`]: the screens swept, the fall's tip, the controls blocked
+/// and the end menu), as the original's hook calls it: a manager the arena
+/// sent back dead after a fall that was not fatal leaves through the end
+/// menu, not into a hub that plays on.
+///
+/// The hook runs on the played hub only, as the original's game frame runs
+/// its hooks: not while the hub's level loads.
 fn hub_session_fall(
     mut hub: ResMut<ArenaHub>,
     flow: Option<ResMut<Flow>>,
+    queued: Option<ResMut<crate::flow::FlowSteps>>,
     slots: Option<Res<HubSlots>>,
     bodies: Query<(&Condition, &Fighter), With<PlayerBody>>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
 ) {
-    if !hub.entered || hub.fall.is_some() {
+    if !hub.entered || hub.fall.is_some() || loading.is_some() {
         return;
     }
     let Some(mut flow) = flow else {
@@ -2299,8 +2314,10 @@ fn hub_session_fall(
             Err(error) => warn!("arena hub: cannot wipe the slot: {error}"),
         }
     }
-    flow.phase = Phase::Ended;
-    flow.hook = Hook::None;
+    let steps = flow.die(fighter.health.red);
+    if let Some(mut queued) = queued {
+        queued.steps.extend(steps);
+    }
     info!("arena hub: the manager fell; the session ends (wipe {wipe})");
 }
 
@@ -2746,6 +2763,7 @@ pub const HUB_SLOT_KIND: exa_formats::save_package::SlotKind =
 mod tests {
     use super::*;
     use crate::arena_hub::same_name;
+    use crate::flow::Phase;
     use crate::hand::Hit;
     use crate::hub_windows::HubWindowKind;
 
@@ -3132,11 +3150,12 @@ mod tests {
         });
     }
 
-    fn spawn_manager(app: &mut App, condition: u32, health: f32) {
+    fn spawn_manager(app: &mut App, condition: u32, health: f32) -> Entity {
         let mut fighter = Fighter::default();
         fighter.health.red = health;
         app.world_mut()
-            .spawn((PlayerBody::new(0.0), Condition(condition), fighter));
+            .spawn((PlayerBody::new(0.0), Condition(condition), fighter))
+            .id()
     }
 
     /// A confirmed trade re-dresses the player, as the trade system runs
@@ -3664,6 +3683,7 @@ mod tests {
         flow.mode = crate::flow::Mode::Arena;
         flow.phase = Phase::Playing;
         app.insert_resource(flow);
+        app.init_resource::<crate::flow::FlowSteps>();
         spawn_hub_level(&mut app);
         spawn_manager(&mut app, 0xA00, 0.0);
         app.update();
@@ -3672,6 +3692,40 @@ mod tests {
             Some(HubFall { wipe: true })
         );
         assert_eq!(app.world().resource::<Flow>().phase, Phase::Ended);
+        // The death as the game runs it: the fatal tip, the controls
+        // blocked and the end menu.
+        let steps = &app.world().resource::<crate::flow::FlowSteps>().steps;
+        assert!(steps.contains(&crate::flow::Step::Tip(3)), "{steps:?}");
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s, crate::flow::Step::EndMenu(_))),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn the_arenas_dead_body_does_not_end_the_session_while_the_hub_loads() {
+        // The return after a fall that was not fatal: the hub's level is in
+        // and entered, but the player's body is still the arena's dead one
+        // until the load spawns the hub's manager.
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        app.insert_resource(exa_ui::LoadingStatus::default());
+        spawn_hub_level(&mut app);
+        let dead = spawn_manager(&mut app, 0xA00, 0.1);
+        app.update();
+        assert_eq!(app.world().resource::<ArenaHub>().fall, None);
+        // The load ends with the hub's own (living) manager.
+        app.world_mut().despawn(dead);
+        app.world_mut().remove_resource::<exa_ui::LoadingStatus>();
+        spawn_manager(&mut app, 0, 0.1);
+        app.update();
+        assert_eq!(app.world().resource::<ArenaHub>().fall, None);
+        assert_eq!(app.world().resource::<Flow>().phase, Phase::Playing);
     }
 
     #[test]
