@@ -161,13 +161,52 @@ pub fn spirit_controls(world: &mut World, on: bool) {
     }
 }
 
+/// A pending end of the GUI's held left button: the death, the knock-out,
+/// the level exit and a weapon coming loose from the player's hand ask the
+/// window manager for a left-button release when its button word holds
+/// the left button, which ends a held drag (a pack entry's, or the hand's
+/// lift or drag) as a release there would.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EndGuiDrag(pub bool);
+
+impl EndGuiDrag {
+    /// Asks for the release (applied at the next frame's input).
+    pub fn ask(world: &mut World) {
+        if let Some(mut end) = world.get_resource_mut::<EndGuiDrag>() {
+            end.0 = true;
+        }
+    }
+}
+
+/// The release itself, once the frame's input is read: a held left button
+/// is released as if the window manager had seen it go up, so every
+/// reader this frame sees the release. A button not held is left alone.
+fn end_gui_drag(mut end: ResMut<EndGuiDrag>, buttons: Option<ResMut<ButtonInput<MouseButton>>>) {
+    if !std::mem::take(&mut end.0) {
+        return;
+    }
+    if let Some(mut buttons) = buttons
+        && buttons.pressed(MouseButton::Left)
+    {
+        buttons.release(MouseButton::Left);
+        info!("controls: the GUI's held left button is released");
+    }
+}
+
 /// The controls' switch plugin.
 pub struct ControlsLivePlugin;
 
 impl Plugin for ControlsLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerControl>()
-            .add_systems(PreUpdate, character_mode)
+            .init_resource::<EndGuiDrag>()
+            .add_systems(
+                PreUpdate,
+                (
+                    character_mode,
+                    end_gui_drag.after(bevy::input::InputSystems),
+                ),
+            )
             .add_systems(Update, (hand_bytes, loadout_form_block));
     }
 }
@@ -213,6 +252,24 @@ mod tests {
         let control = app.world().resource::<PlayerControl>();
         assert!(!control.blocked);
         assert!(control.second_block);
+    }
+
+    /// An asked release lets go of a held left button for the frame's
+    /// readers; with the button up it does nothing.
+    #[test]
+    fn an_asked_release_ends_the_held_left_button() {
+        let mut app = app();
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        EndGuiDrag::ask(app.world_mut());
+        app.update();
+        let buttons = app.world().resource::<ButtonInput<MouseButton>>();
+        assert!(!buttons.pressed(MouseButton::Left));
+        assert!(buttons.just_released(MouseButton::Left));
+        assert!(!app.world().resource::<EndGuiDrag>().0);
     }
 
     /// A player rebuilt in the same frame keeps the controls on.

@@ -1364,6 +1364,9 @@ pub enum Step {
         x: i32,
         y: i32,
     },
+    /// End the GUI's held left button: a held drag ends as a release
+    /// would end it ([`crate::controls_live::EndGuiDrag`]).
+    EndGuiDrag,
     /// Add or remove the frame task that runs the session hook.
     SessionTask(bool),
     /// The session hook now in force.
@@ -2829,6 +2832,7 @@ impl Flow {
         self.saved_phase = Phase::Ended;
         self.hook = Hook::None;
         let mut steps = vec![
+            Step::EndGuiDrag,
             Step::GameGui(false),
             Step::Controls(false),
             Step::Hook(Hook::None),
@@ -2870,6 +2874,7 @@ impl Flow {
         self.story.knockout_ms = now;
         // The knock-out blocks the controls after its tip.
         vec![
+            Step::EndGuiDrag,
             Step::GameGui(false),
             Step::Controls(false),
             Step::Tip(2),
@@ -3288,6 +3293,7 @@ impl Flow {
         if player_condition & DEAD == 0 {
             steps.push(Step::Controls(false));
         }
+        steps.push(Step::EndGuiDrag);
         steps.push(Step::GameGui(false));
         let checkpoint = exit_save(rule) == ExitSave::Checkpoint;
         steps.push(Step::Save {
@@ -4344,6 +4350,9 @@ fn apply_steps(
                 if let Some(session) = session.as_mut() {
                     session.playing = on;
                 }
+            }
+            Step::EndGuiDrag => {
+                commands.queue(crate::controls_live::EndGuiDrag::ask);
             }
             Step::Block(on) => {
                 if let Some(control) = out.control.as_deref_mut() {
@@ -6110,6 +6119,7 @@ mod tests {
             steps,
             vec![
                 Step::Controls(false),
+                Step::EndGuiDrag,
                 Step::GameGui(false),
                 Step::Save {
                     drop_on_low_health: false
@@ -6142,7 +6152,8 @@ mod tests {
         assert_eq!(flow.phase, Phase::Playing);
         // A dead player keeps no controls to lose.
         let steps = flow.level_exit(next, held, DEAD, false);
-        assert_eq!(steps[0], Step::GameGui(false));
+        assert_eq!(steps[0], Step::EndGuiDrag);
+        assert_eq!(steps[1], Step::GameGui(false));
         assert!(!steps.contains(&Step::Checkpoint));
         // Without the portal bit nothing dissolves or hands over.
         assert!(!steps.contains(&Step::PortalUse));
@@ -7471,6 +7482,71 @@ mod tests {
         unlocks.apply_settings(UnlockSettings::default());
         assert!(unlocks.expert);
         assert_eq!(unlocks.backgrounds, 7);
+    }
+
+    /// The death ends the GUI's held left button: a drag the player held
+    /// when the death came ends as a release (the next frame's input sees
+    /// the button up).
+    #[test]
+    fn a_player_death_lets_go_of_the_held_button() {
+        use exa_physics::body::BodyTicks;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .add_plugins((
+                crate::menu_screen::MenuScreenPlugin,
+                FlowPlugin,
+                crate::end_menu_screen::EndMenuScreenPlugin,
+                crate::controls_live::ControlsLivePlugin,
+            ));
+        app.insert_resource(BodyTicks(100));
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::menu_screen::MenuScreen>()
+            .close();
+        {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            flow.mode = Mode::Story;
+            flow.phase = Phase::Playing;
+            flow.hook = Hook::Story;
+            flow.menu_open = false;
+            flow.story = StoryState {
+                reconstruction: REBUILDABLE,
+                record: 3,
+                checkpoint: 3,
+                knockout_ms: u32::MAX - KNOCKOUT_MS,
+                ..Default::default()
+            };
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_combat::Condition(DEAD),
+            exa_combat::Fighter {
+                health: exa_combat::Health {
+                    yellow: 0.0,
+                    red: 0.0,
+                    max: 0.25,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ));
+        app.update();
+        assert!(
+            app.world()
+                .resource::<crate::end_menu_screen::EndMenuScreen>()
+                .open,
+            "the death ran"
+        );
+        app.update();
+        let buttons = app.world().resource::<ButtonInput<MouseButton>>();
+        assert!(!buttons.pressed(MouseButton::Left));
     }
 
     #[test]
