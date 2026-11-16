@@ -453,7 +453,7 @@ pub(crate) fn press(
 pub fn drop_on_panel(
     screens: &mut GameScreens,
     icons: &mut PanelIcons,
-    mut catalogue: Option<&mut ItemCatalogue>,
+    catalogue: Option<&mut ItemCatalogue>,
     objects: Option<&mut exa_assets::live_objects::LiveObjects>,
     drag: PanelDrag,
     destination: Panel,
@@ -537,7 +537,7 @@ pub fn drop_on_panel(
     // The drop's instancing: a base record marked for it becomes a copy in
     // the local tier, with an icon of its own.
     let (placed, placed_icon) = objects
-        .and_then(|objects| instance_dropped(objects, catalogue.as_deref_mut(), icons, id, flags))
+        .and_then(|objects| instance_dropped(objects, catalogue, icons, id, flags))
         .unwrap_or((id, icon));
     let mut destination_container = container_mut(screens, destination)
         .map(std::mem::take)
@@ -623,7 +623,7 @@ pub fn instance_dropped(
 /// Ends the drag: a drop on another panel moves the item, a drop on the same
 /// panel only repositions it, and a release outside every panel cancels. A
 /// drag off the inventory's figure ends through [`crate::figure_pick`].
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn release(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -640,10 +640,11 @@ pub(crate) fn release(
     mut scripted: ResMut<ScriptedRelease>,
     mut figure: MessageWriter<crate::figure_pick::FigureRelease>,
     mut ended: MessageWriter<crate::use_cursor::GuiDragEnded>,
-    (mut cards, mut objects, pointer): (
+    (mut cards, mut objects, pointer, mut roll): (
         ResMut<crate::item_card::CardView>,
         Option<ResMut<exa_assets::live_objects::LiveObjects>>,
         Option<Res<ScriptedPointer>>,
+        ResMut<crate::thaum::live::FrameEffectRoll>,
     ),
 ) {
     let scripted = scripted.0.take();
@@ -676,6 +677,7 @@ pub(crate) fn release(
             at,
             cards.shown.as_mut(),
             objects.as_deref_mut(),
+            roll.word(),
         );
         ended.write(crate::use_cursor::GuiDragEnded {
             accepted,
@@ -747,6 +749,7 @@ pub(crate) fn release(
                     catalogue.as_deref(),
                     &mut p,
                     back,
+                    roll.word(),
                 );
             }
         } else {
@@ -1012,6 +1015,7 @@ fn release_socket_drag(
     at: Option<IVec2>,
     card: Option<&mut crate::item_card::ShownCard>,
     objects: Option<&mut exa_assets::live_objects::LiveObjects>,
+    roll: &mut u32,
 ) -> bool {
     let (Some(card), Some(objects)) = (card, objects) else {
         icons.release(drag.icon);
@@ -1038,7 +1042,7 @@ fn release_socket_drag(
                 && let Some(player) = player
                 && let Ok((_, mut p)) = bodies.get_mut(player)
             {
-                crate::socket_drag::give_back(screens, icons, catalogue, &mut p, back);
+                crate::socket_drag::give_back(screens, icons, catalogue, &mut p, back, roll);
             }
             true
         }
@@ -1153,6 +1157,7 @@ pub struct PanelLivePlugin;
 impl Plugin for PanelLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PanelDrag>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .init_resource::<PointerOverGui>()
             .init_resource::<ScriptedRelease>()
             .add_message::<crate::use_cursor::GuiDragEnded>()
@@ -1822,17 +1827,13 @@ mod tests {
         drag_between(&mut app, from, IVec2::new(popup.left + 40, popup.top + 40));
         let copy = LOCAL | 1;
         let screens = app.world().resource::<GameScreens>();
-        let entry = *screens
-            .popup(chest)
-            .unwrap()
-            .panel
-            .entries
-            .last()
-            .unwrap();
+        let entry = *screens.popup(chest).unwrap().panel.entries.last().unwrap();
         assert_eq!((entry.id, entry.flags), (copy, 0x10));
         assert_ne!(entry.icon, old_icon);
         assert!(screens.pack.entries.iter().all(|e| e.id != 9));
-        let live = app.world().resource::<exa_assets::live_objects::LiveObjects>();
+        let live = app
+            .world()
+            .resource::<exa_assets::live_objects::LiveObjects>();
         assert!(live.db().find(copy).is_some());
         assert_eq!(live.db().store(Tier::Local).len(), 1);
         let icons = app.world().resource::<PanelIcons>();
@@ -1853,7 +1854,9 @@ mod tests {
             .map(|e| e.id)
             .collect();
         assert_eq!(ids, vec![copy, 12]);
-        let live = app.world().resource::<exa_assets::live_objects::LiveObjects>();
+        let live = app
+            .world()
+            .resource::<exa_assets::live_objects::LiveObjects>();
         assert_eq!(live.db().store(Tier::Local).len(), 1);
     }
 
@@ -1978,5 +1981,11 @@ mod tests {
         );
         assert_ne!(back.cell, centre);
         assert!(!p.carried.iter().any(|c| c.id == crystal::AR));
+        // The place pass drew its spot (x, then y) from the frame's engine
+        // generator: two steps from its start.
+        let mut roll = app
+            .world_mut()
+            .resource_mut::<crate::thaum::live::FrameEffectRoll>();
+        assert_eq!(*roll.word(), 0x0808_8406);
     }
 }

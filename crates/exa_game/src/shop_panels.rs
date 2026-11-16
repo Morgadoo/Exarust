@@ -45,7 +45,7 @@
 
 use crate::hub_windows::SHOP_ITEM_FLAGS;
 use crate::item_container::{Cell, Container, Drag, DropDrag, ListChild, grid_layout};
-use crate::item_panel_draw::PanelIcons;
+use crate::item_panel_draw::Placing;
 use crate::shop_window::{BUY_BASKET, PACK_PANEL, SELL_BASKET, WINDOW_SIZE, stock_panel};
 
 /// The inset a panel's entries keep from its edges, as the item panels of
@@ -430,9 +430,9 @@ impl ShopPanels {
     /// with it, each added at its panel's centre [guess: the "Trade"
     /// button's callback lies outside the window and is not read] and,
     /// with the icon cache, placed by the panel's place pass
-    /// ([`PanelIcons::add_placed`]), as every centre add of the shop window
+    /// ([`crate::item_panel_draw::PanelIcons::add_placed`]), as every centre add of the shop window
     /// is.
-    pub fn settle(&mut self, mut icons: Option<&mut PanelIcons>) {
+    pub fn settle(&mut self, mut icons: Option<&mut Placing<'_>>) {
         let bought = std::mem::take(&mut self.buy.entries);
         for entry in bought {
             let flags = entry.flags & !SHOP_ITEM_FLAGS;
@@ -451,7 +451,7 @@ impl ShopPanels {
     /// items to the company's arsenal, so they leave the window (their icon
     /// handles are returned for release); the sell basket's join the stock
     /// as in [`Self::settle`].
-    pub fn settle_bought_away(&mut self, icons: Option<&mut PanelIcons>) -> Vec<usize> {
+    pub fn settle_bought_away(&mut self, icons: Option<&mut Placing<'_>>) -> Vec<usize> {
         let bought = std::mem::take(&mut self.buy.entries);
         self.settle_sold(icons);
         bought
@@ -461,7 +461,7 @@ impl ShopPanels {
             .collect()
     }
 
-    fn settle_sold(&mut self, mut icons: Option<&mut PanelIcons>) {
+    fn settle_sold(&mut self, mut icons: Option<&mut Placing<'_>>) {
         self.buy.used = 0;
         self.sell.used = 0;
         let sold = std::mem::take(&mut self.sell.entries);
@@ -489,9 +489,15 @@ impl ShopPanels {
 }
 
 /// One centre add of the shop window: with the icon cache, the add and its
-/// place pass ([`PanelIcons::add_placed`]); without it, the centre add
+/// place pass ([`crate::item_panel_draw::PanelIcons::add_placed`]); without it, the centre add
 /// alone.
-fn add_to(panel: &mut Container, icons: Option<&mut PanelIcons>, id: u32, icon: usize, flags: u32) {
+fn add_to(
+    panel: &mut Container,
+    icons: Option<&mut Placing<'_>>,
+    id: u32,
+    icon: usize,
+    flags: u32,
+) {
     match icons {
         Some(icons) => {
             icons.add_placed(panel, id, icon, flags, 0);

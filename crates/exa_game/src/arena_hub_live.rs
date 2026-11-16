@@ -151,6 +151,7 @@ impl Plugin for ArenaHubPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ArenaHub>()
             .init_resource::<HubRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
             .add_message::<crate::save_live::SaveStep>()
@@ -940,6 +941,8 @@ struct HubShop<'w, 's> {
     factories: ResMut<'w, crate::shop_stock::ShopFactories>,
     names: ResMut<'w, crate::hub_windows::HubItemNames>,
     icons: Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
+    /// The frame's engine generator the shop panels' place pass draws from.
+    roll: ResMut<'w, crate::thaum::live::FrameEffectRoll>,
     players: Query<
         'w,
         's,
@@ -949,6 +952,16 @@ struct HubShop<'w, 's> {
     /// The company's arsenal and holders a confirmed trade reaches.
     stores: Option<ResMut<'w, crate::save_live::ArenaStores>>,
     kinds: Option<Res<'w, crate::arsenal::ShelfKinds>>,
+}
+
+impl HubShop<'_, '_> {
+    /// The icon manager and the generator of the shop panels' place pass.
+    fn placing(&mut self) -> Option<crate::item_panel_draw::Placing<'_>> {
+        let roll = self.roll.word();
+        self.icons
+            .as_deref_mut()
+            .map(|icons| crate::item_panel_draw::Placing { icons, roll })
+    }
 }
 
 /// The shop line for an item's value: a copy's own model value word in the
@@ -1416,7 +1429,7 @@ fn scripted_shop(
             }
             let trade = (10, crate::hub_windows::SHOP_SIZE.1 - 20);
             let traded = if took {
-                windows.shop_click(trade, &mut career, shop.icons.as_deref_mut())
+                windows.shop_click(trade, &mut career, shop.placing().as_mut())
             } else {
                 None
             };
@@ -1955,7 +1968,7 @@ fn hub_clicks(
                         }
                         HubWindowKind::Shop => {
                             if let Some(trade) =
-                                windows.shop_click(local, &mut career, shop.icons.as_deref_mut())
+                                windows.shop_click(local, &mut career, shop.placing().as_mut())
                             {
                                 let _ = shop.arena_trade(&trade, &mut career);
                             }
@@ -2154,6 +2167,7 @@ fn shop_drag(
     game: Option<Res<exa_assets::Game>>,
     mut items: ResMut<crate::doll_view::DollItems>,
     pick: crate::loadout_kit::PreviewPick,
+    mut roll: ResMut<crate::thaum::live::FrameEffectRoll>,
 ) {
     let pressed = buttons.just_pressed(MouseButton::Left);
     let released = buttons.just_released(MouseButton::Left);
@@ -2326,7 +2340,14 @@ fn shop_drag(
                     match icons.as_deref_mut() {
                         Some(icons) => {
                             let (icon, _) = icons.reserve(id, flags, catalogue);
-                            icons.add_placed(&mut shop.panels.pack, id, icon, flags, bulk);
+                            icons.add_placed(
+                                &mut shop.panels.pack,
+                                id,
+                                icon,
+                                flags,
+                                bulk,
+                                roll.word(),
+                            );
                         }
                         None => {
                             shop.panels.pack.add_at_centre(id, 0, flags, bulk);

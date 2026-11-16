@@ -9,10 +9,11 @@
 //! positions, in sixteenths of a GUI unit, [`Container::load_list`]) and the
 //! equipment panel loads the worn items and the shields of the set in the
 //! hands with the worn/scatter pass ([`exa_game::item_container::worn_layout`]).
-//! The original's scatter draws from the engine's shared generator, which
-//! Exarust does not keep; the panel starts a generator from the run-time
-//! library seed the original stores there ([`DOLL_SEED`]), so a body's layout
-//! is the same every time it opens. [stand-in]
+//! The scatter draws from the engine's generator on the frame
+//! ([`crate::thaum::live::FrameEffectRoll`]), as the original's draws from
+//! its one shared generator, and stores the run-time library seed
+//! [`DOLL_SEED`], which restarts the frame's run-time stream
+//! ([`crate::thaum::live::FrameEffectDraws`]) from it.
 //!
 //! Taking an item moves it between the two sides' [`Possessions`]: a worn
 //! item leaves the worn list, a hand item clears its hand slot and the held
@@ -179,22 +180,29 @@ pub fn with_record_items<R>(
 /// item and every shield in a hand, placed at the panel's random spot and
 /// pushed apart over the original's four rounds. `client` is the panel's
 /// client area and `icon_size` its icon's side, as the painter draws it.
-/// Returns the number of entries loaded.
+/// The spots draw from `roll`, the frame's engine generator; the pass
+/// first stores [`DOLL_SEED`] as the run-time library's seed, so the
+/// frame's run-time stream `rtl` restarts from it. Returns the number of
+/// entries loaded.
 pub fn bind_equipment(
     container: &mut Container,
     possessions: &Possessions,
     icons: &mut PanelIcons,
     catalogue: Option<&ItemCatalogue>,
     client: (i32, i32),
+    roll: &mut u32,
+    rtl: Option<&mut crate::arena::Mt19937>,
 ) -> usize {
     let items = equipment_items(possessions, |id| is_shield(id, catalogue));
-    let mut state = DOLL_SEED;
+    if let Some(rtl) = rtl {
+        *rtl = crate::arena::Mt19937::new(DOLL_SEED);
+    }
     container.entries = worn_layout(
         &items,
         &mut |id, flags| Some(icons.reserve(id, flags, catalogue)),
         client,
         container.icon_size,
-        &mut state,
+        roll,
     );
     // The equipment list is not a saved container: the original's load
     // leaves its loaded flag and used bulk alone.
@@ -328,9 +336,9 @@ pub fn transfer(
 }
 
 /// The equipment panel's entries for a record when there is no icon cache
-/// to reserve slots from (a level-load preview or a test). It draws the same
-/// random numbers as [`bind_equipment`] for the same record: the slot is the
-/// item id and the half extents a square icon's.
+/// to reserve slots from (a level-load preview or a test), drawn from a
+/// generator that starts at [`DOLL_SEED`]: the slot is the item id and the
+/// half extents a square icon's.
 pub fn equipment_layout(
     possessions: &Possessions,
     is_shield: impl Fn(u32) -> bool,
@@ -771,12 +779,15 @@ mod tests {
             let mut pack_panel = Container::form(4);
             bind_pack(&mut pack_panel, &possessions, &mut icons, None);
             let mut equipment_panel = Container::form(4);
+            let mut roll = DOLL_SEED;
             bind_equipment(
                 &mut equipment_panel,
                 &possessions,
                 &mut icons,
                 None,
                 (228, 252),
+                &mut roll,
+                None,
             );
             // The bound panels are the corpse's loot window's own.
             let mut screens = crate::gui_screens::GameScreens::default();

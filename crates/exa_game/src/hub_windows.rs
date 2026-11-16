@@ -1498,7 +1498,7 @@ impl HubWindows {
         &mut self,
         point: (i32, i32),
         career: &mut ArenaCareer,
-        icons: Option<&mut crate::item_panel_draw::PanelIcons>,
+        icons: Option<&mut crate::item_panel_draw::Placing<'_>>,
     ) -> Option<ShopTrade> {
         let shop = self.shop.as_mut()?;
         // The bottom row's own record places are not traced; the guessed

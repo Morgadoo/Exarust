@@ -151,6 +151,7 @@ pub fn give_back(
     catalogue: Option<&ItemCatalogue>,
     possessions: &mut Possessions,
     (id, flags): (u32, u32),
+    roll: &mut u32,
 ) {
     let pack_open = open_panels(screens)
         .iter()
@@ -165,7 +166,7 @@ pub fn give_back(
         let bulk = catalogue.and_then(|c| c.bulk(id)).map_or(0, i32::from);
         // The centre add and its place pass.
         let cell = icons
-            .add_placed(&mut screens.pack, id, icon, flags, bulk)
+            .add_placed(&mut screens.pack, id, icon, flags, bulk, roll)
             .unwrap_or(centre);
         let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
         crate::body_inventory::give(possessions, id, flags, cell, unit, vscale);

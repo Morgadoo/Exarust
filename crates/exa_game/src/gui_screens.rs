@@ -2001,6 +2001,8 @@ impl Plugin for GameScreensPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .init_resource::<DebugGuiForm>()
             .init_resource::<DebugOpenContainer>()
             .init_resource::<DebugOpenLoot>()
@@ -2617,6 +2619,10 @@ fn open_requested_screens(
     windows: Query<&Window, With<PrimaryWindow>>,
     minds: Query<&crate::mind::casts::MindBody>,
     mut screens: ResMut<GameScreens>,
+    (mut roll, mut rtl): (
+        ResMut<crate::thaum::live::FrameEffectRoll>,
+        ResMut<crate::thaum::live::FrameEffectDraws>,
+    ),
 ) {
     if menu.is_some_and(|menu| menu.open) {
         requests.clear();
@@ -2742,6 +2748,8 @@ fn open_requested_screens(
                             icons,
                             catalogue.as_deref(),
                             (client.width(), client.height()),
+                            roll.word(),
+                            Some(&mut rtl.0.0),
                         );
                         screens.bind_loot(target, pack, worn);
                     }
@@ -4062,6 +4070,8 @@ mod tests {
             app.init_resource::<ButtonInput<KeyCode>>()
                 .init_resource::<GameScreens>()
                 .add_message::<ScreenRequest>()
+                .init_resource::<crate::thaum::live::FrameEffectRoll>()
+                .init_resource::<crate::thaum::live::FrameEffectDraws>()
                 .add_systems(Update, open_requested_screens);
             let mut mind = MindBody::new(9);
             if bound {
@@ -4496,6 +4506,8 @@ mod tests {
                 .init_resource::<PanelIcons>()
                 .add_message::<ScreenRequest>()
                 .add_message::<exa_script::ScriptEffect>()
+                .init_resource::<crate::thaum::live::FrameEffectRoll>()
+                .init_resource::<crate::thaum::live::FrameEffectDraws>()
                 .add_systems(
                     Update,
                     (show_script_inventory, open_requested_screens).chain(),
@@ -4523,6 +4535,8 @@ mod tests {
             .init_resource::<PanelIcons>()
             .add_message::<ScreenRequest>()
             .add_message::<exa_script::ScriptEffect>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(
                 Update,
                 (show_script_inventory, open_requested_screens).chain(),
@@ -4566,6 +4580,8 @@ mod tests {
             .init_resource::<PanelIcons>()
             .insert_resource(catalogue)
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         app.world_mut().spawn((
             crate::player::PlayerBody::new(0.0),
@@ -4603,6 +4619,8 @@ mod tests {
             .init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         app.world_mut().spawn((
             crate::player::PlayerBody::new(0.0),
@@ -4755,6 +4773,8 @@ mod tests {
             .init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         app.world_mut().spawn((
             crate::player::PlayerBody::new(0.0),
@@ -4808,6 +4828,8 @@ mod tests {
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_message::<ScreenRequest>()
             .add_systems(
                 Update,
@@ -4976,6 +4998,8 @@ mod tests {
             .init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         app.world_mut().spawn((
             crate::player::PlayerBody::new(0.0),
@@ -5010,6 +5034,8 @@ mod tests {
             .init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         let record = exa_formats::characters::CharacterRecord {
             hands: [
@@ -5055,6 +5081,20 @@ mod tests {
         // catalogue nothing in a hand is known to be a shield.
         let ids: Vec<u32> = window.worn.entries.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![0xa0]);
+        // The scatter drew the worn item's spot (x, then y) from the
+        // frame's engine generator, and its run-time seed restarted the
+        // frame's run-time stream.
+        let mut roll = app
+            .world_mut()
+            .resource_mut::<crate::thaum::live::FrameEffectRoll>();
+        assert_eq!(*roll.word(), 0x0808_8406);
+        assert_eq!(
+            app.world()
+                .resource::<crate::thaum::live::FrameEffectDraws>()
+                .0
+                .0,
+            crate::arena::Mt19937::new(crate::item_container::DOLL_SEED)
+        );
     }
 
     #[test]
@@ -5064,6 +5104,8 @@ mod tests {
             .init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         let record = exa_formats::characters::CharacterRecord {
             race: 3,
@@ -5101,6 +5143,8 @@ mod tests {
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<GameScreens>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         app.world_mut().write_message(ScreenRequest {
             screen: GameScreen::Loot,
@@ -5799,6 +5843,8 @@ mod tests {
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<GameScreens>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(Update, open_requested_screens);
         let request = |screen| ScreenRequest::screen(screen, true, true);
         app.world_mut()
