@@ -1401,6 +1401,7 @@ pub fn ai_tick(
         Option<&mut crate::route_walk::AiRoute>,
     )>,
     mut ends: Option<ResMut<Messages<exa_script::EndConversationsOf>>>,
+    freeze: Option<Res<crate::freeze::StagingFreeze>>,
 ) {
     // One pass a tick: a second frame on the same body tick does nothing
     // (the original's AI tick is called from the body tick).
@@ -1414,6 +1415,9 @@ pub fn ai_tick(
     let trace = now / 1000 != *traced_s;
     *traced_s = now / 1000;
     let player = players.iter().next().map(|(entity, _)| entity);
+    // The staging freeze ([`crate::freeze`]): the idle stand replaces every
+    // state's call this tick.
+    let frozen = freeze.is_some_and(|freeze| freeze.frozen());
     // Every fighter's place (cm) and 600 cm room cell, gathered once a tick
     // for every brain's sightings and nearby list (no system here moves a
     // fighter's global transform).
@@ -1982,6 +1986,24 @@ pub fn ai_tick(
             .is_some_and(|d| d.engaged || d.fighting());
         if fighting {
             npc.sleeping = false;
+        }
+        // While the staging freeze holds, the idle stand runs in place of the
+        // state's call: a present body turns toward its look with the idle
+        // sway (the out-of-combat turn), and Exarust turns the model to the
+        // eased yaw as the waiting branch below does. A following body's soft
+        // stop is [`crate::freeze::soft_stop_frozen_routes`], in the state's place.
+        if frozen {
+            if presence.is_none_or(|p| p.moves())
+                && let Some(mut transform) = transform
+            {
+                let facing = npc.facing(transform.rotation);
+                let encumbrance = fighter.stats.encumbrance;
+                motion::turn_towards(&mut npc.turn, facing, encumbrance, now, &mut roll);
+                let offset = npc.turn.offset;
+                npc.turn_model(&mut transform, offset);
+            }
+            npc.roll = roll;
+            continue;
         }
         if npc.sleeping {
             let mut sleeper = sleeper_of(&condition, flags.as_deref());
