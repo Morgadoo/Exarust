@@ -900,12 +900,18 @@ impl HubWindows {
                     if night.week_won == Some(true)
                         && let Some(prize) = prize.filter(|&prize| prize != 0)
                     {
-                        career.won_items.push(prize);
+                        career
+                            .won_items
+                            .push(crate::arena_rewards::WonItem::Prize(prize));
                     }
                     if night.season {
                         let rewards = &career.company.reward_ids;
                         let start = rewards.len().saturating_sub(4);
-                        career.won_items.extend_from_slice(&rewards[start..]);
+                        career.won_items.extend(
+                            rewards[start..]
+                                .iter()
+                                .map(|&id| crate::arena_rewards::WonItem::SeasonReward(id)),
+                        );
                     }
                     career.matches_today = 0;
                     // The day's log is cleared with the day's counts.
@@ -1253,7 +1259,6 @@ pub fn staff_class(role: Profession) -> u8 {
 }
 
 /// Runs the arena stores' share of what the forms and the matches changed:
-/// the items the company won are stowed in the arsenal free of any holder,
 /// a hired employee joins the staff list (his record wearing the
 /// candidate's outfit, a combatant's kit stowed,
 /// [`crate::staff::Staff::admit_stowing`]), and an employee who left (a
@@ -1267,10 +1272,6 @@ pub fn apply_staff_changes(
     stores: &mut crate::save_live::ArenaStores,
     kinds: &crate::arsenal::ShelfKinds,
 ) {
-    for item in career.won_items.drain(..) {
-        let stowed = stores.arsenal.stow(item, kinds.kind(item), 0);
-        info!("hub arsenal: the won item {item} is stowed ({stowed})");
-    }
     let left = &mut career.staff_left;
     for employee in forms.joined.drain(..) {
         let crate::save_live::ArenaStores { staff, arsenal, .. } = &mut *stores;
@@ -1966,12 +1967,8 @@ pub fn hub_form_input(
         (Some(mut stores), Some(kinds)) => {
             apply_staff_changes(&mut windows.forms, &mut career, &mut stores, &kinds);
         }
-        // A hub career with no staff list has no kit to release and no
-        // arsenal to stow in.
-        (None, _) => {
-            career.staff_left.clear();
-            career.won_items.clear();
-        }
+        // A hub career with no staff list has no kit to release.
+        (None, _) => career.staff_left.clear(),
         (Some(_), None) => {}
     }
 }
@@ -2305,6 +2302,7 @@ mod tests {
         app.insert_resource(crate::arsenal::ShelfKinds(
             [(prize, apparel)].into_iter().collect(),
         ));
+        with_won_stow(&mut app);
         app_click(&mut app, FormWindow::Manage, manage::END_DAY);
         app.update();
         let career = app.world().resource::<ArenaCareer>();
@@ -2320,6 +2318,102 @@ mod tests {
                 .flatten()
                 .any(|entry| entry.item == prize && entry.flags == 0)
         );
+    }
+
+    /// The won items' stow after the form input, with what its shop world
+    /// reads.
+    fn with_won_stow(app: &mut App) {
+        app.init_resource::<crate::shop_stock::LiveShopStock>()
+            .init_resource::<exa_assets::live_objects::LiveObjects>()
+            .init_resource::<crate::shop_stock::ItemPalette>()
+            .init_resource::<crate::shop_stock::ShopFactories>()
+            .init_resource::<crate::hub_windows::HubItemNames>()
+            .add_systems(
+                Update,
+                crate::arena_hub_live::hub_stow_won.after(hub_form_input),
+            );
+    }
+
+    /// A swept season, through the live form input and the stow: the four
+    /// rewards reach the arsenal as fresh local instances of the season's
+    /// records, each pristine (quality 255, damage, dirt and spreads 0),
+    /// the base records untouched.
+    #[test]
+    fn a_swept_season_stows_four_fresh_reward_instances() {
+        use exa_formats::objdb::{INSTANCE_ON_USE, LOCAL, ObjectDb};
+        let (mut windows, mut career) = opened();
+        // Day 21 ends into day 22: the season's fourth week resolves.
+        career.company.day = 21;
+        career.company.weeks = [true, true, true, false];
+        career.matches_today = 1;
+        career.tournament = None;
+        for row in &mut career.entries {
+            row.team_id = 1;
+        }
+        let rewards = crate::career::SEASON_REWARDS[0];
+        let mut db = ObjectDb::default();
+        let mut records = Vec::new();
+        for id in rewards {
+            let mut payload = Vec::new();
+            let mut name = vec![0u8; 0x20];
+            name[0x10..0x14].copy_from_slice(&INSTANCE_ON_USE.to_le_bytes());
+            for (tag, bytes) in [(0x1000_0000u32, name), (0x1000, vec![0x5Au8; 0x1C0])] {
+                payload.extend_from_slice(&tag.to_le_bytes());
+                payload.extend_from_slice(&((bytes.len() + 8) as u32).to_le_bytes());
+                payload.extend_from_slice(&bytes);
+            }
+            records.push((id, payload));
+        }
+        db.base = exa_formats::objdb::Store::from_records(
+            records.iter().map(|(id, p)| (*id, 0x1000_1000, p.as_slice())),
+        );
+        windows.refresh_manage(&career);
+        let mut app = form_app(windows, career);
+        app.insert_resource(crate::save_live::ArenaStores::default())
+            .insert_resource(crate::arsenal::ShelfKinds(
+                rewards
+                    .iter()
+                    .map(|&id| {
+                        (
+                            id,
+                            crate::arsenal::ItemKind {
+                                known: true,
+                                apparel_layer: Some(1),
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect(),
+            ));
+        with_won_stow(&mut app);
+        app.insert_resource(exa_assets::live_objects::LiveObjects::of(db));
+        app_click(&mut app, FormWindow::Manage, manage::END_DAY);
+        app.update();
+        let career = app.world().resource::<ArenaCareer>();
+        assert_eq!(career.company.seasons_won, 1);
+        assert!(career.won_items.is_empty());
+        let stowed: Vec<u32> = app
+            .world()
+            .resource::<crate::save_live::ArenaStores>()
+            .arsenal
+            .shelves
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.flags == 0)
+            .map(|entry| entry.item)
+            .collect();
+        assert_eq!(stowed.len(), 4);
+        let objects = app.world().resource::<exa_assets::live_objects::LiveObjects>();
+        for (made, source) in stowed.iter().zip(rewards) {
+            assert_ne!(made & LOCAL, 0, "{made:#x} is a local instance");
+            let body = objects.db().find(*made).unwrap().section(0x1000).unwrap();
+            assert_eq!(body[0x1B0..0x1B4], [0xFF, 0, 0, 0]);
+            assert_eq!(
+                objects.db().find(source).unwrap().section(0x1000).unwrap()[0x1B0],
+                0x5A
+            );
+        }
     }
 
     /// The loadout form's rank slider, dragged through the live form input:

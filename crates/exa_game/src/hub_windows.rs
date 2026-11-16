@@ -144,9 +144,10 @@ pub struct ArenaCareer {
     /// the arena's stores ([`crate::hub_forms::apply_staff_changes`]).
     pub staff_left: Vec<usize>,
     /// Items the company won (the week's prize, a season's four rewards),
-    /// in order, for the arsenal to stow free of any holder
-    /// ([`crate::hub_forms::apply_staff_changes`]).
-    pub won_items: Vec<u32>,
+    /// in order, for the arsenal to stow free of any holder once each is
+    /// made an item instance in the live object database
+    /// ([`crate::arena_hub_live::hub_stow_won`]).
+    pub won_items: Vec<crate::arena_rewards::WonItem>,
 }
 
 impl Default for ArenaCareer {

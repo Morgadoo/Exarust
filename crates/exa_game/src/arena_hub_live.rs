@@ -204,7 +204,7 @@ impl Plugin for ArenaHubPlugin {
                     // launch's level change tears the hub down.
                     hub_clicks.before(crate::save_live::SaveLiveSystems::Steps),
                     scripted_shop,
-                    hub_restock,
+                    (hub_stow_won, hub_restock).chain(),
                     hub_session_fall,
                     shop_drag,
                     sync_shop_preview,
@@ -951,7 +951,7 @@ fn confirming(windows: &HubWindows) -> bool {
 /// item catalogue (for the shelf's names), the live stock world and the
 /// name table the trade window shows.
 #[derive(bevy::ecs::system::SystemParam)]
-struct HubShop<'w, 's> {
+pub(crate) struct HubShop<'w, 's> {
     game: Option<Res<'w, exa_assets::Game>>,
     catalogue: Option<ResMut<'w, exa_items::catalogue::ItemCatalogue>>,
     live: ResMut<'w, crate::shop_stock::LiveShopStock>,
@@ -1104,6 +1104,46 @@ impl HubShop<'_, '_> {
                     })
                     .collect();
                 bevy::log::info!("hub shop: {panel:?} entry centres (id, screen) {centres:?}");
+            }
+        }
+    }
+
+    /// Makes a won item an item instance in the live object database, as
+    /// the week's verdict has it: the week's prize graded pristine, a
+    /// season reward by the reward maker
+    /// ([`crate::arena_rewards::make_season_reward`]). Without a base tier
+    /// the item stays the id it was drawn as. [Exarust stand-in]
+    fn make_won(&mut self, item: crate::arena_rewards::WonItem) -> u32 {
+        if let Some(game) = self.game.as_deref() {
+            self.objects.ensure_base(&game.0);
+        }
+        if self.objects.db().base.is_empty() {
+            return item.source();
+        }
+        match item {
+            crate::arena_rewards::WonItem::Prize(id) => {
+                let made = self.with_world(|world| {
+                    exa_items::randomise::grade_object(
+                        world,
+                        id,
+                        crate::arena_rewards::PRIZE_GRADE,
+                    )
+                });
+                self.live.take_refresh_state();
+                // A prize the database cannot read stays the id it was
+                // drawn as rather than an empty entry. [Exarust guard]
+                if made == 0 { id } else { made }
+            }
+            crate::arena_rewards::WonItem::SeasonReward(id) => {
+                let entropy = crate::arena_match::counter_now() as u32;
+                let mut seed = entropy;
+                crate::arena_rewards::make_season_reward(
+                    self.objects.db_mut(),
+                    id,
+                    &self.palette.0,
+                    entropy,
+                    &mut seed,
+                )
             }
         }
     }
@@ -1466,6 +1506,41 @@ fn scripted_shop(
             buy.stage = 0;
         }
         _ => buy.stage = 0,
+    }
+}
+
+/// The week's verdict's stow: each item the company won is made an item
+/// instance ([`HubShop::make_won`]) and stowed in the arsenal free of any
+/// holder (flags 0), shelved by the kind of the id it was drawn as. A hub
+/// career with no arsenal drops them.
+pub(crate) fn hub_stow_won(
+    mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+    mut shop: HubShop,
+) {
+    let Some(career) = career.as_mut() else {
+        return;
+    };
+    if career.won_items.is_empty() {
+        return;
+    }
+    let won: Vec<_> = career.won_items.drain(..).collect();
+    if shop.stores.is_none() {
+        return;
+    }
+    for item in won {
+        let made = shop.make_won(item);
+        let kind = shop
+            .kinds
+            .as_deref()
+            .map_or_else(Default::default, |kinds| kinds.kind(item.source()));
+        let Some(stores) = shop.stores.as_deref_mut() else {
+            return;
+        };
+        let stowed = stores.arsenal.stow(made, kind, 0);
+        info!(
+            "hub arsenal: the won item {:?} is made {made:#x} and stowed ({stowed})",
+            item
+        );
     }
 }
 
