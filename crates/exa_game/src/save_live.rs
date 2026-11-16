@@ -2068,8 +2068,8 @@ fn run_save_steps<const AT_QUIT: bool>(
                         let held = slots.has_saved_level(number, "exanima04")
                             || slots.has_saved_level(number, locale);
                         info!(
-                            "save: the exit to {locale} {} a checkpoint (the save {} exanima04 or {locale})",
-                            if held { "keeps no" } else { "keeps" },
+                            "save: the exit to {locale} {} checkpoint (the save {} exanima04 or {locale})",
+                            if held { "keeps no" } else { "keeps a" },
                             if held { "holds" } else { "holds neither" }
                         );
                         if !held && level_time {

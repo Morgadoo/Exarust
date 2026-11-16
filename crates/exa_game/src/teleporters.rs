@@ -483,7 +483,9 @@ pub fn spawn_device_scan(
 
 /// The devices' debug flags. `--debug-scan <frame>` (`scan`): at that
 /// frame after the load the player gets a reconstruction device's scan, as
-/// a use that passed the device's checks starts it, and its sound.
+/// a use that passed the device's checks starts it, and its sound; the
+/// story session's reconstruction word and checkpoint identity are set as
+/// the use sets them.
 /// `--debug-slot <frame>` (`slot`): see [`debug_slot`].
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DebugScan {
@@ -500,6 +502,7 @@ fn debug_scan(
     players: Query<(Entity, &GlobalTransform), With<crate::player::PlayerBody>>,
     mut sounds: MessageWriter<DeviceSound>,
     mut frames: Local<u32>,
+    (identities, mut flow): (Query<&RecordIdentity>, Option<ResMut<crate::flow::Flow>>),
 ) {
     let Some(frame) = script.scan else {
         return;
@@ -526,8 +529,16 @@ fn debug_scan(
         world.flush();
     });
     sounds.write(DeviceSound::scan(at.translation()));
+    // The story session's words a device's scan sets (the reconstruction
+    // word and the identity a dying player's record is compared with), so
+    // a scripted story death is reconstructed as after a device's use.
+    let identity = identities.get(player).map(|i| i.0).unwrap_or(0);
+    if let Some(flow) = flow.as_mut() {
+        flow.story.reconstruction = crate::flow::REBUILDABLE;
+        flow.story.checkpoint = identity;
+    }
     info!(
-        "debug scan: on the player at {} ms, opening at {} ms",
+        "debug scan: on the player (identity {identity:#x}) at {} ms, opening at {} ms",
         clock.now_ms,
         clock.now_ms.wrapping_add(teleporters::SCAN_DELAY_MS)
     );

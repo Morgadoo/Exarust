@@ -22,6 +22,8 @@
 //!          --spawn-race n@x,y,z       play mode: a living character of race byte n stands here (metres), the first
 //!                                     actor template of that race (a fresh record of the race without one); repeatable
 //!          --torch x,y,z              a burning torch fire here (metres), e.g. to stand in for a held one
+//!          --fire x,y,z[,size]        play mode (debug): a fire of this size (default 0.8, a brazier's) stands here
+//!                                     (metres) from the load; repeatable
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
 //!          --no-cube-lids             debug: the room's lid stays out of its lights' cube shadows (to compare)
@@ -59,13 +61,15 @@
 //!          --shove-props <frame>      play mode: a blow to every prop body within 3 m of the player at that frame
 //!                                     after loading, away from the player and up; logs how far each moved once
 //!                                     they all sleep again
-//!          --mechanism-poke <frame>   debug: at that frame after loading, the hand pulls the nearest unlatched hinged door
+//!          --mechanism-poke <frame>[,frame...]  debug: at each frame after loading, the hand pulls the nearest unlatched hinged door
 //!                                     open by its handle for 2 s and turns the nearest lever to its other detent and
 //!                                     holds it 1.5 s; their creaks, knocks, slams and signals play from the live steps
 //!          --kinesis-pick <frame>     play mode: from that frame after loading (waiting for one), a running Kinesis of the player takes
 //!                                     the nearest prop body within 5 m, as the hand's pick hands it one
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry; `+` stands for a space, for grid scenes)
+//!          --weapon-seeds a,b[,q]     debug: a factory --weapon (`@name`) is built from these two paint seeds (hex with 0x) and
+//!                                     quality q (default 200), as an item's weapon record gives them (picture checks)
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
 //!          --spawn-watch <ticks>      log each living body's pelvis height over its feet and its ground for this many
 //!                                     fixed ticks after it spawns (default 120; exa_game::limp at debug level)
@@ -274,7 +278,8 @@
 //!                                     slot (0-based, the order of --powers) and at frame r uses it again (the release);
 //!                                     the cursor's ground point goes 1.5 m beyond the player; repeatable
 //!          --debug-scan <frame>       play mode: at that frame after the load the player gets a reconstruction
-//!                                     device's scan (it opens 1600 ms later), as a use that passed the checks starts it
+//!                                     device's scan (it opens 1600 ms later), as a use that passed the checks starts it,
+//!                                     with the story's reconstruction word set (a scripted story death is reconstructed)
 //!          --debug-slot <frame>       play mode: at that frame after the load a stand-in Power Crystal A goes on every
 //!                                     teleporter's slot and a Power Crystal L on every reconstruction device's slot
 //!          --debug-portal-use <frame> play mode: at that frame after the load the player runs the portal use (the
@@ -424,6 +429,8 @@ pub struct Options {
     /// `--spawn-race n@x,y,z`: living characters of race byte n placed
     /// at these points (a debug tool).
     pub spawn_races: Vec<(u8, [f32; 3])>,
+    /// `--fire x,y,z[,size]`: play mode fires standing at these points.
+    pub fires: Vec<([f32; 3], f32)>,
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
     /// `--frames` was given: without a screenshot the run ends after them.
@@ -449,13 +456,15 @@ pub struct Options {
     /// Deal every prop body near the player a blow at this frame.
     pub shove_props: Option<u32>,
     /// Pull the nearest door and turn the nearest lever at this frame.
-    pub mechanism_poke: Option<u32>,
+    pub mechanism_poke: Vec<u32>,
     /// Hand the player's running Kinesis the nearest prop at this frame.
     pub kinesis_pick: Option<u32>,
     /// Apparel for the character (`Characters.rpk` entries).
     pub outfit: Vec<String>,
     /// Weapon in the right hand (`Objects.rpk` entry).
     pub weapon: Option<String>,
+    /// `--weapon-seeds a,b[,q]`: the factory weapon's seeds and quality.
+    pub weapon_seeds: Option<([u32; 2], u8)>,
     /// Spawn an armed opponent in play mode.
     pub opponent: bool,
     /// The opponent stands its ground (no steps, no strikes).
@@ -1129,10 +1138,35 @@ fn main() -> AppExit {
             }
             "--shove" => options.shove = args.next().and_then(|v| v.parse().ok()),
             "--shove-props" => options.shove_props = args.next().and_then(|v| v.parse().ok()),
-            "--mechanism-poke" => options.mechanism_poke = args.next().and_then(|v| v.parse().ok()),
+            "--mechanism-poke" => {
+                options.mechanism_poke = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|f| f.trim().parse().ok())
+                    .collect();
+            }
             "--kinesis-pick" => options.kinesis_pick = args.next().and_then(|v| v.parse().ok()),
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next().map(|w| w.replace('+', " ")),
+            "--weapon-seeds" => {
+                let text = args.next().unwrap_or_default();
+                let number = |t: &str| match t.trim().strip_prefix("0x") {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => t.trim().parse().ok(),
+                };
+                let parts: Vec<Option<u32>> = text.split(',').map(number).collect();
+                match parts.as_slice() {
+                    [Some(a), Some(b)] => options.weapon_seeds = Some(([*a, *b], 200)),
+                    [Some(a), Some(b), Some(q)] if *q < 256 => {
+                        options.weapon_seeds = Some(([*a, *b], *q as u8));
+                    }
+                    _ => {
+                        eprintln!("--weapon-seeds: cannot read {text:?} (a,b[,quality])");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--opponent" => options.opponent = true,
             "--opponent-shield" => {
                 options.opponent = true;
@@ -1869,6 +1903,19 @@ fn main() -> AppExit {
                 match parsed {
                     Some(spawn) => options.spawn_races.push(spawn),
                     None => eprintln!("--spawn-race: cannot read {v:?} (n@x,y,z)"),
+                }
+            }
+            "--fire" => {
+                let v: Vec<f32> = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .collect();
+                match v.as_slice() {
+                    [x, y, z] => options.fires.push(([*x, *y, *z], 0.8)),
+                    [x, y, z, size] => options.fires.push(([*x, *y, *z], *size)),
+                    _ => eprintln!("--fire: cannot read {v:?} (x,y,z[,size])"),
                 }
             }
             "--corpse" => {

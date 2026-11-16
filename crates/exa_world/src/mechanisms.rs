@@ -69,6 +69,83 @@ impl Plugin for MechanismPlugin {
                     .before(send_relay_forwards),
             )
             .add_systems(FixedUpdate, send_relay_forwards);
+        if std::env::var_os("EXA_MECHANISM_LIST").is_some() {
+            app.add_systems(Update, list_mechanisms);
+        }
+    }
+}
+
+/// `EXA_MECHANISM_LIST=1` (debug): once the level's sliding leaves stand,
+/// logs each one (its placed object's id, where its leaf is, its fraction
+/// and state bits) and each lever (its id, where it is, its two targets),
+/// so a scene can be framed on a lever and the gate it drives; then, every
+/// 30 frames, each awake sliding leaf's fraction and place (`slide watch`).
+fn list_mechanisms(
+    mut listed: Local<bool>,
+    mut frame: Local<u32>,
+    slides: Query<(Entity, &SlideBody, &Ragdoll)>,
+    levers: Query<(Entity, &exa_physics::body::LeverBody)>,
+    parents: Query<&ChildOf>,
+    records: Query<&MechanismRecords>,
+) {
+    let placed_id = |e: Entity| -> String {
+        let mut up = Some(e);
+        while let Some(node) = up {
+            if let Ok(r) = records.get(node) {
+                return format!("{:#x}", r.id);
+            }
+            up = parents.get(node).ok().map(ChildOf::parent);
+        }
+        "no record".to_string()
+    };
+    if !*listed {
+        if slides.is_empty() {
+            return;
+        }
+        *listed = true;
+        for (e, glue, body) in &slides {
+            let at = Vec3::from(body.parts[0].transform().translation);
+            info!(
+                "mechanism list: sliding leaf {e:?} of {} at ({:.2}, {:.2}, {:.2}) m, \
+                 fraction {:.3}, closed {}, latched {}, fast {}, locked {}",
+                placed_id(e),
+                at.x,
+                at.y,
+                at.z,
+                glue.fraction(body),
+                glue.door.closed,
+                glue.door.latched,
+                glue.door.fast,
+                glue.door.locked
+            );
+        }
+        for (e, lever) in &levers {
+            let at = lever.origin();
+            info!(
+                "mechanism list: lever {e:?} {:#x} at ({:.2}, {:.2}, {:.2}) m signals {:#x} and {:#x}",
+                lever.id, at.x, at.y, at.z, lever.record.target, lever.record.second
+            );
+        }
+        return;
+    }
+    *frame += 1;
+    if !(*frame).is_multiple_of(30) {
+        return;
+    }
+    for (e, glue, body) in &slides {
+        if body.asleep() {
+            continue;
+        }
+        let at = Vec3::from(body.parts[0].transform().translation);
+        info!(
+            "slide watch: leaf {e:?} of {} fraction {:.3} at ({:.2}, {:.2}, {:.2}) m, closed {}",
+            placed_id(e),
+            glue.fraction(body),
+            at.x,
+            at.y,
+            at.z,
+            glue.door.closed
+        );
     }
 }
 

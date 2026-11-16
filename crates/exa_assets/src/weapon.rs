@@ -964,6 +964,14 @@ mod tests {
                     if f.parts[part].flags & 1 != 0 {
                         assert!(!placed.contains(&part), "{}: overlay placed", entry.name);
                         overlays += 1;
+                        // For picture checks (`--weapon-seeds`): the seeds
+                        // that give this recipe its overlay.
+                        eprintln!(
+                            "overlay {:?} part {part} with seeds {:#x},{:#x}",
+                            entry.name,
+                            seed.wrapping_mul(0x9E37_79B9),
+                            seed
+                        );
                     }
                 }
             }
@@ -1044,6 +1052,11 @@ mod tests {
                 assert_eq!(refracts, alpha_job, "{name}");
                 if alpha_job {
                     assert!(translucent > 0, "{name}: an opaque gem atlas");
+                    // For picture checks (`--weapon-seeds`).
+                    eprintln!(
+                        "gem-set {name:?} with seeds {:#x},{:#x} quality 200",
+                        weapon.seeds[0], weapon.seeds[1]
+                    );
                     gems += 1;
                     break;
                 } else {
