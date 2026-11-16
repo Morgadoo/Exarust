@@ -17,7 +17,11 @@
 //! changes the technique word puts it on the body's caster (its technique
 //! bits) and adds the record's perks to the body's fighter
 //! ([`apply_technique_word`]); the level start puts the starting word there
-//! the same way.
+//! the same way. A rise in the armour skill also runs the armour pass again
+//! over the worn outfit ([`ArmourRefresh`], [`refresh_armour`]). A
+//! companion's rise refreshes its own body the same way (its technique word,
+//! and its armour after an armour rise); the two AI factors its rise writes
+//! are not applied (their fields in the AI are not named yet).
 //!
 //! Each pass first explores, as the original's tick does: in a grid level
 //! the 5 × 5 cells around the player's cell are walked
@@ -67,6 +71,13 @@ impl AccountExperience {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TechniqueWord(pub u32);
 
+/// On the player's body after a rise in the armour skill: the armour pass
+/// runs again over the outfit it wears ([`refresh_armour`]), as the
+/// original's conversion calls it on the player's body when the trained
+/// skill that rose is the armour skill.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArmourRefresh;
+
 /// The flow's discovery pass (every story frame) ran at `now`, on the game clock
 /// (ms). [`crate::flow`]'s step application sends it.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +97,14 @@ pub struct StoryExperience {
     pub party_bodies: Vec<Entity>,
     /// The player's body technique word after its last rise.
     pub technique_word: u32,
+    /// The last pass raised the player's armour skill
+    /// ([`crate::experience::ARMOUR_SKILL`]): the body's armour is redone.
+    pub armour_rose: bool,
+    /// The companions whose skill rose in the last pass (their index in
+    /// the party) with their new technique word and whether the skill was
+    /// the armour skill: the rise refreshes the body (its technique word)
+    /// and, for the armour skill, its armour, as the player's does.
+    pub companion_rises: Vec<(usize, u32, bool)>,
     /// Play started and the level-start hook ran.
     pub started: bool,
     /// The account experience last written to the settings, so an unchanged
@@ -101,6 +120,8 @@ impl Default for StoryExperience {
             party: Vec::new(),
             party_bodies: Vec::new(),
             technique_word: 0,
+            armour_rose: false,
+            companion_rises: Vec::new(),
             started: false,
             written_global: Some(0),
         }
@@ -151,9 +172,22 @@ impl StoryExperience {
             return false;
         }
         self.state.convert_global(now);
-        let Conversion { techniques, .. } = self.state.convert_player(now, &mut self.player);
-        for companion in &mut self.party {
-            convert_companion(now, companion);
+        let Conversion {
+            techniques, raised, ..
+        } = self.state.convert_player(now, &mut self.player);
+        self.armour_rose = raised == Some(crate::experience::ARMOUR_SKILL);
+        self.companion_rises.clear();
+        for (index, companion) in self.party.iter_mut().enumerate() {
+            let Conversion {
+                raised, techniques, ..
+            } = convert_companion(now, companion);
+            if let (Some(skill), Some(word)) = (raised, techniques) {
+                self.companion_rises.push((
+                    index,
+                    word,
+                    skill == crate::experience::ARMOUR_SKILL,
+                ));
+            }
         }
         if let Some(word) = techniques {
             let changed = word != self.technique_word;
@@ -422,6 +456,23 @@ pub(crate) fn tick_story_experience(
                 write_learner(learner, &mut data.record);
             }
         }
+        // A companion's rise refreshes its body: the technique word, and
+        // the armour after a rise in the armour skill.
+        for &(index, word, armour) in &live.companion_rises {
+            let Some(&body) = live.party_bodies.get(index) else {
+                continue;
+            };
+            info!(
+                "experience: companion {body:?} rose at {} ms: technique word {word:#010x}{}",
+                pass.now,
+                if armour { ", armour redone" } else { "" }
+            );
+            let mut entity = commands.entity(body);
+            entity.insert(TechniqueWord(word));
+            if armour {
+                entity.insert(ArmourRefresh);
+            }
+        }
         if let Ok((player, _, mut data)) = players.single_mut() {
             live.write_player(&mut data.record);
             if changed {
@@ -432,6 +483,13 @@ pub(crate) fn tick_story_experience(
                 commands
                     .entity(player)
                     .insert(TechniqueWord(live.technique_word));
+            }
+            if live.armour_rose {
+                info!(
+                    "experience: the armour skill rose at {} ms: the armour pass runs again",
+                    pass.now
+                );
+                commands.entity(player).insert(ArmourRefresh);
             }
         }
     }
@@ -463,6 +521,44 @@ pub fn apply_technique_word(mut bodies: TechniqueReaders) {
                 fighter.perks.insert(perk);
             }
         }
+    }
+}
+
+/// The bodies whose armour skill rose, with what the armour pass reads.
+type ArmourReaders<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static exa_character::record::CharacterData,
+        &'static mut exa_combat::Fighter,
+        Option<&'static exa_character::WornArmour>,
+    ),
+    With<ArmourRefresh>,
+>;
+
+/// The armour refresh after a rise in the armour skill: the fighter's
+/// Deflection is read again from its record (a rise can teach it) and the
+/// armour pass runs over the worn items' protection
+/// ([`exa_combat::Fighter::wear`]). The fighter is the simulation's: the
+/// write lands on its copy at the next step.
+pub fn refresh_armour(
+    mut bodies: ArmourReaders,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    mut commands: Commands,
+) {
+    for (body, data, mut fighter, worn) in &mut bodies {
+        let deflection = data.record.deflection();
+        let worn = worn.map(|w| w.0.clone()).unwrap_or_default();
+        let refresh = move |f: &mut exa_combat::Fighter| {
+            f.stats.deflection = deflection;
+            f.wear(&worn);
+        };
+        match fixed.as_deref_mut() {
+            Some(fixed) => fixed.write(body, &mut fighter, refresh),
+            None => refresh(&mut fighter),
+        }
+        commands.entity(body).remove::<ArmourRefresh>();
     }
 }
 
@@ -511,6 +607,7 @@ impl Plugin for ExperienceLivePlugin {
                         .after(crate::flow::apply_steps)
                         .after(crate::thaum::cast::broadcast_level_change)
                         .after(crate::save_live::save_to_new_slot),
+                    refresh_armour,
                     store_account_experience,
                 )
                     .chain()
@@ -661,6 +758,122 @@ mod tests {
         assert_eq!(live.technique_word, 0x1);
         live.advance(1000);
         assert_eq!(live.technique_word, 0x3);
+    }
+
+    /// A pass that raises the player's armour skill to the level whose
+    /// chosen technique is Deflection runs the armour pass again over the
+    /// worn items: the fighter's layers become the ones Deflection gives.
+    /// A rise in another skill leaves the armour alone.
+    #[test]
+    fn an_armour_skill_rise_redoes_the_players_armour() {
+        let worn = exa_formats::objdb::Armour {
+            coverage: [50; 18],
+            padding: 60,
+            slash: 140,
+            crush: 60,
+            pierce: 80,
+            material: 4,
+            ..Default::default()
+        };
+        let run = |skill: usize| {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_plugins(ExperienceLivePlugin)
+                .add_message::<SettingsEntry>();
+            let mut record = record(2_000);
+            // A point short of the first level, Deflection chosen there.
+            record.skills[skill].points = 4_999;
+            record.skills[skill].techniques[0] = 4;
+            let mut fighter = exa_combat::Fighter::default();
+            fighter.wear(std::slice::from_ref(&worn));
+            let before = fighter.armour;
+            let body = app
+                .world_mut()
+                .spawn((
+                    PlayerBody::new(0.0),
+                    GlobalTransform::default(),
+                    exa_character::record::CharacterData::of_record(record.clone()),
+                    fighter,
+                    exa_character::WornArmour(vec![worn]),
+                ))
+                .id();
+            app.world_mut()
+                .resource_mut::<StoryExperience>()
+                .begin(&record, 0);
+            app.world_mut().write_message(DiscoveryTick { now: 1000 });
+            app.update();
+            app.update();
+            let data = app
+                .world()
+                .get::<exa_character::record::CharacterData>(body)
+                .unwrap();
+            let fighter = app.world().get::<exa_combat::Fighter>(body).unwrap();
+            assert!(app.world().get::<ArmourRefresh>(body).is_none());
+            (data.record.deflection(), fighter.clone(), before)
+        };
+        let (deflection, fighter, before) = run(crate::experience::ARMOUR_SKILL);
+        assert!(deflection);
+        assert!(fighter.stats.deflection);
+        let expected = exa_combat::damage::armour_layers(None, &[worn], true);
+        assert_eq!(fighter.armour, expected);
+        assert_ne!(fighter.armour, before);
+        let (_, fighter, before) = run(0);
+        assert!(!fighter.stats.deflection);
+        assert_eq!(fighter.armour, before);
+    }
+
+    /// A companion's rise in the armour skill refreshes its body as the
+    /// player's does: the technique word and the armour pass.
+    #[test]
+    fn a_companions_armour_rise_refreshes_its_body() {
+        let worn = exa_formats::objdb::Armour {
+            coverage: [50; 18],
+            slash: 140,
+            ..Default::default()
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ExperienceLivePlugin)
+            .add_message::<SettingsEntry>()
+            .add_systems(Update, apply_technique_word.after(refresh_armour));
+        let mut companion = record(2_000);
+        companion.skills[crate::experience::ARMOUR_SKILL].points = 4_999;
+        companion.skills[crate::experience::ARMOUR_SKILL].techniques[0] = 4;
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.wear(std::slice::from_ref(&worn));
+        let body = app
+            .world_mut()
+            .spawn((
+                exa_character::record::CharacterData::of_record(companion.clone()),
+                fighter,
+                exa_character::WornArmour(vec![worn]),
+            ))
+            .id();
+        {
+            let mut live = app.world_mut().resource_mut::<StoryExperience>();
+            live.begin(&record(0), 0);
+            assert!(live.join(body, &companion, 0));
+        }
+        app.world_mut().write_message(DiscoveryTick { now: 1000 });
+        app.update();
+        app.update();
+        let word = app.world().get::<TechniqueWord>(body).copied();
+        assert_eq!(
+            word.map(|w| w.0),
+            Some(technique_bits(
+                &app.world()
+                    .get::<exa_character::record::CharacterData>(body)
+                    .unwrap()
+                    .record
+                    .skills
+            ))
+        );
+        let fighter = app.world().get::<exa_combat::Fighter>(body).unwrap();
+        assert!(fighter.stats.deflection);
+        assert_eq!(
+            fighter.armour,
+            exa_combat::damage::armour_layers(None, &[worn], true)
+        );
     }
 
     #[test]
