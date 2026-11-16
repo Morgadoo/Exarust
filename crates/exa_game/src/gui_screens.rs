@@ -1881,8 +1881,8 @@ impl GameScreens {
     /// saves its panel into its record (queued in
     /// [`Self::saved_containers`]) and the journal stores its text. The
     /// inventory's and a loot window's loaded panels ask for their save
-    /// too; their items already live in the body's possessions in Exarust,
-    /// so there is nothing more to write. Returns the saves asked for.
+    /// too, which the save system writes into the bodies' carried lists
+    /// ([`body_inventory::store_pack`]). Returns the saves asked for.
     pub fn save_open_screens(&mut self) -> Vec<exa_ui::game_gui::SaveAction> {
         use exa_ui::game_gui::{SaveAction, save_action};
         let mut actions = Vec::new();
@@ -2453,6 +2453,7 @@ pub fn save_open_screens_for_saves<const AT_QUIT: bool>(
         Option<ResMut<exa_assets::live_objects::LiveObjects>>,
         Option<Res<crate::save_live::QuitAutosave>>,
     ),
+    mut bodies: Query<(Entity, &mut exa_items::possession::Possessions)>,
 ) {
     let new_slot = new_slots.read().count() > 0;
     let writes = steps.read().any(|step| {
@@ -2475,6 +2476,31 @@ pub fn save_open_screens_for_saves<const AT_QUIT: bool>(
     let actions = screens.save_open_screens();
     info!("save: the open screens save first: {actions:?}");
     store_containers(&mut screens, &mut objects, items.as_deref_mut(), &mut live);
+    // The inventory's and the loot windows' loaded packs save into their
+    // characters' carried lists.
+    use exa_ui::game_gui::SaveAction;
+    if actions.contains(&SaveAction::Inventory)
+        && let Some(body) = screens.inventory_body
+        && let Ok((_, mut possessions)) = bodies.get_mut(body)
+    {
+        let written = body_inventory::store_pack(&mut possessions, &screens.pack);
+        info!("save: the inventory's pack writes {written} entries into {body:?}'s list");
+    }
+    if actions.contains(&SaveAction::Loot) {
+        for window in screens.loot.iter().filter(|window| window.pack.loaded) {
+            let Some((_, mut possessions)) = bodies
+                .iter_mut()
+                .find(|(entity, _)| entity.index().index() as i32 == window.character)
+            else {
+                continue;
+            };
+            let written = body_inventory::store_pack(&mut possessions, &window.pack);
+            info!(
+                "save: the loot window's pack writes {written} entries into character {}'s list",
+                window.character
+            );
+        }
+    }
 }
 
 /// Gives the icon manager back the handles of the panels the screens
@@ -4143,6 +4169,64 @@ mod tests {
             vec![SaveAction::Journal, SaveAction::Inventory]
         );
         assert!(screens.saved_containers.is_empty());
+    }
+
+    /// A game save writes the open inventory's loaded pack into its body's
+    /// carried list, in the panel's order and at its places; a carried item
+    /// the panel does not show stays first.
+    #[test]
+    fn a_save_writes_the_open_packs_into_the_carried_lists() {
+        use exa_items::possession::{Carried, Possessions};
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<exa_assets::live_objects::LiveObjects>()
+            .add_message::<crate::save_live::SaveToNewSlot>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_systems(Update, save_open_screens_for_saves::<false>);
+        let carried = |id, x| Carried {
+            id,
+            flags: 0,
+            x,
+            y: 0,
+        };
+        let body = app
+            .world_mut()
+            .spawn(Possessions {
+                carried: vec![carried(10, 0), carried(11, 0), carried(12, 0)],
+                ..Default::default()
+            })
+            .id();
+        {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.open_inventory(true, true, 4);
+            screens.inventory_body = Some(body);
+            screens.pack.loaded = true;
+            for (id, x) in [(11, 64), (10, 128)] {
+                screens.pack.entries.push(crate::item_container::Entry {
+                    cell: crate::item_container::Cell::new(x, 0),
+                    id,
+                    ..Default::default()
+                });
+            }
+        }
+        app.world_mut()
+            .write_message(crate::save_live::SaveStep::Save {
+                drop_on_low_health: false,
+            });
+        app.update();
+        let list = &app.world().get::<Possessions>(body).unwrap().carried;
+        let pack = app.world().resource::<GameScreens>().pack.save_list();
+        assert_eq!(
+            list.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![12, 11, 10]
+        );
+        assert_eq!((list[1].x, list[1].y), (pack[0].x, pack[0].y));
+        assert_eq!((list[2].x, list[2].y), (pack[1].x, pack[1].y));
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Inventory)
+        );
     }
 
     #[test]
