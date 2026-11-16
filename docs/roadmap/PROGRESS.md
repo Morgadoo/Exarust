@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r241, 11-16) | target |
+| measure | start (r186, 11-10) | now (r242, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **53.82%** | **100%** |
+| **Ledger: bytes in a final state** | — | **54.23%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 312 of 2,808 (11%) | 100% |
+| Live rows with scene or retail evidence | — | 312 of 2,812 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,815 | all |
+| Tests passing | 8,489 | 8,826 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,11 +98,11 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 170 | 179,606 |
+| Physics, bodies & cloth | 7 | 7 | 165 | 168,964 |
 | UI | 12 | 12 | 380 | 150,606 |
 | Rendering & GPU | 10 | 10 | 293 | 149,713 |
 | Thaumaturgy & effects | 9 | 9 | 166 | 118,695 |
-| AI & behaviour | 8 | 8 | 164 | 109,255 |
+| AI & behaviour | 8 | 8 | 165 | 109,794 |
 | Characters, motion & animation | 8 | 8 | 236 | 107,315 |
 | Game modes, arena & session | 7 | 7 | 212 | 88,970 |
 | World, levels & terrain | 5 | 5 | 168 | 87,048 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,279** | **1,158,794** |
+| **Total** | **90** | **90** | **2,275** | **1,148,691** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 242 | The level's cloths run inside the bodies' tick at the original's points: the body takes its share of a cloth's push inside the solver, grabs are grab records, normal-mapped cloths rebuild their tangents, the cloth grid is the scene grid (clothbody); a follow-up brought the stage's CPU cost back to the base on the game's path. Scenes and an FPS check owed (GPU on hold). |
 | 2026-11-16 | 241 | The inventory character view's equipment side: a bound body's trust follows drags and drops (F278 fixed), script HasItem answers (it always answered no), the full shield take, the swap gate and the page buttons, the arsenal's keys (charview; F281, F282 fixed). Grid scenes owed (GPU on hold). |
 | 2026-11-16 | 239–240 | Each game mode gives the camera its own record and GameModes is the live mode word (F361, F362 fixed); window points use the original's projection (a 2x lift-warp bug under supersampling fixed); the post sharpen follows the supersample level (cammodes). The living placement of a character body replaces the rigid moves for the arena's kept bodies, the golem reset, the revive, the player's level placement and the hub entry (replace). Two lanes held before integration: clothbody (CPU cost being cut) and skinning (a large garment-weight change waiting for a picture check). Scenes owed (GPU on hold). |
 | 2026-11-16 | 238 | The in-game GUI unit: the heartbeat fades out, the HUD takes the shield, the power bar and the bars' holds, the dead powers close the corpse's windows, the AI search reads the open-container registry, a bound body's inventory sets its mind window, a save writes the open packs (gamegui; F31, F32, F34-F38). Grid scenes owed (GPU on hold). |

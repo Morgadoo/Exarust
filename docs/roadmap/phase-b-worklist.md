@@ -6,19 +6,19 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 738 | 186,964 | B1 wire (or prove unreachable) |
-| partial | 1,487 | 958,277 | B4 complete the port |
-| missing | 62 | 14,463 | B4 port |
+| partial | 1,484 | 949,812 | B4 complete the port |
+| missing | 61 | 12,825 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
 ## By section (open bytes)
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 153,634 | 23,907 | 2,065 |
+| physics | 144,630 | 23,907 | 427 |
 | ui | 98,154 | 51,141 | 1,311 |
 | render | 123,703 | 22,990 | 3,232 |
 | powers | 112,229 | 3,417 | 3,049 |
-| ai | 103,915 | 5,312 | 28 |
+| ai | 104,454 | 5,312 | 28 |
 | characters | 89,820 | 15,398 | 2,097 |
 | modes | 74,355 | 13,673 | 942 |
 | world | 65,469 | 21,016 | 563 |
@@ -37,12 +37,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMotileDynamics | physics | 48 / 99,121 | 5 / 5,469 | 1 / 38 | 104,628 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 26 / 32,570 | 5 / 2,048 | 2 / 28 | 34,646 |
-| SG_PlayerControls (unit routines) | ai | 38 / 22,534 | 0 / 0 | 0 / 0 | 22,534 |
+| SG_PlayerControls (unit routines) | ai | 39 / 23,073 | 0 / 0 | 0 / 0 | 23,073 |
 | TSimSector | physics | 29 / 21,802 | 0 / 0 | 0 / 0 | 21,802 |
 | XA_Arena (unit routines) | modes | 32 / 19,158 | 8 / 1,658 | 8 / 942 | 21,758 |
 | TMotilePart | characters | 36 / 17,100 | 6 / 1,449 | 2 / 1,370 | 19,919 |
 | TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
-| TVCCloth | physics | 15 / 15,321 | 6 / 1,514 | 1 / 1,638 | 18,473 |
 | RF_SceneNodes (unit routines) | world | 10 / 15,347 | 12 / 2,377 | 0 / 0 | 17,724 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
 | TGUIForm | ui | 31 / 10,077 | 24 / 6,919 | 0 / 0 | 16,996 |
@@ -77,6 +76,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPlayerBehaviour | ai | 9 / 7,954 | 2 / 79 | 0 / 0 | 8,033 |
 | TRBDDoor | world | 4 / 5,922 | 1 / 2,085 | 0 / 0 | 8,007 |
 | TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
+| TVCCloth | physics | 11 / 6,317 | 6 / 1,514 | 0 / 0 | 7,831 |
 | TCharacterView | ui | 14 / 6,327 | 4 / 1,141 | 0 / 0 | 7,468 |
 | SG_GameGUI (unit routines) | ui | 12 / 6,906 | 6 / 549 | 0 / 0 | 7,455 |
 | RF_Dynamics (unit routines) | physics | 5 / 2,122 | 15 / 5,244 | 0 / 0 | 7,366 |
