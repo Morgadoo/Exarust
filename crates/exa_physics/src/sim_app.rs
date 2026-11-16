@@ -1527,6 +1527,12 @@ impl SimPause {
         self.raised = self.raised.saturating_sub(1);
     }
 
+    /// The paired raises up: a lockstep frame's fixed loop does not run
+    /// while any is (a free-running simulation sleeps on [`Self::paused`]).
+    pub fn raised(&self) -> u32 {
+        self.raised
+    }
+
     pub fn paused(&self) -> bool {
         self.held || self.raised > 0 || self.teardown
     }

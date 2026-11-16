@@ -185,11 +185,14 @@ impl Plugin for SimControlPlugin {
             )
             .add_systems(Update, sim_keys)
             // The fixed loop neither takes the frame's time nor runs while
-            // the loading screen shows.
+            // the loading screen shows, nor while a screen has raised the
+            // pause counter (a staging's transition, for its frames at
+            // black): the original's main loop skips the frame time then.
             .configure_sets(
                 RunFixedMainLoop,
                 RunFixedMainLoopSystems::FixedMainLoop
-                    .run_if(|loading: Option<Res<exa_ui::LoadingStatus>>| loading.is_none()),
+                    .run_if(|loading: Option<Res<exa_ui::LoadingStatus>>| loading.is_none())
+                    .run_if(not_raised),
             )
             .add_systems(
                 RunFixedMainLoop,
@@ -291,6 +294,12 @@ fn sim_keys(
             info!("simulation at ×{speed}");
         }
     }
+}
+
+/// No screen holds a paired raise of the pause counter
+/// ([`exa_physics::sim_app::SimPause::raised`]).
+fn not_raised(pause: Option<Res<exa_physics::sim_app::SimPause>>) -> bool {
+    pause.is_none_or(|pause| pause.raised() == 0)
 }
 
 /// While the loading screen shows, the fixed step does not run: the fixed
@@ -826,6 +835,35 @@ mod tests {
         let short = first_ticks(3);
         assert_eq!(short, first_ticks(47));
         assert!(*short.last().unwrap() > 0);
+    }
+
+    /// A paired raise of the pause counter (a staging's transition at
+    /// black) holds the lockstep fixed loop; its lower lets it run again,
+    /// without catching up the frames it was held.
+    #[test]
+    fn no_tick_runs_while_the_pause_is_raised() {
+        let mut app = app(SimControl::default());
+        app.init_resource::<exa_physics::sim_app::SimPause>();
+        for _ in 0..5 {
+            app.update();
+        }
+        let before = ticks(&app);
+        assert!(before > 0);
+        app.world_mut()
+            .resource_mut::<exa_physics::sim_app::SimPause>()
+            .raise();
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(ticks(&app), before);
+        app.world_mut()
+            .resource_mut::<exa_physics::sim_app::SimPause>()
+            .lower();
+        app.update();
+        let after = ticks(&app);
+        // One frame's worth (1/30 s at 12 ms a tick: two or three ticks),
+        // not the four frames since the raise.
+        assert!(after > before && after - before <= 3, "{before} -> {after}");
     }
 
     /// The starting speed waits for the loading screen to go.

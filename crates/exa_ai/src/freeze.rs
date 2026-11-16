@@ -20,11 +20,15 @@
 //! So no combat state, idle routine, sleep, flight or walk state runs, and
 //! the fighters stand facing where they look for the hold and the fade.
 //!
-//! Exarust's simulation clock stands in for the real clock the original's
-//! simulation follows: the freeze covers the first [`STAGING_TICKS`] body
-//! ticks after the staging (the hold and the fade, 1100 ms at 12 ms a tick),
-//! counted on the ticks themselves, so a load or a pause between the staging
-//! and the first tick does not shorten it.
+//! A staging made under Exarust's transition screen (the arena's rounds,
+//! its match start, the next practice fight) is held there: the screen's
+//! close, at the end of its fade back in, releases it ([`release`]), on the
+//! frame's real clock as the original's. A staging with no screen running
+//! (a command-line arena match, the practice start, whose creator commit
+//! opens no screen yet) counts instead: the freeze covers the first
+//! [`STAGING_TICKS`] body ticks after it (the hold and the fade, 1100 ms at
+//! 12 ms a tick), counted on the ticks themselves, so a load or a pause
+//! between the staging and the first tick does not shorten it.
 //!
 //! Evidence: the AI tick's flag test and its idle-stand call, the six writers
 //! of the byte and the transition screen's run routine, read from
@@ -48,15 +52,38 @@ pub const STAGING_TICKS: u32 =
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StagingFreeze {
     set: bool,
+    /// Held by a transition screen: only its close releases the freeze.
+    held: bool,
     /// The body ticks run frozen so far.
     ticks: u32,
 }
 
 impl StagingFreeze {
-    /// The staging sets the freeze; a freeze already running starts again.
+    /// The staging sets the freeze for [`STAGING_TICKS`] ticks; a freeze
+    /// already running starts again.
     pub fn set(&mut self) {
         self.set = true;
+        self.held = false;
         self.ticks = 0;
+    }
+
+    /// The staging sets the freeze until the transition screen it runs
+    /// under closes ([`Self::release`]).
+    pub fn hold(&mut self) {
+        self.set = true;
+        self.held = true;
+        self.ticks = 0;
+    }
+
+    /// The transition screen closed: the freeze ends (the original clears
+    /// its byte on every close, set or not).
+    pub fn release(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The freeze waits for a screen's close.
+    pub fn held(&self) -> bool {
+        self.set && self.held
     }
 
     /// The AI tick runs the idle stand in place of its state.
@@ -75,7 +102,7 @@ impl StagingFreeze {
         if !self.set {
             return false;
         }
-        if self.ticks >= STAGING_TICKS {
+        if !self.held && self.ticks >= STAGING_TICKS {
             *self = Self::default();
             return false;
         }
@@ -101,6 +128,54 @@ pub fn stage(
         None => {
             if let Some(freeze) = freeze {
                 freeze.set();
+            }
+        }
+    }
+}
+
+/// Stages a freeze held by the running transition screen, posted as
+/// [`stage`] posts its write.
+pub fn stage_held(
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
+    freeze: Option<&mut StagingFreeze>,
+) {
+    match fixed {
+        Some(fixed) => fixed.post(|world| {
+            if let Some(mut freeze) = world.get_resource_mut::<StagingFreeze>() {
+                freeze.hold();
+                info!("staging freeze: set; the AI states wait for the transition screen");
+            }
+        }),
+        None => {
+            if let Some(freeze) = freeze {
+                freeze.hold();
+            }
+        }
+    }
+}
+
+/// The transition screen's close releases the freeze, posted for the next
+/// step as the staging was, so the release comes after it.
+pub fn release(
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
+    freeze: Option<&mut StagingFreeze>,
+) {
+    match fixed {
+        Some(fixed) => fixed.post(|world| {
+            let ticks = world.get_resource::<BodyTicks>().map_or(0, |t| t.0);
+            if let Some(mut freeze) = world.get_resource_mut::<StagingFreeze>()
+                && freeze.frozen()
+            {
+                let ran = freeze.ticks();
+                freeze.release();
+                info!(
+                    "staging freeze: released by the transition screen after {ran} ticks (tick {ticks})"
+                );
+            }
+        }),
+        None => {
+            if let Some(freeze) = freeze {
+                freeze.release();
             }
         }
     }
@@ -314,6 +389,45 @@ mod tests {
         tick(&mut app);
         assert!(!app.world().resource::<StagingFreeze>().frozen());
         assert!(app.world().get::<AiRoute>(npc).unwrap().following);
+    }
+
+    /// A freeze held by a screen outlasts the counted span and ends only
+    /// at the release.
+    #[test]
+    fn a_held_freeze_waits_for_the_screens_close() {
+        let mut freeze = StagingFreeze::default();
+        stage_held(None, Some(&mut freeze));
+        assert!(freeze.held());
+        for _ in 0..STAGING_TICKS * 3 {
+            assert!(freeze.advance());
+        }
+        assert!(freeze.frozen());
+        release(None, Some(&mut freeze));
+        assert!(!freeze.frozen());
+        assert!(!freeze.advance());
+        // A counted staging after it counts again.
+        freeze.set();
+        assert!(!freeze.held());
+        assert_eq!((0..200).take_while(|_| freeze.advance()).count(), 92);
+    }
+
+    /// The posted hold and release run in order at the next fixed step.
+    #[test]
+    fn the_posted_hold_and_release_run_in_order() {
+        let mut world = World::new();
+        world.init_resource::<StagingFreeze>();
+        world.init_resource::<exa_physics::sim_app::FixedCommands>();
+        world.resource_scope(|_, mut fixed: Mut<exa_physics::sim_app::FixedCommands>| {
+            stage_held(Some(&mut fixed), None);
+        });
+        exa_physics::sim_app::run_fixed_commands(&mut world);
+        assert!(world.resource::<StagingFreeze>().held());
+        world.resource_scope(|_, mut fixed: Mut<exa_physics::sim_app::FixedCommands>| {
+            release(Some(&mut fixed), None);
+        });
+        assert!(world.resource::<StagingFreeze>().frozen());
+        exa_physics::sim_app::run_fixed_commands(&mut world);
+        assert!(!world.resource::<StagingFreeze>().frozen());
     }
 
     #[test]

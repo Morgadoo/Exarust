@@ -3602,17 +3602,19 @@ fn start_fight(
 /// A board pick in the hub asks for a career match: the career stays in the
 /// running `ArenaCareer`, the launch is kept in [`PendingArenaLaunch`], and
 /// the level changes to the drawn arena in process (the original's own
-/// launch, no restarted process and no hand-off file).
+/// launch, no restarted process and no hand-off file). The launch arrives
+/// as the match start, once the transition screen the Begin or the rematch
+/// opened is black (`exa_game::arena_fade`).
 fn launch_arena_match(
     mut commands: Commands,
-    mut launches: MessageReader<exa_game::arena_hub_live::ArenaMatchLaunch>,
+    mut launches: MessageReader<exa_game::arena_fade::ArenaMatchStart>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
 ) {
     if loading.is_some() {
         return;
     }
-    for launch in launches.read() {
+    for exa_game::arena_fade::ArenaMatchStart(launch) in launches.read() {
         let Some(map) = exa_game::arena_match::ARENA_MAPS.get(launch.arena) else {
             warn!("arena match launch: no arena {}", launch.arena);
             continue;

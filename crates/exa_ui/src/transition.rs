@@ -127,6 +127,10 @@ pub struct TransitionStep {
     pub callback: bool,
     /// The draw shows the "TO BE CONTINUED" text.
     pub continued: bool,
+    /// The second frame after the switch: the original lowers the game's
+    /// pause counter here (when it is above zero), which the switch
+    /// callback of a staging raised.
+    pub lower_pause: bool,
 }
 
 /// The clock difference as a signed value: the original subtracts the two
@@ -198,6 +202,7 @@ impl TransitionScreen {
     /// One frame of the state machine.
     pub fn step(&mut self, now: u32) -> TransitionStep {
         let elapsed = elapsed_since(now, self.start);
+        let mut lower_pause = false;
         match self.phase {
             Phase::FadingOut => {
                 let rate = self.rate();
@@ -267,6 +272,7 @@ impl TransitionScreen {
                 if self.countdown > 0 {
                     self.countdown -= 1;
                 }
+                lower_pause = true;
             }
             Phase::HoldFrame2 => {
                 let hold: u32 = if self.flags.hold_1000 {
@@ -307,6 +313,7 @@ impl TransitionScreen {
             close: self.close,
             callback: std::mem::take(&mut self.callback),
             continued: self.phase == Phase::Continued,
+            lower_pause,
         }
     }
 }
@@ -398,9 +405,12 @@ mod tests {
         t.step(601);
         assert_eq!(t.phase, Phase::HoldFrame);
         assert_eq!(t.countdown, 2);
-        t.step(601);
+        let s = t.step(601);
         assert_eq!(t.phase, Phase::HoldFrame2);
         assert_eq!(t.countdown, 1);
+        // That frame, and only that one, lowers the pause counter.
+        assert!(s.lower_pause);
+        assert!(!t.step(601).lower_pause);
         // The 500 ms hold keeps the screen black.
         t.step(1000);
         assert_eq!(t.phase, Phase::HoldFrame2);
