@@ -296,8 +296,8 @@ single. Both modes share the first 36 bytes.
 |---:|---|---|
 | 0 | u32 | signature `0x6F5AEA14` |
 | 4 | char[16] | locale (the level name) |
-| 20 | f32[3] | camera target (cm) |
-| 32 | f32 | camera zoom |
+| 20 | f32[3] | camera place: the view camera's eye (cm) |
+| 32 | f32 | camera zoom (the controller's current zoom) |
 | 36 | u32 | save seed, drawn when the character was created |
 | 40 | u32 | flags: low byte the start background; bit 16 is set by the writer |
 | 44 | u32 | game clock in seconds |
@@ -305,13 +305,18 @@ single. Both modes share the first 36 bytes.
 
 The story reader accepts **any signature at or above** `0x6F5AEA14` (a
 newer save still loads); a lower one makes the slot legacy. It reads the
-camera target and zoom into scratch and does not restore them (the arena
+camera place and zoom into scratch and does not restore them (the arena
 reader does the same), and it skips the reserved word. The writers stamp
-the view's camera target (centimetres) and zoom word into the header;
-Exarust carries them on the session (`Session::camera`/`Session::zoom`,
-dropped on read) and stamps them from the host's optional `SaveCamera`
-resource, which the running game does not set yet, so its saves write the
-defaults (origin, zoom 1). The flag
+twelve bytes of the viewport's camera node, the translation row of its
+4×3 matrix (where the eye stands, centimetres; the screen-ray routine
+reads the same matrix), and the camera controller's current zoom word
+(the value the ticks ease toward the wheel's stop, 800–2000) into the
+header. Exarust carries them on the session (`Session::camera`/
+`Session::zoom`, dropped on read) and stamps them from `SaveCamera`, which
+the running game keeps on the chase camera's eye and shown zoom each frame
+(`save_live::follow_the_view`); a run without a camera writes the defaults
+(origin, zoom 1). A retail story save read for this holds an eye about
+20 m from the player and zoom 1280.0035 (just off the 1280 stop). The flag
 byte at bits 16–23 is the "started" byte
 (the writer always sets it to 1). When the start background is 0 and the
 player record's own flag word is 0, the reader sets that word to `0x510000`. Before the chunks it resets the journal to one "New
@@ -329,8 +334,8 @@ character (`parse_retail` follows the original's rule).
 |---:|---|---|
 | 0 | u32 | signature `0xE8AAEA10` |
 | 4 | char[16] | locale (`arenahub`) |
-| 20 | f32[3] | camera target (cm) |
-| 32 | f32 | camera zoom |
+| 20 | f32[3] | camera place: the view camera's eye (cm) |
+| 32 | f32 | camera zoom (the controller's current zoom) |
 | 36 | u32 | money (the company's copper) |
 | 40 | u32 | arena data version (current 9) |
 | 44 | u32 | game clock in seconds |
@@ -500,8 +505,15 @@ skipped by size.
 | `0xD0E80001` | Exarust | **guess:** Exarust's session payload; no retail counterpart |
 
 A string is a `u32` byte length and that many bytes (no terminator). A
-journal entry's id identifies the dialogue entry that wrote it; Exarust's
-journal has no ids and writes the page index.
+journal entry's id word is carried, not used: the reader stores each saved
+word in its page and only the writer reads it back. Every page the game
+makes gets 0 (the reader's default page, the journal window's opening
+page, an added page from the array's zero fill, the erase's reset of the
+last page), and an erase moves the later pages down with their words
+(REA, the assembly of the journal's reader, writer, add, erase and open
+routines). A retail story save read for this holds one page, id 0, "New
+Entry". Exarust's pages carry the word the same way
+(`exa_ui::game_gui::JournalEntry::id`, `exa_script::story::Entry::id`).
 
 **Write order.** The story writes the placement, discovery (always), the
 journal (when it has entries), the global experience (always), the memory
@@ -560,10 +572,18 @@ only.
   it as `LiveTransition::saves_disabled`; the running game inserts the
   `LiveTransition` resource after each level change and the live save
   paths read it.
-* **Placement.** The player's matrix is the saved placement; its height is
-  probed down 300 cm from 100 cm up, then lifted by `108.18 − 11.1·extent`
-  and 5 cm (13 cm for a body in its raised state). The body's feet are put
-  at the probed floor and the body is carried to the lifted point.
+* **Placement.** The player's matrix is the saved placement. The landing
+  first writes the body's pelvis-target word as `108.18 − 11.1·h` (double
+  precision, `h` the record's height), restarts its stance clip with no
+  blend, clears its capture key, sets both muscle tones to 1 and clears its
+  condition word, its condition flags and its locomotion flags. The height
+  is then probed down 300 cm from 100 cm up (a miss keeps the lifted
+  start), both feet's ground words take the hit's height, and the frame is
+  lifted by the target word plus 13 cm for a body in combat mode, else
+  5 cm; the living placement puts the pelvis there and the held items are
+  put back. Exarust runs this for a door's arrival
+  (`save_level::landing_floor`, `landing_resets`, `landing_height`, the
+  viewer's step placement); its single drive tone stands for both tones.
 * **The save's own section.** A door's or a journey's transition opens the
   save package when none is open, looks the destination's section up by
   its locale name and imports it; the archive's file is read only when the

@@ -18,7 +18,7 @@
 pub const SPAWN_HEIGHT: f64 = 108.18;
 /// The extent scale in [`SPAWN_HEIGHT`].
 pub const SPAWN_EXTENT_SCALE: f64 = 11.1;
-/// Extra lift for a body in its raised state.
+/// Extra lift for a body in combat mode.
 pub const SPAWN_LIFT_RAISED: f32 = 13.0;
 /// Extra lift for every other body.
 pub const SPAWN_LIFT: f32 = 5.0;
@@ -27,15 +27,14 @@ pub const SPAWN_PROBE_LIFT: f32 = 100.0;
 /// The floor probe's reach.
 pub const SPAWN_PROBE_REACH: f32 = 300.0;
 
-/// Where the feet of a body placed at `at` (m) stand on a loaded level: the
-/// original probes the floor from [`SPAWN_PROBE_LIFT`] over the placement,
-/// [`SPAWN_PROBE_REACH`] down, with the line cast (`cast(from, dir, reach)`),
-/// and carries the body's frame to the hit plus `108.18 − 11.1·extent` and
-/// [`SPAWN_LIFT`] ([`spawn_height`]). Exarust's character stands on its
-/// feet, so the frame's standing height is left out and the feet go
-/// [`SPAWN_LIFT`] over the hit [inf: the frame's height over the feet is the
-/// standing body's; the raised state's 13 cm is not modelled]. On a miss the
-/// placement is kept, where the original keeps the probe's lifted start.
+/// Where the feet of a body placed at `at` (m) stand on a loaded level, for
+/// the placements without a frame of their own that are not a door's
+/// arrival (a door's arrival is the save landing proper: [`landing_floor`],
+/// [`landing_height`], [`landing_resets`]): the floor probed from
+/// [`SPAWN_PROBE_LIFT`] over the placement, [`SPAWN_PROBE_REACH`] down, with
+/// the line cast (`cast(from, dir, reach)`), and the feet [`SPAWN_LIFT`] over
+/// the hit, the pelvis then at the pose's own target over them. On a miss
+/// the placement is kept.
 pub fn landing_feet(
     at: bevy::math::Vec3,
     cast: impl FnOnce(bevy::math::Vec3, bevy::math::Vec3, f32) -> Option<bevy::math::Vec3>,
@@ -44,6 +43,72 @@ pub fn landing_feet(
     let from = at + bevy::math::Vec3::Y * (SPAWN_PROBE_LIFT * METRES);
     cast(from, bevy::math::Vec3::NEG_Y, SPAWN_PROBE_REACH * METRES)
         .map_or(at, |hit| hit + bevy::math::Vec3::Y * (SPAWN_LIFT * METRES))
+}
+
+/// The pelvis-target word the save landing writes before it places a
+/// surviving body (cm): `108.18 − 11.1·h` in double precision, `h` the
+/// record's height, rounded once to single.
+pub fn landing_target(height: f32) -> f32 {
+    (SPAWN_HEIGHT - f64::from(height) * SPAWN_EXTENT_SCALE) as f32
+}
+
+/// The lift the save landing adds over the probed floor and the target
+/// word (cm): 13 for a body in combat mode, else 5.
+pub fn landing_lift(combat: bool) -> f32 {
+    if combat { SPAWN_LIFT_RAISED } else { SPAWN_LIFT }
+}
+
+/// The frame height the save landing puts a surviving body's pelvis at
+/// over the probed floor: its pelvis-target word ([`landing_target`]) and
+/// its lift ([`landing_lift`]).
+pub fn landing_height(height: f32, combat: bool) -> crate::limp::FrameHeight {
+    crate::limp::FrameHeight::Over(landing_target(height) + landing_lift(combat))
+}
+
+/// The floor the save landing stands a surviving body on (m): the line
+/// cast from [`SPAWN_PROBE_LIFT`] over the placement, [`SPAWN_PROBE_REACH`]
+/// down (`cast(from, dir, reach)`), its hit; on a miss the probe's lifted
+/// start, which the original's probe leaves in its frame.
+pub fn landing_floor(
+    at: bevy::math::Vec3,
+    cast: impl FnOnce(bevy::math::Vec3, bevy::math::Vec3, f32) -> Option<bevy::math::Vec3>,
+) -> bevy::math::Vec3 {
+    const METRES: f32 = 0.01;
+    let from = at + bevy::math::Vec3::Y * (SPAWN_PROBE_LIFT * METRES);
+    cast(from, bevy::math::Vec3::NEG_Y, SPAWN_PROBE_REACH * METRES).unwrap_or(from)
+}
+
+/// The body's state the save landing writes before it places a surviving
+/// player on its new level, in the original's order: the stance clip
+/// starts again with no blend and no capture (the capture key cleared), the
+/// muscle tone is full, the condition word and its flags are cleared, and
+/// the locomotion flags are cleared. Each part the body lacks is skipped.
+pub fn landing_resets(
+    anim: Option<&mut exa_anim::Animator>,
+    stance: exa_combat::stance::Stance,
+    condition: Option<&mut exa_combat::Condition>,
+    flags: Option<&mut exa_combat::StateFlags>,
+    request: Option<&mut exa_physics::body::locomotion::Locomotion>,
+    body: Option<&mut exa_physics::body::Ragdoll>,
+) {
+    if let Some(anim) = anim {
+        anim.start(stance.action(), true, None, 0, exa_anim::Ease::Linear);
+        anim.pending = None;
+        anim.capture = None;
+        anim.leading = false;
+    }
+    if let Some(drive) = body.and_then(|body| body.drive.as_mut()) {
+        drive.tone = 1.0;
+    }
+    if let Some(condition) = condition {
+        *condition = exa_combat::Condition::NORMAL;
+    }
+    if let Some(flags) = flags {
+        *flags = exa_combat::StateFlags::NONE;
+    }
+    if let Some(request) = request {
+        request.flags = 0;
+    }
 }
 
 /// Where the player is put on a newly loaded level: the matrix's x and z,

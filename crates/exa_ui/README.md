@@ -619,7 +619,7 @@ callback reset come back as ordered follow-ups.
 `game_gui` is the in-game unit's non-drawing half: the screens' tags
 (0xce1c2010 inventory, 0xce1c2040 loot window, 0xce1c2030 journal), the
 eight-slot open-container registry, the inventory, loot and journal show
-rules and places, the journal's entries, the power slot's, counter's and
+rules and places, the journal's entries (each with the id word only a save reads: 0 for an entry the journal makes, a loaded save's word kept, moved down with its entry by an erase), the power slot's, counter's and
 bar control's messages, blocks and draw places, the status marker with its
 glow radius, share, tint and hide clock, skill-ready alert, level curtain
 and its hold-count reset, compass, heartbeat sound fade, menu cursor and

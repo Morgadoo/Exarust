@@ -46,12 +46,13 @@ pub struct Session {
     pub focus: f32,
     /// The game clock in seconds.
     pub clock: u32,
-    /// The view's camera target the header carries, centimetres (the
-    /// original writes the scene view's target into both headers; its
-    /// readers drop it, so a read session keeps the default).
+    /// The view's camera place the header carries, centimetres (the
+    /// original writes the viewport camera node's translation, the eye,
+    /// into both headers; its readers drop it, so a read session keeps the
+    /// default).
     pub camera: [f32; 3],
-    /// The view's zoom word the header carries (1 by default; dropped on
-    /// read like the target).
+    /// The camera controller's current zoom word the header carries (1 by
+    /// default; dropped on read like the place).
     pub zoom: f32,
     /// The story's save seed; zero in the arena.
     pub seed: u32,
@@ -202,16 +203,16 @@ pub enum SaveError {
     Malformed,
 }
 
-/// The journal records of a story's pages; the original journals carry an
-/// id and Exarust's pages have none, so the page index is written.
+/// The journal records of a story's pages, each with its page's id word as
+/// the original's writer writes it: 0 for a page the game made, the saved
+/// word for a page a load put back.
 fn journal_records(story: &Story) -> Vec<JournalRecord> {
     story
         .journal()
         .entries()
         .iter()
-        .enumerate()
-        .map(|(index, page)| JournalRecord {
-            id: index as i32,
+        .map(|page| JournalRecord {
+            id: page.id,
             title: page.title.clone(),
             text: page.text.clone(),
         })
@@ -560,6 +561,7 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
         let entries: Vec<Entry> = records
             .into_iter()
             .map(|record| Entry {
+                id: record.id,
                 title: record.title,
                 text: record.text,
             })
@@ -638,6 +640,7 @@ pub fn session_from_player_data(data: &PlayerData) -> Session {
         .unwrap_or_default()
         .into_iter()
         .map(|record| Entry {
+            id: record.id,
             title: record.title,
             text: record.text,
         })
@@ -838,7 +841,10 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
     let pages = take_count(&mut rest)?;
     let mut entries = Vec::with_capacity(pages);
     for _ in 0..pages {
+        // Exarust's own copy carries no id word; the journal chunk the
+        // load reads after it puts the saved words back.
         entries.push(Entry {
+            id: 0,
             title: take_str(&mut rest)?.to_string(),
             text: take_str(&mut rest)?.to_string(),
         });

@@ -626,9 +626,9 @@ pub enum Flavour {
 pub struct StoryHeader {
     /// The level the player was in (`exanima01` … `exanima08`).
     pub locale: [u8; NAME_LEN],
-    /// The camera's target (cm).
+    /// The view camera's place, its node's translation: the eye (cm).
     pub camera: [f32; 3],
-    /// The camera's zoom.
+    /// The camera controller's current zoom word.
     pub zoom: f32,
     /// The seed drawn when the save was created.
     pub seed: u32,
@@ -645,9 +645,9 @@ pub struct StoryHeader {
 pub struct ArenaHeader {
     /// The level the player was in (`arenahub`, `arena`, `arenae`).
     pub locale: [u8; NAME_LEN],
-    /// The camera's target (cm).
+    /// The view camera's place, its node's translation: the eye (cm).
     pub camera: [f32; 3],
-    /// The camera's zoom.
+    /// The camera controller's current zoom word.
     pub zoom: f32,
     /// The company's copper.
     pub money: u32,
@@ -867,7 +867,9 @@ pub const EXARUST_CHUNK: u32 = 0xD0E8_0001;
 /// One journal entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalRecord {
-    /// The entry's id; Exarust's journal has none and writes its index.
+    /// The entry's id word: only the writer reads it back. The game's own
+    /// pages carry 0 (the default page, an added page, the erase's reset);
+    /// a page read from a save keeps its word.
     pub id: i32,
     /// The title.
     pub title: String,

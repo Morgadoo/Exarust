@@ -235,7 +235,7 @@ chunks leaves the session without tables. What Exarust has no live model
 for (the tournament's field until one is drawn and its season weeks, the
 merchant's stock type, the day's specials and daily tallies, the company's
 second string and three words) keeps the chunk the save already held, and
-the merchant's specialisation is the writer's constant −1. `save_level::landing_feet` is the load's placement onto the line cast (from 100 cm up, 300 cm down, the feet 5 cm over the hit), which the viewer applies to the player after a save load or level change. Arena plans carry `SceneBodyPlan::snap` (opponents, hires, the Beast, company entrants): the scene command stands them 5 cm over the line cast's hit (`exa_world::start::arena_snap`); `match_layout::snaps_our_spot` marks the elimination and reserve setups, whose player spot is snapped too.
+the merchant's specialisation is the writer's constant −1. `save_level::landing_feet` is the load's placement onto the line cast (from 100 cm up, 300 cm down, the feet 5 cm over the hit), which the viewer applies to the player after a save load. A door's arrival is the save landing proper: the probed floor (`landing_floor`), the stance clip restarted with no blend or capture, full tone, the condition word, flags and locomotion flags cleared (`landing_resets`), and the pelvis 108.18 − 11.1·height plus 13 cm in combat mode or 5 cm over the floor (`landing_height`, `limp::FrameHeight::Over`). Arena plans carry `SceneBodyPlan::snap` (opponents, hires, the Beast, company entrants): the scene command stands them 5 cm over the line cast's hit (`exa_world::start::arena_snap`); `match_layout::snaps_our_spot` marks the elimination and reserve setups, whose player spot is snapped too.
 
 The `CheckpointSave` script function's save side is
 `Slots::checkpoint_from_script`: it runs only for the player with
@@ -1478,9 +1478,10 @@ makes the entered hub load that slot as the original's full load does
 (tables applied, the reader's list regeneration with the object records'
 classification, the world clock restored, the player record's race byte
 cleared before the import, a converted old save's record repaired first,
-the hub's permadeath slot set). The header's camera target and zoom are
-stamped from the host's optional `SaveCamera` (not set by the running
-game yet, so the defaults are written; both readers drop the pair),
+the hub's permadeath slot set). The header's camera place and zoom are
+stamped from `SaveCamera`, which `save_live::follow_the_view` keeps on the
+chase camera's eye (cm) and shown zoom each frame (the original's viewport
+camera node translation and controller zoom; both readers drop the pair),
 saving is refused while the last level change reports it disabled, and a
 checkpoint step saves before it copies. A script's `CheckpointSave` call
 for the player with checkpoints on runs that step
@@ -1520,7 +1521,10 @@ and from the arena's pause page the match is forfeited and the settled
 career's player data alone is saved (`SaveStep::ForfeitSave`). Every save
 writes the live journal (`GameScreens::journal`) as its journal chunk, and a
 story load gives the in-game journal the saved pages
-(`save_live::apply_loaded_journal`).
+(`save_live::apply_loaded_journal`), each with its id word (0 for a page
+the game made, the saved word for a loaded page). The settled arena match's
+return to the hub reads the hub from the arena slot's saved `arenahub`
+section (`save_live::prefer_saved_section`).
 
 The pick meets a character's limb at the nearest front face of its node mesh, through the limb's kd-tree with the ray in the limb's frame (`hand::character_hit`, logged at debug: "mesh pick: … (bone) face …"); a limb without a tree is met by its collision spheres. A prop body put into the scene after the level was built (a GUI drop, a weapon let go of) has no stand-in collider, so the pick also asks each such body's part meshes for their nearest front face (`hand::loose_prop_hit`, `exa_physics::mesh_tree::ray_mesh`: the tree, or every triangle of a mesh of ten or fewer; a part with no triangles by its spheres), as the original's cursor pick asks every mesh node of the scene; a body a hand holds (its parts' held bit) is left out, as it hangs under its holder. A dropped item can be lifted again. `--gui-drop ID@FRAME,ID@FRAME…` drops several items (a later one at the same pointer lands on the earlier). The lift's release prints the item's countdown and settling ticks and drops its world contacts (`Ragdoll::clear_world_contacts`), as the original's place does.
 A left click that is not a drag sends `hand::WorldClick`. A static mesh

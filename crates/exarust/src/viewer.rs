@@ -2628,14 +2628,27 @@ fn apply_player_placement(
         }
     }
     // A caller that wrote its frame's height puts the pelvis by its rule
-    // at the frame; any other placement lands on the floor the save
-    // landing probes, the pelvis at the pose's target over it.
+    // at the frame. A door's arrival is the save landing: the probed floor,
+    // the body's state reset and the pelvis at the landing's own target
+    // word and lift over the floor (resolved in the step). Any other
+    // placement lands on the probed feet, the pelvis at the pose's target
+    // over them.
+    let landing = frame.is_none() && arrival.is_some();
     let (at, height) = match frame.as_deref() {
         Some(&exa_game::level_change::PlacedFrame(height)) => {
             info!(
                 "level placement: the player placed at {position} by its frame ({height:?}); no floor probe"
             );
             (position, height)
+        }
+        None if landing => {
+            let at = exa_game::save_level::landing_floor(position, |from, dir, reach| {
+                frame_physics.0.line_cast(from, dir, reach)
+            });
+            info!(
+                "level placement: the arriving player placed at {position} lands on the floor at {at} (the save landing)"
+            );
+            (at, exa_game::limp::FrameHeight::Over(0.0))
         }
         None => {
             let at = exa_game::save_level::landing_feet(position, |from, dir, reach| {
@@ -2659,7 +2672,7 @@ fn apply_player_placement(
     let settle = settle.map_or(0, |settle| settle.0);
     fixed.run(
         place_player_in_step,
-        (at, by, placement.yaw, settle, height),
+        (at, by, placement.yaw, settle, height, landing),
     );
     commands.insert_resource(PlacedTrace(1200));
     commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
@@ -2707,16 +2720,29 @@ fn trace_placed_player(
 /// turns to `yaw`, and the body is put living there
 /// ([`exa_game::limp::LivingPlacement`], run later in the same step): its
 /// current clip sampled afresh and the pelvis put by `height` over `at`.
-/// The save landing frames it at the pose's pelvis target over the probed
-/// feet [the original's target word there is 108.18 − 11.1 × the body's
-/// extent; the pose's own target stands in for it]; the practice fights
-/// and the respawn at its portal write their own frame heights. Its held
+/// A door's arrival (`landing`) is the original's save landing: the body's
+/// stance clip starts again with no blend or capture, its tone is full,
+/// its condition word, flags and locomotion flags are cleared
+/// ([`exa_game::save_level::landing_resets`]), and the pelvis goes to the
+/// landing's target word 108.18 − 11.1 × the record's height plus 13 cm in
+/// combat mode or 5 cm (`height` is replaced by
+/// [`exa_game::save_level::landing_height`]). Other placements without a
+/// frame stand at the pose's pelvis target over the probed feet; the
+/// practice fights and the respawn at its portal write their own frame
+/// heights. Its held
 /// items are re-placed unless it settles. A `settle` over zero gives the
 /// body the settling state for that many ticks (the story respawn's, after
 /// its placement).
 #[allow(clippy::type_complexity)]
 fn place_player_in_step(
-    In((at, by, yaw, settle, height)): In<(Vec3, Vec3, f32, i32, exa_game::limp::FrameHeight)>,
+    In((at, by, yaw, settle, height, landing)): In<(
+        Vec3,
+        Vec3,
+        f32,
+        i32,
+        exa_game::limp::FrameHeight,
+        bool,
+    )>,
     mut roots: Query<
         (&mut Transform, Option<&mut exa_physics::CharacterBody>),
         (
@@ -2734,6 +2760,18 @@ fn place_player_in_step(
             With<exa_game::player::PlayerBody>,
             Without<exa_game::player::Player>,
         ),
+    >,
+    mut landed: Query<
+        (
+            &exa_game::player::PlayerBody,
+            Option<&exa_combat::Fighter>,
+            Option<&mut exa_anim::Animator>,
+            Option<&exa_combat::stance::Stance>,
+            Option<&mut exa_combat::Condition>,
+            Option<&mut exa_combat::StateFlags>,
+            Option<&mut exa_physics::body::locomotion::Locomotion>,
+        ),
+        Without<exa_game::player::Player>,
     >,
     physics: Option<Res<exa_physics::Physics>>,
     mut commands: Commands,
@@ -2766,6 +2804,25 @@ fn place_player_in_step(
     };
     for (entity, mut transform, mut ragdoll) in &mut bodies {
         transform.rotation = Quat::from_rotation_y(yaw);
+        let mut height = height;
+        if landing && let Ok((body, fighter, anim, stance, condition, flags, request)) =
+            landed.get_mut(entity)
+        {
+            exa_game::save_level::landing_resets(
+                anim.map(|a| a.into_inner()),
+                stance.copied().unwrap_or_default(),
+                condition.map(|c| c.into_inner()),
+                flags.map(|f| f.into_inner()),
+                request.map(|r| r.into_inner()),
+                ragdoll.as_deref_mut(),
+            );
+            let record_height = fighter.map_or(0.0, |f| f.stats.height);
+            height = exa_game::save_level::landing_height(record_height, body.combat);
+            info!(
+                "level placement: the save landing resets the body and puts its pelvis {height:?} over the floor (height {record_height}, combat {})",
+                body.combat
+            );
+        }
         // The original puts the living body at its frame: the clip
         // sampled afresh, the pelvis by the frame's height rule, facing the
         // placement's yaw, its held items put back in its hands (not after
@@ -4950,6 +5007,71 @@ mod placement_tests {
     /// The save landing's frame height.
     const LANDING: FrameHeight = FrameHeight::Target(0.0);
 
+    /// A door's arrival is the save landing: the body's stance clip starts
+    /// again with no blend or capture, its condition word and flags clear,
+    /// and the pelvis goes to 108.18 − 11.1 × the record's height plus 5 cm
+    /// (13 cm in combat mode) over the probed floor.
+    #[test]
+    fn a_doors_arrival_lands_the_player_with_the_landings_word_and_lift() {
+        let mut world = World::new();
+        world.spawn((exa_game::player::Player, Transform::default()));
+        let mut anim = exa_anim::Animator::new("Unarmed", "Walk");
+        anim.capture = None;
+        let mut flags = exa_combat::StateFlags::NONE;
+        flags.0 = 0x20;
+        let body = world
+            .spawn((
+                exa_game::player::PlayerBody::new(0.0),
+                Transform::default(),
+                Ragdoll::new(&[]),
+                anim,
+                exa_combat::stance::Stance::CombatIdle,
+                exa_combat::Condition(0x300),
+                flags,
+            ))
+            .id();
+        let floor = Vec3::new(3.0, 0.4, -2.0);
+        world
+            .run_system_once_with(
+                place_player_in_step,
+                (floor, Vec3::ZERO, 0.7, 0, FrameHeight::Over(0.0), true),
+            )
+            .unwrap();
+        let asked = *world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
+        // No fighter: the height word is 0, so 108.18 + 5.
+        assert_eq!(asked.height, FrameHeight::Over(108.18 + 5.0));
+        assert_eq!(asked.frame.translation.y, 0.4);
+        assert!(asked.replace_held);
+        let anim = world.get::<exa_anim::Animator>(body).unwrap();
+        assert_eq!(anim.action, "Cmbt - Idle");
+        assert!(anim.looping && anim.capture.is_none() && anim.pending.is_none());
+        assert_eq!(
+            *world.get::<exa_combat::Condition>(body).unwrap(),
+            exa_combat::Condition::NORMAL
+        );
+        assert_eq!(
+            *world.get::<exa_combat::StateFlags>(body).unwrap(),
+            exa_combat::StateFlags::NONE
+        );
+        // In combat mode the lift is 13 cm.
+        world
+            .get_mut::<exa_game::player::PlayerBody>(body)
+            .unwrap()
+            .set_combat(true);
+        world
+            .run_system_once_with(
+                place_player_in_step,
+                (floor, Vec3::ZERO, 0.7, 0, FrameHeight::Over(0.0), true),
+            )
+            .unwrap();
+        let asked = *world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
+        assert_eq!(asked.height, FrameHeight::Over(108.18 + 13.0));
+        assert_eq!(
+            exa_game::save_level::landing_target(1.0),
+            (108.18f64 - 11.1) as f32
+        );
+    }
+
     /// The step's placement gives the player's body the settling it was
     /// asked for (the story respawn's 16) and leaves it alone when none
     /// was asked (every other placement).
@@ -4965,13 +5087,13 @@ mod placement_tests {
             ))
             .id();
         world
-            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::ZERO, 0.0, 0, LANDING))
+            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::ZERO, 0.0, 0, LANDING, false))
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 0);
         world
             .run_system_once_with(
                 place_player_in_step,
-                (Vec3::X, Vec3::X, 0.5, PLACED_SETTLE, FrameHeight::Given),
+                (Vec3::X, Vec3::X, 0.5, PLACED_SETTLE, FrameHeight::Given, false),
             )
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 16);
@@ -4994,7 +5116,7 @@ mod placement_tests {
             .id();
         let at = Vec3::new(3.0, 0.4, -2.0);
         world
-            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, 0, LANDING))
+            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, 0, LANDING, false))
             .unwrap();
         let asked = *world
             .get::<exa_game::limp::LivingPlacement>(body)
@@ -5006,7 +5128,7 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (at, Vec3::ZERO, 0.7, PLACED_SETTLE, FrameHeight::Given),
+                (at, Vec3::ZERO, 0.7, PLACED_SETTLE, FrameHeight::Given, false),
             )
             .unwrap();
         let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
@@ -5016,7 +5138,7 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (at.with_y(0.0), Vec3::ZERO, 0.7, 0, FrameHeight::Stand),
+                (at.with_y(0.0), Vec3::ZERO, 0.7, 0, FrameHeight::Stand, false),
             )
             .unwrap();
         let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();

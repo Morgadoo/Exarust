@@ -835,6 +835,10 @@ pub enum FrameHeight {
     /// The pose's pelvis target plus this many cm over the frame's height
     /// ([`exa_physics::body::PlacementHeights::target`]).
     Target(f32),
+    /// This many cm over the frame's height whatever the pose: the save
+    /// landing's own pelvis-target word and lift
+    /// ([`crate::save_level::landing_height`]).
+    Over(f32),
 }
 
 /// The original's living placement of a body at a matrix, asked by the
@@ -870,6 +874,7 @@ impl LivingPlacement {
     pub fn pelvis_height(&self, heights: Option<exa_physics::body::PlacementHeights>) -> f32 {
         let base = self.frame.translation.y;
         match (self.height, heights) {
+            (FrameHeight::Over(cm), _) => base + cm / CM,
             (FrameHeight::Given, _) | (_, None) => base,
             (FrameHeight::Stand, Some(h)) => base + h.stand / CM,
             (FrameHeight::Target(extra), Some(h)) => base + (h.target + extra) / CM,
@@ -2608,6 +2613,8 @@ pub(crate) mod tests {
             FrameHeight::Given,
             FrameHeight::Stand,
             FrameHeight::Target(5.0),
+            // The save landing's word and lift: 108.18 − 11.1·0 + 5 cm.
+            FrameHeight::Over(113.18),
         ] {
             let mut app = placement_app();
             let world = app.world_mut();
@@ -2645,6 +2652,7 @@ pub(crate) mod tests {
             let want_y = match height {
                 FrameHeight::Given | FrameHeight::Stand => 0.5,
                 FrameHeight::Target(extra) => 0.5 + ((2.0 * scale + 5.0) + extra) / CM,
+                FrameHeight::Over(cm) => 0.5 + cm / CM,
             };
             // The step after the placement lets it fall one tick (no level).
             let pelvis = Vec3::from(pelvis);
