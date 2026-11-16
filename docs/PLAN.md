@@ -1521,6 +1521,8 @@ GameModes is the scene's live mode word, entered by the Character and Spectate m
 
 the living placement of a character body is ported (word resets, the pose lowered onto the frame, matrix foot anchors, the feet centre, the chest restarted, no wake) and run in the fixed step with each caller's frame-height rule, replacing the rigid moves: the arena's kept bodies between rounds and the tournament's next fight, the golem's pose reset, the revive's roaming bodies, the surviving player's level placement and the hub entry, each followed by the held re-place. Heights are absolute as in the original. Scenes and determinism runs owed while the GPU is on hold.
 
+the inventory character view's equipment side: a bound body's mind cost runs on drag start, cancelled release and drop with the Loyalty limit test, and a failing marker ends and closes the window (F278 fixed); script HasItem answers from the carried list and nested containers (it always answered no); the shield drop runs the full shield take; the swap key respects the GUI drag and the open pack, and the inventory's page buttons and pack follow a swap; the open arsenal takes its keys and a right release (F281, F282 fixed). Grid scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
