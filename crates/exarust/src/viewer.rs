@@ -385,6 +385,7 @@ fn setup(
                     characters: Vec::new(),
                     foes: Vec::new(),
                     arrivals: Vec::new(),
+                    rebuilt: false,
                 };
                 place_chase_camera(&mut commands, camera, &start, &options);
                 spawn_players(
@@ -927,6 +928,10 @@ struct PlayStart {
     /// The followers a door's change carried, already placed around the
     /// player ([`exa_game::follower_travel`]); empty otherwise.
     arrivals: Vec<exa_game::follower_travel::Traveller>,
+    /// The new player is the respawn's rebuild
+    /// ([`exa_game::save_live::RebuiltPlayer`]): it holds only what its
+    /// record's hands hold, without Exarust's carried torch.
+    rebuilt: bool,
 }
 
 /// Play mode around a loaded level: its music, the player's start and the
@@ -1217,6 +1222,7 @@ fn play_level(
         characters: info.characters,
         foes,
         arrivals: Vec::new(),
+        rebuilt: false,
     };
     if let Some(camera) = camera {
         place_chase_camera(commands, camera, &start, options);
@@ -1403,6 +1409,7 @@ type SpawnSources<'w> = (
     Option<Res<'w, exa_game::save_live::SavedPlayer>>,
     Option<Res<'w, exa_game::save_live::LoadedPlayerStream>>,
     Option<Res<'w, exa_game::content_requests::ContentRequests>>,
+    Option<Res<'w, exa_game::save_live::RebuiltPlayer>>,
 );
 
 /// What a door's change carries into the destination's spawn: the
@@ -1447,7 +1454,7 @@ fn finish_collision(
         ),
     >,
     (mut time, (travelling, placement, arrival)): (ResMut<Time<Virtual>>, ArrivalSources),
-    (hold, created, saved, streamed, requests): SpawnSources,
+    (hold, created, saved, streamed, requests, rebuilt): SpawnSources,
 ) {
     // The level's characters go to the content stream's streamed pass
     // while the collision builds (the original hands the level's character
@@ -1554,6 +1561,25 @@ fn finish_collision(
         );
     }
     commands.remove_resource::<PendingCollision>();
+    // The respawn's rebuild: the original spawns the player at the respawn
+    // portal from the stripped record. The new body starts at the portal's
+    // placement (the placement still lays it there once the load ends);
+    // from the level's own start it stood outside the level's rooms, drawn
+    // in the dark, until the step placed it (F564).
+    if rebuilt.is_some() && players.is_empty() {
+        commands.remove_resource::<exa_game::save_live::RebuiltPlayer>();
+        pending.start.rebuilt = true;
+        if let Some(placement) = placement.as_deref() {
+            info!(
+                "level start: the rebuilt player starts at the respawn placement {} (yaw {:.1} deg) instead of {}",
+                placement.position,
+                placement.yaw.to_degrees(),
+                pending.start.position
+            );
+            pending.start.position = placement.position;
+            pending.start.yaw = placement.yaw;
+        }
+    }
     // A new player at the level's own start: the original casts its start
     // onto the floor before it adds the player there.
     if pending.cast_start != StartCast::None && players.is_empty() {
@@ -2042,7 +2068,14 @@ fn spawn_players(
         };
         let player_shield = shields.player.is_some();
         commands.insert_resource(shields);
-        if exa_world::start::keeps_torch(name) && !player_shield && !options.no_torch {
+        // The respawn's rebuild holds what its stripped record holds: the
+        // original's spawn gives the player nothing of its own (F564).
+        if exa_game::torch::spawn_carries_torch(
+            name,
+            player_shield,
+            options.no_torch,
+            start.rebuilt,
+        ) {
             commands.entity(model).insert(exa_game::torch::CarriesTorch);
         }
         if let Some(w) = &options.weapon {
