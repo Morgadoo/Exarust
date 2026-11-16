@@ -2143,6 +2143,8 @@ impl TreeScreen {
         if word & word::INDEX == 0 {
             return out;
         }
+        // A set slot shows the HUD's bars for a second before it casts.
+        out.hold_bars = true;
         let result = if body.item_flags & ITEM_REFUSES_POWERS != 0 {
             super::casting::code::REFUSED
         } else {
@@ -2195,6 +2197,9 @@ pub struct CastEntry {
     /// The body controls another: the caller ends the control.
     pub end_control: bool,
     pub sound: Option<TreeSound>,
+    /// The slot holds a power: the caller holds the HUD's bars shown for
+    /// 1000 ms (the original does it before the domain's cast).
+    pub hold_bars: bool,
 }
 
 /// The sound a refused cast plays.
@@ -5151,6 +5156,8 @@ mod tests {
             },
         );
         assert_eq!(out.result, 1);
+        // A set slot holds the HUD's bars.
+        assert!(out.hold_bars);
         assert_eq!(body.last_instant, 0x201);
         assert!(!screen.bar_open);
         assert_eq!(record.slots[0], 0x100201);
@@ -5167,6 +5174,7 @@ mod tests {
         });
         assert_eq!(out.result, 0);
         assert!(out.end_control);
+        assert!(!out.hold_bars);
         body.status_bits = 0;
         // A body whose item flags refuse powers answers −1 without
         // dispatching: the fail sound plays at 0.05.
