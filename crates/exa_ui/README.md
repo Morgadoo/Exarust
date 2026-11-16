@@ -614,8 +614,11 @@ alpha), both scrollbars and their setters, the wheel, held arrows and
 thumb drags, the point conversions rounded with `CVTSS2SI`, the hit test
 (client, children, then records exactly and within two units), hover,
 focus, caret, Tab, the base form's key handler (`form_key`: Tab among
-the records, the focused record's answer, else the parent's key slot
-unless the key repeats or was typed), the key/press/drag routes, the frame codes a press,
+the records, back only on the word's 0x10, the focused record's answer
+to the key message 0xa0, else the parent's key slot unless the key
+repeats or was typed; `BaseForm`'s key slot and `GuiTask::key` run it
+live, up the parents to the task, with the window procedure's modifier
+word from `gui_keys::KeyMask`), the key/press/drag routes, the frame codes a press,
 grip drag and release act on, the snap slots and the records' rescale,
 the maximise and restore steps with the window-state hook's words, the
 close cascade over owned popups and children, and the control table's

@@ -931,6 +931,15 @@ impl GameScreens {
             .is_some_and(|b| self.task.active == Some(b.form))
     }
 
+    /// The window manager's focus is on a game screen (a window or its
+    /// child, the pointer over it): a key goes to that form's key slot and
+    /// climbs its parents to the task, never reaching the game view's key
+    /// handler (the player's hotkeys). With the focus on the root (the
+    /// pointer over the view) the keys are the view's.
+    pub fn keys_to_window(&self) -> bool {
+        matches!(self.task.active, Some(form) if Some(form) != self.task.root)
+    }
+
     fn root_client(&self) -> ClientRect {
         ClientRect {
             left: 0,
@@ -1137,10 +1146,10 @@ impl GameScreens {
         // containers').
         self.task.show_snaps(form);
         self.open.push(OpenScreen { kind, form });
+        // The show's activation raises the window; the key focus stays
+        // with the form under the pointer.
         if plan.raise {
             self.task.activate(form);
-        } else {
-            self.task.focus_set(Some(form), NO_CONTROL);
         }
         form
     }
@@ -1491,6 +1500,9 @@ impl GameScreens {
                     GuiRect::new(x, y, width, height),
                     self.inventory_unit,
                 );
+                // The new inventory's show ends with the forced pointer
+                // update: the focus goes to the form under the pointer.
+                self.task.refresh_pointer();
             }
             (ScreenAction::Focused, Some(screen)) => {
                 self.task.activate(screen.form);
@@ -1554,6 +1566,9 @@ impl GameScreens {
                 );
                 self.open_journal_box(form);
                 self.journal_selected();
+                // The opener ends with the forced pointer update: the focus
+                // goes to the form under the pointer.
+                self.task.refresh_pointer();
             }
             (ScreenAction::Focused, Some(screen)) => {
                 self.task.activate(screen.form);
@@ -1846,18 +1861,35 @@ impl GameScreens {
             }
             _ => {}
         }
-        if let Some(next) = self.open.last() {
-            self.task.focus_set(Some(next.form), NO_CONTROL);
-        } else {
-            self.task.active = None;
-            self.task.active_control = NO_CONTROL;
-        }
+        // The focus went to the form under the pointer: the window's hide
+        // ends with the forced pointer update (`GuiTask::close_form`).
         true
     }
 
-    /// Closes the focused screen, if any (Escape).
+    /// The screen whose window is its task's active child (the topmost by
+    /// the openers' test, [`GuiTask::is_active`]).
+    pub fn active_screen(&self) -> Option<GameScreen> {
+        self.open
+            .iter()
+            .rev()
+            .find(|screen| self.task.is_active(screen.form))
+            .map(|screen| screen.kind)
+    }
+
+    /// Closes the focused screen (the one under the pointer), else the
+    /// active one, if any (Escape; Exarust's).
     pub fn close_focused(&mut self) -> bool {
-        self.focused().is_some_and(|kind| self.close(kind))
+        let focused = self.task.active.map(|form| self.task.root_of(form));
+        let index = self
+            .open
+            .iter()
+            .position(|screen| Some(screen.form) == focused)
+            .or_else(|| {
+                self.open
+                    .iter()
+                    .rposition(|screen| self.task.is_active(screen.form))
+            });
+        index.is_some_and(|index| self.close_at(index))
     }
 
     /// Closes the loot window of one body (the deferred close), whichever
@@ -2006,6 +2038,7 @@ pub struct GameScreensPlugin;
 
 impl Plugin for GameScreensPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
             .init_resource::<crate::thaum::live::FrameEffectRoll>()
@@ -2062,7 +2095,7 @@ impl Plugin for GameScreensPlugin {
             .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_systems(
                 Update,
-                journal_typing
+                (journal_typing, screens_keys)
                     .before(crate::hotkeys::HotkeySet)
                     .before(open_requested_screens),
             )
@@ -2935,6 +2968,26 @@ fn screens_pointer(
     screens.journal_pointer(&frame, mouse.pressed(MouseButton::Left), shift);
 }
 
+/// The frame's keys for the focused game screen ([`GameScreens::keys_to_window`]):
+/// each key-down (with the window procedure's mask word) and typed
+/// character goes to the focused form's key slot
+/// ([`exa_ui::gui_core::GuiTask::key`]): a Tab moves a window's focus among
+/// its tab stops, a record's key message (0xa0) answers 0 for every record
+/// class the game screens hold, and the key climbs to the task. The
+/// journal's text box has its own key slot ([`journal_typing`]).
+pub fn screens_keys(frame: Res<crate::gui_keys::GuiKeyFrame>, mut screens: ResMut<GameScreens>) {
+    if frame.keys.is_empty() || !screens.keys_to_window() || screens.journal_box_focused() {
+        return;
+    }
+    for key in &frame.keys {
+        let route = screens.task.key(key.key, key.flags);
+        debug!(
+            "gui: key {:#x} (word {:#x}) on the game screens: {route:?}",
+            key.key, key.flags
+        );
+    }
+}
+
 /// The text box's key code for a key-down (the virtual-key codes its key
 /// slot switches on).
 fn text_box_key(code: KeyCode) -> Option<u32> {
@@ -3184,7 +3237,7 @@ pub fn release_marked_body(world: &mut World, body: Entity) {
         return;
     };
     if let Some(root) = screens.task.root {
-        screens.task.activate(root);
+        screens.task.activate_with(root, NO_CONTROL);
     }
     if screens.inventory_body == Some(body)
         && screens.is_open(GameScreen::Inventory)
@@ -4080,7 +4133,10 @@ mod tests {
             screens.task.form(form).unwrap().bounds(),
             GuiRect::new(8, 8, 244, 644)
         );
-        assert_eq!(screens.focused(), Some(GameScreen::Inventory));
+        // The new window comes to the front; the key focus stays with the
+        // form under the pointer (the forced pointer update ends the open).
+        assert_eq!(screens.active_screen(), Some(GameScreen::Inventory));
+        assert_eq!(screens.focused(), None);
         assert!(screens.containers.is_open(0x2000_0007));
         assert_eq!(screens.open_inventory(true, true, 4), ScreenAction::Closed);
         assert!(!screens.is_open(GameScreen::Inventory));
@@ -4294,9 +4350,9 @@ mod tests {
         let mut screens = GameScreens::default();
         screens.open_inventory(true, true, 4);
         screens.open_journal(true, true);
-        assert_eq!(screens.focused(), Some(GameScreen::Journal));
+        assert_eq!(screens.active_screen(), Some(GameScreen::Journal));
         assert_eq!(screens.open_inventory(true, true, 4), ScreenAction::Focused);
-        assert_eq!(screens.focused(), Some(GameScreen::Inventory));
+        assert_eq!(screens.active_screen(), Some(GameScreen::Inventory));
         assert_eq!(screens.close_container_family(), 2);
         assert!(screens.open.is_empty());
     }
@@ -4506,7 +4562,7 @@ mod tests {
                 Some((slots.next().unwrap(), 5))
             });
         assert_eq!(action, ScreenAction::Opened);
-        assert_eq!(screens.focused(), Some(GameScreen::Container));
+        assert_eq!(screens.active_screen(), Some(GameScreen::Container));
         assert!(screens.containers.is_open(id as i32));
         let popup = screens.popup(id).unwrap();
         let bounds = screens.task.form(popup.form).unwrap().bounds();
@@ -4573,7 +4629,7 @@ mod tests {
             screens.task.form(form).unwrap().bounds(),
             GuiRect::new(400, 36, 244, 440)
         );
-        assert_eq!(screens.focused(), Some(GameScreen::Loot));
+        assert_eq!(screens.active_screen(), Some(GameScreen::Loot));
         assert!(screens.containers.is_open(0x2000_0007));
         // The same body again focuses its window; another body opens a
         // second one and keeps the first.
@@ -4581,8 +4637,8 @@ mod tests {
         assert_eq!(screens.open_loot(8, 0, 4), ScreenAction::Opened);
         assert_eq!(screens.loot.len(), 2);
         assert!(screens.containers.is_open(0x2000_0008));
-        assert_eq!(screens.focused(), Some(GameScreen::Loot));
-        // The focused window (body 8) closes; body 7's stays open.
+        assert_eq!(screens.active_screen(), Some(GameScreen::Loot));
+        // The active window (body 8) closes; body 7's stays open.
         assert!(screens.close_focused());
         assert!(!screens.containers.is_open(0x2000_0008));
         assert!(screens.containers.is_open(0x2000_0007));
@@ -5007,7 +5063,10 @@ mod tests {
         assert!(screens.task.form(journal).is_none());
         assert!(screens.task.form(text_box).is_none());
         assert!(screens.journal_box.is_none());
-        assert_eq!(screens.task.active, Some(inventory));
+        // The hide's forced pointer update: the focus goes to the form under
+        // the pointer, none here (no pointer was read yet).
+        assert_eq!(screens.task.active, None);
+        assert!(screens.task.is_active(inventory));
         assert_eq!(screens.task.pointer.target, None);
         assert_eq!(screens.task.pointer.capture, None);
         assert!(
@@ -6030,6 +6089,66 @@ mod tests {
         assert_eq!(screens.journal.entries[0].text, "Well\r\ndry");
     }
 
+    /// A key with a game screen under the pointer goes to that window's
+    /// key slot and climbs to the task: the game view's key handler (the
+    /// player's hotkeys) does not hear it, so J over the journal leaves it
+    /// open. With the pointer on the view the same key is the hotkey and
+    /// closes the journal.
+    #[test]
+    fn a_key_over_a_game_screen_never_reaches_the_players_hotkeys() {
+        use bevy::input::keyboard::Key;
+        let (mut app, window) = journal_app();
+        app.init_resource::<crate::bindings::Bindings>()
+            .init_resource::<crate::hand::Hand>()
+            .add_plugins(crate::hotkeys::HotkeyPlugin);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_combat::Condition::NORMAL,
+        ));
+        let (form, title) = {
+            let screens = app.world().resource::<GameScreens>();
+            let journal = screens.find(GameScreen::Journal).unwrap().form;
+            let b = screens.task.form(journal).unwrap().bounds();
+            (
+                journal,
+                ((b.left + b.right) as f32 / 2.0, b.top as f32 + 6.0),
+            )
+        };
+        point(&mut app, title);
+        app.update();
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert_eq!(screens.task.active, Some(form));
+            assert!(screens.keys_to_window());
+            assert!(!screens.journal_box_focused());
+        }
+        let j = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyJ);
+            press_key(app, window, KeyCode::KeyJ, Key::Character("j".into()));
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::KeyJ);
+            keys.clear();
+            app.update();
+        };
+        j(&mut app);
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Journal)
+        );
+        point(&mut app, (1590.0, 890.0));
+        app.update();
+        assert!(!app.world().resource::<GameScreens>().keys_to_window());
+        j(&mut app);
+        assert!(
+            !app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Journal)
+        );
+    }
+
     /// Tab in the journal's text box is its callback: combat mode on.
     #[test]
     fn tab_in_the_journal_box_turns_combat_mode_on() {
@@ -6143,7 +6262,7 @@ mod tests {
         app.world_mut().write_message(request(GameScreen::Journal));
         app.update();
         assert_eq!(
-            app.world().resource::<GameScreens>().focused(),
+            app.world().resource::<GameScreens>().active_screen(),
             Some(GameScreen::Journal)
         );
         app.world_mut()
@@ -6152,6 +6271,6 @@ mod tests {
         app.update();
         let screens = app.world().resource::<GameScreens>();
         assert!(!screens.is_open(GameScreen::Journal));
-        assert_eq!(screens.focused(), Some(GameScreen::Inventory));
+        assert_eq!(screens.active_screen(), Some(GameScreen::Inventory));
     }
 }

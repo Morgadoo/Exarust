@@ -419,6 +419,7 @@ pub struct HelpLivePlugin;
 
 impl Plugin for HelpLivePlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<ManualScreen>()
             .init_resource::<crate::prelude::Tips>()
             .init_resource::<GuiFrames>()
@@ -518,6 +519,7 @@ fn manual_input(
     mut flow: Option<ResMut<crate::flow::Flow>>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
     mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
+    gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     let typed: Vec<_> = typed.read().cloned().collect();
@@ -614,6 +616,18 @@ fn manual_input(
     // press goes to its press slot, and the keys to its key slot while the
     // window manager's focus is on it.
     let list_focused = forms.task.active == Some(list_form);
+    // The manual's own forms (the window and its page) are base forms: a
+    // key on them goes to the focused one's key slot and climbs to the
+    // task (no record of theirs takes it); the topic list has its own.
+    if !list_focused && let Some(gui_keys) = gui_keys.as_deref() {
+        for key in &gui_keys.keys {
+            let route = forms.task.key(key.key, key.flags);
+            debug!(
+                "manual: key {:#x} (word {:#x}): {route:?}",
+                key.key, key.flags
+            );
+        }
+    }
     let Some(list) = screen.list.as_mut() else {
         return;
     };

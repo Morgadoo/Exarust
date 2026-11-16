@@ -72,6 +72,7 @@ pub mod glow_pulse;
 pub mod golem_alarm;
 pub mod golem_body;
 pub mod gui_drop;
+pub mod gui_keys;
 pub mod gui_paint;
 pub mod gui_screens;
 pub mod hand;

@@ -2065,6 +2065,19 @@ advances a binding's list was not traced). `exarust` registers `cshd`
 
 ## In-game screens
 
+`gui_keys` reads the frame's keyboard messages into `GuiKeyFrame`: each
+key-down with the window procedure's modifier word (Shift 0x20 on a first
+key-down, 1 on a repeat, one bit lower after a key-up) and then its typed
+character with the word 2. The game screens (`gui_screens::screens_keys`),
+the manual (`help_live`) and the hub's Tab (`option_forms::hub_form_typing`)
+hand those keys to their focused form's key slot; while a game screen has
+the window manager's focus (the pointer over it) the player's hotkeys
+(`hotkeys`) hear no key-down, as the original's game view, whose key
+handler they are, never gets a key a window passed up to the task. The
+openers' activation raises a window without moving the key focus; a new
+inventory's and journal's open and every window's hide end with the forced
+pointer update, so the focus is the form under the pointer.
+
 `gui_screens` runs the in-game unit's screens for the player: the I and J
 hotkeys (through `hotkeys`, so their permissions apply) and the pad's
 Inventory (through `hotkeys::pad_hotkeys`, the controls' per-frame pad

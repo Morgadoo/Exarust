@@ -180,6 +180,13 @@ pub trait FormHost: Send + Sync {
     fn wheel(&mut self, _delta: i32) -> u32 {
         0
     }
+    /// The key slot: a key and its mask word ([`crate::gui_keys`]) for the
+    /// focused form. The default is the base form's handler with no
+    /// focused record: the key goes on to the parent's key slot unless the
+    /// word has a low bit (a repeat or a typed character).
+    fn key(&mut self, key: u32, flags: u32) -> crate::form::FormKey {
+        crate::form::form_key(key, flags, 0, &[], |_| 0)
+    }
     /// The form's attribute word, for its layer when it is raised.
     fn attributes(&self) -> u32 {
         0
@@ -884,11 +891,23 @@ impl GuiTask {
             .is_some_and(|i| crate::form::is_active(&words, i))
     }
 
-    /// Activates a form: it comes to the front of its siblings and takes
-    /// the focus with no control (the base form's focus routine with no
-    /// control, as the openers call it on a window that is already open).
+    /// Activates a form as the openers and the show do (the activation with
+    /// the control 0): it comes to the front of its siblings by the child
+    /// rule and a redraw is asked for; the key focus does not move (the
+    /// activation calls the focus routine only for a nonzero control, which
+    /// the press passes).
     pub fn activate(&mut self, form: FormId) {
-        self.bring_to_front(form, NO_CONTROL);
+        self.activate_with(form, 0);
+    }
+
+    /// The activation with a control: the child raise, then, for a nonzero
+    /// control, the focus routine ([`GuiTask::focus_form`]) with it.
+    pub fn activate_with(&mut self, form: FormId, control: i32) {
+        self.raise_child(form);
+        if control != 0 {
+            self.focus_form(Some(form), control);
+        }
+        self.redraw = true;
     }
 
     pub fn form(&self, id: FormId) -> Option<&dyn FormHost> {
@@ -1024,6 +1043,42 @@ impl GuiTask {
         result
     }
 
+    /// A key for the focused form (the window procedure's key-down and
+    /// typed character, [`crate::gui_keys`]): its key slot runs, and a key
+    /// it passes on goes to its parent's key slot, up to the task. A Tab
+    /// that moves the focus focuses the form with the record's code
+    /// ([`GuiTask::focus_form`]); a key a record takes asks for a redraw.
+    /// With the focus on the root (no window under the pointer: the game's
+    /// view in play) the key is the root's own ([`KeyRoute::Root`]); a key
+    /// a window passed up reaches the task ([`KeyRoute::Task`]) without
+    /// passing through the root's own handler.
+    pub fn key(&mut self, key: u32, flags: u32) -> KeyRoute {
+        let mut at = match self.active {
+            Some(form) if Some(form) != self.root => form,
+            _ => return KeyRoute::Root,
+        };
+        loop {
+            let Some(form) = self.form_mut(at) else {
+                return KeyRoute::Ended(at);
+            };
+            match form.key(key, flags) {
+                crate::form::FormKey::Focus(record) => {
+                    self.focus_form(Some(at), record as i32 + 1);
+                    return KeyRoute::Focus(at, record);
+                }
+                crate::form::FormKey::Taken(record) => {
+                    self.redraw = true;
+                    return KeyRoute::Taken(at, record);
+                }
+                crate::form::FormKey::Nothing => return KeyRoute::Ended(at),
+                crate::form::FormKey::Parent => match form.parent() {
+                    Some(parent) if Some(parent) != self.root => at = parent,
+                    _ => return KeyRoute::Task,
+                },
+            }
+        }
+    }
+
     fn pointer_to(&mut self, form: FormId) {
         let at = (self.pointer.x, self.pointer.y);
         let press = (self.pointer.press_x, self.pointer.press_y);
@@ -1046,7 +1101,7 @@ impl GuiTask {
             .copied()
             .filter(|&id| {
                 self.form(id)
-                    .is_some_and(|f| f.parent() == Some(form) && f.is_visible())
+                    .is_some_and(|f| f.parent() == Some(form) && f.is_visible() && !f.doomed())
             })
             .collect();
         if let Some(parent) = self.form(form).and_then(FormHost::base) {
@@ -1696,6 +1751,16 @@ impl GuiTask {
         self.pointer.buttons &= !0x100;
     }
 
+    /// The forced pointer update at the stored pointer (the original's
+    /// pointer update with its force flag): the hover and the focus go to
+    /// what is under the pointer even though it did not move. The openers
+    /// of a new inventory and a new journal end with it, so the focus their
+    /// show's activation gave the new window goes back to the form under
+    /// the pointer.
+    pub fn refresh_pointer(&mut self) -> bool {
+        self.update(true, (self.pointer.x, self.pointer.y))
+    }
+
     /// The forced idle step: the active control becomes [`RESELECT`] and the
     /// pointer is re-read.
     pub fn reselect(&mut self) {
@@ -1870,11 +1935,18 @@ impl GuiTask {
     /// ([`crate::form::visibility_plan`]); the form is then marked closed.
     fn hide_form(&mut self, form: FormId) {
         let visible = self.form(form).is_some_and(FormHost::is_visible);
-        if crate::form::visibility_plan(visible, false, false).clear_references {
+        let plan = crate::form::visibility_plan(visible, false, false);
+        if plan.clear_references {
             self.sweep_references(form);
         }
         if let Some(f) = self.form_mut(form) {
             f.close(0);
+        }
+        // The hide ends with the forced pointer update: the hover and the
+        // focus go to what is under the pointer now that the form (closed,
+        // so passed over by the hit) is gone.
+        if visible && plan.clear_references {
+            self.refresh_pointer();
         }
     }
 
@@ -1995,6 +2067,23 @@ impl GuiTask {
     pub fn is_modal(&self, form: FormId) -> bool {
         self.modal == Some(form)
     }
+}
+
+/// Where a key went ([`GuiTask::key`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// The focus is the root: the key is its own handler's (in play, the
+    /// game view's: the player's hotkeys, then the task's shortcuts).
+    Root,
+    /// A form's Tab moved the focus to this record.
+    Focus(FormId, usize),
+    /// A form's focused record took the key.
+    Taken(FormId, usize),
+    /// The key ended at a form (a Tab with nowhere to go, or a repeat or
+    /// typed character nobody took).
+    Ended(FormId),
+    /// The forms passed the key up to the task's key slot (its shortcuts).
+    Task,
 }
 
 /// What a hit test found and focused.

@@ -437,8 +437,15 @@ fn press_hotkeys(
     if gui.as_deref().is_some_and(|gui| gui.journal_box_focused()) {
         return;
     }
+    // The key handler is the game view's: a key-down reaches it only while
+    // the view has the window manager's focus. With a game screen under the
+    // pointer the key goes to that form's key slot and climbs to the task
+    // instead (`gui_screens::screens_keys`). The pad's commands are the
+    // controls' own frame routine and are not gated.
+    let to_window = gui.as_deref().is_some_and(|gui| gui.keys_to_window());
     let pressed: Vec<u32> = keys
         .get_just_pressed()
+        .filter(|_| !to_window)
         .filter_map(|&k| virtual_key(k))
         .collect();
     let pad_frame = pad_status
