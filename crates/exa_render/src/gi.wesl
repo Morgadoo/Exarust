@@ -208,11 +208,15 @@ fn voxel_lights(id: vec3<u32>, dims: vec3<u32>, stored: vec3<f32>) -> vec3<f32> 
     var rgb = stored;
     let uv = volume_uv(id, dims);
     let at = volume_height(id, dims);
-    let here = 1.0 - textureSampleLevel(occupancy, linear_sampler, uv, 0.0).r;
+    // The voxel's own openness, read once a light's box covers it.
+    var here = -1.0;
     for (var i = 0u; i < params.voxel_count.x; i++) {
         let lt = params.voxel_lights[i];
         if any(id < lt.lo.xyz) || any(id >= lt.hi.xyz) {
             continue;
+        }
+        if here < 0.0 {
+            here = 1.0 - textureSampleLevel(occupancy, linear_sampler, uv, 0.0).r;
         }
         var o = lt.position.xyz;
         o.z = o.z * f32(dims.x) / f32(dims.z);
@@ -391,8 +395,8 @@ fn shape_multipoint(s: GiShape, p: vec3<f32>) -> vec3<f32> {
 }
 
 // The shapes covering voxel `id` (texture axes X, Z, Y), with `world` the
-// voxel's centre in world centimetres and `occ` its occupancy.
-fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32, stored: vec3<f32>) -> vec3<f32> {
+// voxel's centre in world centimetres, each blended over `stored`.
+fn shape_light(id: vec3<u32>, world: vec3<f32>, stored: vec3<f32>) -> vec3<f32> {
     var rgb = stored;
     // The line and point programs measure in the volume's units (the
     // block's width is 1), as the original's texture space does.
@@ -429,7 +433,6 @@ fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32, stored: vec3<f32>) -> 
             rgb = blend_srgb8(rgb, add);
         }
     }
-    _ = occ;
     return rgb;
 }
 
@@ -444,13 +447,11 @@ fn write_dark(id: vec3<u32>, dims: vec3<u32>) {
 // The additive passes after the groups' draw, over `stored` (codes over
 // 255): every voxel light, then every shape, each blended on its own.
 fn extras(id: vec3<u32>, dims: vec3<u32>, stored: vec3<f32>) -> vec3<f32> {
-    let uvw = volume_uv(id, dims);
     let at = volume_height(id, dims);
-    let occ = textureSampleLevel(occupancy, linear_sampler, uvw, 0.0).r;
     let world = params.origin.xyz
         + vec3(at.x * params.extent.x, at.z * params.extent.x, at.y * params.extent.z);
     let lit = voxel_lights(id, dims, stored);
-    return shape_light(id, world * 100.0, occ, lit);
+    return shape_light(id, world * 100.0, lit);
 }
 
 // The lowest height (m) the sky light's map reaches: the map is drawn once
