@@ -31,6 +31,19 @@
 //!   sectors against the view, adjacent sectors through their doorways to
 //!   active ones, the membership rebuild, the hidden and visible passes and
 //!   the removal queue.
+//! - **Lights.** Every point light with a light id is a light node,
+//!   registered in the sector of the room at its position (the scene's
+//!   own sector off the rooms), as the room manager's node hook moves a
+//!   node into the room of its cell. A moved light takes its new frame,
+//!   which makes the frame activate it again; a light whose room changes
+//!   moves sector first. The activation makes the light's alias in its
+//!   sector and floods it: the cells the light flood recorded it in
+//!   ([`crate::shadow_links::LevelWalls::cells_of`], flooded just before by
+//!   [`crate::shadow_links`]) give their rooms' sectors an alias stamped
+//!   this frame through the room cell hook ([`Scene::flood_hook`]), and the
+//!   light's aliases no cell stamped are dropped. A sector's aliases are
+//!   the lights a mesh registered there can be lit by
+//!   ([`LiveScene::light_aliased`], read by the link pass).
 //! - **What it drives.** A registered mesh the visible pass leaves undrawn (no main,
 //!   dithered or partial bit) is taken out of the main camera's visible
 //!   list, as the original draws only entries whose word meets the
@@ -63,11 +76,19 @@ use exa_render::sun_fit::frustum_volume;
 use exa_render::supersample::{SceneCamera, Supersample};
 use exa_render::view::project_to_screen;
 
+use bevy::platform::collections::HashMap;
+use exa_render::lights::{LightId, LightsSystems};
+
 use crate::room_view::{InRoom, LevelRooms, RoomShell, RoomTracked};
 use crate::rooms::{CELL_M, DoorPortal, PORTAL_BOTTOM_CM, Rooms};
 use crate::scene_nodes::{
-    BOUNDS_SPLIT, Draw, NodeKind, Portal, SCENE_SECTOR, SCISSOR, Scene, SectorState,
+    AliasLink, BOUNDS_SPLIT, Draw, NodeKind, Portal, SCENE_SECTOR, SCISSOR, Scene, SectorState,
 };
+use crate::shadow_links::{LevelWalls, ShadowReach};
+
+/// The scene's light kind for a point light (an omni light, which the
+/// activation floods through the cells).
+const OMNI_LIGHT: u32 = 3;
 
 pub struct SceneLivePlugin;
 
@@ -82,6 +103,7 @@ impl Plugin for SceneLivePlugin {
                     .after(VisibilitySystems::CalculateBounds)
                     .after(VisibilitySystems::UpdateFrusta)
                     .after(crate::room_view::track_rooms)
+                    .after(LightsSystems::Ids)
                     .before(VisibilitySystems::CheckVisibility),
             )
             .add_systems(
@@ -148,6 +170,11 @@ pub struct LiveScene {
     /// for the light links ([`crate::shadow_links`]): a mesh is lit only by
     /// the lights its sector lists.
     pub sector_changes: Vec<Entity>,
+    /// The light nodes: each light entity's node, and each node's light id.
+    light_node: EntityHashMap<usize>,
+    light_id_of: HashMap<usize, u32>,
+    /// The node of each light id.
+    node_of_light: HashMap<u32, usize>,
 }
 
 impl LiveScene {
@@ -164,6 +191,26 @@ impl LiveScene {
     pub fn sector_of(&self, entity: Entity) -> Option<usize> {
         let node = *self.node_of.get(&entity)?;
         self.scene.as_ref()?.nodes[node].sector
+    }
+
+    /// Whether light `id` has an alias owned by `sector` (the sector's
+    /// aliases are the lights a mesh registered there may be lit by);
+    /// `None` when the scene holds no node for the light.
+    pub fn light_aliased(&self, id: u32, sector: usize) -> Option<bool> {
+        let node = *self.node_of_light.get(&id)?;
+        Some(self.scene.as_ref()?.alias_in(node, sector).is_some())
+    }
+
+    /// The sectors holding an alias of light `id`, in the order its aliases
+    /// were made; `None` when the scene holds no node for the light.
+    pub fn light_sectors(&self, id: u32) -> Option<&[usize]> {
+        let node = *self.node_of_light.get(&id)?;
+        Some(&self.scene.as_ref()?.nodes[node].aliases)
+    }
+
+    /// The number of light nodes registered.
+    pub fn light_count(&self) -> usize {
+        self.light_node.len()
     }
 
     /// Whether the last visible pass drew a registered mesh (its node's
@@ -295,6 +342,38 @@ type MovedQuery<'w, 's> = Query<
     (With<Mesh3d>, Or<(Changed<GlobalTransform>, Changed<Aabb>)>),
 >;
 
+type LightQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GlobalTransform,
+        &'static LightId,
+        &'static PointLight,
+        Option<&'static ShadowReach>,
+    ),
+>;
+
+/// The light inputs of [`run_scene`]: the lights, the new ones, the gone
+/// ones and the level's walls (whose cell lists the flood left).
+type LightParams<'w, 's> = (
+    LightQuery<'w, 's>,
+    Query<'w, 's, Entity, Added<LightId>>,
+    RemovedComponents<'w, 's, LightId>,
+    Option<Res<'w, LevelWalls>>,
+);
+
+/// A light node's frame: its position, and half extents whose box radius
+/// is the light's radius (the scene's sphere tests read it).
+fn light_frame(
+    transform: &GlobalTransform,
+    light: &PointLight,
+    reach: Option<&ShadowReach>,
+) -> (Vec3, Vec3) {
+    let radius = reach.map_or(light.range, |r| r.radius);
+    (transform.translation(), Vec3::splat(radius / 3f32.sqrt()))
+}
+
 /// The scene's per-frame update: registration, moves, removals, frames and
 /// bounds, then the original's frame with the room states and the main
 /// camera.
@@ -324,6 +403,7 @@ pub fn run_scene(
         SceneCamera,
     >,
     mut scissors: ResMut<SectorScissors>,
+    (lights, added_lights, mut lights_removed, walls): LightParams,
 ) {
     let started = std::time::Instant::now();
     let Some(level) = level else {
@@ -354,9 +434,15 @@ pub fn run_scene(
         register.extend(meshes.iter().map(|m| m.0));
         despawned.clear();
         rooms_removed.clear();
+        lights_removed.clear();
     } else {
         register.extend(added.iter());
     }
+    let new_lights: Vec<Entity> = if fresh {
+        lights.iter().map(|l| l.0).collect()
+    } else {
+        added_lights.iter().collect()
+    };
     let rooms = level.rooms.clone();
     let room_sector = |room: Option<u16>| room.map_or(SCENE_SECTOR, |r| usize::from(r) + 1);
 
@@ -383,6 +469,74 @@ pub fn run_scene(
             live.freeing.push(node);
         }
         live.mark(sector);
+    }
+
+    // Lights gone leave through the removal queue too.
+    for entity in lights_removed.read() {
+        let Some(node) = live.light_node.remove(&entity) else {
+            continue;
+        };
+        if let Some(id) = live.light_id_of.remove(&node)
+            && live.node_of_light.get(&id) == Some(&node)
+        {
+            live.node_of_light.remove(&id);
+        }
+        live.entity_of[node] = None;
+        let scene = live.scene.as_mut().expect("scene");
+        if !scene.queue_removal(node, true) {
+            live.freeing.push(node);
+        }
+    }
+
+    // New lights: registered in the sector of the room they stand in.
+    for entity in new_lights {
+        if live.light_node.contains_key(&entity) {
+            continue;
+        }
+        let Ok((_, transform, id, light, reach)) = lights.get(entity) else {
+            continue;
+        };
+        let (position, half) = light_frame(transform, light, reach);
+        let sector = room_sector(rooms.room_of_node(Vec2::new(position.x, position.z)));
+        let scene = live.scene.as_mut().expect("scene");
+        let parent = scene.sectors[sector].node;
+        let node = match live.free.pop() {
+            Some(slot) => scene.reuse_node(slot, NodeKind::Light, parent),
+            None => scene.add_node(NodeKind::Light, parent),
+        };
+        // Every Exarust light is a point light: the omni kind, flooded.
+        scene.nodes[node].light_type = OMNI_LIGHT;
+        scene.set_frame(node, position, Mat3::IDENTITY, half);
+        scene.refresh(node);
+        scene.register(node, sector);
+        if live.entity_of.len() <= node {
+            live.entity_of.resize(node + 1, None);
+        }
+        live.entity_of[node] = Some(entity);
+        live.light_node.insert(entity, node);
+        live.light_id_of.insert(node, id.0);
+        live.node_of_light.insert(id.0, node);
+    }
+
+    // Moved lights take their new frame (the frame activates them again);
+    // one whose room changed moves sector first, as the room manager's
+    // node hook moves a node into the room of its new cell.
+    for (entity, transform, _, light, reach) in &lights {
+        let Some(&node) = live.light_node.get(&entity) else {
+            continue;
+        };
+        let (position, half) = light_frame(transform, light, reach);
+        let scene = live.scene.as_mut().expect("scene");
+        let n = &scene.nodes[node];
+        if n.position == position && n.half_extents == half {
+            continue;
+        }
+        let sector = room_sector(rooms.room_of_node(Vec2::new(position.x, position.z)));
+        if scene.nodes[node].sector != Some(sector) {
+            scene.move_to_sector(node, sector);
+        }
+        scene.set_frame(node, position, Mat3::IDENTITY, half);
+        scene.refresh(node);
     }
 
     // New meshes.
@@ -586,7 +740,31 @@ pub fn run_scene(
     };
     let dt_ms = time.delta().as_millis().min(i32::MAX as u128) as i32;
     let frame_started = std::time::Instant::now();
-    let events = scene.frame(dt_ms, eye, std::slice::from_ref(&view), &project);
+    // The flood: the rooms of the cells the light flood recorded the light
+    // in this frame, in the order it recorded them.
+    let walls = walls.filter(|w| w.size().0 == rooms.width() as usize);
+    let light_id_of = &live.light_id_of;
+    let mut flood = |_: &Scene, node: usize| -> Option<Vec<usize>> {
+        let walls = walls.as_deref()?;
+        let id = *light_id_of.get(&node)?;
+        Some(
+            walls
+                .cells_of(id)
+                .iter()
+                .filter_map(|&cell| rooms.room_of_index(cell as u32))
+                .map(|room| usize::from(room) + 1)
+                .collect(),
+        )
+    };
+    let mut no_link = |_: usize, _: usize| AliasLink::default();
+    let events = scene.frame_with(
+        dt_ms,
+        eye,
+        std::slice::from_ref(&view),
+        &project,
+        &mut no_link,
+        &mut flood,
+    );
     live.camera = Some(camera_entity);
 
     // Slots taken out this frame are free again.
@@ -736,6 +914,7 @@ fn cull_undrawn(
 
 #[cfg(test)]
 mod tests {
+    use bevy::camera::PerspectiveProjection;
     use exa_formats::level::LevelGrid;
 
     use super::*;
@@ -790,6 +969,254 @@ mod tests {
                 assert!(portal.distance(Vec3::new(behind.x, 1.0, behind.y)) > 0.0);
                 assert!(portal.distance(Vec3::new(here.x, 1.0, here.y)) < 0.0);
             }
+        }
+    }
+
+    /// A headless app with the real scene and light-link plugins on a
+    /// grid level: its rooms (with their doorways), its walls and a camera.
+    fn light_app(rooms: Rooms, grid: &LevelGrid) -> App {
+        let portals: Vec<DoorPortal> = rooms
+            .rooms()
+            .iter()
+            .flat_map(|r| r.links.iter())
+            .filter_map(|&l| rooms.portal(grid, l))
+            .collect();
+        let mut level = LevelRooms::new(Arc::new(rooms));
+        level.portals = Arc::new(portals);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin))
+            .init_resource::<DrawSectors>()
+            .init_resource::<SectorScissors>()
+            .init_resource::<exa_render::cube_shadows::PointShadows>()
+            .init_resource::<Assets<Mesh>>()
+            .add_plugins((SceneLivePlugin, crate::shadow_links::ShadowLinksPlugin))
+            .insert_resource(level)
+            .insert_resource(LevelWalls::new(grid).expect("walls"));
+        app.world_mut().spawn((
+            Camera3d::default(),
+            Projection::Perspective(PerspectiveProjection::default()),
+            Transform::from_xyz(0.0, 1.5, 0.0),
+        ));
+        app
+    }
+
+    /// A ranged point light with its id at `at` (m).
+    fn spawn_light(app: &mut App, id: u32, at: Vec3, radius: f32) -> Entity {
+        app.world_mut()
+            .spawn((
+                PointLight {
+                    range: radius,
+                    ..default()
+                },
+                ShadowReach::new(Vec3::ONE, 1.0, radius),
+                LightId(id),
+                Transform::from_translation(at),
+            ))
+            .id()
+    }
+
+    #[test]
+    fn a_level_light_floods_its_aliases_into_the_rooms_it_reaches() {
+        let (rooms, grid) = two_rooms();
+        let a = rooms.cell_centre(6 + 1);
+        let b = rooms.cell_centre(6 + 4);
+        let mut app = light_app(rooms, &grid);
+        // Light 1 stands in room A and reaches room B through the door;
+        // light 2 is short and stays in room B.
+        let far = spawn_light(&mut app, 1, Vec3::new(a.x, 2.0, a.y), 30.0);
+        spawn_light(&mut app, 2, Vec3::new(b.x, 2.0, b.y), 2.0);
+        app.update();
+        let live = app.world().resource::<LiveScene>();
+        assert_eq!(live.light_count(), 2);
+        let scene = live.scene.as_ref().unwrap();
+        // Registered in the room it stands in, aliased there and in every
+        // room its flood recorded, each alias stamped this frame.
+        assert_eq!(live.light_sectors(1), Some(&[1, 2][..]));
+        assert_eq!(live.light_sectors(2), Some(&[2][..]));
+        assert_eq!(live.light_aliased(1, 2), Some(true));
+        assert_eq!(live.light_aliased(2, 1), Some(false));
+        assert_eq!(live.light_aliased(9, 1), None);
+        for sector in [1, 2] {
+            assert!(
+                scene.sectors[sector]
+                    .aliases
+                    .iter()
+                    .all(|a| a.flooded == scene.frame_count)
+            );
+        }
+        // The membership rebuild took the aliases as processed.
+        assert_eq!(scene.sectors[2].aliases_done, 2);
+        // The room lists the link pass used to read agree.
+        let lists = &app
+            .world()
+            .resource::<crate::shadow_links::RoomLightLists>()
+            .lists;
+        assert_eq!(lists.rooms_of(1), &[0, 1]);
+        assert_eq!(lists.rooms_of(2), &[1]);
+
+        // Light 1 moves into room B with a short reach: it changes sector,
+        // its alias in room A goes and room A's sector drops it.
+        app.world_mut()
+            .entity_mut(far)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation = Vec3::new(b.x + 1.0, 2.0, b.y);
+        app.world_mut()
+            .entity_mut(far)
+            .get_mut::<ShadowReach>()
+            .unwrap()
+            .radius = 2.0;
+        app.update();
+        app.update();
+        let live = app.world().resource::<LiveScene>();
+        let scene = live.scene.as_ref().unwrap();
+        assert_eq!(live.light_sectors(1), Some(&[2][..]));
+        assert_eq!(live.light_aliased(1, 1), Some(false));
+        assert!(
+            scene.sectors[1]
+                .aliases
+                .iter()
+                .all(|a| a.light != 1 || a.owner.is_some())
+        );
+        assert!(
+            !scene.sectors[1]
+                .lights
+                .iter()
+                .any(|&l| scene.nodes[l].sector != Some(1))
+        );
+
+        // A despawned light leaves the scene and its aliases go.
+        app.world_mut().entity_mut(far).despawn();
+        app.update();
+        app.update();
+        let live = app.world().resource::<LiveScene>();
+        assert_eq!(live.light_count(), 1);
+        assert_eq!(live.light_aliased(1, 2), None);
+        let scene = live.scene.as_ref().unwrap();
+        assert_eq!(scene.sectors[2].aliases.len(), 1);
+    }
+
+    /// The shipped tile-grid levels: every level light is a light node of
+    /// the live scene, and the scene's sector aliases — the lights a mesh
+    /// in each sector may take — are the room lists the link pass read
+    /// before (the light's room and the rooms of the cells its flood
+    /// recorded), but for what the original does differently: a light
+    /// standing in no room loses its scene-sector alias at the end of its
+    /// flood (no cell hook stamps the scene's own sector). The cell lists
+    /// are the flood's, unchanged. Skipped without `EXANIMA_DIR`.
+    #[test]
+    fn shipped_level_light_aliases_follow_the_floods() {
+        use exa_assets::{GameData, ModelCache, ModelLoader};
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+        for name in ["exanima01", "exanima02", "exanima06"] {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin))
+                .init_resource::<DrawSectors>()
+                .init_resource::<SectorScissors>()
+                .init_resource::<exa_render::cube_shadows::PointShadows>()
+                .init_resource::<Assets<Mesh>>()
+                .add_plugins((SceneLivePlugin, crate::shadow_links::ShadowLinksPlugin));
+            app.world_mut().spawn((
+                Camera3d::default(),
+                Projection::Perspective(PerspectiveProjection::default()),
+                Transform::from_xyz(0.0, 1.5, 0.0),
+            ));
+            let mut cache = ModelCache::default();
+            let mut meshes = Assets::<Mesh>::default();
+            let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+            let mut images = Assets::<Image>::default();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            {
+                let mut loader = ModelLoader {
+                    game: &game,
+                    cache: &mut cache,
+                    meshes: &mut meshes,
+                    materials: &mut materials,
+                    images: &mut images,
+                    bc_supported: true,
+                };
+                let mut commands = Commands::new(&mut queue, app.world());
+                crate::spawn_level(&mut commands, &mut loader, name)
+                    .unwrap_or_else(|| panic!("{name} is in Resource.rpk"));
+            }
+            queue.apply(app.world_mut());
+            // The light ids, in spawn order, as the renderer gives them.
+            let mut lights: Vec<Entity> = app
+                .world_mut()
+                .query_filtered::<Entity, With<PointLight>>()
+                .iter(app.world())
+                .collect();
+            lights.sort();
+            for (id, &entity) in lights.iter().enumerate() {
+                app.world_mut()
+                    .entity_mut(entity)
+                    .insert(LightId(id as u32));
+            }
+            app.update();
+            app.update();
+            let world = app.world();
+            let live = world.resource::<LiveScene>();
+            let lists = &world
+                .resource::<crate::shadow_links::RoomLightLists>()
+                .lists;
+            let level = world.resource::<LevelRooms>();
+            let walls = world.resource::<LevelWalls>();
+            assert_eq!(live.light_count(), lights.len(), "{name}");
+            let mut off_room = 0;
+            let mut differ = Vec::new();
+            for id in 0..lights.len() as u32 {
+                let sectors = live.light_sectors(id).expect("a light node");
+                let listed: Vec<usize> = lists
+                    .rooms_of(id)
+                    .iter()
+                    .map(|&r| usize::from(r) + 1)
+                    .collect();
+                let node = live.node_of_light[&id];
+                let scene = live.scene.as_ref().unwrap();
+                let home = scene.nodes[node].sector;
+                if home == Some(SCENE_SECTOR) {
+                    off_room += 1;
+                    // The original: the scene-sector alias is dropped.
+                    assert!(!sectors.contains(&SCENE_SECTOR), "{name} light {id}");
+                    assert!(lists.reaches(id, None), "{name} light {id}");
+                }
+                let mut a = sectors.to_vec();
+                let mut b = listed.clone();
+                a.sort_unstable();
+                b.sort_unstable();
+                if a != b {
+                    differ.push((id, sectors.to_vec(), listed));
+                }
+                // Every alias the light has is current.
+                for &s in sectors {
+                    assert_eq!(
+                        scene.alias_in(node, s).map(|a| a.flooded),
+                        Some(scene.frame_count - 1),
+                        "{name} light {id} sector {s}"
+                    );
+                }
+            }
+            let cells = walls.size().0 * walls.size().1;
+            let full = (0..cells)
+                .filter(|&c| {
+                    walls.lights(c % walls.size().0, c / walls.size().0).count()
+                        >= crate::light_flood::MAX_CELL_LIGHTS
+                })
+                .count();
+            println!(
+                "{name}: {} lights, {} rooms, {} lights in no room, {} lights whose aliases differ from the room lists {:?}, {} full cells",
+                lights.len(),
+                level.rooms.len(),
+                off_room,
+                differ.len(),
+                differ.iter().take(4).collect::<Vec<_>>(),
+                full
+            );
+            assert!(differ.is_empty(), "{name}: {differ:?}");
         }
     }
 

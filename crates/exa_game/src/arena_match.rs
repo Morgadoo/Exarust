@@ -612,6 +612,59 @@ pub fn log_fall(
     }
 }
 
+/// A company fighter's death, as the original's employee removal runs it
+/// when the fall is resolved: the employee's place in the list (his record
+/// id less the earlier dead of this match with a lower id, since the
+/// records keep their ids until the next numbering) is dropped from the
+/// "saved" records of the match's log and of the career's, the later ids
+/// moved down. The id is kept in `died`; the roster place, the tournament
+/// entries and the kit's release follow when the match is settled
+/// ([`crate::hub_windows::ArenaCareer::drop_employee`]), since the match
+/// still finds its fighters' records by id until then.
+pub fn book_death(
+    died: &mut Vec<u8>,
+    id: u8,
+    log: &mut ArenaLog,
+    career_log: Option<&mut ArenaLog>,
+) {
+    if id == 0 || died.contains(&id) {
+        return;
+    }
+    let earlier = died.iter().filter(|&&dead| dead < id).count() as u32;
+    let place = u32::from(id) - earlier;
+    crate::staff::renumber_saved(log, place);
+    if let Some(career_log) = career_log {
+        crate::staff::renumber_saved(career_log, place);
+    }
+    died.push(id);
+}
+
+/// The match's dead leave the career's roster, as the return to the hub
+/// finds them gone: highest id first, so each id is still its roster
+/// place ([`crate::hub_windows::ArenaCareer::drop_employee`]). Returns the
+/// members who left.
+pub fn remove_dead(
+    career: &mut crate::hub_windows::ArenaCareer,
+    died: &[u8],
+) -> Vec<crate::career::Member> {
+    let mut ids: Vec<u8> = died.iter().copied().filter(|&id| id > 0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.iter()
+        .rev()
+        .filter_map(|&id| career.drop_employee(usize::from(id) - 1))
+        .collect()
+}
+
+/// A company fighter's name for a death record: the roster member his id
+/// names (id `n` is member `n − 1`), none for the manager or an id the
+/// roster does not hold.
+pub fn roster_name(career: Option<&crate::hub_windows::ArenaCareer>, id: u8) -> Option<[u8; 16]> {
+    let index = usize::from(id).checked_sub(1)?;
+    let member = career?.company.roster.get(index)?;
+    Some(crate::hub_windows::name16(&member.name))
+}
+
 /// What a round's end set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoundEnd {
@@ -663,7 +716,8 @@ pub enum MatchTick {
 /// 3 for a fatal fall (the permadeath branch) or 2 otherwise.
 ///
 /// `remove` is the original's employee-removal call: it takes the scene
-/// index and the record id of a company fighter who died.
+/// index and the record id of a company fighter who died, and the match's
+/// log the removal renumbers ([`book_death`]).
 #[allow(clippy::too_many_arguments)]
 pub fn match_tick(
     fighters: &mut [SceneFighter],
@@ -673,7 +727,7 @@ pub fn match_tick(
     physician: bool,
     log: &mut ArenaLog,
     deaths: &mut u32,
-    mut remove: impl FnMut(usize, u8),
+    mut remove: impl FnMut(usize, u8, &mut ArenaLog),
     started_ms: u32,
     now_ms: u32,
 ) -> MatchTick {
@@ -685,7 +739,7 @@ pub fn match_tick(
         let fallen = fighters[index];
         let fall = resolve_fall(fallen.health, fallen.max, physician, fallen.id);
         if log_fall(log, fall, fallen.id, fallen.name, deaths) && fall == Fall::Died {
-            remove(index, fallen.id);
+            remove(index, fallen.id, log);
         }
     }
     let round = counted.round_end().map(|won| {
@@ -1003,6 +1057,10 @@ pub struct ArenaMatch {
     pub physician: bool,
     pub log: ArenaLog,
     pub deaths: u32,
+    /// The record ids of the company fighters who died in this match, in
+    /// the order their falls were resolved ([`book_death`]); the return
+    /// takes them off the roster.
+    pub died: Vec<u8>,
     /// Fighters whose fall was resolved.
     pub resolved: Vec<Entity>,
     /// The manager's own fall was handled: the end screen it showed, 3 when
@@ -1049,6 +1107,7 @@ impl ArenaMatch {
             physician: false,
             log: ArenaLog::default(),
             deaths: 0,
+            died: Vec::new(),
             resolved: Vec::new(),
             manager_screen: None,
             screen: None,
@@ -1168,6 +1227,11 @@ fn tick_arena_match(
             name: None,
             manager: player,
         });
+        // A company fighter's death record names him by his record.
+        if company && !player {
+            let last = scene.len() - 1;
+            scene[last].name = roster_name(career.as_deref(), scene[last].id);
+        }
         scored.push(crate::arena::XpFighter {
             company,
             damage: score.map_or(0, |score| score.0),
@@ -1177,7 +1241,8 @@ fn tick_arena_match(
         index = index.wrapping_add(1);
     }
     let mut handled = arena.manager_screen.is_some();
-    let mut removed = Vec::new();
+    let died = &mut arena.died;
+    let mut career_log = career.as_deref_mut().map(|career| &mut career.log);
     let result = match_tick(
         &mut scene,
         &mut arena.rounds,
@@ -1186,9 +1251,9 @@ fn tick_arena_match(
         arena.physician,
         &mut arena.log,
         &mut arena.deaths,
-        |_, id| {
+        |_, id, log| {
             info!("arena match: company fighter {id} died");
-            removed.push(id);
+            book_death(died, id, log, career_log.as_deref_mut());
         },
         started,
         now,
@@ -1202,7 +1267,7 @@ fn tick_arena_match(
     };
     if round_ended && let Some(career) = career.as_deref_mut() {
         let ids: Vec<u8> = scene.iter().map(|fighter| fighter.id).collect();
-        let credited = award_round_xp(arena, career, &scored, &ids, &removed);
+        let credited = award_round_xp(arena, career, &scored, &ids, &arena.died);
         for (index, share) in credited {
             if let Ok((.., Some(mut score))) = fighters.get_mut(entities[index]) {
                 score.take();
@@ -1642,7 +1707,7 @@ mod tests {
             physician,
             log,
             deaths,
-            |index, id| removed.push((index, id)),
+            |index, id, _| removed.push((index, id)),
             started,
             now,
         )
@@ -1693,7 +1758,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |index, id| removed.push((index, id)),
+            |index, id, _| removed.push((index, id)),
             500,
             1499,
         );
@@ -1711,7 +1776,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |index, id| removed.push((index, id)),
+            |index, id, _| removed.push((index, id)),
             500,
             1500,
         );
@@ -1754,7 +1819,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |index, id| removed.push((index, id)),
+            |index, id, _| removed.push((index, id)),
             1000,
             2000,
         );
@@ -1844,7 +1909,7 @@ mod tests {
             true,
             &mut log,
             &mut deaths,
-            |index, id| removed.push((index, id)),
+            |index, id, _| removed.push((index, id)),
             1000,
             2000,
         );
@@ -1872,7 +1937,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |index, id| removed.push((index, id)),
+            |index, id, _| removed.push((index, id)),
             1000,
             2000,
         );
@@ -1904,7 +1969,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |_, _| {},
+            |_, _, _| {},
             1000,
             2000,
         );
@@ -1935,7 +2000,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |_, _| {},
+            |_, _, _| {},
             1000,
             2000,
         );
@@ -1970,7 +2035,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |index, id| removed.push((index, id)),
+            |index, id, _| removed.push((index, id)),
             1000,
             2000,
         );
@@ -2011,7 +2076,7 @@ mod tests {
             true,
             &mut log,
             &mut deaths,
-            |_, _| {},
+            |_, _, _| {},
             1000,
             2000,
         );
@@ -2051,7 +2116,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |_, _| {},
+            |_, _, _| {},
             1000,
             2000,
         );
@@ -2075,7 +2140,7 @@ mod tests {
             false,
             &mut log,
             &mut deaths,
-            |_, _| {},
+            |_, _, _| {},
             1000,
             2100,
         );

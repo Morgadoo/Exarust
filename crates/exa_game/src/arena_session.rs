@@ -235,7 +235,8 @@ pub fn regenerate_round(
 /// already resolved, before the end screen or the return to the hub.
 ///
 /// The manager's fatal fall is the permadeath branch; a hired fighter's is
-/// logged and counted, or logged as saved when the fall was not fatal. The
+/// logged and counted and `died` runs the employee's removal with his
+/// record id, or it is logged as saved when the fall was not fatal. The
 /// body is marked resolved either way. The returned indices are the bodies
 /// this pass resolved, in scene order.
 pub fn resolve_dead_bodies(
@@ -243,6 +244,7 @@ pub fn resolve_dead_bodies(
     physician: bool,
     log: &mut ArenaLog,
     deaths: &mut u32,
+    mut died: impl FnMut(u8, &mut ArenaLog),
 ) -> Vec<usize> {
     let mut resolved = Vec::new();
     for (index, fighter) in fighters.iter_mut().enumerate() {
@@ -257,7 +259,11 @@ pub fn resolve_dead_bodies(
         }
         let fall =
             crate::arena_match::resolve_fall(fighter.health, fighter.max, physician, fighter.id);
-        crate::arena_match::log_fall(log, fall, fighter.id, fighter.name, deaths);
+        if crate::arena_match::log_fall(log, fall, fighter.id, fighter.name, deaths)
+            && fall == crate::arena_match::Fall::Died
+        {
+            died(fighter.id, log);
+        }
         fighter.resolved = true;
         resolved.push(index);
     }
@@ -410,6 +416,35 @@ pub fn hub_arrival(has_physician: bool, has_tournament: bool) -> HubFixups {
         drop_unfit: true,
         install_session_hook: true,
     }
+}
+
+/// The continue-career fixups after an arena load, as the original runs
+/// them once the slot is read ([`hub_arrival`]): a missing week's
+/// tournament is generated and the unfit entrants are dropped from the
+/// pending events. The renumbering is implicit (an Exarust id is its
+/// roster place); the physician's weapon and the session hook are the
+/// hub entry's. Returns the fixups.
+pub fn continue_career(career: &mut crate::hub_windows::ArenaCareer) -> HubFixups {
+    let physician = career
+        .company
+        .roster
+        .iter()
+        .any(|member| member.profession == crate::career::Profession::Physician);
+    let fixups = hub_arrival(physician, career.tournament.is_some());
+    if fixups.generate_tournament {
+        career.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
+    }
+    if fixups.drop_unfit {
+        // An entrant's id is its participant id: 0 the manager, `i` roster
+        // member `i - 1`.
+        let healths: Vec<u16> = std::iter::once(career.player.health)
+            .chain(career.company.roster.iter().map(|member| member.health))
+            .collect();
+        crate::arena::drop_unfit(&mut career.entries, |id| {
+            healths.get(id as usize).copied().unwrap_or(0)
+        });
+    }
+    fixups
 }
 
 /// The hub-return day's tournament work.
@@ -728,14 +763,19 @@ mod tests {
         ];
         let mut log = ArenaLog::default();
         let mut deaths = 0;
-        let resolved = resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths);
+        let mut died = Vec::new();
+        let resolved = resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths, |id, _| {
+            died.push(id)
+        });
         assert_eq!(resolved, vec![0, 2]);
         assert_eq!(deaths, 1);
+        // The death runs the removal with the dead fighter's id.
+        assert_eq!(died, vec![2]);
         assert_eq!(log.records.len(), 2);
         assert_eq!(log.records[1].id, LOG_SAVED);
         assert!(scene.iter().all(|fighter| fighter.resolved));
         // A second pass resolves nobody.
-        assert!(resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths).is_empty());
+        assert!(resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths, |_, _| {}).is_empty());
         // The single 0.01 widens below the double 0.01: the body is resolved
         // (saved, not dead, with a physician); NaN never is.
         let mut edge = [scene[2], scene[2]];
@@ -743,9 +783,25 @@ mod tests {
         edge[0].health = 0.01;
         edge[1].resolved = false;
         edge[1].health = f32::NAN;
-        let resolved = resolve_dead_bodies(&mut edge, true, &mut log, &mut deaths);
+        let resolved = resolve_dead_bodies(&mut edge, true, &mut log, &mut deaths, |_, _| {});
         assert_eq!(resolved, vec![0]);
         assert_eq!(log.records.last().unwrap().id, LOG_SAVED);
+    }
+
+    /// The continue fixups generate a missing week's tournament (which
+    /// clears the entries, as a new week's board does) and keep a present
+    /// one.
+    #[test]
+    fn the_continue_fixups_generate_a_missing_tournament() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        let kept = career.tournament.clone();
+        let fixups = continue_career(&mut career);
+        assert!(!fixups.generate_tournament);
+        assert_eq!(career.tournament, kept);
+        career.tournament = None;
+        let fixups = continue_career(&mut career);
+        assert!(fixups.generate_tournament && fixups.drop_unfit);
+        assert!(career.tournament.is_some());
     }
 
     #[test]

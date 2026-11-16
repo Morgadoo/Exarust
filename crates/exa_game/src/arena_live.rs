@@ -806,7 +806,7 @@ fn continue_round(
     }
     // Continue first resolves the company bodies that fell since the last
     // tick.
-    sweep_fallen(arena, &fighters);
+    sweep_fallen(arena, &fighters, career.as_deref_mut());
     let action = arena.end_action(scene.tournament);
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
     match action {
@@ -899,7 +899,7 @@ fn continue_round(
 #[allow(clippy::too_many_arguments)]
 fn stand_next_round(
     fight: &RoundFight,
-    scene: &ArenaScene,
+    scene: &mut ArenaScene,
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
     kits: &mut Query<KitBody<'_>>,
@@ -909,6 +909,10 @@ fn stand_next_round(
 ) {
     let opponent = opponent_place(scene.spawn_at);
     let ours = our_place(scene.spawn_at);
+    // The scene work waits the round's yield before it touches the bodies;
+    // the bodies' own AI clock starts at the action grace after that.
+    let now = now_ms.wrapping_add(fight.yield_ms);
+    let mut kept = Vec::new();
     for (entity, _, condition, body, player) in fighters {
         // A company fighter that still stands fights on (`FreshOpponent`);
         // a dead one is cleared and the reserve takes its place. The
@@ -932,6 +936,7 @@ fn stand_next_round(
         };
         if dress {
             redress(kits, level.as_deref_mut(), entity);
+            kept.push((entity, player));
         }
     }
     if !fight.keeps_opponent {
@@ -946,12 +951,18 @@ fn stand_next_round(
             // not lost.
             if fighters.iter().all(|(body, ..)| body != entity) {
                 redress(kits, level.as_deref_mut(), entity);
+                kept.push((entity, true));
             }
         }
     }
-    // The scene work waits the round's yield before it touches the bodies;
-    // the bodies' own AI clock starts at the action grace after that.
-    let now = now_ms.wrapping_add(fight.yield_ms);
+    // Whoever stays is reset for the next round: the kept opponent, then
+    // the continuing fighter, as the original resets them in that order
+    // (the roll steps once per non-player).
+    kept.sort_by_key(|&(_, player)| player);
+    for (body, player) in kept {
+        let reset = crate::match_layout::reset_kept(player, now, &mut scene.roll);
+        commands.write(SceneCommand::Reset { body, reset });
+    }
     if let Some(plan) = &fight.opponent {
         let body = opponent_plan(*plan, &opponent, HOSTILE, now, MATCH_ACT_GRACE_MS);
         commands.write(SceneCommand::Spawn(Box::new(body)));
@@ -1041,6 +1052,17 @@ fn stand_bracket_round(
                         body: entity,
                         at: Vec3::from_array(place.position) / 100.0,
                         yaw: place.forward[0].atan2(place.forward[2]),
+                    });
+                    // The kept player is reset as a kept body is (no AI
+                    // clocks, so the roll does not step).
+                    let reset = crate::match_layout::reset_kept(
+                        true,
+                        now_ms.wrapping_add(crate::arena_session::NEXT_ROUND_YIELD_MS),
+                        &mut scene.roll,
+                    );
+                    commands.write(SceneCommand::Reset {
+                        body: entity,
+                        reset,
                     });
                 }
             }
@@ -1153,7 +1175,7 @@ fn forfeit_match<const AT_QUIT: bool>(
     }
     // The forfeit first resolves the company bodies that fell since the
     // last tick.
-    sweep_fallen(arena, &fighters);
+    sweep_fallen(arena, &fighters, career.as_deref_mut());
     match arena.forfeit(scene.tournament) {
         crate::arena_session::ForfeitResult::Ignored => {
             info!("arena forfeit: the manager is already down, ignored");
@@ -1187,7 +1209,11 @@ fn forfeit_match<const AT_QUIT: bool>(
 /// whose fall the once-a-second tick has not resolved yet is resolved now,
 /// as a death or a save, and marked resolved
 /// ([`crate::arena_session::resolve_dead_bodies`]).
-fn sweep_fallen(arena: &mut ArenaMatch, fighters: &Query<MatchBody<'_>>) {
+fn sweep_fallen(
+    arena: &mut ArenaMatch,
+    fighters: &Query<MatchBody<'_>>,
+    career: Option<&mut crate::hub_windows::ArenaCareer>,
+) {
     let mut entities = Vec::new();
     let mut scene = Vec::new();
     for (entity, fighter, condition, body, player) in fighters {
@@ -1205,15 +1231,29 @@ fn sweep_fallen(arena: &mut ArenaMatch, fighters: &Query<MatchBody<'_>>) {
             health: fighter.health.red,
             max: fighter.health.max,
             id: u8::try_from(body.id).unwrap_or(u8::MAX),
-            name: None,
+            // A hired fighter's death record names him by his record.
+            name: if player {
+                None
+            } else {
+                crate::arena_match::roster_name(
+                    career.as_deref(),
+                    u8::try_from(body.id).unwrap_or(u8::MAX),
+                )
+            },
             manager: player,
         });
     }
+    let died = &mut arena.died;
+    let mut career_log = career.map(|career| &mut career.log);
     let resolved = crate::arena_session::resolve_dead_bodies(
         &mut scene,
         arena.physician,
         &mut arena.log,
         &mut arena.deaths,
+        |id, log| {
+            info!("arena match: company fighter {id} died");
+            crate::arena_match::book_death(died, id, log, career_log.as_deref_mut());
+        },
     );
     for index in resolved {
         info!(
@@ -1272,6 +1312,13 @@ fn settle_match(
     // roster's.
     let written = write_back_health(career, &returned);
     debug_assert!(written <= out.healths_written);
+    // The company fighters who died are off the books by the time the hub
+    // opens (the original removes each as his fall is resolved; the match
+    // here still finds its records by id until the return).
+    for member in crate::arena_match::remove_dead(career, &arena.died) {
+        info!("arena return: {} died and leaves the company", member.name);
+    }
+    arena.died.clear();
     career.matches_today = out.matches_today;
     career.company.copper = career.company.copper.saturating_add(out.paid);
     career.company.earned = career.company.earned.saturating_add(out.paid);
@@ -1682,6 +1729,7 @@ mod tests {
         assert_eq!(arena.started_ms, None);
         let mut spawned = 0;
         let mut killed = Vec::new();
+        let mut reset = Vec::new();
         let messages: Vec<SceneCommand> = app
             .world_mut()
             .resource_mut::<Messages<SceneCommand>>()
@@ -1692,13 +1740,17 @@ mod tests {
                 SceneCommand::Spawn(_) => spawned += 1,
                 SceneCommand::Despawn(entity) => killed.push(entity),
                 SceneCommand::Place { .. } => {}
+                SceneCommand::Reset { body, reset: kept } => reset.push((body, kept)),
             }
         }
         // The reserve entrant comes in against the opponent who won, which
-        // stays on its place.
+        // stays on its place and is reset with the AI's clocks held.
         assert_eq!(spawned, 1);
         assert!(!killed.contains(&opponent));
         assert_eq!(killed, vec![fallen]);
+        assert_eq!(reset.len(), 1);
+        assert_eq!(reset[0].0, opponent);
+        assert_eq!(reset[0].1.act_at_ms, Some(1_000 + 13 + 10_000));
     }
 
     #[test]
@@ -1725,17 +1777,21 @@ mod tests {
             .collect();
         let mut spawned = 0;
         let mut killed = Vec::new();
+        let mut reset = Vec::new();
         for message in messages {
             match message {
                 SceneCommand::Spawn(_) => spawned += 1,
                 SceneCommand::Despawn(entity) => killed.push(entity),
                 SceneCommand::Place { .. } => {}
+                SceneCommand::Reset { body, .. } => reset.push(body),
             }
         }
-        // The fighter fights on; a fresh opponent replaces the old one.
+        // The fighter fights on and is reset; a fresh opponent replaces the
+        // old one.
         assert_eq!(spawned, 1);
         assert_eq!(killed, vec![opponent]);
         assert!(!killed.contains(&company));
+        assert_eq!(reset, vec![company]);
     }
 
     #[test]
@@ -1796,6 +1852,117 @@ mod tests {
         // The body's half-health went back into its record as the rounded
         // word (0.125 / 0.25 · 65535).
         assert_eq!(career.company.roster[0].health, 32_768);
+    }
+
+    fn hired(name: &str) -> crate::career::Member {
+        crate::career::Member {
+            name: name.to_string(),
+            profession: crate::career::Profession::Combatant,
+            xp: 0,
+            skills: [0; 6],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
+            health: u16::MAX,
+            in_entry: false,
+            outfit: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_company_fighter_who_dies_is_logged_counted_and_leaves_the_company() {
+        let mut app = arena_app();
+        app.add_plugins(crate::arena_match::ArenaMatchPlugin);
+        app.insert_resource(ArenaMatch::begin(1));
+        app.insert_resource(scene());
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.roster.push(hired("Ash"));
+        career.company.roster.push(hired("Bo"));
+        career.company.deaths = 2;
+        // Ash is entered in the first event with Bo; an earlier save of Bo
+        // is in the log.
+        career.entries[0].count = 2;
+        career.entries[0].entries[0].actor_id = 1;
+        career.entries[0].entries[1].actor_id = 2;
+        career.log.append_value(crate::arena_match::LOG_SAVED, 2);
+        app.insert_resource(career);
+        let marker = |id| SceneFighter {
+            team: 1,
+            company: true,
+            id,
+            damage: 100.0,
+            condition_health: 100.0,
+            act_at_ms: 0,
+            behaviour: None,
+        };
+        app.world_mut().spawn((
+            crate::player::Player,
+            crate::player::PlayerBody::new(0.0),
+            Fighter::default(),
+            Condition::NORMAL,
+        ));
+        let mut ash = Fighter::default();
+        ash.health.red = -0.1;
+        app.world_mut().spawn((ash, Condition::DEAD, marker(1)));
+        app.world_mut()
+            .spawn((Fighter::default(), Condition::NORMAL, marker(2)));
+        let mut foe = Fighter::default();
+        foe.health.red = -0.1;
+        app.world_mut().spawn((
+            foe,
+            Condition::DEAD,
+            SceneFighter {
+                team: 2,
+                company: false,
+                ..marker(0)
+            },
+        ));
+        // The first frame stamps the match; a second later the tick counts.
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::effects::EffectClock>()
+            .now_ms = 2_000;
+        app.update();
+        {
+            let arena = app.world().resource::<ArenaMatch>();
+            assert_eq!(arena.state, MatchState::Won);
+            assert_eq!(arena.died, vec![1]);
+            assert_eq!(arena.deaths, 1);
+            let death = arena.log.records[0];
+            assert_eq!(death.id, crate::arena_match::LOG_DIED);
+            assert_eq!(
+                death.words,
+                crate::staff::name_words(&crate::hub_windows::name16("Ash"))
+            );
+            // Bo's save already names his place after Ash's removal.
+            let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+            assert_eq!(career.log.records[0].words[0], 1);
+            // The roster still finds the match's fighters by id.
+            assert_eq!(career.company.roster.len(), 2);
+        }
+        press_continue(&mut app);
+        app.update();
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        // Ash is off the books, Bo is id 1, the event names Bo only, and the
+        // staff list is asked to release Ash's kit.
+        let names: Vec<&str> = career
+            .company
+            .roster
+            .iter()
+            .map(|member| member.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Bo"]);
+        assert_eq!(career.entries[0].count, 1);
+        assert_eq!(career.entries[0].entries[0].actor_id, 1);
+        assert_eq!(career.staff_left, vec![0]);
+        assert_eq!(career.company.deaths, 3);
+        assert!(
+            career
+                .log
+                .records
+                .iter()
+                .any(|record| record.id == crate::arena_match::LOG_DIED)
+        );
     }
 
     #[test]
@@ -1989,16 +2156,20 @@ mod tests {
         let mut spawned = Vec::new();
         let mut killed = Vec::new();
         let mut placed = Vec::new();
+        let mut reset = Vec::new();
         for message in messages {
             match message {
                 SceneCommand::Spawn(plan) => spawned.push(*plan),
                 SceneCommand::Despawn(entity) => killed.push(entity),
                 SceneCommand::Place { body, .. } => placed.push(body),
+                SceneCommand::Reset { body, .. } => reset.push(body),
             }
         }
         assert_eq!(spawned.len(), expected);
         assert_eq!(killed, vec![opponent]);
         assert_eq!(placed, vec![player]);
+        // The kept player is reset too.
+        assert_eq!(reset, vec![player]);
         // Every raised opponent is generated from its record and outfit.
         assert!(
             spawned

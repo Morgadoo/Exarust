@@ -84,12 +84,11 @@ pub struct HubForms {
     pub forms: Vec<OpenForm>,
     pub arsenal: Option<ArsenalForm>,
     pub marked: [[bool; 5]; 5],
-    /// Staff places whose employee left the company through a form, for
-    /// the staff's share of the leaving (the kit's release), which needs
-    /// the arena's stores ([`hub_form_input`]).
-    pub left: Vec<usize>,
     /// Employees a form took on, for the staff list's matching entry.
     pub joined: Vec<crate::staff::Employee>,
+    /// The rank the loadout form's slider is being dragged to: its points
+    /// line follows it until the drag ends ([`crate::loadout_kit::sync_kit`]).
+    pub dragged_rank: Option<i32>,
     /// The extended-control forms' popup, focus and models
     /// ([`crate::option_forms`]).
     pub options: crate::option_forms::OptionForms,
@@ -894,8 +893,23 @@ impl HubWindows {
                     // The week's verdict names a rival winner by the week's
                     // field.
                     let field = career.rivals;
+                    let prize = career.tournament.as_ref().map(|board| board.prize_id);
                     let night = career.company.end_day_in_field(events, &field);
+                    // A week the company took puts its prize in the arsenal,
+                    // and a swept season its four rewards after it.
+                    if night.week_won == Some(true)
+                        && let Some(prize) = prize.filter(|&prize| prize != 0)
+                    {
+                        career.won_items.push(prize);
+                    }
+                    if night.season {
+                        let rewards = &career.company.reward_ids;
+                        let start = rewards.len().saturating_sub(4);
+                        career.won_items.extend_from_slice(&rewards[start..]);
+                    }
                     career.matches_today = 0;
+                    // The day's log is cleared with the day's counts.
+                    career.log.records.clear();
                     // A resolved week the company entered but did not take
                     // counts one more tournament lost.
                     if entered && night.week_won == Some(false) {
@@ -1051,11 +1065,14 @@ impl HubWindows {
                     .map_or(0.0, |f| f.controls()[loadout::RANK].value);
                 let rank = crate::manage::slider_rank(value);
                 if finished {
+                    self.forms.dragged_rank = None;
                     arsenal.switch_tab(rank);
                 } else if let Some(form) = self.forms.get_mut(FormWindow::Loadout)
                     && let Some(name) = crate::report::RANKS.get(rank.max(0) as usize)
                 {
                     form.set_text(loadout::RANK, name);
+                    // The points line follows the dragged rank.
+                    self.forms.dragged_rank = Some(rank);
                     self.forms.arsenal = Some(arsenal);
                     return;
                 }
@@ -1090,10 +1107,18 @@ impl HubWindows {
                         info!("hub hire: a {role:?} joined the company");
                         if let Some(member) = career.company.roster.last() {
                             // The record wears and holds the candidate's
-                            // outfit; the list (the kit) starts empty.
+                            // outfit; a combatant's kit is gathered from
+                            // his six loadouts (stowed in the arsenal when
+                            // the staff list takes him on).
+                            let kit = if role == Profession::Combatant {
+                                crate::staff::kit_of_record(&member.loadouts)
+                            } else {
+                                Vec::new()
+                            };
                             self.forms.joined.push(crate::staff::Employee {
                                 class: staff_class(role),
                                 name: crate::hub_windows::name16(&member.name),
+                                kit,
                                 hands: member.outfit.hands,
                                 worn: member.outfit.items.iter().map(|&id| (id, 0)).collect(),
                                 ..crate::staff::Employee::default()
@@ -1143,20 +1168,17 @@ impl HubWindows {
         let leaving = usize::try_from(arsenal.selection - 1).ok();
         arsenal.confirm_dismiss();
         if let Some(index) = leaving
-            && index < career.company.roster.len()
+            && let Some(member) = career.company.roster.get(index)
         {
-            let id = u32::try_from(index).unwrap_or(0).wrapping_add(1);
-            let member = career.company.roster.remove(index);
+            let name = crate::hub_windows::name16(&member.name);
             career.company.fired = career.company.fired.wrapping_add(1);
-            career.log.append_words(
-                crate::staff::LOG_DISMISSED,
-                crate::staff::name_words(&crate::hub_windows::name16(&member.name)),
-            );
-            crate::staff::unlink_entries(&mut career.entries, id);
-            crate::staff::renumber_saved(&mut career.log, id);
+            career
+                .log
+                .append_words(crate::staff::LOG_DISMISSED, crate::staff::name_words(&name));
             // The kit's release runs on the arena's stores.
-            self.forms.left.push(index);
-            info!("hub loadout: {} is dismissed", member.name);
+            if let Some(member) = career.remove_employee(index) {
+                info!("hub loadout: {} is dismissed", member.name);
+            }
         }
         let commit = arsenal.commit(|form| {
             let _ = loadout_rows(form, career);
@@ -1230,22 +1252,32 @@ pub fn staff_class(role: Profession) -> u8 {
     }
 }
 
-/// Runs the staff's share of the forms' joinings and leavings on the
-/// arena's stores: a hired employee joins the staff list (his record wearing
-/// the candidate's outfit, his list empty, as the original's hire appends
-/// him), and a dismissed one leaves it, his kit
-/// going back to the arsenal ([`crate::staff::Staff::leave`]). A place the
-/// staff list does not hold (a hub career whose staff was never loaded) has
-/// nothing to release.
+/// Runs the arena stores' share of what the forms and the matches changed:
+/// the items the company won are stowed in the arsenal free of any holder,
+/// a hired employee joins the staff list (his record wearing the
+/// candidate's outfit, a combatant's kit stowed,
+/// [`crate::staff::Staff::admit_stowing`]), and an employee who left (a
+/// dismissal, a death, a departure) leaves it, his kit going back to the
+/// arsenal ([`crate::staff::Staff::leave`]). A place the staff list does
+/// not hold (a hub career whose staff was never loaded) has nothing to
+/// release.
 pub fn apply_staff_changes(
     forms: &mut HubForms,
+    career: &mut ArenaCareer,
     stores: &mut crate::save_live::ArenaStores,
     kinds: &crate::arsenal::ShelfKinds,
 ) {
-    for employee in forms.joined.drain(..) {
-        stores.staff.admit(employee);
+    for item in career.won_items.drain(..) {
+        let stowed = stores.arsenal.stow(item, kinds.kind(item), 0);
+        info!("hub arsenal: the won item {item} is stowed ({stowed})");
     }
-    for index in forms.left.drain(..) {
+    let left = &mut career.staff_left;
+    for employee in forms.joined.drain(..) {
+        let crate::save_live::ArenaStores { staff, arsenal, .. } = &mut *stores;
+        let stowed = staff.admit_stowing(employee, arsenal, |item| kinds.kind(item));
+        info!("hub staff: an employee joined; {stowed} kit entries stowed in the arsenal");
+    }
+    for index in left.drain(..) {
         let crate::save_live::ArenaStores { staff, arsenal, .. } = stores;
         match staff.leave(index, arsenal, |item| kinds.kind(item)) {
             Some(leaving) => info!(
@@ -1930,8 +1962,17 @@ pub fn hub_form_input(
             }
         }
     }
-    if let (Some(mut stores), Some(kinds)) = (stores, kinds) {
-        apply_staff_changes(&mut windows.forms, &mut stores, &kinds);
+    match (stores, kinds) {
+        (Some(mut stores), Some(kinds)) => {
+            apply_staff_changes(&mut windows.forms, &mut career, &mut stores, &kinds);
+        }
+        // A hub career with no staff list has no kit to release and no
+        // arsenal to stow in.
+        (None, _) => {
+            career.staff_left.clear();
+            career.won_items.clear();
+        }
+        (Some(_), None) => {}
     }
 }
 
@@ -2128,6 +2169,222 @@ mod tests {
         for (w, r, f) in windows.forms.input(at, false, true) {
             windows.answer(career, w, r, f);
         }
+    }
+
+    /// A headless app running the hub's form input (the live system) over
+    /// `windows` and `career`.
+    fn form_app(windows: HubWindows, career: ArenaCareer) -> App {
+        let mut app = App::new();
+        app.insert_resource(windows)
+            .insert_resource(career)
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<crate::arena_hub_live::ArenaHub>()
+            .insert_resource(exa_ui::ScriptedPointer(None))
+            .add_message::<crate::arsenal_view::OpenArsenal>()
+            .add_systems(Update, hub_form_input);
+        app.world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow));
+        app
+    }
+
+    /// A left press then release on a form's control, a frame each.
+    fn app_click(app: &mut App, window: FormWindow, i: usize) {
+        let at = {
+            let windows = app.world().resource::<HubWindows>();
+            let form = windows.forms.get(window).unwrap();
+            let (ox, oy) = form.origin();
+            let c = &form.controls()[i];
+            (ox + c.x + c.w / 2, oy + c.y + c.h / 2)
+        };
+        for press in [true, false] {
+            app.insert_resource(exa_ui::ScriptedPointer(Some(Vec2::new(
+                at.0 as f32,
+                at.1 as f32,
+            ))));
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            if press {
+                mouse.press(MouseButton::Left);
+            } else {
+                mouse.release(MouseButton::Left);
+            }
+            app.update();
+        }
+    }
+
+    /// The End Day button, through the live form input: the day's log is
+    /// cleared with the day's match count.
+    #[test]
+    fn the_day_end_clears_the_days_log() {
+        let (mut windows, mut career) = opened();
+        career.matches_today = 1;
+        career.log.append_value(crate::arena_match::LOG_SAVED, 1);
+        // A day with a match fought may end.
+        windows.refresh_manage(&career);
+        let mut app = form_app(windows, career);
+        app_click(&mut app, FormWindow::Manage, manage::END_DAY);
+        let career = app.world().resource::<ArenaCareer>();
+        assert_eq!(career.company.day, 1);
+        assert_eq!(career.matches_today, 0);
+        assert!(career.log.records.is_empty());
+    }
+
+    /// The hire page's HIRE, through the live form input: a combatant's
+    /// kit is gathered from his six loadouts (hand items, then worn items
+    /// but item 8, each once) and stowed in the arsenal as the staff list
+    /// takes him on.
+    #[test]
+    fn a_hired_combatant_brings_his_loadouts_kit_into_the_arsenal() {
+        use exa_formats::characters::ItemRef;
+        let (mut windows, mut career) = opened();
+        career.company.copper = 100_000;
+        let index = career
+            .hire_pool
+            .iter()
+            .position(|member| member.profession == Profession::Combatant)
+            .expect("a combatant is listed");
+        let candidate = &mut career.hire_pool[index];
+        candidate.loadouts[0].hands = [
+            ItemRef::new(77, 0),
+            ItemRef::NONE,
+            ItemRef::new(99, 0),
+            ItemRef::NONE,
+        ];
+        candidate.loadouts[0].worn = vec![ItemRef::new(88, 0), ItemRef::new(8, 0)];
+        candidate.loadouts[1].hands[0] = ItemRef::new(77, 0);
+        windows.open_loadout(crate::manage::PAGE_HIRE, &career);
+        let mut arsenal = windows.forms.arsenal.expect("the loadout form");
+        arsenal.select(i32::try_from(index).unwrap());
+        windows.forms.arsenal = Some(arsenal);
+        let mut app = form_app(windows, career);
+        app.insert_resource(crate::save_live::ArenaStores::default());
+        let weapon = crate::arsenal::ItemKind {
+            known: true,
+            weapon: true,
+            ..Default::default()
+        };
+        app.insert_resource(crate::arsenal::ShelfKinds(
+            [(77, weapon)].into_iter().collect(),
+        ));
+        app_click(&mut app, FormWindow::Loadout, loadout::HIRE);
+        let stores = app.world().resource::<crate::save_live::ArenaStores>();
+        let joined = stores.staff.employees.last().expect("the hire joined");
+        assert_eq!(joined.class, crate::staff::COMBATANT);
+        assert_eq!(joined.kit[..2], [77, 88]);
+        let weapons = &stores.arsenal.shelves[crate::arsenal::WEAPONS][0];
+        assert!(
+            weapons
+                .iter()
+                .any(|entry| entry.item == 77 && entry.flags == crate::staff::FIGHTER_KIT)
+        );
+    }
+
+    /// The End Day that resolves a week the company took, through the
+    /// live form input: the week's prize goes into the arsenal, free of
+    /// any holder.
+    #[test]
+    fn a_won_week_puts_its_prize_in_the_arsenal() {
+        let (mut windows, mut career) = opened();
+        // Day 7 ends into day 8: the week resolves; the company won all six.
+        career.company.day = 7;
+        career.matches_today = 1;
+        for row in &mut career.entries {
+            row.team_id = 1;
+        }
+        let prize = career.tournament.as_ref().unwrap().prize_id;
+        assert_ne!(prize, 0);
+        windows.refresh_manage(&career);
+        let mut app = form_app(windows, career);
+        app.insert_resource(crate::save_live::ArenaStores::default());
+        let apparel = crate::arsenal::ItemKind {
+            known: true,
+            apparel_layer: Some(1),
+            ..Default::default()
+        };
+        app.insert_resource(crate::arsenal::ShelfKinds(
+            [(prize, apparel)].into_iter().collect(),
+        ));
+        app_click(&mut app, FormWindow::Manage, manage::END_DAY);
+        app.update();
+        let career = app.world().resource::<ArenaCareer>();
+        assert_eq!(career.company.tournaments_won, 1);
+        assert!(career.won_items.is_empty());
+        let stores = app.world().resource::<crate::save_live::ArenaStores>();
+        assert!(
+            stores
+                .arsenal
+                .shelves
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|entry| entry.item == prize && entry.flags == 0)
+        );
+    }
+
+    /// The loadout form's rank slider, dragged through the live form input:
+    /// the points line follows the dragged rank (its loadout over its
+    /// limit) before the drag ends, and the release switches the tab.
+    #[test]
+    fn the_points_line_follows_the_dragged_rank() {
+        let (mut windows, career) = opened();
+        windows.open_loadout(PAGE_ROSTER, &career);
+        let mut arsenal = windows.forms.arsenal.expect("the loadout form");
+        arsenal.select(1);
+        windows.forms.arsenal = Some(arsenal);
+        let (left, right, y) = {
+            let form = windows.forms.get(FormWindow::Loadout).unwrap();
+            let (ox, oy) = form.origin();
+            let c = &form.controls()[loadout::RANK];
+            (ox + c.x + 2, ox + c.x + c.w * 3 / 5, oy + c.y + c.h / 2)
+        };
+        let mut app = form_app(windows, career);
+        app.insert_resource(crate::save_live::ArenaStores::default())
+            .init_resource::<crate::doll_view::DollItems>()
+            .init_resource::<crate::loadout_kit::KitPanels>()
+            .init_resource::<crate::loadout_kit::KitPreview>()
+            .add_systems(Update, crate::loadout_kit::sync_kit.after(hub_form_input));
+        let points = |app: &App| {
+            let windows = app.world().resource::<HubWindows>();
+            let form = windows.forms.get(FormWindow::Loadout).unwrap();
+            String::from_utf8_lossy(&form.controls()[loadout::POINTS].text).into_owned()
+        };
+        let step = |app: &mut App, at: (i32, i32), press: bool, release: bool| {
+            app.insert_resource(exa_ui::ScriptedPointer(Some(Vec2::new(
+                at.0 as f32,
+                at.1 as f32,
+            ))));
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            if press {
+                mouse.press(MouseButton::Left);
+            }
+            if release {
+                mouse.release(MouseButton::Left);
+            }
+            app.update();
+        };
+        step(&mut app, (left, y), true, false);
+        step(&mut app, (right, y), false, false);
+        assert_eq!(
+            app.world().resource::<HubWindows>().forms.dragged_rank,
+            Some(3)
+        );
+        assert_eq!(points(&app), "Points: 0 / 20");
+        assert_eq!(
+            app.world()
+                .resource::<HubWindows>()
+                .forms
+                .arsenal
+                .unwrap()
+                .tab,
+            0
+        );
+        step(&mut app, (right, y), false, true);
+        let windows = app.world().resource::<HubWindows>();
+        assert_eq!(windows.forms.dragged_rank, None);
+        assert_eq!(windows.forms.arsenal.unwrap().tab, 3);
+        assert_eq!(points(&app), "Points: 0 / 20");
     }
 
     #[test]

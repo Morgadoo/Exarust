@@ -650,6 +650,9 @@ pub struct KitSnapshot {
     pub list: Vec<u32>,
     pub boxed: Vec<(u32, u32)>,
     pub loadout: Loadout,
+    /// The rank whose points the form shows: the slider's while it is
+    /// dragged, else the tab's.
+    pub points_tab: i32,
 }
 
 /// The hub loadout form's item views, while it is open on the roster.
@@ -758,6 +761,10 @@ pub fn sync_kit(
         return;
     };
     let loadout = person.loadouts[tab.clamp(0, 5) as usize].clone();
+    // While the rank slider is dragged the points line follows it: the
+    // dragged rank's loadout over that rank's limit.
+    let points_tab = windows.forms.dragged_rank.unwrap_or(tab);
+    let points_loadout = person.loadouts[points_tab.clamp(0, 5) as usize].clone();
     let list = list_of(&stores, row).to_vec();
     let shown = (arsenal.shelf as usize, arsenal.box_index as usize);
     let boxed: Vec<(u32, u32)> = stores
@@ -776,6 +783,7 @@ pub fn sync_kit(
         list: list.clone(),
         boxed: boxed.clone(),
         loadout: loadout.clone(),
+        points_tab,
     };
     if !panels.dirty
         && panels
@@ -809,9 +817,10 @@ pub fn sync_kit(
         kind: &kind,
         shelf: &shelf,
     };
-    let cost = loadout_cost(&loadout, &lookup);
+    let cost = loadout_cost(&points_loadout, &lookup);
     if let Some(form) = windows.forms.get_mut(crate::hub_forms::FormWindow::Loadout)
-        && let Some(line) = crate::manage::points_line(cost, tab, &crate::arena::POINT_LIMITS).2
+        && let Some(line) =
+            crate::manage::points_line(cost, points_tab, &crate::arena::POINT_LIMITS).2
     {
         form.set_text(exa_ui::arena_forms::loadout::POINTS, &line);
     }

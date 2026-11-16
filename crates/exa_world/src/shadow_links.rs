@@ -18,9 +18,10 @@
 //! light is relinked against every mesh, a moved mesh against every light.
 //!
 //! In tile-grid levels a light lights, and takes casters from, only the
-//! meshes of the sectors it has an alias in ([`crate::rooms::RoomLights`],
-//! kept as [`RoomLightLists`]): the room it stands in (the scene's own
-//! sector off the rooms) and the rooms of the cells its flood recorded it
+//! meshes of the sectors it has an alias in (the live scene's aliases,
+//! [`crate::scene_live::LiveScene::light_aliased`]; [`RoomLightLists`]
+//! answers for a light the scene does not hold): the room it stands in and
+//! the rooms of the cells its flood recorded it
 //! in, as the original's room manager adds an alias to a cell's room from
 //! the flood's cell hook and gives each mesh one light bucket per alias of
 //! its sector. A mesh's sector is the one the live scene registered it in
@@ -55,19 +56,27 @@ impl Plugin for ShadowLinksPlugin {
             .init_resource::<LinkStats>()
             .init_resource::<RoomLightGate>()
             .init_resource::<RoomLightLists>()
+            // The flood runs before the scene's frame, whose light
+            // activation takes the rooms of the cells it recorded; the links
+            // follow the frame, which decides each mesh's sector and each
+            // sector's light aliases.
             .add_systems(
                 PostUpdate,
-                (
-                    track_lights,
-                    link_casters,
-                    dirty_moved_casters,
-                    see_light_layers,
-                )
-                    .chain()
+                track_lights
                     .after(TransformSystems::Propagate)
                     .after(VisibilitySystems::CalculateBounds)
-                    .after(crate::scene_live::run_scene)
                     .after(LightsSystems::Ids)
+                    .before(crate::scene_live::run_scene)
+                    .before(LightsSystems::Cubes)
+                    .before(VisibilitySystems::CheckVisibility)
+                    .in_set(LightCells),
+            )
+            .add_systems(
+                PostUpdate,
+                (link_casters, dirty_moved_casters, see_light_layers)
+                    .chain()
+                    .after(track_lights)
+                    .after(crate::scene_live::run_scene)
                     .before(LightsSystems::Cubes)
                     .before(VisibilitySystems::CheckVisibility)
                     .in_set(LightCells),
@@ -132,6 +141,12 @@ impl LevelWalls {
     /// Whether the cell (`x`, `z`) is built (plane A's open flag).
     pub fn open(&self, x: i64, z: i64) -> bool {
         self.grid.open(x, z)
+    }
+
+    /// The cells light `id` was recorded in by its last flood, in the order
+    /// the flood recorded them (cell index `z · width + x`).
+    pub fn cells_of(&self, id: u32) -> &[usize] {
+        self.cells.cells_of(id)
     }
 
     /// The lights the cell (`x`, `z`) records, in the order the flood lists
@@ -723,7 +738,12 @@ fn link_casters(
         // alias in.
         let aliased = |l: &LinkedLight| match (room_lists, sector) {
             (Some(lists), Some(room)) if !unwalled => {
-                let ok = lists.reaches(l.id, room);
+                // The scene's sector aliases decide (a light the scene does
+                // not hold falls back to the room lists).
+                let sector = room.map_or(crate::scene_nodes::SCENE_SECTOR, |r| usize::from(r) + 1);
+                let ok = live
+                    .light_aliased(l.id, sector)
+                    .unwrap_or_else(|| lists.reaches(l.id, room));
                 // Counted for the log: a mesh still in the scene's own
                 // sector is waiting for its room (it moves and is relinked).
                 if !ok && room.is_some() {

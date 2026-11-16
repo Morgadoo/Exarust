@@ -834,29 +834,55 @@ pub struct LightAlias {
     /// matches its light is current; one that does not is refreshed and
     /// marked moved, as the original compares the two update words.
     pub stamp: u32,
+    /// The scene frame ([`Scene::frame_count`]) the light's flood last
+    /// stamped the alias in through the room cell hook; zero for an alias
+    /// no flood stamped. The flood's last step drops the light's aliases
+    /// whose stamp is not the current frame ([`Scene::drop_unflooded`]).
+    pub flooded: u32,
+    /// The light values the last alias sync copied ([`Scene::sync_light_aliases`]).
+    pub values: Option<crate::light_source::AliasValues>,
 }
 
-/// One entry of a light node's link list: the weight one of the light's
-/// sector aliases gives it and the doubly linked list's neighbours, as the
-/// original's 24-byte records hold them. The list runs heaviest first and
-/// a NaN weight stops the sort's walk wherever it meets one.
+impl LightAlias {
+    /// A new alias of `light` owned by `sector`, as the original's alias
+    /// constructor makes one: moved (its links are due), with the light's
+    /// update stamp and no flood stamp.
+    pub fn new(light: usize, sector: usize, stamp: u32) -> Self {
+        Self {
+            light,
+            owner: Some(sector),
+            moved: true,
+            mask: 0,
+            shadow_faces: None,
+            shadow_links: 0,
+            stamp,
+            flooded: 0,
+            values: None,
+        }
+    }
+}
+
+/// What one alias's link test answers for a node, as the original's alias
+/// link methods write a bucket record: the weight the light gives the node,
+/// the shadow-cube faces it reaches it through, and whether the weight
+/// passed the alias's cutoff (the node is lit by it).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct LightLink {
-    /// The weight the alias's link method gave this link (the original's
-    /// float at the record's start).
+pub struct AliasLink {
     pub weight: f32,
-    /// The heavier neighbour, or −1 at the head.
-    pub prev: i32,
-    /// The lighter neighbour, or −1 at the end.
-    pub next: i32,
+    pub faces: u32,
+    pub lit: bool,
 }
 
 /// One entry of a node's per-alias bucket list: a doubly linked list over
-/// the sector's aliases, as [`Scene::rebuild_buckets`] builds it.
+/// the sector's aliases, as [`Scene::rebuild_buckets`] builds it, ordered
+/// heaviest first by [`Scene::order_buckets`] after the link tests. The
+/// original's records are 24 bytes: the weight, the two neighbours, the
+/// face mask and the alias.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bucket {
-    /// The entry's leading word (a weight the alias test resets).
-    pub weight: u32,
+    /// The weight the alias's link test gave the node (reset to zero when
+    /// the entry is relinked).
+    pub weight: f32,
     pub prev: i32,
     pub next: i32,
     /// The face mask the alias test fills in.
@@ -868,7 +894,7 @@ pub struct Bucket {
 impl Bucket {
     /// A zero-filled entry, as growing the original's array leaves one.
     pub const ZERO: Self = Self {
-        weight: 0,
+        weight: 0.0,
         prev: 0,
         next: 0,
         faces: 0,
@@ -921,7 +947,11 @@ pub struct SceneNode {
     pub refs: i32,
     /// The node was flushed from the removal queue.
     pub removed: bool,
-    /// A light's aliases (copies of it registered in other sectors).
+    /// A light's alias list: the sectors holding an alias of it, in the
+    /// order the aliases were made (the original's alias constructor
+    /// appends itself to its light's list; [`Scene::remove_alias`] takes
+    /// one out, the last taking its place). The alias itself is the
+    /// sector's [`LightAlias`] entry for the light.
     pub aliases: Vec<usize>,
     /// The values a light's last alias sync copied (the derived colours,
     /// luminance, falloff, softness, reach and flag byte); `None` until one
@@ -970,12 +1000,6 @@ pub struct SceneNode {
     pub bucket_head: i32,
     /// One bucket per sector alias.
     pub buckets: Vec<Bucket>,
-    /// The head of the light's link list (−1 for none): one link per sector
-    /// alias, heaviest first.
-    pub link_head: i32,
-    /// The light's link records, in alias order before
-    /// [`Scene::order_links`] sorts their chain.
-    pub links: Vec<LightLink>,
     /// A light's update stamp: the tick its links were last built, with 1
     /// meaning they are due. An alias copies it so a spread walk knows
     /// whether the alias is current.
@@ -1027,8 +1051,6 @@ impl SceneNode {
             active_frame: Vec3::ZERO,
             bucket_head: -1,
             buckets: Vec::new(),
-            link_head: -1,
-            links: Vec::new(),
             link_stamp: 1,
             children_settled: false,
         }
@@ -1272,6 +1294,11 @@ pub struct Scene {
     /// methods (direct field writes do not wake a sector), so it is off
     /// unless the caller sets it.
     pub quiet_passes: bool,
+    /// The frame counter the passes and the flood's alias stamps compare
+    /// with (the engine's global frame word): [`Scene::frame_with`] counts
+    /// it up at the start of every frame, so the first frame is 1 and an
+    /// alias no flood stamped (0) is never current.
+    pub frame_count: u32,
 }
 
 impl Scene {
@@ -1298,6 +1325,7 @@ impl Scene {
             material_removes: Vec::new(),
             pending_free: Vec::new(),
             quiet_passes: false,
+            frame_count: 0,
         }
     }
 
@@ -1367,20 +1395,25 @@ impl Scene {
             .is_none_or(|p| self.nodes[p].kind == NodeKind::Sector)
     }
 
-    /// Takes an alias out of its light's alias list, as the original does
-    /// when the alias's sector drops it: the last alias takes its place,
-    /// the alias's sector is marked [`LINKS_CHANGED`] and the alias loses
-    /// its owner. Returns whether the alias was in the list.
-    pub fn remove_alias(&mut self, light: usize, alias: usize) -> bool {
-        let Some(at) = self.nodes[light].aliases.iter().position(|&a| a == alias) else {
+    /// Takes the alias of `light` in `sector` out of the light's alias
+    /// list, as the original does when the alias's sector drops it: the
+    /// last alias takes its place, the alias's sector is marked
+    /// [`LINKS_CHANGED`] and the alias loses its owner (the sector's
+    /// membership rebuild then removes the entry). Returns whether the
+    /// alias was in the list.
+    pub fn remove_alias(&mut self, light: usize, sector: usize) -> bool {
+        let Some(at) = self.nodes[light].aliases.iter().position(|&a| a == sector) else {
             return false;
         };
         self.nodes[light].aliases.swap_remove(at);
-        // The alias's owner is its sector, whose change word is marked.
-        if let Some(sector) = self.nodes[alias].sector {
-            self.sectors[sector].changes |= LINKS_CHANGED;
+        if let Some(s) = self.sectors.get_mut(sector) {
+            s.changes |= LINKS_CHANGED;
+            for alias in &mut s.aliases {
+                if alias.light == light && alias.owner == Some(sector) {
+                    alias.owner = None;
+                }
+            }
         }
-        self.nodes[alias].sector = None;
         true
     }
 
@@ -1393,14 +1426,95 @@ impl Scene {
         light: usize,
         values: &crate::light_source::AliasValues,
     ) -> usize {
-        let aliases = self.nodes[light].aliases.clone();
         self.nodes[light].alias_values = Some(*values);
-        for &alias in &aliases {
-            if let Some(a) = self.nodes.get_mut(alias) {
-                a.alias_values = Some(*values);
+        let mut written = 0;
+        for &sector in &self.nodes[light].aliases {
+            if let Some(alias) = self
+                .sectors
+                .get_mut(sector)
+                .and_then(|s| s.aliases.iter_mut().find(|a| a.light == light))
+            {
+                alias.values = Some(*values);
+                written += 1;
             }
         }
-        aliases.len()
+        written
+    }
+
+    /// The light's alias owned by `sector`, if it has one.
+    pub fn alias_in(&self, light: usize, sector: usize) -> Option<&LightAlias> {
+        self.sectors
+            .get(sector)?
+            .aliases
+            .iter()
+            .find(|a| a.light == light && a.owner == Some(sector))
+    }
+
+    /// Makes a new alias of `light` in `sector`, as the original's alias
+    /// constructor does: appended to the sector's aliases and to the
+    /// light's alias list, and the sector marks [`LIGHT_ADDED`]. Returns the
+    /// alias's index in the sector.
+    fn new_alias(&mut self, light: usize, sector: usize) -> usize {
+        let stamp = self.nodes[light].link_stamp;
+        self.sectors[sector]
+            .aliases
+            .push(LightAlias::new(light, sector, stamp));
+        self.nodes[light].aliases.push(sector);
+        self.sectors[sector].changes |= LIGHT_ADDED;
+        self.sectors[sector].aliases.len() - 1
+    }
+
+    /// The room manager's light cell hook, run by the light's flood each
+    /// time it records the light in a cell of a room: the light's alias in
+    /// the room's `sector` is stamped with this frame
+    /// ([`LightAlias::flooded`]); without one a new alias is made there
+    /// (moved, stamped, and the sector marks [`LIGHT_ADDED`]).
+    pub fn flood_hook(&mut self, light: usize, sector: usize) {
+        let frame = self.frame_count;
+        if self.nodes[light].aliases.contains(&sector)
+            && let Some(alias) = self.sectors[sector]
+                .aliases
+                .iter_mut()
+                .find(|a| a.light == light && a.owner == Some(sector))
+        {
+            alias.flooded = frame;
+            return;
+        }
+        let at = self.new_alias(light, sector);
+        self.sectors[sector].aliases[at].flooded = frame;
+    }
+
+    /// The flood's last step: every alias of the light whose flood stamp is
+    /// not this frame is removed ([`Scene::remove_alias`]). The original
+    /// walks the light's list by index up to its starting length while the
+    /// removals swap the last alias into the freed slot, so an alias moved
+    /// down is met again only at its old slot, which keeps its value; the
+    /// walk is reproduced over a copy of the list as it stood. Returns how
+    /// many aliases were removed.
+    pub fn drop_unflooded(&mut self, light: usize) -> usize {
+        let frame = self.frame_count;
+        let mut slots = self.nodes[light].aliases.clone();
+        let mut count = slots.len();
+        let mut removed = 0;
+        for i in 0..slots.len() {
+            let sector = slots[i];
+            let current = self
+                .alias_in(light, sector)
+                .is_some_and(|a| a.flooded == frame);
+            if current {
+                continue;
+            }
+            // The removal finds the alias in the live part of the list and
+            // swaps the last live slot into it; slots past the live part
+            // keep what they held.
+            if let Some(at) = slots[..count].iter().position(|&a| a == sector) {
+                count -= 1;
+                slots[at] = slots[count];
+                self.remove_alias(light, sector);
+                removed += 1;
+            }
+        }
+        removed
     }
 
     /// Sets the room sectors' states (room `i` is sector `i + 1`) from the
@@ -2081,19 +2195,19 @@ impl Scene {
     /// and each sector runs the hidden pass (no view bit and no doorway to
     /// an active sector) or the visible pass, moving cut-away fades by
     /// `dt_ms` (whole milliseconds, as the original's frame delta is).
-    /// `faces` is the alias shadow test (node, alias) → face mask.
+    /// `link` is the alias link test (node, alias).
     /// Returns whether a visible pass saw a change (an alias moved, a seen
     /// mesh or a seen mesh's part moved).
     pub fn update_visibility(&mut self, dt_ms: i32) -> bool {
-        let mut no_faces = |_: usize, _: usize| 0u32;
-        self.update_visibility_with(dt_ms, &mut no_faces)
+        let mut no_link = |_: usize, _: usize| AliasLink::default();
+        self.update_visibility_with(dt_ms, &mut no_link)
     }
 
-    /// [`Scene::update_visibility`] with the alias shadow test supplied.
+    /// [`Scene::update_visibility`] with the alias link test supplied.
     pub fn update_visibility_with(
         &mut self,
         dt_ms: i32,
-        faces: &mut dyn FnMut(usize, usize) -> u32,
+        link: &mut dyn FnMut(usize, usize) -> AliasLink,
     ) -> bool {
         for sector in 0..self.sectors.len() {
             if self.sectors[sector].changes & MEMBERSHIP_CHANGED != 0 {
@@ -2110,8 +2224,8 @@ impl Scene {
         for sector in 0..self.sectors.len() {
             let s = &self.sectors[sector];
             if s.mask == 0 && s.visible_portals.is_empty() {
-                self.hidden_pass(sector, faces, &mut events);
-            } else if self.visible_pass(sector, dt_ms, faces, &mut events) {
+                self.hidden_pass(sector, link, &mut events);
+            } else if self.visible_pass(sector, dt_ms, link, &mut events) {
                 moved_seen = true;
             }
         }
@@ -2131,24 +2245,29 @@ impl Scene {
         main: &[ConvexVolume],
         project: &dyn Fn(Vec3) -> Vec2,
     ) -> FrameEvents {
-        let mut no_faces = |_: usize, _: usize| 0u32;
-        self.frame_with(dt_ms, eye, main, project, &mut no_faces)
+        let mut no_link = |_: usize, _: usize| AliasLink::default();
+        let mut no_flood = |_: &Scene, _: usize| None;
+        self.frame_with(dt_ms, eye, main, project, &mut no_link, &mut no_flood)
     }
 
-    /// [`Scene::frame`] with the alias shadow test supplied.
+    /// [`Scene::frame`] with the alias link test and the light flood
+    /// supplied ([`Scene::activate_lights_with`]). The frame counter
+    /// ([`Scene::frame_count`]) counts up first.
     pub fn frame_with(
         &mut self,
         dt_ms: i32,
         eye: Vec3,
         main: &[ConvexVolume],
         project: &dyn Fn(Vec3) -> Vec2,
-        faces: &mut dyn FnMut(usize, usize) -> u32,
+        link: &mut dyn FnMut(usize, usize) -> AliasLink,
+        flood: &mut dyn FnMut(&Scene, usize) -> Option<Vec<usize>>,
     ) -> FrameEvents {
+        self.frame_count = self.frame_count.wrapping_add(1).max(1);
         let mut events = FrameEvents::default();
         self.drain_removals();
         self.classify(eye, main, project);
         for sector in 0..self.sectors.len() {
-            self.activate_lights(sector, &mut events);
+            self.activate_lights_with(sector, &mut events, flood);
         }
         for sector in 0..self.sectors.len() {
             if self.sectors[sector].changes & MEMBERSHIP_CHANGED != 0 {
@@ -2163,8 +2282,8 @@ impl Scene {
         for sector in 0..self.sectors.len() {
             let s = &self.sectors[sector];
             if s.mask == 0 && s.visible_portals.is_empty() {
-                self.hidden_pass(sector, faces, &mut events);
-            } else if self.visible_pass(sector, dt_ms, faces, &mut events) {
+                self.hidden_pass(sector, link, &mut events);
+            } else if self.visible_pass(sector, dt_ms, link, &mut events) {
                 events.moved_seen = true;
             }
         }
@@ -2404,88 +2523,68 @@ impl Scene {
         for (i, bucket) in n.buckets.iter_mut().enumerate().skip(from) {
             bucket.prev = i as i32 - 1;
             bucket.next = i as i32 + 1;
-            bucket.weight = 0;
+            bucket.weight = 0.0;
             bucket.faces = 0;
             bucket.alias = i;
         }
         n.buckets[count - 1].next = -1;
     }
 
-    /// Sets the light's link records from one weight per sector alias, in
-    /// alias order, and chains them in that order with the first as the
-    /// head — the state the per-alias link writes leave before
-    /// [`Scene::order_links`] runs. A light with no aliases has no head.
-    pub fn reset_links(&mut self, light: usize, weights: &[f32]) {
-        let n = &mut self.nodes[light];
-        n.links.clear();
-        n.links.reserve(weights.len());
-        for (i, &weight) in weights.iter().enumerate() {
-            n.links.push(LightLink {
-                weight,
-                prev: i as i32 - 1,
-                next: if i + 1 == weights.len() {
-                    -1
-                } else {
-                    i as i32 + 1
-                },
-            });
-        }
-        n.link_head = if weights.is_empty() { -1 } else { 0 };
-    }
-
-    /// Orders the light's link list heaviest first, as the original's
-    /// weight sort does: every entry after the head is taken off the chain
-    /// and walked back while the entry before it is strictly lighter
-    /// (`before < entry`, an ordered compare: an equal weight stops it and
-    /// a NaN on either side stops it too), then linked in behind the entry
-    /// it stopped at — at the head when it walked past them all. Without
-    /// NaN weights the result is the stable order by descending weight
-    /// whatever the starting chain; a NaN entry stays behind the entry it
-    /// first meets and blocks every later entry from passing it.
+    /// Orders a node's bucket list heaviest first, as the original's
+    /// weight sort does after the link tests: every entry after the head
+    /// is taken off the chain and walked back while the entry before it is
+    /// strictly lighter (`before < entry`, an ordered compare: an equal
+    /// weight stops it and a NaN on either side stops it too), then linked
+    /// in behind the entry it stopped at — at the head when it walked past
+    /// them all. Without NaN weights the result is the stable order by
+    /// descending weight whatever the starting chain; a NaN entry stays
+    /// behind the entry it first meets and blocks every later entry from
+    /// passing it.
     ///
     /// A model whose chain is malformed (an index out of range or a cycle)
     /// is left as it is instead of trapping; the original trusts its list.
-    pub fn order_links(&mut self, light: usize) {
-        let n = &mut self.nodes[light];
-        if n.link_head < 0 || !links_valid(n) {
+    pub fn order_buckets(&mut self, node: usize) {
+        let n = &mut self.nodes[node];
+        if n.bucket_head < 0 || !buckets_valid(n) {
             return;
         }
-        let head = n.link_head as usize;
-        let mut next = n.links[head].next;
+        let b = &mut n.buckets;
+        let head = n.bucket_head as usize;
+        let mut next = b[head].next;
         while next >= 0 {
             let item = next as usize;
-            next = n.links[item].next;
-            let before = n.links[item].prev;
+            next = b[item].next;
+            let before = b[item].prev;
             // Take the entry off the chain it is on.
             if next >= 0 {
-                n.links[next as usize].prev = before;
+                b[next as usize].prev = before;
             }
-            n.links[before as usize].next = next;
+            b[before as usize].next = next;
             // Walk back while the entry before is strictly lighter (an
             // unordered compare stops the walk).
             let mut at = before;
             loop {
-                if !(n.links[at as usize].weight < n.links[item].weight) {
+                if !(b[at as usize].weight < b[item].weight) {
                     break;
                 }
-                at = n.links[at as usize].prev;
+                at = b[at as usize].prev;
                 if at < 0 {
                     break;
                 }
             }
             let after = if at < 0 {
-                let old_head = n.link_head;
-                n.link_head = item as i32;
+                let old_head = n.bucket_head;
+                n.bucket_head = item as i32;
                 old_head
             } else {
-                let after = n.links[at as usize].next;
-                n.links[at as usize].next = item as i32;
+                let after = b[at as usize].next;
+                b[at as usize].next = item as i32;
                 after
             };
-            n.links[item].prev = at;
-            n.links[item].next = after;
+            b[item].prev = at;
+            b[item].next = after;
             if after >= 0 {
-                n.links[after as usize].prev = item as i32;
+                b[after as usize].prev = item as i32;
             }
         }
     }
@@ -2546,17 +2645,11 @@ impl Scene {
             alias.moved = true;
             return Some(index);
         }
-        self.sectors[sector].aliases.push(LightAlias {
-            light,
-            owner: Some(sector),
-            moved: true,
-            mask: 0,
-            shadow_faces: shadow.then_some(0x3f),
-            shadow_links: 0,
-            stamp,
-        });
-        self.sectors[sector].changes |= LIGHT_ADDED;
-        Some(self.sectors[sector].aliases.len() - 1)
+        let at = self.new_alias(light, sector);
+        if shadow {
+            self.sectors[sector].aliases[at].shadow_faces = Some(0x3f);
+        }
+        Some(at)
     }
 
     /// Spreads a light's aliases from `sector` along the linked sectors, as
@@ -2619,6 +2712,22 @@ impl Scene {
     /// first step and its alias copies are refreshed. Auxiliary nodes below
     /// state 2 take state 2 and snapshot their position.
     pub fn activate_lights(&mut self, sector: usize, events: &mut FrameEvents) {
+        self.activate_lights_with(sector, events, &mut |_: &Scene, _: usize| None);
+    }
+
+    /// [`Scene::activate_lights`] with the flood supplied: in grid mode an
+    /// activated light is flooded through `flood`, which answers the
+    /// sectors of the rooms whose cells recorded the light, in the order
+    /// the flood recorded them (`None`: no flood ran). Each gets the room
+    /// cell hook ([`Scene::flood_hook`]) and then the light's aliases no
+    /// cell stamped are dropped ([`Scene::drop_unflooded`]), as the
+    /// original's flood ends.
+    pub fn activate_lights_with(
+        &mut self,
+        sector: usize,
+        events: &mut FrameEvents,
+        flood: &mut dyn FnMut(&Scene, usize) -> Option<Vec<usize>>,
+    ) {
         let mut at = 0;
         while at < self.sectors[sector].lights.len() {
             let light = self.sectors[sector].lights[at];
@@ -2645,26 +2754,26 @@ impl Scene {
                     n.active_frame.y = 0.0;
                 }
             }
+            // The sector's alias list is searched by light alone, as the
+            // original does (an alias dropped this frame still counts).
             if !self.sectors[sector]
                 .aliases
                 .iter()
                 .any(|a| a.light == light)
             {
-                let stamp = self.nodes[light].link_stamp;
-                self.sectors[sector].aliases.push(LightAlias {
-                    light,
-                    owner: Some(sector),
-                    moved: true,
-                    mask: 0,
-                    shadow_faces: None,
-                    shadow_links: 0,
-                    stamp,
-                });
-                self.sectors[sector].changes |= LIGHT_ADDED;
+                self.new_alias(light, sector);
             }
             if self.grid_mode {
                 store_cell(&mut self.nodes[light], self.grid);
                 events.activated.push(light);
+                if let Some(sectors) = flood(self, light) {
+                    for room in sectors {
+                        if room < self.sectors.len() {
+                            self.flood_hook(light, room);
+                        }
+                    }
+                    self.drop_unflooded(light);
+                }
             } else {
                 // The original spreads the light's alias along the
                 // sector's linked sectors before its links are rebuilt.
@@ -2674,9 +2783,9 @@ impl Scene {
             if self.nodes[light].light_flags & LIGHT_FLICKER != 0 {
                 events.flicker.push((light, false));
             }
-            events
-                .alias_updates
-                .extend(self.nodes[light].aliases.iter().copied());
+            if !self.nodes[light].aliases.is_empty() {
+                events.alias_updates.push(light);
+            }
             at += 1;
         }
         let mut at = 0;
@@ -2700,28 +2809,18 @@ impl Scene {
 
     /// A light that left the scene drops its aliases: each alias's sector
     /// is marked [`LINKS_CHANGED`] and the alias loses its owner (the
-    /// sector's membership rebuild then removes it). The model keeps a
-    /// light's alias copies as nodes ([`SceneNode::aliases`]) and the
-    /// sectors' [`LightAlias`] entries; both are released.
+    /// sector's membership rebuild then removes it), and the light's alias
+    /// list empties.
     fn drop_light_aliases(&mut self, light: usize) {
-        for alias in std::mem::take(&mut self.nodes[light].aliases) {
-            if let Some(owner) = self.nodes.get(alias).and_then(|n| n.sector) {
-                self.sectors[owner].changes |= LINKS_CHANGED;
-            }
-            if let Some(node) = self.nodes.get_mut(alias) {
-                node.sector = None;
-            }
-        }
-        for index in 0..self.sectors.len() {
-            let mut marked = false;
-            for alias in &mut self.sectors[index].aliases {
-                if alias.light == light && alias.owner.is_some() {
+        for sector in std::mem::take(&mut self.nodes[light].aliases) {
+            let Some(s) = self.sectors.get_mut(sector) else {
+                continue;
+            };
+            s.changes |= LINKS_CHANGED;
+            for alias in &mut s.aliases {
+                if alias.light == light {
                     alias.owner = None;
-                    marked = true;
                 }
-            }
-            if marked {
-                self.sectors[index].changes |= LINKS_CHANGED;
             }
         }
     }
@@ -3163,34 +3262,36 @@ impl Scene {
         }
     }
 
-    /// The alias shadow test for one node: runs the caller's face test and
-    /// stores its faces on the node's bucket for that alias. For a node
-    /// whose option word carries [`BOUNDS_SPLIT`] (the bit the original's
-    /// test checks on the node) and an alias with a shadow map, the needed
-    /// faces gain both the new and the old faces, so a face the node left
-    /// is redrawn too. Returns whether the test asks for a relink (guess:
-    /// the original's test answers from its own distance comparison, which
-    /// the model leaves to the caller; here any face counts).
-    fn alias_shadow(
+    /// One alias's link test for a node, as the original calls the alias's
+    /// link method: the caller's test answers the weight, the faces and
+    /// whether the node is lit, and the node's bucket for that alias takes
+    /// the weight and faces. For a node whose option word carries
+    /// [`BOUNDS_SPLIT`] (the bit the original's test checks on the node)
+    /// and an alias with a shadow map, the needed faces gain both the new
+    /// and the old faces, so a face the node left is redrawn too. Returns
+    /// whether the node is lit (the original's answer, which decides
+    /// whether an unmoved node's buckets are ordered again).
+    fn alias_link(
         &mut self,
         node: usize,
         alias: usize,
-        faces: &mut dyn FnMut(usize, usize) -> u32,
+        link: &mut dyn FnMut(usize, usize) -> AliasLink,
     ) -> bool {
-        let mask = faces(node, alias);
+        let hit = link(node, alias);
         let mut old = 0;
         if let Some(bucket) = self.nodes[node].buckets.get_mut(alias) {
             old = bucket.faces;
-            bucket.faces = mask;
+            bucket.weight = hit.weight;
+            bucket.faces = hit.faces;
         }
         if self.nodes[node].flags & BOUNDS_SPLIT != 0
             && let Some(sector) = self.nodes[node].sector
             && let Some(entry) = self.sectors[sector].aliases.get_mut(alias)
             && let Some(shadow) = entry.shadow_faces
         {
-            entry.shadow_faces = Some(shadow | mask | old);
+            entry.shadow_faces = Some(shadow | hit.faces | old);
         }
-        mask != 0
+        hit.lit
     }
 
     /// The meshes a node pass walks: the sector's processed meshes (the
@@ -3222,7 +3323,7 @@ impl Scene {
     fn hidden_pass(
         &mut self,
         sector: usize,
-        faces: &mut dyn FnMut(usize, usize) -> u32,
+        link: &mut dyn FnMut(usize, usize) -> AliasLink,
         events: &mut FrameEvents,
     ) {
         let woken = std::mem::take(&mut self.sectors[sector].woken);
@@ -3258,19 +3359,21 @@ impl Scene {
                 }
                 if needs {
                     for alias in 0..alias_count {
-                        self.alias_shadow(id, alias, faces);
+                        self.alias_link(id, alias, link);
                     }
+                    self.order_buckets(id);
                     events.relinked.push(id);
                 }
                 events.moved.push(id);
             } else if needs && !moved_aliases.is_empty() {
                 let mut relink = false;
                 for &alias in &moved_aliases {
-                    if self.alias_shadow(id, alias, faces) {
+                    if self.alias_link(id, alias, link) {
                         relink = true;
                     }
                 }
                 if relink {
+                    self.order_buckets(id);
                     events.relinked.push(id);
                 }
             }
@@ -3287,7 +3390,7 @@ impl Scene {
         &mut self,
         index: usize,
         dt_ms: i32,
-        faces: &mut dyn FnMut(usize, usize) -> u32,
+        link: &mut dyn FnMut(usize, usize) -> AliasLink,
         events: &mut FrameEvents,
     ) -> bool {
         self.sectors[index].quiet = false;
@@ -3351,8 +3454,9 @@ impl Scene {
                     // Every alias is tested; the relink and the face links
                     // follow whatever the tests answered.
                     for alias in 0..alias_count {
-                        self.alias_shadow(id, alias, faces);
+                        self.alias_link(id, alias, link);
                     }
+                    self.order_buckets(id);
                     events.relinked.push(id);
                     if seen {
                         self.link_bucket_faces(id);
@@ -3366,11 +3470,12 @@ impl Scene {
                 if !moved_aliases.is_empty() {
                     let mut relink = false;
                     for &alias in &moved_aliases {
-                        if self.alias_shadow(id, alias, faces) {
+                        if self.alias_link(id, alias, link) {
                             relink = true;
                         }
                     }
                     if relink {
+                        self.order_buckets(id);
                         events.relinked.push(id);
                     }
                 }
@@ -3397,19 +3502,20 @@ impl Scene {
     }
 }
 
-/// Whether a node's link chain is safe to walk: the head is in range and
-/// following `next` reaches the end without leaving the array or cycling.
-/// The original trusts its list; the model checks so a malformed one is
-/// left unordered rather than trapping.
-fn links_valid(node: &SceneNode) -> bool {
-    let len = node.links.len();
-    let mut at = node.link_head;
+/// Whether a node's bucket chain is safe to walk: the head is in range and
+/// following `next` reaches the end without leaving the array or cycling,
+/// and every `prev` on the way is in range. The original trusts its list;
+/// the model checks so a malformed one is left unordered rather than
+/// trapping.
+fn buckets_valid(node: &SceneNode) -> bool {
+    let len = node.buckets.len();
+    let mut at = node.bucket_head;
     let mut steps = 0;
     while at >= 0 {
-        if at as usize >= len || steps > len {
+        if at as usize >= len || steps > len || node.buckets[at as usize].prev >= len as i32 {
             return false;
         }
-        at = node.links[at as usize].next;
+        at = node.buckets[at as usize].next;
         steps += 1;
     }
     true
@@ -4132,23 +4238,27 @@ mod tests {
     #[test]
     fn an_alias_leaves_its_light() {
         let mut scene = Scene::new((32, 40));
-        let sector = scene.add_node(NodeKind::Sector, None);
-        scene.add_batch(&[sector]);
+        for _ in 0..3 {
+            let sector = scene.add_node(NodeKind::Sector, None);
+            scene.add_batch(&[sector]);
+        }
         let light = scene.add_node(NodeKind::Light, None);
-        let a = scene.add_node(NodeKind::Light, None);
-        let b = scene.add_node(NodeKind::Light, None);
-        let c = scene.add_node(NodeKind::Light, None);
-        scene.nodes[light].aliases = vec![a, b, c];
-        scene.nodes[a].sector = Some(1);
-        scene.sectors[1].changes = 0;
-        assert!(scene.remove_alias(light, a));
+        for sector in 1..=3 {
+            scene.flood_hook(light, sector);
+            scene.sectors[sector].changes = 0;
+        }
+        assert_eq!(scene.nodes[light].aliases, vec![1, 2, 3]);
+        assert!(scene.remove_alias(light, 1));
         // The last alias takes the removed one's place.
-        assert_eq!(scene.nodes[light].aliases, vec![c, b]);
-        assert_eq!(scene.nodes[a].sector, None);
+        assert_eq!(scene.nodes[light].aliases, vec![3, 2]);
+        assert_eq!(scene.sectors[1].aliases[0].owner, None);
         // The alias's own sector is marked, not the scene's.
         assert_eq!(scene.sectors[1].changes, LINKS_CHANGED);
         assert_eq!(scene.sectors[SCENE_SECTOR].changes, 0);
-        assert!(!scene.remove_alias(light, a), "already gone");
+        assert!(!scene.remove_alias(light, 1));
+        // The membership rebuild then drops the ownerless alias.
+        scene.rebuild_membership(1);
+        assert!(scene.sectors[1].aliases.is_empty());
     }
 
     #[test]
@@ -5008,6 +5118,8 @@ mod tests {
                 shadow_faces: None,
                 shadow_links: 0,
                 stamp: 0,
+                flooded: 0,
+                values: None,
                 owner: Some(sector),
             };
             3
@@ -5028,6 +5140,8 @@ mod tests {
             shadow_faces: None,
             shadow_links: 0,
             stamp: 0,
+            flooded: 0,
+            values: None,
             owner: Some(sector),
         });
         scene.rebuild_buckets(sector, mesh, 3);
@@ -5052,6 +5166,8 @@ mod tests {
                 shadow_faces: None,
                 shadow_links: 0,
                 stamp: 0,
+                flooded: 0,
+                values: None,
                 owner: Some(sector),
             };
             2
@@ -5107,6 +5223,8 @@ mod tests {
             shadow_faces: None,
             shadow_links: 0,
             stamp: 0,
+            flooded: 0,
+            values: None,
         }
     }
 
@@ -5420,6 +5538,9 @@ mod tests {
         scene.rebuild_bounds();
         let report = scene.frame(16, Vec3::ZERO, &[box_view(10.0)], &no_project);
         assert!(report.parts_moved);
+        scene.rebuild_bounds();
+        let report = scene.frame(16, Vec3::ZERO, &[box_view(10.0)], &no_project);
+        assert!(report.parts_moved);
     }
 
     #[test]
@@ -5427,11 +5548,101 @@ mod tests {
         let (mut scene, sector, _) = node_scene();
         let light = scene.add_node(NodeKind::Light, None);
         scene.register(light, sector);
-        let copy = scene.add_node(NodeKind::Light, None);
-        scene.nodes[light].aliases = vec![copy];
         let mut events = FrameEvents::default();
         scene.activate_lights(sector, &mut events);
-        assert_eq!(events.alias_updates, [copy]);
+        // The activation made the light's alias in its sector and lists the
+        // light for the alias sync.
+        assert_eq!(scene.nodes[light].aliases, [sector]);
+        assert_eq!(events.alias_updates, [light]);
+    }
+
+    #[test]
+    fn a_flooded_light_keeps_only_the_aliases_its_cells_stamped() {
+        let mut scene = Scene::new((8, 8));
+        for _ in 0..3 {
+            let sector = scene.add_node(NodeKind::Sector, None);
+            scene.add_batch(&[sector]);
+        }
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.set_frame(light, Vec3::new(1.0, 1.0, 1.0), Mat3::IDENTITY, Vec3::ONE);
+        scene.refresh(light);
+        scene.register(light, 1);
+        scene.frame_count = 4;
+        let mut events = FrameEvents::default();
+        // The flood records the light in rooms 1 and 3 (sector 2 is never
+        // reached): the home alias is stamped by the cell hook of its own
+        // room and room 3 gets a new alias.
+        scene.activate_lights_with(1, &mut events, &mut |_: &Scene, _| Some(vec![1, 3, 1]));
+        assert_eq!(events.activated, [light]);
+        assert_eq!(scene.nodes[light].aliases, vec![1, 3]);
+        assert_eq!(scene.alias_in(light, 1).map(|a| a.flooded), Some(4));
+        assert_eq!(scene.alias_in(light, 3).map(|a| a.flooded), Some(4));
+        assert_ne!(scene.sectors[3].changes & LIGHT_ADDED, 0);
+        // It moves: the next flood reaches room 2 only, so the aliases in
+        // rooms 1 and 3 go (their sectors are marked) and room 2 gets one.
+        scene.refresh(light);
+        scene.frame_count = 5;
+        for s in &mut scene.sectors {
+            s.changes = 0;
+        }
+        scene.activate_lights_with(1, &mut events, &mut |_: &Scene, _| Some(vec![2]));
+        assert_eq!(scene.nodes[light].aliases, vec![2]);
+        assert_eq!(scene.alias_in(light, 1), None);
+        assert_eq!(scene.alias_in(light, 3), None);
+        assert_eq!(scene.sectors[1].changes & LINKS_CHANGED, LINKS_CHANGED);
+        assert_eq!(scene.sectors[3].changes & LINKS_CHANGED, LINKS_CHANGED);
+        // Without a flood nothing is dropped; the home sector (rebuilt, so
+        // its ownerless alias is gone) makes a new alias.
+        scene.rebuild_membership(1);
+        scene.refresh(light);
+        scene.frame_count = 6;
+        scene.activate_lights_with(1, &mut events, &mut |_: &Scene, _| None);
+        assert_eq!(scene.nodes[light].aliases, vec![2, 1]);
+    }
+
+    #[test]
+    fn a_moved_mesh_orders_its_buckets_after_the_link_tests() {
+        let (mut scene, sector, mesh) = node_scene();
+        scene.nodes[mesh].flags |= BOUNDS_SPLIT;
+        for _ in 0..2 {
+            let light = scene.add_node(NodeKind::Light, None);
+            scene.flood_hook(light, sector);
+        }
+        // The first frame links the waiting aliases and builds the buckets.
+        let mut weigh = |_: usize, alias: usize| AliasLink {
+            weight: [1.0, 3.0][alias],
+            faces: 1,
+            lit: true,
+        };
+        scene.update_visibility_with(16, &mut weigh);
+        assert_eq!(scene.nodes[mesh].buckets.len(), 2);
+        // The mesh moves: every alias is tested and the heavier leads.
+        scene.refresh(mesh);
+        scene.update_visibility_with(16, &mut weigh);
+        assert_eq!(chain_of(&scene.nodes[mesh]), vec![1, 0]);
+        assert_eq!(scene.nodes[mesh].buckets[1].weight, 3.0);
+        assert_eq!(scene.nodes[mesh].buckets[0].faces, 1);
+    }
+
+    #[test]
+    fn the_flood_drop_walks_the_list_as_it_stood() {
+        let mut scene = Scene::new((8, 8));
+        for _ in 0..4 {
+            let sector = scene.add_node(NodeKind::Sector, None);
+            scene.add_batch(&[sector]);
+        }
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.frame_count = 1;
+        for sector in 1..=4 {
+            scene.flood_hook(light, sector);
+        }
+        // Frame 2 stamps only the alias in sector 3: the walk removes 1
+        // (4 moves into its slot) and 2 (3 moves into its slot), keeps 3,
+        // then meets 4 again at its old slot and removes it.
+        scene.frame_count = 2;
+        scene.flood_hook(light, 3);
+        assert_eq!(scene.drop_unflooded(light), 3);
+        assert_eq!(scene.nodes[light].aliases, vec![3]);
     }
 
     #[test]
@@ -5629,6 +5840,8 @@ mod tests {
             shadow_faces: None,
             shadow_links: 0,
             stamp: 7,
+            flooded: 0,
+            values: None,
         });
         scene.spread_aliases(light, 1);
         assert!(scene.sectors[3].aliases.is_empty());
@@ -5703,60 +5916,85 @@ mod tests {
         assert!(scene.light_reaches(light, 1));
     }
 
+    /// Sets a node's buckets from one weight per alias, chained in alias
+    /// order with the first as the head: the state the link tests leave
+    /// before [`Scene::order_buckets`] runs.
+    fn weigh_buckets(scene: &mut Scene, node: usize, weights: &[f32]) {
+        let n = &mut scene.nodes[node];
+        n.buckets = weights
+            .iter()
+            .enumerate()
+            .map(|(i, &weight)| Bucket {
+                weight,
+                prev: i as i32 - 1,
+                next: if i + 1 == weights.len() {
+                    -1
+                } else {
+                    i as i32 + 1
+                },
+                faces: 0,
+                alias: i,
+            })
+            .collect();
+        n.bucket_head = if weights.is_empty() { -1 } else { 0 };
+    }
+
     #[test]
-    fn a_link_list_is_ordered_heaviest_first() {
+    fn a_bucket_list_is_ordered_heaviest_first() {
         let mut scene = Scene::new((0, 0));
-        let light = scene.add_node(NodeKind::Light, None);
-        scene.reset_links(light, &[1.0, 3.0, 2.0]);
-        scene.order_links(light);
-        let chain = chain_of(&scene.nodes[light]);
+        let mesh = scene.add_node(NodeKind::Mesh, None);
+        weigh_buckets(&mut scene, mesh, &[1.0, 3.0, 2.0]);
+        scene.order_buckets(mesh);
+        let chain = chain_of(&scene.nodes[mesh]);
         assert_eq!(chain, vec![1, 2, 0]);
-        assert_eq!(scene.nodes[light].link_head, 1);
+        assert_eq!(scene.nodes[mesh].bucket_head, 1);
         // The lightest entry ends the list and the head starts it.
-        assert_eq!(scene.nodes[light].links[0].next, -1);
-        assert_eq!(scene.nodes[light].links[1].prev, -1);
+        assert_eq!(scene.nodes[mesh].buckets[0].next, -1);
+        assert_eq!(scene.nodes[mesh].buckets[1].prev, -1);
+        // Each entry keeps its alias.
+        assert_eq!(scene.nodes[mesh].buckets[2].alias, 2);
     }
 
     #[test]
     fn equal_weights_keep_their_order_and_a_nan_is_heaviest() {
         let mut scene = Scene::new((0, 0));
-        let light = scene.add_node(NodeKind::Light, None);
-        scene.reset_links(light, &[2.0, 2.0, 1.0]);
-        scene.order_links(light);
-        assert_eq!(chain_of(&scene.nodes[light]), vec![0, 1, 2]);
-        scene.reset_links(light, &[1.0, f32::NAN, 2.0]);
-        scene.order_links(light);
+        let mesh = scene.add_node(NodeKind::Mesh, None);
+        weigh_buckets(&mut scene, mesh, &[2.0, 2.0, 1.0]);
+        scene.order_buckets(mesh);
+        assert_eq!(chain_of(&scene.nodes[mesh]), vec![0, 1, 2]);
+        weigh_buckets(&mut scene, mesh, &[1.0, f32::NAN, 2.0]);
+        scene.order_buckets(mesh);
         // The NaN entry stops at once behind 1.0, and 2.0 stops at the NaN
         // before it: every compare with a NaN is unordered and ends the
         // walk, so nothing moves.
-        assert_eq!(chain_of(&scene.nodes[light]), vec![0, 1, 2]);
+        assert_eq!(chain_of(&scene.nodes[mesh]), vec![0, 1, 2]);
         // A NaN further back still blocks: 3.0 passes 1.0 but stops at
         // the NaN.
-        scene.reset_links(light, &[f32::NAN, 1.0, 3.0]);
-        scene.order_links(light);
-        assert_eq!(chain_of(&scene.nodes[light]), vec![0, 2, 1]);
+        weigh_buckets(&mut scene, mesh, &[f32::NAN, 1.0, 3.0]);
+        scene.order_buckets(mesh);
+        assert_eq!(chain_of(&scene.nodes[mesh]), vec![0, 2, 1]);
     }
 
     #[test]
-    fn an_empty_and_a_malformed_link_list_are_left_alone() {
+    fn an_empty_and_a_malformed_bucket_list_are_left_alone() {
         let mut scene = Scene::new((0, 0));
-        let light = scene.add_node(NodeKind::Light, None);
-        scene.reset_links(light, &[]);
-        scene.order_links(light);
-        assert_eq!(scene.nodes[light].link_head, -1);
+        let mesh = scene.add_node(NodeKind::Mesh, None);
+        weigh_buckets(&mut scene, mesh, &[]);
+        scene.order_buckets(mesh);
+        assert_eq!(scene.nodes[mesh].bucket_head, -1);
         // A chain that points past the array is not walked.
-        scene.reset_links(light, &[1.0, 2.0]);
-        scene.nodes[light].links[0].next = 7;
-        scene.order_links(light);
-        assert_eq!(scene.nodes[light].links[0].next, 7);
+        weigh_buckets(&mut scene, mesh, &[1.0, 2.0]);
+        scene.nodes[mesh].buckets[0].next = 7;
+        scene.order_buckets(mesh);
+        assert_eq!(scene.nodes[mesh].buckets[0].next, 7);
     }
 
     fn chain_of(node: &SceneNode) -> Vec<usize> {
         let mut chain = Vec::new();
-        let mut at = node.link_head;
+        let mut at = node.bucket_head;
         while at >= 0 {
             chain.push(at as usize);
-            at = node.links[at as usize].next;
+            at = node.buckets[at as usize].next;
         }
         chain
     }
@@ -5784,9 +6022,10 @@ mod tests {
     #[test]
     fn an_alias_sync_copies_the_light_values() {
         let mut scene = Scene::new((0, 0));
+        let sector = scene.add_node(NodeKind::Sector, None);
+        scene.add_batch(&[sector]);
         let light = scene.add_node(NodeKind::Light, None);
-        let alias = scene.add_node(NodeKind::Light, None);
-        scene.nodes[light].aliases.push(alias);
+        scene.flood_hook(light, 1);
         let values = crate::light_source::AliasValues {
             node_flags: 0x0010_0000,
             colour: [0.5, 0.25, 0.125],
@@ -5800,8 +6039,10 @@ mod tests {
         };
         assert_eq!(scene.sync_light_aliases(light, &values), 1);
         assert_eq!(scene.nodes[light].alias_values, Some(values));
-        assert_eq!(scene.nodes[alias].alias_values, Some(values));
-        assert!(!scene.nodes[alias].moved);
+        assert_eq!(
+            scene.alias_in(light, 1).and_then(|a| a.values),
+            Some(values)
+        );
     }
 
     #[test]

@@ -253,7 +253,17 @@ pub fn from_live(
         matches_today: career.matches_today,
         spent_today: pack_coins(career.company.spent),
         earned_today: pack_coins(career.company.earned),
-        specials: previous.day.specials,
+        // The day's six special matches: each one's template id, rank and
+        // flags (the fourth word is written as 0).
+        specials: career
+            .daily_rows
+            .iter()
+            .map(|row| arena_save::SpecialEntry {
+                template: row.id,
+                rank: row.rank as u32,
+                flags: row.flags,
+            })
+            .collect(),
         log_word: previous.day.log_word,
         log: career
             .log
@@ -452,6 +462,26 @@ pub fn candidate_member(record: &CharacterRecord) -> crate::career::Member {
     }
 }
 
+/// The day chunk's special matches back into the day's board, as the
+/// original's reader rebuilds them: each saved id names its ranked
+/// template (the last of the seven when none matches), which is rolled
+/// again at its place in the day ([`crate::arena::roll_instance_mt`], the
+/// weapon row from a fresh draw); the saved rank, flags and window are put
+/// back ([`crate::arena::restore_special`]). A save holding fewer than six
+/// leaves the rest of the board as the load's reset rolled it.
+pub fn restore_specials(career: &mut ArenaCareer, specials: &[arena_save::SpecialEntry]) {
+    let mut rng = crate::item_container::Rng(crate::arena_match::counter_now() as u32);
+    for (slot, (row, saved)) in career.daily_rows.iter_mut().zip(specials).enumerate() {
+        let template = crate::arena::RANKED
+            .iter()
+            .find(|template| template.id == saved.template)
+            .unwrap_or(&crate::arena::RANKED[crate::arena::RANKED.len() - 1]);
+        let slot = u32::try_from(slot).unwrap_or(0);
+        *row = crate::arena::roll_instance_mt(template, slot, &mut career.random, &mut rng);
+        crate::arena::restore_special(row, saved.rank, saved.flags);
+    }
+}
+
 /// Put a loaded save's arena tables into the live state: the arsenal, the
 /// shop's shelf, the company's counters and emblem, the day's log, the staff
 /// and the tournament's roster. The stash is the caller's list (see
@@ -497,6 +527,7 @@ pub fn apply(
     career.company.earned = crate::career::coin_total(tables.day.earned_today);
 
     career.matches_today = tables.day.matches_today;
+    restore_specials(career, &tables.day.specials);
     career.log = ArenaLog {
         records: tables
             .day
@@ -534,21 +565,29 @@ pub fn apply(
             companies,
         });
     }
-    // The hire list's candidates from their character exports; a broken
-    // chunk keeps the list the career has.
-    match arena_save::parse_hireables(&tables.hireables, |bytes| {
-        let record = CharacterRecord::parse(0, bytes).ok()?;
-        let size = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
-        Some((record, size + 8))
-    }) {
-        Ok(candidates) if !tables.hireables.is_empty() => {
+    // The hire list's candidates from their character exports. The count
+    // is cleared before the chunk loads, so a save with no candidates (or
+    // a broken chunk) leaves the list empty; Manage Company draws a new
+    // one when it opens on an empty list.
+    career.hire_pool.clear();
+    let parsed = (!tables.hireables.is_empty()).then(|| {
+        arena_save::parse_hireables(&tables.hireables, |bytes| {
+            let record = CharacterRecord::parse(0, bytes).ok()?;
+            let size = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
+            Some((record, size + 8))
+        })
+    });
+    match parsed {
+        Some(Ok(candidates)) => {
             career.hire_pool = candidates
                 .iter()
                 .map(|entry| candidate_member(&entry.character))
                 .collect();
         }
-        Ok(_) => {}
-        Err(error) => bevy::log::warn!("arena load: the hire list does not read ({error:?})"),
+        Some(Err(error)) => {
+            bevy::log::warn!("arena load: the hire list does not read ({error:?})");
+        }
+        None => {}
     }
     bevy::log::info!(
         "arena load: hire list {:?}; week's events {:?}",
@@ -774,8 +813,48 @@ mod tests {
         // The hire list is the career's own, not the save's.
         assert_ne!(kept.hireables, vec![1, 2, 3, 4]);
         assert_eq!(kept.company.second, b"second");
-        assert_eq!(kept.day.specials[0].template, 8);
+        // The day's specials are the live board's, not the save's.
+        assert_eq!(kept.day.specials.len(), 6);
+        assert_eq!(kept.day.specials[0].template, career.daily_rows[0].id);
         assert!(kept.stash.is_empty());
+    }
+
+    /// The day's special matches go into the day chunk and come back: the
+    /// same templates in the same places, their ranks and flags.
+    #[test]
+    fn the_days_special_matches_round_trip_through_the_day_chunk() {
+        let mut career = career("Specials");
+        career.regenerate_daily_board_at(0x2468_ace0);
+        career.daily_rows[2].flags |= 0x40;
+        let tables = from_live(&career, &Staff::default(), &Arsenal::default(), &[], None);
+        let mut wire = tables.clone();
+        wire.day = arena_save::parse_day(&arena_save::write_day(&tables.day)).unwrap();
+        let mut back = ArenaCareer::default();
+        back.regenerate_daily_board_at(0x1111_1111);
+        apply(
+            &mut back,
+            &mut Staff::default(),
+            &mut Arsenal::default(),
+            &mut Vec::new(),
+            &wire,
+        );
+        for (loaded, saved) in back.daily_rows.iter().zip(&career.daily_rows) {
+            assert_eq!(loaded.id, saved.id);
+            assert_eq!(loaded.flags, saved.flags);
+            assert_eq!(loaded.slot, saved.slot);
+            assert_eq!(loaded.rank, saved.rank);
+            assert_eq!(loaded.cash, saved.cash);
+        }
+        // An id no ranked template has takes the last one.
+        restore_specials(
+            &mut back,
+            &[arena_save::SpecialEntry {
+                template: 99,
+                rank: 1,
+                flags: 0,
+            }],
+        );
+        assert_eq!(back.daily_rows[0].id, crate::arena::RANKED[6].id);
     }
 
     #[test]
@@ -835,6 +914,20 @@ mod tests {
             &wire,
         );
         assert_eq!(back.hire_pool.len(), career.hire_pool.len());
+        // A save whose hire list is empty loads an empty list: the count is
+        // cleared before the chunk is read.
+        let mut none = wire.clone();
+        none.hireables.clear();
+        let mut full = ArenaCareer::default();
+        assert!(!full.hire_pool.is_empty());
+        apply(
+            &mut full,
+            &mut Staff::default(),
+            &mut Arsenal::default(),
+            &mut Vec::new(),
+            &none,
+        );
+        assert!(full.hire_pool.is_empty());
         for (loaded, saved) in back.hire_pool.iter().zip(&career.hire_pool) {
             assert_eq!(loaded.name, saved.name);
             assert_eq!(loaded.profession, saved.profession);

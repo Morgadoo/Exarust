@@ -179,6 +179,20 @@ pub fn kit_of(loadouts: &[Loadout]) -> Vec<u32> {
     kit
 }
 
+/// [`kit_of`] over a record's six loadouts: each loadout's set items of its
+/// first hand pair, then its worn items but item 8, each item once, in
+/// order (the second hand pair is not read).
+pub fn kit_of_record(loadouts: &[crate::loadout::CharacterLoadout]) -> Vec<u32> {
+    let loadouts: Vec<Loadout> = loadouts
+        .iter()
+        .map(|loadout| Loadout {
+            hands: [loadout.hands[0].id, loadout.hands[1].id],
+            items: loadout.worn.iter().map(|worn| worn.id).collect(),
+        })
+        .collect();
+    kit_of(&loadouts)
+}
+
 /// What a leaving did beyond the staff list.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Leaving {
@@ -448,6 +462,28 @@ impl Staff {
     pub fn admit(&mut self, employee: Employee) {
         self.employees.push(employee);
         self.note_order();
+    }
+
+    /// [`Self::admit`] with the hire's stow into the arsenal: a fighter's
+    /// kit with [`FIGHTER_KIT`], a specialist's own items with
+    /// [`SPECIALIST_KIT`]. Returns how many items were stowed.
+    pub fn admit_stowing(
+        &mut self,
+        employee: Employee,
+        arsenal: &mut Arsenal,
+        kind: impl Fn(u32) -> ItemKind,
+    ) -> usize {
+        let (items, mask) = if employee.fights() {
+            (&employee.kit, FIGHTER_KIT)
+        } else {
+            (&employee.carried, SPECIALIST_KIT)
+        };
+        for &item in items {
+            arsenal.stow(item, kind(item), mask);
+        }
+        let stowed = items.len();
+        self.admit(employee);
+        stowed
     }
 
     /// Dismiss an employee: log the name, count one more fired, and let
