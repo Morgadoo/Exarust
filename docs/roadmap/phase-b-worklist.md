@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 644 | 158,903 | B1 wire (or prove unreachable) |
-| partial | 1,411 | 886,062 | B4 complete the port |
+| uncalled | 642 | 158,714 | B1 wire (or prove unreachable) |
+| partial | 1,409 | 885,271 | B4 complete the port |
 | missing | 55 | 11,367 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -19,7 +19,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | ui | 85,823 | 42,621 | 1,311 |
 | powers | 105,361 | 3,090 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
-| ai | 90,421 | 2,336 | 28 |
+| ai | 89,630 | 2,147 | 28 |
 | modes | 65,694 | 10,554 | 363 |
 | world | 56,920 | 18,972 | 563 |
 | items | 55,107 | 8,565 | 601 |
@@ -36,7 +36,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|---|---|
 | TMotileDynamics | physics | 46 / 98,698 | 3 / 558 | 1 / 38 | 99,294 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
-| TMotileAI | ai | 22 / 30,743 | 3 / 233 | 2 / 28 | 31,004 |
+| TMotileAI | ai | 20 / 29,952 | 2 / 165 | 2 / 28 | 30,145 |
 | TSimSector | physics | 27 / 21,200 | 0 / 0 | 0 / 0 | 21,200 |
 | TMotilePart | characters | 37 / 17,208 | 5 / 1,341 | 2 / 1,370 | 19,919 |
 | XA_Arena (unit routines) | modes | 28 / 16,281 | 3 / 1,321 | 4 / 363 | 17,965 |
@@ -89,11 +89,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
 | TPlayerBehaviour | ai | 3 / 5,813 | 0 / 0 | 0 / 0 | 5,813 |
 | TProcMaterial | items | 9 / 5,114 | 0 / 0 | 1 / 525 | 5,639 |
-| TAISearchActivity | ai | 5 / 5,505 | 1 / 121 | 0 / 0 | 5,626 |
 | FLX_System (unit routines) | core | 31 / 2,561 | 22 / 2,983 | 1 / 59 | 5,603 |
 | TIconManager | ui | 0 / 0 | 6 / 5,573 | 0 / 0 | 5,573 |
 | SG_Character_Data (unit routines) | characters | 9 / 2,332 | 21 / 3,211 | 0 / 0 | 5,543 |
 | TCombatant | ai | 9 / 4,839 | 3 / 690 | 0 / 0 | 5,529 |
+| TAISearchActivity | ai | 5 / 5,505 | 0 / 0 | 0 / 0 | 5,505 |
 | TNavCameraControl | render | 2 / 5,215 | 1 / 192 | 0 / 0 | 5,407 |
 | TSkinController2 | characters | 6 / 3,997 | 2 / 1,193 | 0 / 0 | 5,190 |
 | RF_Mesh (unit routines) | render | 3 / 2,922 | 1 / 2,210 | 0 / 0 | 5,132 |
