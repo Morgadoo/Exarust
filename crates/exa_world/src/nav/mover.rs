@@ -23,7 +23,6 @@
 
 use bevy::math::{Affine3A, Vec2, Vec3};
 
-use super::query::axis;
 use super::{Layer, NavGrid, Path, find_path, remove_footprint, stamp_footprint};
 
 /// Ring slots.
@@ -270,22 +269,85 @@ pub fn plan_around(grid: &mut NavGrid, standing: Vec3, goal: Vec3, size: u8) -> 
     path
 }
 
-/// A body the refresh may sample: its node's frame (metres) and its node's
-/// GI sample points in the node's space. The refresh walks the bodies the
-/// simulation's room grid holds by their node's position.
+/// A body the build and the refresh sample: its node's frame (metres), its
+/// node's GI sample points in the node's space (metres), and the world
+/// point (metres) the simulation buckets it by in its 6 m rooms, the
+/// centre of the node's box under its frame (the physics buckets a body
+/// by its mesh box's centre).
 #[derive(Debug, Clone, Copy)]
 pub struct MoverPoints<'a> {
     pub at: Affine3A,
     pub points: &'a [Vec3],
+    pub centre: Vec3,
 }
 
-/// The simulation room (along an axis of `n` cells) a body at `metres`
-/// is bucketed in: `floor(cm · (1/600))` plus half the room count. The
-/// offset is Exarust's reading of the simulation grid's origin (centred on
-/// the level, as the navigation grid is), a guess.
+/// The simulation room (along an axis of `n` cells) a body whose box
+/// centre lies at `metres` is bucketed in: `floor(cm · (1/600))` (single
+/// precision) plus half the room count. The simulation's room grid is the
+/// scene's room count (the tile grid's, which also sizes the navigation
+/// grid at 20 cells a room) and its sector adds half of it (unsigned
+/// shifts) plus its root's own room, 0 for a level root at the origin.
 fn body_room(metres: f32, n: usize) -> i32 {
     let cm = super::centimetres_of(f64::from(metres)) as f32;
-    (cm * ROOM_INVERSE).floor() as i32 + (n / (2 * super::CELLS_PER_ROOM)) as i32
+    (cm * ROOM_INVERSE).floor() as i32 + ((n / super::CELLS_PER_ROOM) >> 1) as i32
+}
+
+/// A body's frame as the original's raise and refresh pre-scale it, so a
+/// node-space point in centimetres goes through it straight to a cell and
+/// a voxel: each axis's x and z times `1/30` and its y times 0.1 (in
+/// double, back to single); the translation's x and z
+/// `W/2 + (t · (1/30) − ½)` and its y `(t · 0.1 + ½) − base · 0.1` (in
+/// double). The original holds the frame in centimetres; Exarust's frame
+/// in metres has the same axes and its translation is converted.
+struct CellFrame {
+    axes: [[f32; 3]; 3],
+    translation: [f32; 3],
+}
+
+impl CellFrame {
+    fn new(grid: &NavGrid, at: Affine3A) -> Self {
+        let (width, depth) = grid.size();
+        let inverse = 1.0f32 / super::CELL_CM as f32;
+        let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+        let scale = |a: Vec3| [a.x * inverse, (f64::from(a.y) * 0.1) as f32, a.z * inverse];
+        let t = Vec3::from(at.translation);
+        let half = |n: usize| ((n as u32) >> 1) as f32;
+        Self {
+            axes: [
+                scale(Vec3::from(at.x_axis)),
+                scale(Vec3::from(at.y_axis)),
+                scale(Vec3::from(at.z_axis)),
+            ],
+            translation: [
+                half(width) + (cm(t.x) * inverse - 0.5),
+                ((f64::from(cm(t.y)) * 0.1 + 0.5) - f64::from(cm(grid.base())) * 0.1) as f32,
+                half(depth) + (cm(t.z) * inverse - 0.5),
+            ],
+        }
+    }
+
+    /// A node-space point (metres) as cell x, voxel and cell z: the point
+    /// in centimetres through the frame, `(x·X + y·Y) + (z·Z + T)` in
+    /// single precision, each rounded to the nearest, ties to even.
+    fn sample(&self, point: Vec3) -> (i32, i32, i32) {
+        let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+        let p = [cm(point.x), cm(point.y), cm(point.z)];
+        let [x, y, z] = &self.axes;
+        let lane =
+            |k: usize| convert((p[0] * x[k] + p[1] * y[k]) + (p[2] * z[k] + self.translation[k]));
+        (lane(0), lane(1), lane(2))
+    }
+}
+
+/// The processor's single-to-64-bit conversion (to nearest, ties to even)
+/// kept to its low 32 bits; NaN and values out of range give 0, the low
+/// half of the integer the processor returns for them.
+fn convert(value: f32) -> i32 {
+    if value.is_finite() && value.abs() < 9.2e18 {
+        value.round_ties_even() as i64 as i32
+    } else {
+        0
+    }
 }
 
 /// The rooms a grown rectangle's side spans: from `floor(lo · 0.05)` up to,
@@ -325,6 +387,24 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPo
         movers.read = (movers.read + 1) % SLOTS;
     }
     let rects = std::mem::take(&mut movers.rects);
+    if rects.is_empty() {
+        return false;
+    }
+    // The bodies by their room (the room grid's flat index, `z · rooms +
+    // x`, wrapping as the original's does), in the order given within a
+    // room; their frames pre-scaled once.
+    let rooms_x = (width / super::CELLS_PER_ROOM) as i32;
+    let mut by_room: Vec<(i32, usize)> = bodies
+        .iter()
+        .enumerate()
+        .map(|(i, body)| {
+            let room_x = body_room(body.centre.x, width);
+            let room_z = body_room(body.centre.z, depth);
+            (room_z.wrapping_mul(rooms_x).wrapping_add(room_x), i)
+        })
+        .collect();
+    by_room.sort_by_key(|&(room, _)| room);
+    let frames: Vec<CellFrame> = bodies.iter().map(|b| CellFrame::new(grid, b.at)).collect();
     let mut any = false;
     for rect in rects {
         let grown = CellRect {
@@ -356,24 +436,26 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPo
                 upper[i] = grid.built_floor(x as usize, z as usize, Layer::Upper);
             }
         }
-        for body in bodies {
-            let position = Vec3::from(body.at.translation);
-            let room_x = body_room(position.x, width);
-            let room_z = body_room(position.z, depth);
-            if room_x < room_x0 || room_x >= room_x1 || room_z < room_z0 || room_z >= room_z1 {
-                continue;
-            }
-            for &point in body.points {
-                let sample = body.at.transform_point3(point);
-                let sx = axis(sample.x, width).round_ties_even() as i32;
-                let sz = axis(sample.z, depth).round_ties_even() as i32;
-                let v = sample_voxel(sample.y, grid.base());
-                if !(1..255).contains(&v) || sx < x0 || sz < z0 || sx > x1 || sz > z1 {
-                    continue;
+        // The rooms row by row (z outer), each room's bodies, each body's
+        // points in order.
+        for room_z in room_z0..room_z1 {
+            for room_x in room_x0..room_x1 {
+                let room = room_z.wrapping_mul(rooms_x).wrapping_add(room_x);
+                let first = by_room.partition_point(|&(r, _)| r < room);
+                for &(r, b) in &by_room[first..] {
+                    if r != room {
+                        break;
+                    }
+                    for &point in bodies[b].points {
+                        let (sx, v, sz) = frames[b].sample(point);
+                        if sx < x0 || sx > x1 || sz < z0 || sz > z1 || !(1..255).contains(&v) {
+                            continue;
+                        }
+                        let i = at(sx, sz);
+                        let underside = grid.cell(sx as usize, sz as usize, Layer::Lower).underside;
+                        raise_static(&mut lower[i], &mut upper[i], underside, v as u8);
+                    }
                 }
-                let i = at(sx, sz);
-                let underside = grid.cell(sx as usize, sz as usize, Layer::Lower).underside;
-                raise_static(&mut lower[i], &mut upper[i], underside, v as u8);
             }
         }
         let mut changed = false;
@@ -392,19 +474,25 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPo
     any
 }
 
-/// Raise the grid's floors from the moving props' sample points (world,
-/// metres) as the original's build does once the layers are written and
-/// before the cost passes: each point that falls in cells 1 to `W − 3`
-/// (and `D − 3`) and voxels 0–254 raises the current floor of its cell by
-/// the refresh's rule ([`raise_static`]), one point after another, against
-/// the lower slab's underside. The floors as built stay as they were, so a
-/// prop that moves away later leaves its cells to the built floors.
-pub fn raise_from_movers(grid: &mut NavGrid, samples: impl IntoIterator<Item = Vec3>) {
+/// Raise the grid's floors from the moving props' sample points as the
+/// original's build does once the layers are written and before the cost
+/// passes: each body in the order given, each of its points through its
+/// pre-scaled frame ([`CellFrame`]); a point that falls in cells 1 to
+/// `W − 3` (and `D − 3`) and voxels 0–254 raises the current floor of its
+/// cell by the refresh's rule ([`raise_static`]), one point after another,
+/// against the lower slab's underside. The floors as built stay as they
+/// were, so a prop that moves away later leaves its cells to the built
+/// floors.
+pub fn raise_from_movers(grid: &mut NavGrid, movers: &[MoverPoints]) {
     let (width, depth) = grid.size();
-    for sample in samples {
-        let sx = axis(sample.x, width).round_ties_even() as i32;
-        let sz = axis(sample.z, depth).round_ties_even() as i32;
-        let v = sample_voxel(sample.y, grid.base());
+    let samples: Vec<(i32, i32, i32)> = movers
+        .iter()
+        .flat_map(|body| {
+            let frame = CellFrame::new(grid, body.at);
+            body.points.iter().map(move |&p| frame.sample(p))
+        })
+        .collect();
+    for (sx, v, sz) in samples {
         if sx < 1
             || sz < 1
             || sx >= width as i32 - 2
@@ -421,13 +509,6 @@ pub fn raise_from_movers(grid: &mut NavGrid, samples: impl IntoIterator<Item = V
         grid.set_floor(x, z, Layer::Lower, lower);
         grid.set_floor(x, z, Layer::Upper, upper);
     }
-}
-
-/// A sample's voxel as the refresh rounds a mover's vertex:
-/// `y · 0.1 + ½ − base · 0.1` (centimetres, single precision), ties to even.
-fn sample_voxel(y: f32, base: f32) -> i32 {
-    let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
-    ((cm(y) * 0.1 + 0.5) - cm(base) * 0.1).round_ties_even() as i32
 }
 
 /// Raise a working floor from a sample voxel, as the refresh does.
@@ -525,6 +606,7 @@ mod tests {
         [MoverPoints {
             at: Affine3A::IDENTITY,
             points,
+            centre: Vec3::ZERO,
         }]
     }
 
@@ -748,11 +830,11 @@ mod tests {
         let leaf: Vec<Vec3> = (0..15)
             .map(|k| at(&grid, 10, 10, 1.05 + 0.1 * k as f32))
             .collect();
-        raise_from_movers(&mut grid, leaf);
+        raise_from_movers(&mut grid, &world(&leaf));
         assert_eq!(grid.cell(10, 10, Layer::Lower).floor, 25);
         assert_eq!(grid.built_floor(10, 10, Layer::Lower), 10);
         let points = [at(&grid, 5, 5, 2.45), at(&grid, 22, 5, 1.05)];
-        raise_from_movers(&mut grid, points);
+        raise_from_movers(&mut grid, &world(&points));
         assert_eq!(grid.cell(5, 5, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(5, 5, Layer::Upper).floor, 25);
         assert_eq!(grid.cell(22, 5, Layer::Lower).floor, 10);
@@ -972,6 +1054,7 @@ mod tests {
         let away = [MoverPoints {
             at: far,
             points: &[far_point],
+            centre: Vec3::from(far.translation),
         }];
         refresh_movers(&mut grid, &mut movers, &away);
         assert_eq!(grid.cell(41, 41, Layer::Lower).floor, 10);
@@ -993,7 +1076,14 @@ mod tests {
             .collect();
         let door = at(&grid, 14, 14, 0.0);
         let closed = Affine3A::from_translation(door);
-        raise_from_movers(&mut grid, leaf.iter().map(|&p| closed.transform_point3(p)));
+        raise_from_movers(
+            &mut grid,
+            &[MoverPoints {
+                at: closed,
+                points: &leaf,
+                centre: door,
+            }],
+        );
         assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 25);
         let mut movers = Movers::default();
         assert!(movers_idle(&movers));
@@ -1004,6 +1094,7 @@ mod tests {
         let moved = [MoverPoints {
             at: open,
             points: &leaf,
+            centre: Vec3::from(open.translation),
         }];
         assert!(refresh_movers(&mut grid, &mut movers, &moved));
         assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 10);
@@ -1014,13 +1105,32 @@ mod tests {
         assert!(!refresh_movers(&mut grid, &mut movers, &moved));
     }
 
-    /// The sample's voxel is `y·0.1 + ½` rounded ties to even: 2.0 m is the
-    /// tie 20.5 (20), 2.04 m already reads 21 and 1.96 m 20.
+    /// A sample's voxel through the pre-scaled frame is `y·0.1 + ½ −
+    /// base·0.1` rounded ties to even: 2.0 m is the tie 20.5 (20), 2.04 m
+    /// already reads 21 and 1.96 m 20; its cell is `x/30 − ½ + W/2`, a
+    /// point on a cell's edge the tie.
     #[test]
     fn a_sample_rounds_half_a_voxel_up() {
-        assert_eq!(sample_voxel(2.0, 0.0), 20);
-        assert_eq!(sample_voxel(2.04, 0.0), 21);
-        assert_eq!(sample_voxel(1.96, 0.0), 20);
-        assert_eq!(sample_voxel(2.16, 0.1), 21);
+        let grid = |base: f32| NavGrid::empty(64, 64, base);
+        let voxel = |y: f32, base: f32| {
+            CellFrame::new(&grid(base), Affine3A::IDENTITY)
+                .sample(Vec3::new(0.0, y, 0.0))
+                .1
+        };
+        assert_eq!(voxel(2.0, 0.0), 20);
+        assert_eq!(voxel(2.04, 0.0), 21);
+        assert_eq!(voxel(1.96, 0.0), 20);
+        assert_eq!(voxel(2.16, 0.1), 21);
+        let frame = CellFrame::new(&grid(0.0), Affine3A::IDENTITY);
+        // 0.3 m is on the edge of cells 32 and 33: 32.5, ties to even.
+        assert_eq!(frame.sample(Vec3::new(0.3, 0.0, 0.45)), (32, 0, 33));
+        // A frame turned a quarter about y and moved 0.65 m along x maps
+        // node x to world −z: 0.95 m along it is cell 28 (28.33).
+        let turned = Affine3A::from_rotation_translation(
+            bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(0.65, 0.0, 0.0),
+        );
+        let (x, _, z) = CellFrame::new(&grid(0.0), turned).sample(Vec3::new(0.95, 0.0, 0.0));
+        assert_eq!((x, z), (34, 28));
     }
 }

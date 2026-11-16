@@ -154,7 +154,11 @@ which every shipped body has; character parts, marked `0x400`, never)
 raises the floors under it, level geometry or not. Each point goes through
 the node's world matrix, pre-scaled so that x and z come out in cells
 (`/30 − ½ + W/2`) and y in voxels (`·0.1 + ½ − base·0.1`), rounded to the
-nearest. A point in cells 1 to `W − 3` (and `D − 3`) and voxels 0–254
+nearest: each axis's x and z times `1/30` and its y times 0.1 in double
+(back to single), the translation's x `W/2 + (t·(1/30) − ½)` and its y
+`(t·0.1 + ½) − base·0.1` in double, then the point `(x·X + y·Y) + (z·Z +
+T)` in single precision. Exarust builds the same frame from the node's
+(its translation in centimetres) and rounds the same sums. A point in cells 1 to `W − 3` (and `D − 3`) and voxels 0–254
 raises its cell, one point after another, by the refresh's rule: a missing
 lower floor takes any higher point; a point less than fifteen above the
 lower floor takes it; one fifteen or more above, or at or under the lower
@@ -172,10 +176,23 @@ floors back, and the original queues none for a door
 
 What queues a rectangle, in the original, is short:
 
-- **A node registered** in a simulation sector (at load, or a body spawned
-  later) whose third flag word has `0x100`: the node's box under its world
-  matrix is merged into the pending list. Exarust does not track that
-  flag; what is registered at load the build has covered.
+- **A node registered** in a simulation sector (a mesh node, or the node
+  of a body inserted into the sector) whose render word (the mesh body's
+  word, [formats/RFC.md](formats/RFC.md)) has `0x100`: the node's box under
+  its world matrix is merged into the pending list. A node added to the
+  scene goes into its sector's pending list, which the physics thread
+  drains at the start of its next pass. A level's own nodes are added
+  while the level loads and the load builds the grid at its end, whose
+  set-up empties the pending list, so they leave nothing queued (that a
+  pass always falls between the two was not established; were they kept,
+  the refresh would change 8 lower and 14 upper floors of exanima01 and
+  its walk would meet 5 more cells). A node added later, with the grid
+  built, is refreshed. 1536 shipped meshes carry the bit: the doors,
+  gates, cabinets, pots, amphorae and other props a character can move
+  (`exa-tool corpus render-words`). Exarust marks those meshes when it
+  spawns the level's model, its props and its placed objects
+  (`nav::QueuesGridRefresh`); the first fixed tick drops the mark, queuing
+  the box only when the grid exists.
 - **An item let go** from the cursor (the lift's release, in reach or
   cancelled): the held node's box under the frame **the lift saved**, so
   the floor the item stood on, goes into the ring. Where the item comes to
@@ -228,9 +245,14 @@ mesh with points and no character mark, through the body's world matrix.
 
 Exarust runs the refresh in `FixedPostUpdate`, after the bodies step,
 from the moving meshes ([`MovingMesh`](#moving-props)), each bucketed by
-its node's position: `floor(cm/600)` plus half the room count (the
-simulation grid read as centred on the level, like the navigation grid;
-a guess). With nothing queued it returns before gathering anything. The
+its box's centre, as the physics buckets a body: `floor(cm · (1/600))`
+plus half the room count, the room's index `z · rooms + x` (wrapping into
+the next row as the original's does). The simulation's room grid is the
+scene's room count (the tile grid's, which sizes the navigation grid at
+20 cells a room), and its level sector adds half of it (unsigned shifts)
+plus its root's own room (0 at the origin), read in the simulation's grid
+build. The rooms are walked row by row, each room's bodies in turn. With
+nothing queued it returns before gathering anything. The
 item cursor's let-go writes the held node's box at the lift's saved frame
 (`nav::NavMoved`), which the refresh rings on the next tick.
 `--nav-refresh-moved` is Exarust's debug option: a moving mesh whose node
@@ -319,8 +341,16 @@ cell's lower and upper floor and underside):
   cell of the longer axis to the kept point and is blocked by a refused
   cell or a cost (the penalty shifted once more) over what the search paid
   between the two plus ten. Points sit on cell centres at the node's layer
-  floor; fewer than two corners give no points. Each thread keeps one set
-  of window buffers, and a search clears only the window's interior.
+  floor; fewer than two corners give no points (the original leaves the
+  previous path's points with a count of one, which every caller treats
+  as no route). Each thread keeps one set of window buffers, and a search
+  clears only the window's interior. The planner, its line test and the
+  flood below read the grid without a bounds check, by `z·W + x` in 32
+  bits taken unsigned: a window column past the grid's side reads the
+  neighbouring row's cell (x = −1 the previous row's last, x = W the next
+  row's first), and a node stands there and goes on from it; a row past
+  the grid reads memory past the original's arrays, which Exarust reads
+  as no floor.
   The AI plans with its goal record: size class 3, accept 10 at
   construction, the penalty shift its group-alert count; the roam and
   patrol write class 4 and accept 20, the chase and the flight the roles'
@@ -358,8 +388,9 @@ cell's lower and upper floor and underside):
   layer whose clearance plus penalty is under 80 the point stays, on its
   floor. Else a best-first flood in a 256-cell window round the point's
   cell: from a point off the floors (no layer, or clearance 255) first the
-  nearest cell across the ground that has a floor (not open sky, with
-  more than 10 between its floor and the other layer's slab); then, from
+  nearest cell across the ground whose layer is not open sky and leaves
+  more than 10 between its floor and the other layer's slab (a lower
+  layer without a floor passes too); then, from
   the cell, each neighbour in the original's order the line walk's reach
   steps onto (under 50 cm up, under 2.1 m down), keyed by its distance
   from the point (×10, in 3-D), keeping the cheapest; it stops at a cell
@@ -369,11 +400,19 @@ cell's lower and upper floor and underside):
   is moved onto the nearest walkable point (across the ground; the
   original does it once, not on its first three ticks).
 
-Exarust leaves out two quirks of the off-floor search: the original adds
-to every distance the square of a register it never sets there (the same
-for every cell, so it changes nothing but the bound), and its met map is
-a shared buffer cleared only ±15 cells round the centre; Exarust starts
-each search with a fresh map. The buffer is the planner's own stamp table
+Exarust leaves out two quirks of the off-floor search. The original adds
+to every cell's key the square of `R − h`, `R` a callee-saved register the
+function first writes later, in the flood, so it holds its caller's value
+(none of the five callers of the query sets it; its value is not known),
+and the bound a cell must beat takes that key. With the term from 0 to
+just under 2³¹ the answer is Exarust's (the search meets cells in order
+of their distance, so the term only widens what it puts on the list); a
+square that wraps negative (`|R − h|` of 46 341 or more, a pointer left
+in the register) makes the first acceptable neighbour win and then
+expands a node past its node table, so the answer is undefined. Settling
+it needs the register's value at the query in the running game. Its met
+map is a shared buffer cleared only ±15 cells round the centre; Exarust
+starts each search with a fresh map. The buffer is the planner's own stamp table
 (a word per window cell, a half for each layer): the flood clears window
 columns 112 to 143 of rows 112 to 144 and treats any cell holding a
 non-zero half as met, so a cell a previous plan or flood stamped outside
@@ -472,11 +511,15 @@ Not reproduced, with what it changes:
   centre-floor variants flagged `0x10000` or `0x8`) generated surface
   points; Exarust takes them only into the floor's heightfield, as its GI
   does.
-- The original queues a node registered with its third flag word's
-  `0x100` (at load or on a spawn); Exarust does not track the flag.
-- A body outside the simulation's room grid is bucketed by the original
-  in its first inner room; Exarust buckets it by its position, and the
-  room offset is read as half the room count, unconfirmed.
+- A model dropped into the world from a window (the GUI drop) does not
+  mark its meshes for the registration queue yet; nor does a spawned
+  character, whose meshes carry no such bit in the shipped data.
+- A body outside the simulation's room grid's rows is put back by the
+  original's physics; Exarust buckets it by its box centre wherever it
+  is, and every body by the level sector's rooms.
+- A level without a tile grid has no simulation rooms in the original
+  (its room count is 0, so a refresh there would read an empty room
+  table); Exarust buckets by the 16 rooms its grid's default size gives.
 - Each cell's floor points come from all tile-grid floors over its columns
   rather than from its own merged mesh; they differ only where two cells'
   floors overlap.

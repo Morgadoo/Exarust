@@ -53,6 +53,7 @@ impl Plugin for NavPlugin {
             .add_systems(
                 FixedPostUpdate,
                 (
+                    queue_registered,
                     watch_moving_meshes.run_if(|o: Res<NavRefreshMoved>| o.0),
                     refresh_grid,
                     share_nav_view,
@@ -74,6 +75,8 @@ fn bridge_nav_types(app: &mut App) {
         .bridge_copy::<crate::db_objects::ContainerVolume>()
         .bridge_copy::<crate::db_objects::PlaceholderNode>()
         .bridge_copy::<MovingMesh>()
+        .bridge_copy::<QueuesGridRefresh>()
+        .bridge_copy::<crate::PartBounds>()
         .bridge_message::<crate::nav::view::NavMoved>()
         .bridge_copy::<crate::gi_volume::GiPoints>()
         .bridge_move_resource::<crate::nav::view::NavMovers>()
@@ -120,6 +123,25 @@ pub struct MovingMesh {
     /// The node is level geometry, so its points are stamped too.
     pub stamped: bool,
 }
+
+/// A mesh node whose render word has `0x100`, waiting to be registered in
+/// the simulation. The original's registration of a node in a simulation
+/// sector (the sector's pending nodes, drained at the start of a physics
+/// pass) marks such a node's box dirty on the sector's pathfinder: its box
+/// (`PartBounds`) under its world frame goes into the refresh's pending
+/// list through the merge ([`super::queue_box`]), and the refresh at the
+/// end of that pass takes it. A level's own nodes are added while the
+/// level loads, before the load builds the grid, whose set-up empties the
+/// pending list: they leave nothing queued, and Exarust drops the mark of
+/// a node registered while no grid exists. In the shipped data doors,
+/// gates, cabinets, pots, amphorae and the other props a character can
+/// move carry the bit (`exa-tool corpus render-words`).
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct QueuesGridRefresh;
+
+/// The render-word bit that makes a node's registration queue its box for
+/// the grid's refresh.
+pub const GRID_REFRESH_WORD: u32 = 0x100;
 
 /// A node whose box should be refreshed on the grid: its world frame and
 /// its box (centre and half extents in the node's space, metres). The
@@ -359,6 +381,30 @@ fn finish_build(
     }
 }
 
+/// The registration of the nodes marked [`QueuesGridRefresh`], at the
+/// start of the fixed tick: with a grid, each one's box under its frame
+/// goes into the refresh's pending list (the merge); without one (a level
+/// still loading) nothing is kept. Either way the mark is dropped.
+fn queue_registered(
+    mut commands: Commands,
+    grid: Option<Res<NavGrid>>,
+    mut movers: Option<ResMut<NavMovers>>,
+    nodes: Query<(Entity, &GlobalTransform, &crate::PartBounds), With<QueuesGridRefresh>>,
+) {
+    for (e, at, bounds) in &nodes {
+        if let (Some(grid), Some(movers)) = (grid.as_deref(), movers.as_deref_mut()) {
+            super::queue_box(
+                &mut movers.0,
+                grid,
+                at.affine(),
+                bounds.centre,
+                bounds.half_extents,
+            );
+        }
+        commands.entity(e).remove::<QueuesGridRefresh>();
+    }
+}
+
 /// Queues the moved nodes and refreshes the grid's rectangles from the
 /// bodies under the level's moving meshes. With nothing queued it touches
 /// nothing.
@@ -366,7 +412,7 @@ fn refresh_grid(
     grid: Option<ResMut<NavGrid>>,
     movers: Option<ResMut<NavMovers>>,
     mut moved: MessageReader<NavMoved>,
-    bodies: Query<(&GiPoints, &GlobalTransform), With<MovingMesh>>,
+    bodies: Query<(&GiPoints, &GlobalTransform, Option<&crate::PartBounds>), With<MovingMesh>>,
     mut revision: ResMut<NavRevision>,
 ) {
     let (Some(mut grid), Some(mut movers)) = (grid, movers) else {
@@ -382,9 +428,10 @@ fn refresh_grid(
     }
     let samples: Vec<super::MoverPoints> = bodies
         .iter()
-        .map(|(points, at)| super::MoverPoints {
+        .map(|(points, at, bounds)| super::MoverPoints {
             at: at.affine(),
             points: points.0.as_slice(),
+            centre: bounds.map_or(at.translation(), |b| at.transform_point(b.centre)),
         })
         .collect();
     if super::refresh_movers(&mut grid, &mut movers.0, &samples) {
@@ -585,7 +632,14 @@ mod tests {
         );
         let c = grid.cell_centre(14, 14);
         let at = Vec3::new(c.x, 0.0, c.y);
-        super::super::raise_from_movers(&mut grid, points.iter().map(|&p| p + at));
+        super::super::raise_from_movers(
+            &mut grid,
+            &[super::super::MoverPoints {
+                at: bevy::math::Affine3A::from_translation(at),
+                points: &points,
+                centre: at,
+            }],
+        );
         assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 25);
         world.insert_resource(grid);
         world.insert_resource(NavMovers::default());
@@ -624,6 +678,64 @@ mod tests {
         assert_eq!(grid.cell(16, 14, Layer::Lower).floor, 25);
         assert!(super::super::movers_idle(&world.resource::<NavMovers>().0));
         assert_eq!(*world.resource::<NavRevision>(), NavRevision(1));
+    }
+
+    /// A node whose render word has `0x100` registered while the level has
+    /// no grid queues nothing (its mark is dropped); one registered once
+    /// the grid exists queues its box, which the same tick's refresh takes:
+    /// with no body there any more, the cell goes back to its floor as
+    /// built. The real physics and navigation plugins, one fixed tick an
+    /// update.
+    #[test]
+    fn a_node_registered_with_a_grid_queues_its_box() {
+        use bevy::time::TimeUpdateStrategy;
+        use exa_physics::sim_bridge::SimBridgeAppExt;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, exa_physics::PhysicsPlugin, NavPlugin))
+            .init_resource::<Assets<Mesh>>()
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+            ))
+            .bridge_move_resource::<NavGrid>();
+        let mut scratch = World::new();
+        let (at, _) = yard(&mut scratch);
+        let grid = scratch.remove_resource::<NavGrid>().unwrap();
+        let bounds = crate::PartBounds {
+            centre: Vec3::new(0.0, 1.75, 0.0),
+            radius: 0.7,
+            half_extents: Vec3::new(0.05, 0.7, 0.05),
+        };
+        let node = |app: &mut App| {
+            app.world_mut()
+                .spawn((
+                    Transform::from_translation(at),
+                    GlobalTransform::from_translation(at),
+                    bounds,
+                    QueuesGridRefresh,
+                ))
+                .id()
+        };
+        let early = node(&mut app);
+        app.update();
+        app.update();
+        assert!(!app.world().entity(early).contains::<QueuesGridRefresh>());
+        app.world_mut().insert_resource(grid);
+        app.world_mut().insert_resource(NavMovers::default());
+        app.update();
+        app.update();
+        let floor = |app: &App| {
+            app.world()
+                .resource::<NavGrid>()
+                .cell(14, 14, Layer::Lower)
+                .floor
+        };
+        assert_eq!(floor(&app), 25, "the early node left nothing queued");
+        let late = node(&mut app);
+        app.update();
+        app.update();
+        assert!(!app.world().entity(late).contains::<QueuesGridRefresh>());
+        assert_eq!(floor(&app), 10);
+        assert_eq!(app.world().resource::<NavRevision>().0, 1);
     }
 
     /// `--nav-refresh-moved`: a moving mesh that has held a new frame for

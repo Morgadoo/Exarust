@@ -53,8 +53,11 @@
 //!
 //! The original keeps its window, nodes and stamp table in shared buffers;
 //! Exarust keeps one set per thread and clears the window's interior for
-//! each search, as the original does. A grid smaller than the window reads
-//! as no floor outside it. Evidence: reverse engineering of `Exanima.exe`
+//! each search, as the original does. The original reads the grid without
+//! a bounds check, by a 32-bit index: a window column past the grid's side
+//! reads the neighbouring row's cell (and a node stands there and expands
+//! from it), as here; a row past the grid reads memory past its arrays,
+//! which Exarust reads as no floor. Evidence: reverse engineering of `Exanima.exe`
 //! 0.9.5 (the planner, its line test, the squared-distance helper and the
 //! window reset), `docs/NAVIGATION.md` (Planning).
 
@@ -244,15 +247,18 @@ fn planner_height(y: f32, base: f32) -> i32 {
     (f64::from(cm(y) - cm(base)) * 0.1).round_ties_even() as i32
 }
 
-/// The cell at grid coordinates, or nothing outside the grid (the
-/// original reads past a grid smaller than its window).
+/// The cell at grid coordinates as the original reads it, by its
+/// unchecked 32-bit index ([`NavGrid::cell_unchecked`]): a window column
+/// past the grid's side reads the neighbouring row, and an index past the
+/// grid's cells reads nothing (the original reads memory past its arrays).
 fn cells(grid: &NavGrid, x: i64, z: i64) -> Option<(NavCell, NavCell)> {
-    let (width, depth) = grid.size();
-    if x < 0 || z < 0 || x >= width as i64 || z >= depth as i64 {
+    if !grid.holds_unchecked(x, z) {
         return None;
     }
-    let (x, z) = (x as usize, z as usize);
-    Some((grid.cell(x, z, Layer::Lower), grid.cell(x, z, Layer::Upper)))
+    Some((
+        grid.cell_unchecked(x, z, Layer::Lower),
+        grid.cell_unchecked(x, z, Layer::Upper),
+    ))
 }
 
 /// The layer and floor a step from floor `own` enters (see the module's
@@ -664,14 +670,17 @@ fn search(
             cost,
         };
     }
+    // A point's place across the ground comes from its window place, a
+    // node that stands past the grid's side (on the neighbouring row's
+    // cell, which gave its floor) included.
     let point = |id: u16| {
         let node = nodes[usize::from(id)];
         let (x, z) = grid_of(node.at);
-        let centre = grid.cell_centre(x as usize, z as usize);
+        let centre = |c: i64, n: usize| (c as f32 - (n / 2) as f32 + 0.5) * super::CELL;
         Vec3::new(
-            centre.x,
+            centre(x, width),
             grid.floor_height(floor_of(node.at, node.layer) as u8),
-            centre.y,
+            centre(z, depth),
         )
     };
     let mut points = Vec::with_capacity(count);
