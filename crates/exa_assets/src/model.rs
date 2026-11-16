@@ -5561,6 +5561,93 @@ mod tests {
         assert_eq!(ClothMesh::of(&bare, &[0]).face_flags, vec![0, 0]);
     }
 
+    /// The link walk over every installed cloth mesh (skipped without the
+    /// game): the long hair, the four banners and the wraith's robe. Every
+    /// element is linked, no link joins an element to itself, and each
+    /// face's two shorter edges are links. Logs each mesh's counts (with
+    /// the pairs linked twice).
+    #[test]
+    fn the_shipped_cloths_walk_their_links() {
+        use exa_rpk::PackKind;
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let mut meshes = 0;
+        for kind in [PackKind::CharExt, PackKind::Objlib, PackKind::Resource] {
+            let pack = game.pack(kind).unwrap();
+            for entry in pack.entries() {
+                let bytes = pack.bytes(entry);
+                if exa_formats::FileKind::detect(bytes) != exa_formats::FileKind::ChunkTree {
+                    continue;
+                }
+                let Ok(scene) = Scene::parse(bytes) else {
+                    continue;
+                };
+                for node in scene.nodes.iter().filter(|n| n.cloth_marker) {
+                    let NodeBody::Mesh(mesh) = &node.body else {
+                        continue;
+                    };
+                    let groups: Vec<usize> = (0..mesh.groups.len()).collect();
+                    let cloth = ClothMesh::of(mesh, &groups);
+                    meshes += 1;
+                    let mut pairs = std::collections::HashMap::new();
+                    let mut linked = vec![false; cloth.elements];
+                    let mut twice = Vec::new();
+                    for (index, &(a, b)) in cloth.links.iter().enumerate() {
+                        assert_ne!(a, b, "{}: a self link", entry.name);
+                        if let Some(first) = pairs.insert((a.min(b), a.max(b)), index) {
+                            twice.push((first, index, a, b));
+                        }
+                        linked[a as usize] = true;
+                        linked[b as usize] = true;
+                    }
+                    // Some pairs come twice (the walk's link and a neighbour
+                    // pair, or two neighbour pairs, around triangle fans):
+                    // the original's lists keep them, so they are counted,
+                    // not refused.
+                    let used: std::collections::HashSet<u32> =
+                        cloth.faces.iter().flatten().copied().collect();
+                    let unlinked = used.iter().filter(|&&e| !linked[e as usize]).count();
+                    // Each face's two shorter edges are links.
+                    let at = |e: u32| {
+                        let v = mesh.position_ids.iter().position(|&id| id == e).unwrap();
+                        bevy::math::Vec3::from_array(mesh.positions[v])
+                    };
+                    let mut missing = 0;
+                    for face in &cloth.faces {
+                        let mut edges: Vec<(f32, u32, u32)> = (0..3)
+                            .map(|k| {
+                                let (a, b) = (face[k], face[(k + 1) % 3]);
+                                (at(a).distance_squared(at(b)), a.min(b), a.max(b))
+                            })
+                            .collect();
+                        edges.sort_by(|x, y| x.0.total_cmp(&y.0));
+                        for &(_, a, b) in &edges[..2] {
+                            if !pairs.contains_key(&(a, b)) {
+                                missing += 1;
+                            }
+                        }
+                    }
+                    eprintln!(
+                        "{} {}: {} elements, {} faces, {} links ({} pairs twice), {} unlinked, {} short edges missing",
+                        entry.name,
+                        node.name,
+                        used.len(),
+                        cloth.faces.len(),
+                        cloth.links.len(),
+                        twice.len(),
+                        unlinked,
+                        missing
+                    );
+                    assert_eq!(unlinked, 0, "{}: elements without a link", entry.name);
+                    assert!(cloth.links.len() >= used.len(), "{}", entry.name);
+                }
+            }
+        }
+        assert!(meshes >= 6, "{meshes} cloth meshes");
+    }
+
     /// A built part turns back into the merge's streams: its positions,
     /// normals, UVs, weights and indices; two materials become two runs of
     /// the merged mesh, each with its own vertices and its handle, and
