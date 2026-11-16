@@ -4115,6 +4115,7 @@ mod tests {
             model_flags: 0,
             worn_model: worn.into(),
             appearance: Some(Appearance {
+                seed: 0,
                 quality: 160,
                 damage: 64,
                 dirt: 0,

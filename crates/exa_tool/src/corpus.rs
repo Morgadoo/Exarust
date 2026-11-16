@@ -383,11 +383,24 @@ pub fn factories(game: &GameData) -> Result<()> {
     };
     let (mut ok, mut failed) = (0, 0);
     let mut versions = [0usize; 3];
+    // Parts by their paint-region flags (bit 0 texture-only overlay, bit 1
+    // mask-gated shade, bit 2 the alternate normal program).
+    let mut flagged: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for e in pack.entries() {
         match Factory::parse(pack.bytes(e)) {
             Ok(f) => {
                 ok += 1;
                 versions[f.version as usize] += 1;
+                for p in &f.parts {
+                    for bit in [1u32, 2, 4] {
+                        if p.flags & bit != 0 {
+                            flagged
+                                .entry(bit)
+                                .or_default()
+                                .push(format!("{}:{}", e.name, p.name));
+                        }
+                    }
+                }
             }
             Err(err) => {
                 failed += 1;
@@ -399,6 +412,33 @@ pub fn factories(game: &GameData) -> Result<()> {
         "{ok} factories parsed (v0 {}, v1 {}, v2 {}), {failed} failed",
         versions[0], versions[1], versions[2]
     );
+    // The recipes items name (`@<factory>` models in the object database).
+    let named: std::collections::BTreeSet<String> = game
+        .pack(exa_rpk::PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .and_then(|b| exa_formats::rdb::Database::parse(b).ok())
+        .map(|db| {
+            exa_formats::objdb::items(&db)
+                .into_iter()
+                .filter_map(|i| i.model.strip_prefix('@').map(str::to_ascii_lowercase))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (bit, parts) in &flagged {
+        let shown: Vec<&str> = parts.iter().take(12).map(String::as_str).collect();
+        let used = parts
+            .iter()
+            .filter(|p| {
+                let factory = p.split(':').next().unwrap_or("");
+                named.contains(&factory.trim_end_matches(".fty").to_ascii_lowercase())
+            })
+            .count();
+        println!(
+            "part flag {bit:#x}: {} parts ({used} in recipes an item names), e.g. {}",
+            parts.len(),
+            shown.join(", ")
+        );
+    }
     for (name, seed, quality) in [
         ("AxeTool2H_A01", 0x0D31_0870u32, 107u8),
         ("sword_lnga1", 0x1234_5678, 128),
