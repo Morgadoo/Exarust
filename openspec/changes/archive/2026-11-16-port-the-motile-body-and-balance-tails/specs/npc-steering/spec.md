@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Jolt soft stop
-An AI body whose last balance tick was jolted while it moved SHALL be soft-stopped before its states run: its route ends and its request takes the stopping bit.
+An AI body whose last balance tick was jolted while it moved SHALL be soft-stopped at the next AI tick, before the combat states: its route ends and its request takes the stopping bit.
 
 #### Scenario: A jolted walker
 - **WHEN** a route-following body's balance tick reports a jolt

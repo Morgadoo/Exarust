@@ -121,7 +121,7 @@ stop once; the idle walk does not touch the route otherwise, so a
 fighter's chase walks its own.
 
 A moving AI body whose balance tick was jolted is soft-stopped at the next
-AI tick, before its states run (`route_walk::soft_stop_jolted_routes`), as
+AI tick, before the combat states (`route_walk::soft_stop_jolted_routes`), as
 the original's body tick calls the behaviour's soft stop on a jolt.
 
 Every state that walks (the roam and patrol legs, the flight, the chase,

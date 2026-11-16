@@ -617,7 +617,8 @@ pub fn walk(route: &mut AiRoute, body: &mut WalkBody, gaze: &mut Gaze, ask: Walk
 /// is soft-stopped, as the original's body tick calls its behaviour's soft
 /// stop right after the jolt, before the behaviour runs. Exarust's jolt is
 /// measured in the movement stage, so the stop lands at the next AI tick,
-/// before its states. [Exarust: AI bodies only; whether the player's
+/// with the staging freeze's soft stop, before the combat states (after
+/// the brains' own tick). [Exarust: AI bodies only; whether the player's
 /// behaviour takes the same stop is not traced.]
 pub fn soft_stop_jolted_routes(
     nav: Option<Res<NavGrid>>,
