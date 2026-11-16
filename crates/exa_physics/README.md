@@ -402,7 +402,8 @@ matched nothing in the simulation's world.
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
 `MINSS`/`MAXSS`/clamp compares, the floor and ceiling conversions (the
-rounding mode set and restored), the polynomial logarithm, exponential,
+rounding mode set and restored; a denormal reads as zero, as under the
+engine's denormals-are-zero, where the library's floor and ceiling do not), the polynomial logarithm, exponential,
 sine and sine-cosine (the polynomials picked by mask arithmetic), the
 arctangent and octant atan2, arcsine and arccosine, the double-precision
 angle wrap, the 4×3 products, the rigid frame's transpose product and row sum (`point_into_frame`, `point_out_of_frame`), triple product, fast and exact barycentrics,
