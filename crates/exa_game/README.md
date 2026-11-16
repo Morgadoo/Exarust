@@ -335,6 +335,17 @@ tick (`mind::runtime::tick_minds`). Every level change first runs the save
 unit's GUI reset (`load_reset`: the death fade, every game screen, the
 crystal drain's sources and the item icon cache), and an adapter journey's
 end saves and refreshes the checkpoint (`SaveStep::SaveAndCheckpoint`).
+A scanned player's story death runs the original's record strip
+(`left_behind::leave_behind`): the dead body keeps a dressed copy of its
+record in the world store and the player goes on with the stripped record;
+the respawn's and the exit's owned-mark clear then make the story save write
+the stripped player into `#playerdata` and the body, dead, into the level
+section (`left_behind::LeftBody`, `level_save::LevelSaveScene::left_character`).
+Every story level change reads the save's own section of the destination
+when the save holds one (`save_live::prefer_saved_section`), and the host's
+loads take the session's arrival words (`level_change::SessionArrival`: a
+door's entrance and level left, the respawn's session-start word, the word
+the session last left for any other load).
 Each load also fills
 the save unit's node-hook lists (`save_level::track_scene_content`: door-side
 volumes, zones and markers, scripted devices).
