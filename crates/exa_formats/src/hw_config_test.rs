@@ -429,7 +429,7 @@ fn apply_writes_its_lines_in_the_original_order() {
         ("ShadowDetail", "5"),
         ("ShadowQuality", "4"),
         ("HWMultisample", "4"),
-        ("InputMode", "51"),
+        ("InputMode", "3"),
         ("AimSpeed", "30"),
         ("Fullscreen", "1"),
         ("Music", "1"),

@@ -1114,6 +1114,28 @@ fn tip_box(canvas: &mut Canvas, tip: &SkillTip, unit: i32) {
     quads(canvas, &corners, &shade);
 }
 
+/// A label's glyphs: a line centred in its box and clipped there (the
+/// forget dialog's title and question), else a line from `x`, moved left by
+/// half its width when it is centred on `x`.
+fn label_glyphs(font: &GuiFont, label: &SkillLabel) -> Vec<exa_ui::gui_text::TextQuad> {
+    let text = label.text.as_bytes();
+    if let Some(width) = label.centred_in {
+        return exa_ui::gui_text::draw_line_centred(
+            font,
+            text,
+            label.x as i32,
+            label.y as i32,
+            width as i32,
+        )
+        .0;
+    }
+    let mut x = label.x as i32;
+    if label.centred {
+        x -= font.text_width(text) >> 1;
+    }
+    exa_ui::gui_text::draw_line(font, text, x, label.y as i32)
+}
+
 /// A label's glyph quads in the GUI font, sampled from its atlas (the
 /// skin's textured program, the ink as the tint).
 fn label(canvas: &mut Canvas, label: &SkillLabel, font: (&GuiFont, &GuiTexture, (u16, u16))) {
@@ -1121,12 +1143,8 @@ fn label(canvas: &mut Canvas, label: &SkillLabel, font: (&GuiFont, &GuiTexture, 
     let Some((du, dv)) = exa_ui::gui_text::font_uv(font, atlas) else {
         return;
     };
-    let mut x = label.x as i32;
-    if label.centred {
-        x -= font.text_width(label.text.as_bytes()) >> 1;
-    }
     let ink = label.ink.map(|byte| f32::from(byte) / 255.0);
-    let glyphs = exa_ui::gui_text::draw_line(font, label.text.as_bytes(), x, label.y as i32);
+    let glyphs = label_glyphs(font, label);
     let shade = |uv: [f32; 2], ink: [f32; 4]| {
         let t = texel(Some(texture), uv[0], uv[1]);
         [t[0] * ink[0], t[1] * ink[1], t[2] * ink[2], t[3] * ink[3]]
@@ -1198,6 +1216,48 @@ pub fn rasterise(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tens() -> GuiFont {
+        GuiFont {
+            texture: "test",
+            glyph: (12, 16),
+            ascent: 13,
+            slant: 0,
+            gap: 0,
+            line_height: 16,
+            advances: [10; 256],
+        }
+    }
+
+    fn forget_line(text: &str, x: f32, width: Option<f32>) -> SkillLabel {
+        SkillLabel {
+            x,
+            y: 50.0,
+            ink: [0xff; 4],
+            text: text.to_string(),
+            centred: false,
+            centred_in: width,
+            order: 0,
+        }
+    }
+
+    #[test]
+    fn the_forget_lines_are_centred_in_their_width_and_clipped() {
+        let font = tens();
+        // 40 wide in 100 from 20: starts at round(30 + 20) = 50.
+        let glyphs = label_glyphs(&font, &forget_line("abcd", 20.0, Some(100.0)));
+        assert_eq!(glyphs.len(), 4);
+        assert_eq!(glyphs[0].rect[0], 50);
+        // Wider than the box: drawn from its left and stopped after the
+        // glyph whose pen passes left + width (20 + 30 = 50: the third
+        // glyph ends at 50, the fourth passes it).
+        let clipped = label_glyphs(&font, &forget_line("abcdefgh", 20.0, Some(30.0)));
+        assert_eq!(clipped[0].rect[0], 20);
+        assert_eq!(clipped.len(), 4);
+        // A plain label is left-aligned and whole.
+        let plain = label_glyphs(&font, &forget_line("abcdefgh", 20.0, None));
+        assert_eq!((plain[0].rect[0], plain.len()), (20, 8));
+    }
 
     #[test]
     fn the_ring_program_fades_out_from_the_centre() {

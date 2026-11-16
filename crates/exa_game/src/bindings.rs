@@ -101,12 +101,21 @@ pub const VERSION: u32 = 101;
 /// The table's slot count.
 pub const COUNT: usize = 23;
 
-/// A player's bindings: the controller-mode flag and 23 virtual-key codes.
+/// A player's bindings: the controller-mode flag, 23 virtual-key codes
+/// (the slots the game reads), the saved table they came from (the
+/// Controls page's rows, in scan codes) and the file's controller word.
 #[derive(Resource, Debug, Clone, PartialEq, Eq)]
 pub struct Bindings {
     /// Whether the controller drives the player instead of the keyboard.
     pub controller: bool,
     keys: [u32; COUNT],
+    /// The saved table, kept as it was read or captured: the saver writes
+    /// these rows as they are (an extended key keeps its `0x100` bit).
+    rows: [u32; COUNT],
+    /// The file's controller word as the loader read it (0 for the older
+    /// shape and without a file). The original only reads and writes it
+    /// back; the live controller mode comes from the settings' `InputMode`.
+    word: u32,
 }
 
 impl Default for Bindings {
@@ -114,6 +123,8 @@ impl Default for Bindings {
         Self {
             controller: false,
             keys: DEFAULT_KEYS,
+            rows: DEFAULT_ROWS,
+            word: 0,
         }
     }
 }
@@ -124,9 +135,44 @@ impl Bindings {
         self.keys[action.slot()]
     }
 
-    /// Binds `action` to `key`.
+    /// Binds `action` to the virtual-key code `key`; the saved row that
+    /// fills its slot takes the code's row ([`row_code`]).
     pub fn set_key(&mut self, action: Action, key: u32) {
         self.keys[action.slot()] = key;
+        if let Some(row) = ROW_SLOTS.iter().position(|slot| *slot == Some(action.slot())) {
+            self.rows[row] = row_code(key);
+        }
+    }
+
+    /// Writes a captured code into the saved row `row` as it is, and the
+    /// row's slot through the original's conversion ([`slot_code`]), as the
+    /// Controls page's capture and Apply do. A row past the table is
+    /// ignored.
+    pub fn set_row(&mut self, row: usize, code: u32) {
+        let Some(slot) = ROW_SLOTS.get(row) else {
+            return;
+        };
+        self.rows[row] = code;
+        if let Some(slot) = slot {
+            self.keys[*slot] = slot_code(code);
+        }
+    }
+
+    /// The saved table's rows.
+    pub fn rows(&self) -> &[u32; COUNT] {
+        &self.rows
+    }
+
+    /// The name the Controls page's key cell shows for the saved row `row`
+    /// ([`row_key_name`]).
+    pub fn row_name(&self, row: usize) -> String {
+        self.rows.get(row).map_or_else(String::new, |code| row_key_name(*code))
+    }
+
+    /// The file's controller word as read ([`Bindings::encode`] writes it
+    /// back unchanged).
+    pub fn controller_word(&self) -> u32 {
+        self.word
     }
 
     /// The table's codes.
@@ -204,15 +250,15 @@ impl Bindings {
     }
 
     /// The saved payload, as the original's saver writes it: version 101,
-    /// the controller flag, the count 23, then the saved table's 23 rows
-    /// ([`row_code`] of each row's slot; row 21 is 0).
+    /// the controller word as the loader read it, the count 23, then the
+    /// saved table's 23 rows as they are (a captured extended key keeps
+    /// its `0x100` bit; row 21 is 0 once a file was read).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(12 + COUNT * 4);
         out.extend_from_slice(&VERSION.to_le_bytes());
-        out.extend_from_slice(&u32::from(self.controller).to_le_bytes());
+        out.extend_from_slice(&self.word.to_le_bytes());
         out.extend_from_slice(&(COUNT as u32).to_le_bytes());
-        for slot in ROW_SLOTS {
-            let code = slot.map_or(0, |slot| row_code(self.keys[slot]));
+        for code in self.rows {
             out.extend_from_slice(&code.to_le_bytes());
         }
         out
@@ -234,11 +280,12 @@ impl Bindings {
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         };
         let version = word(0)? as i32;
-        let (controller, first) = if version > 100 {
-            (word(1)? != 0, 3)
+        let (saved_word, first) = if version > 100 {
+            (word(1)?, 3)
         } else {
-            (false, 2)
+            (0, 2)
         };
+        let controller = saved_word != 0;
         let count = (word(first - 1)? as i32).max(0) as usize;
         let mut rows = DEFAULT_ROWS;
         for (i, row) in rows.iter_mut().enumerate().take(count) {
@@ -251,7 +298,12 @@ impl Bindings {
                 keys[*slot] = slot_code(rows[row]);
             }
         }
-        Some(Self { controller, keys })
+        Some(Self {
+            controller,
+            keys,
+            rows,
+            word: saved_word,
+        })
     }
 }
 
@@ -436,6 +488,48 @@ pub fn row_code(code: u32) -> u32 {
         .map_or(0, |(scan, _)| if extended { 0x100 | scan } else { *scan })
 }
 
+/// The name the Controls page shows for a saved row, as the original names
+/// its key cells from the page's rows: the mouse (`0x8000`) and `0x4000`
+/// shapes by [`exa_formats::hw_config::key_name`] (a mouse code other than
+/// 4 to 6, the primary and secondary buttons among them, has an empty
+/// caption); a scan code by its key, the extended bit kept: control and
+/// alt without it are the either-side keys, with it the right ones; the
+/// keypad's digits and decimal without it are the keypad's keys, with it
+/// the navigation keys. The names themselves are the US layout's
+/// ([`exa_formats::hw_config::key_name`]), not the system's layout-aware
+/// call; a scan code without a key shows as `<code>`.
+pub fn row_key_name(row: u32) -> String {
+    if row & 0xC000 != 0 {
+        return exa_formats::hw_config::key_name(row);
+    }
+    let scan = row & 0xFF;
+    let extended = row & 0x100 != 0;
+    let vk = match (scan, extended) {
+        (0x1D, false) => Some(0x11),
+        (0x38, false) => Some(0x12),
+        (0x2A, false) => Some(0x10),
+        (0x1D, true) => Some(0xA3),
+        (0x38, true) => Some(0xA5),
+        (0x35, true) => Some(0x6F),
+        (0x53, false) => Some(0x6E),
+        (0x47..=0x52, false) if !matches!(scan, 0x4A | 0x4E) => {
+            const KEYPAD: [u32; 10] = [0x52, 0x4F, 0x50, 0x51, 0x4B, 0x4C, 0x4D, 0x47, 0x48, 0x49];
+            KEYPAD
+                .iter()
+                .position(|code| *code == scan)
+                .map(|digit| 0x60 + digit as u32)
+        }
+        _ => SCAN_CODES
+            .iter()
+            .find(|(code, _)| *code == scan)
+            .map(|(_, vk)| *vk),
+    };
+    match vk {
+        Some(vk) => exa_formats::hw_config::key_name(vk),
+        None => format!("<{row}>"),
+    }
+}
+
 /// The Bevy key for a Windows virtual-key code in the table. An
 /// either-side modifier (0x10, 0x11, 0x12) names the left key ([`Bindings`]
 /// reads it on both sides); the one-sided codes the saved table's
@@ -533,7 +627,7 @@ mod tests {
         assert_eq!(Action::from_slot(COUNT), None);
     }
 
-    fn payload(words: &[u32]) -> Vec<u8> {
+    pub(super) fn payload(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
     }
 
@@ -566,6 +660,7 @@ mod tests {
     fn a_saved_table_round_trips() {
         let mut bindings = Bindings {
             controller: true,
+            word: 1,
             ..default()
         };
         bindings.set_key(Action::Talk, 0x45);
@@ -830,6 +925,7 @@ pub fn mouse_hook_bit(button: MouseButton) -> Option<u32> {
 
 #[cfg(test)]
 mod rebind_tests {
+    use super::tests::payload;
     use super::*;
 
     #[test]
@@ -867,6 +963,56 @@ mod rebind_tests {
         assert_eq!(row_code(0x04), 0x8004);
         assert_eq!(row_code(0x05), 0x8005);
         assert_eq!(row_code(0x06), 0x8006);
+    }
+
+    #[test]
+    fn a_captured_extended_key_and_the_controller_word_save_as_they_are() {
+        // A file with controller word 5 and right control on Interact's
+        // row (8): both come back unchanged, though the slot reads the
+        // left key.
+        let mut words = vec![VERSION, 5, COUNT as u32];
+        words.extend(DEFAULT_ROWS);
+        words[3 + 8] = 0x11D;
+        let mut bindings = Bindings::decode(&payload(&words)).expect("loads");
+        assert!(bindings.controller);
+        assert_eq!(bindings.controller_word(), 5);
+        assert_eq!(bindings.key(Action::Interact), 0xA2);
+        let mut expected = words.clone();
+        expected[3 + UNUSED_ROW] = 0;
+        assert_eq!(bindings.encode(), payload(&expected));
+        // A capture writes the row as it is: right alt on Run's row (13).
+        bindings.set_row(13, 0x138);
+        assert_eq!(bindings.rows()[13], 0x138);
+        assert_eq!(bindings.key(Action::Alternate), 0xA4);
+        assert_eq!(&bindings.encode()[(3 + 13) * 4..][..4], &0x138u32.to_le_bytes());
+        // Exarust's live flag does not change the word the file keeps.
+        bindings.controller = false;
+        assert_eq!(&bindings.encode()[4..8], &5u32.to_le_bytes());
+    }
+
+    #[test]
+    fn the_rows_are_named_with_their_extended_bit() {
+        assert_eq!(row_key_name(0x11), "W");
+        assert_eq!(row_key_name(0x1D), "Ctrl");
+        assert_eq!(row_key_name(0x11D), "Right Ctrl");
+        assert_eq!(row_key_name(0x38), "Alt");
+        assert_eq!(row_key_name(0x138), "Right Alt");
+        assert_eq!(row_key_name(0x2A), "Shift");
+        assert_eq!(row_key_name(0x14B), "Left");
+        assert_eq!(row_key_name(0x4B), row_key_name_vk(0x64));
+        assert_eq!(row_key_name(0x8004), "Mouse 3");
+        // The primary and secondary buttons have no caption.
+        assert_eq!(row_key_name(0x8001), "");
+        assert_eq!(row_key_name(0x8002), "");
+        assert_eq!(row_key_name(0x4041), "<65>");
+        assert_eq!(row_key_name(0x7F), "<127>");
+        let bindings = Bindings::default();
+        assert_eq!(bindings.row_name(0), "W");
+        assert_eq!(bindings.row_name(6), "Mouse 3");
+    }
+
+    fn row_key_name_vk(vk: u32) -> String {
+        exa_formats::hw_config::key_name(vk)
     }
 
     #[test]

@@ -106,7 +106,7 @@ reading (see [UI.md](../UI.md), Settings options):
 | `PerfIndex` | fraction | 0 | the GPU benchmark's best rate over 60 |
 | `ShowFPS`, `Music`, `CamFollow`, `LinearRGB`, `SoftwareAudio`, `NoProcMips`, `NoDynamicMips`, `DynamicVBO`, `SwapCopy`, `ForceVBO`, `GILowPrecision` | boolean | `Music` and `CamFollow` on, the rest off (`ShowFPS` and `Music` are the screen's own defaults; the others are guesses, see the code comments) | kept; `ShowFPS` feeds the readout, `GILowPrecision` is already Exarust's GI format |
 | `ShadowFmt`, `ScreenWidth`, `ScreenHeight` | integer | 0 | kept; `ScreenWidth`/`ScreenHeight` are the full-screen mode's size |
-| `InputMode` | integer | 0 | the controller when greater than 0 (the screen writes 0 or 51) |
+| `InputMode` | integer | 0 | the controller when greater than 0 (the screen writes 0 or 3) |
 | `AimSpeed` | integer | 30 (0.29) | the 1-based step: the aim speed is `(step − 1) / 99` in double precision, then single, unclamped (the screen writes `round(99·fraction) + 1`) |
 
 The audio's `Volume` (a fraction in percent: the handler multiplies it by
@@ -128,7 +128,7 @@ Apply reads the file first (nothing happens when it cannot be read), then
 writes `PerfIndex` (two decimals, trailing zeros kept), `Volume`
 (percent), `Supersample`, `ShadingQuality`, `TextureDetail`,
 `TextureQuality`, `ShadowDetail`, `ShadowQuality`, `HWMultisample`,
-`InputMode` (`0`/`51`), `AimSpeed`, `Fullscreen`, `Music`, `ShowFPS`,
+`InputMode` (`0`/`3`), `AimSpeed`, `Fullscreen`, `Music`, `ShowFPS`,
 `ShowGameTips`, `Checkpoints`, `VerticalSync` and `ShowFPS` again, in that
 order, through the settings screen's line rewriter, and writes the file. The
 quality levels, super sampling, hardware antialiasing, vertical sync, full
