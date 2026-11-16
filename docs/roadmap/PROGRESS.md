@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r289, 11-16) | target |
+| measure | start (r186, 11-10) | now (r290, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,099 | all |
+| Tests passing | 8,489 | 9,100 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 290 | Every schedule the simulation step runs is fully ordered (1149 unordered pairs touching the same data, each kept in the order it already ran, no simulation value changed) and PreUpdate too; a test on the game's own App fails on any new unordered pair, the frame's Update and PostUpdate held at an exact count (5835 and 275) for the next ordering lane (ambiguity) |
 | 2026-11-16 | 289 | A function oracle runs the original's machine code in an emulator on the worker and replays the cases against the Rust ports (exa_oracle crate, no addresses): 29 of 33 functions identical over 5000 cases each; a denormal bug in the floor and ceiling helpers fixed; the DEC-7 numbers measured (Intel and AMD differ on about half of the approximate reciprocal answers); about 70 to 110 open rows are cheap to check next (oracle) |
 | 2026-11-16 | 288 | The scenes owed by rounds 273 to 280 ran on the worker's GPU with new debug hooks (a play-mode fire, weapon seeds, mechanism list and pokes, a device scan); determinism holds per binary; a twelve-scene golden suite now runs after each round (determinism, screenshots against references, log checks); F560 to F566 opened (far characters changed by the fires round, the hire page layout, the golem view's head, the portcullis reading, the respawn's dark torch, the save screen's missing records, the portcullis pick) (evidence2) |
 | 2026-11-16 | 287 | The terrain lane, held since round 242, is released after a free-camera check on the worker's GPU: blank blocks are left out of every draw as the original's only path (unseen by shipped cameras), and their plants leave the camera draws but stay shadow casters; two older faults fixed on the way: the interface camera had taken part in world visibility, and plants grew over blocks never built. No lane is held |
