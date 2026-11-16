@@ -1605,6 +1605,8 @@ the GI manager's shape list is cleared at the level teardown and its dirty-marki
 
 the bug class behind F547 is now a test failure: a test builds the game's own App headless with the lockstep bridge and fails on any system either world skips for a missing resource or message (none on the current code; it catches the vanish-turn regression when reintroduced). F549 fixed: the Shock read the cast clip's length where the original reads the step length, so its burst fired on the second tick; it now charges about 1.2 s and its burst is aimed at the target (the earlier jolts were the duellist's sword). F551 fixed: a dead manager back in the hub ends the session through the player's death and the end menu, as the original's hub hook does. F552 opened (a checked subtraction in the GI shape draw).
 
+the held terrain lane was checked with a free camera on the open outdoor arenas: past 44 m the ground is gone as the original's only terrain draw has it, and no shipped camera sees that far (the play view covers about 15 to 25 m), so it is releasable once blank blocks' plants are left out of the camera draws as the original's grass hook does (not out of their shadows). F550 split: its light lines were rain, whose odd vertex count broke the line pairs across the supersample copies (fixed: whole rain lines); its straight seam is the voxel GI's 48 m block edge (left for the GI).
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
