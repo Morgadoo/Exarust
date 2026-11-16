@@ -1003,7 +1003,14 @@ pub fn follow_and_search(
         Query<(&GlobalTransform, &Condition)>,
         Query<&exa_ai::combatant::Combatant>,
     ),
-    leader_body: Query<(Entity, &GlobalTransform), With<PlayerBody>>,
+    leader_body: Query<
+        (
+            Entity,
+            &GlobalTransform,
+            Option<&exa_physics::body::locomotion::Locomotion>,
+        ),
+        With<PlayerBody>,
+    >,
     objects: LevelObjects,
     mut clock: Local<(Option<u64>, exa_ai::route::PlanTurn, u32)>,
 ) {
@@ -1030,16 +1037,21 @@ pub fn follow_and_search(
         let facing = leader_body
             .iter()
             .next()
-            .map_or(Vec3::Z, |(_, gt)| gt.rotation() * Vec3::Z);
+            .map_or(Vec3::Z, |(_, gt, _)| gt.rotation() * Vec3::Z);
+        // The follow runs at urgency 2 while the leader's request holds the
+        // sprint latch.
+        let sprinting = leader_body.iter().next().is_some_and(|(.., request)| {
+            request.is_some_and(|r| r.flags & exa_physics::body::locomotion::flags::SPRINT != 0)
+        });
         let place = root.translation() * 100.0;
         Leader {
             place,
             aim: place,
             facing: Vec3::new(facing.x, 0.0, facing.z).normalize_or_zero(),
-            sprinting: false,
+            sprinting,
         }
     });
-    let leader_model = leader_body.iter().next().map(|(entity, _)| entity);
+    let leader_model = leader_body.iter().next().map(|(entity, ..)| entity);
     let searching = followers
         .iter()
         .any(|(_, npc, ..)| npc.state() == Some(IdleState::Follow) && npc.search.is_some());

@@ -4215,8 +4215,10 @@ mod tests {
                 crate::route_walk::Walker::Flight,
             );
             route.mode = 4;
-            let mut combatant = Combatant::default();
-            combatant.target = Some(threat);
+            let combatant = Combatant {
+                target: Some(threat),
+                ..Combatant::default()
+            };
             let npc = app
                 .world_mut()
                 .spawn((
