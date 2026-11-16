@@ -1424,10 +1424,7 @@ pub fn ai_tick(
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
     fighters: Query<(Entity, &GlobalTransform), With<Fighter>>,
-    (children, placed): (
-        Query<&Children>,
-        Query<(), With<crate::rooms::RoomPlace>>,
-    ),
+    (children, placed): (Query<&Children>, Query<(), With<crate::rooms::RoomPlace>>),
     mut traced_s: Local<u32>,
     mut npcs: Query<(
         Entity,

@@ -1334,5 +1334,8 @@ fn a_removed_searcher_lets_its_object_go() {
     assert!(!world.held.contains_key(&leaving));
     // A later tick does not let it go twice.
     app.update();
-    assert_eq!(app.world().resource::<SearchWorld>().scene.objects[0].reserved, 0);
+    assert_eq!(
+        app.world().resource::<SearchWorld>().scene.objects[0].reserved,
+        0
+    );
 }

@@ -457,7 +457,14 @@ mod tests {
         let room0 = Vec3::new(-900.0, 0.0, 300.0);
         let room1 = Vec3::new(300.0, 0.0, 300.0);
         assert_eq!(
-            lists.move_to(&rooms, a, room0, &mut room_a, &mut previous_a, &mut nearby_a),
+            lists.move_to(
+                &rooms,
+                a,
+                room0,
+                &mut room_a,
+                &mut previous_a,
+                &mut nearby_a
+            ),
             RoomMove::Moved
         );
         // A first room remembers none before it.
@@ -476,7 +483,14 @@ mod tests {
         // The newest is at the head.
         assert_eq!(lists.occupants(0), &[b, a]);
         assert_eq!(
-            lists.move_to(&rooms, a, room1, &mut room_a, &mut previous_a, &mut nearby_a),
+            lists.move_to(
+                &rooms,
+                a,
+                room1,
+                &mut room_a,
+                &mut previous_a,
+                &mut nearby_a
+            ),
             RoomMove::Moved
         );
         assert_eq!((room_a, previous_a), (1, 0));
@@ -529,7 +543,14 @@ mod tests {
         // room number is linked again.
         lists = RoomLists::default();
         assert_eq!(
-            lists.move_to(&rooms, b, room0, &mut room_b, &mut previous_b, &mut nearby_b),
+            lists.move_to(
+                &rooms,
+                b,
+                room0,
+                &mut room_b,
+                &mut previous_b,
+                &mut nearby_b
+            ),
             RoomMove::Moved
         );
         assert_eq!((room_b, previous_b), (0, -1));

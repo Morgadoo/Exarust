@@ -1821,8 +1821,11 @@ pub fn release_removed_searches(mut world: ResMut<SearchWorld>, brains: Query<(E
         .map(|(e, o)| (*e, *o))
         .collect();
     for (brain, object) in gone {
-        if let Some(o) = world.scene.objects.get_mut(object) {
-            o.reserved -= 1;
+        // The search's stop, on the object the brain's search held.
+        let mut search = exa_ai::search::Search::new();
+        search.target = Some(object);
+        search.stop(&mut world.scene);
+        if let Some(o) = world.scene.objects.get(object) {
             info!(
                 "search: {brain:?} left the scene: object {} is let go ({} reservations left)",
                 o.id, o.reserved
