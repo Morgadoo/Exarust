@@ -60,15 +60,22 @@ impl Plugin for TerrainDrawRulesPlugin {
             .add_systems(
                 PostUpdate,
                 (
-                    mark_blank_blocks.before(VisibilitySystems::CheckVisibility),
+                    mark_blank_blocks
+                        .in_set(exa_physics::FramePostPhase::Prepare)
+                        .before(VisibilitySystems::CheckVisibility),
                     skip_blank_blocks
+                        .in_set(exa_physics::FramePostPhase::View)
+                        .after(crate::scene_live::cull_undrawn)
                         .after(mark_blank_blocks)
                         .after(VisibilitySystems::CheckVisibility)
+                        .before(bevy::light::SimulationLightSystems::CheckLightVisibility)
                         .before(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
                     shadow_draw::sun_casts_drawn_blocks
+                        .in_set(exa_physics::FramePostPhase::View)
                         .after(mark_blank_blocks)
                         .after(bevy::light::SimulationLightSystems::CheckLightVisibility),
                     shadow_draw::cube_faces_skip_undrawn_blocks
+                        .in_set(exa_physics::FramePostPhase::View)
                         .after(mark_blank_blocks)
                         .after(crate::scene_live::run_scene)
                         .before(exa_render::lights::LightsSystems::Cubes),

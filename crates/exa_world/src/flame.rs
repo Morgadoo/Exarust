@@ -54,11 +54,14 @@ impl Plugin for FlamePlugin {
             Update,
             (
                 load_flame_assets.run_if(asset_stores),
-                attach_flames.run_if(asset_stores),
-                frame_flames,
+                attach_flames
+                    .after(exa_assets::texture_stream::run_texture_loader)
+                    .run_if(asset_stores),
+                frame_flames.after(crate::fire::flicker),
                 build_meshes.run_if(resource_exists::<Assets<Mesh>>),
             )
-                .chain(),
+                .chain()
+                .in_set(exa_physics::FramePhase::World),
         );
         bridge_flame_types(app);
     }
@@ -131,7 +134,7 @@ fn is_small_fire(texture: &str) -> bool {
 /// additive flame's texture (the level portals'), loaded the first time
 /// one asks for it (`None` once its texture failed to load).
 #[derive(Resource)]
-struct FlameAssets {
+pub struct FlameAssets {
     small: Handle<FlameMaterial>,
     large: Handle<FlameMaterial>,
     others: std::collections::HashMap<(&'static str, bool), Option<Handle<FlameMaterial>>>,
@@ -245,7 +248,7 @@ impl FlameView {
 const FRAME_STREAM: u32 = 0x6A09_E667;
 
 #[allow(clippy::too_many_arguments)]
-fn load_flame_assets(
+pub fn load_flame_assets(
     mut commands: Commands,
     loaded: Option<Res<FlameAssets>>,
     game: Option<Res<Game>>,
@@ -305,7 +308,7 @@ pub(crate) fn empty_particle_mesh() -> Mesh {
 /// small fire's texture, else the large one's, and an additive flame's own
 /// texture, loaded the first time one asks for it.
 #[allow(clippy::too_many_arguments)]
-fn attach_flames(
+pub fn attach_flames(
     mut commands: Commands,
     assets: Option<ResMut<FlameAssets>>,
     flames: Query<(Entity, &Flame), Without<Mesh3d>>,
@@ -522,7 +525,7 @@ pub fn unstage_flames(stages: Option<ResMut<SolverStages>>, mut flames: Query<&m
 /// removal of a finished flame, its fire's tick count, then its light's and
 /// sound's frame from the step's emitter and the frame's own walks.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn frame_flames(
+pub fn frame_flames(
     clock: Res<Time<Virtual>>,
     gi_waits: Option<Res<crate::gi_volume::PendingGi>>,
     pin: Res<FireLightPin>,

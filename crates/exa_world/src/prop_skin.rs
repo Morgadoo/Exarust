@@ -14,7 +14,10 @@ pub struct PropSkinPlugin;
 
 impl Plugin for PropSkinPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, bind_prop_skins);
+        app.add_systems(
+            PostUpdate,
+            bind_prop_skins.in_set(exa_physics::FramePostPhase::Prepare),
+        );
     }
 }
 
