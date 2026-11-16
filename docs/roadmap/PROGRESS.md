@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r281, 11-16) | target |
+| measure | start (r186, 11-10) | now (r282, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **58.24%** | **100%** |
+| **Ledger: bytes in a final state** | — | **58.27%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,066 | all |
+| Tests passing | 8,489 | 9,071 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -101,9 +101,9 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Physics, bodies & cloth | 7 | 7 | 154 | 162,146 |
 | Rendering & GPU | 10 | 10 | 289 | 148,319 |
 | UI | 12 | 12 | 345 | 128,907 |
-| Thaumaturgy & effects | 9 | 9 | 152 | 109,953 |
+| Thaumaturgy & effects | 9 | 9 | 151 | 109,619 |
 | Characters, motion & animation | 8 | 8 | 227 | 104,849 |
-| AI & behaviour | 8 | 8 | 127 | 91,805 |
+| AI & behaviour | 8 | 8 | 126 | 91,383 |
 | Game modes, arena & session | 7 | 7 | 178 | 76,192 |
 | World, levels & terrain | 5 | 5 | 151 | 76,114 |
 | Items, materials & crafting | 5 | 5 | 132 | 62,916 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,061** | **1,047,848** |
+| **Total** | **90** | **90** | **2,059** | **1,047,092** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 282 | A test now builds the game's own App headless with the lockstep bridge and fails on any system skipped for a missing resource or message (the bug class of F547); F549 fixed (the Shock charges about 1.2 s by the step length and its burst is aimed); F551 fixed (a dead manager back in the hub ends the session through the death flow and the end menu); F552 fixed (the GI shape box arithmetic wraps) (bridgeaudit) |
 | 2026-11-16 | 281 | The GI manager's shape list is cleared at the level teardown, its dirty-marking slot proven unreachable; voxel lights and shapes blend one pass at a time in the manager's order, meshes splat in centimetres, terrain columns read the tile's vertex grid and moving meshes are boxed by their node bounds; worker GPU pictures unchanged within noise, FPS holds (gimanager) |
 | 2026-11-16 | 280 | The fires' particle systems are simulation objects as the original's sector objects are: each step ticks every flame in the solver's object stage (a carried flame at its part's pose) and meets the bodies with it, the doses reaching the characters' burn; the draw keeps the step's snapshot with no flicker in either simulation mode and takes the original's render fraction (one to two ticks); the beds and portal sparks meet no body (simfires). Torch and brazier scenes owed |
 | 2026-11-16 | 279 | The factory paint job's shade scratch, its overlay regions (fullers, axe holes), the steel normal's mirrored-tile turn and the Gemstone alpha job with its refracting material are ported; the apparel job takes its tile offsets from the item's paint seed and its wear by the stored byte; both generators run about 30 percent faster in wall time (texgen). DEC-12 opened (the generated textures' GPU job queue and caches as engine-replaced): its twenty rows keep their state until it is taken. Picture checks owed |

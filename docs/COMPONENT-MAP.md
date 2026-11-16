@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 58.2% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 58.3% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.2% closed**, of which 46.0% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.3% partial and 6.5% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.3% closed**, of which 46.1% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.3% partial and 6.4% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -28,7 +28,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 48% | 41% | 4% | 3% | 44% | 8% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 56% | 53% | 2% | 1% | 38% | 6% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 56% | 53% | 1% | 2% | 43% | 1% |  |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 57% | 53% | 1% | 2% | 43% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 64% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 86% | 84% | 2% | 0% | 10% | 3% |  |
@@ -349,7 +349,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | SG_PlayerControls | AI & behaviour | 47 | 99% | 63% | 61% | 1% | 0% | 37% | 0% |
 | TPathFinder | AI & behaviour | 32 | 91% | 55% | 55% | 0% | 0% | 45% | 0% |
 | TPlayerBehaviour | AI & behaviour | 17 | 99% | 67% | 64% | 3% | 0% | 33% | 0% |
-| TCombatant | AI & behaviour | 17 | 97% | 67% | 60% | 0% | 8% | 28% | 4% |
+| TCombatant | AI & behaviour | 17 | 97% | 70% | 62% | 0% | 8% | 28% | 2% |
 | TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 0% |
 | Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 39% | 36% | 3% | 0% | 55% | 5% |
 | SG_CharacterAI | AI & behaviour | 5 | 88% | 11% | 9% | 3% | 0% | 89% | 0% |
@@ -413,7 +413,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TForceBlastGeometry | Thaumaturgy & effects | 1 | 87% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TForceTorrentGeometry | Thaumaturgy & effects | 1 | 85% | 27% | 27% | 0% | 0% | 73% | 0% |
 | TForceTorrentEmissive | Thaumaturgy & effects | 1 | 96% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TPwrEnergyShock_I | Thaumaturgy & effects | 1 | 86% | 0% | 0% | 0% | 0% | 100% | 0% |
+| TPwrEnergyShock_I | Thaumaturgy & effects | 1 | 86% | 40% | 40% | 0% | 0% | 60% | 0% |
 | TForceWaveEntity | Thaumaturgy & effects | 1 | 84% | 21% | 21% | 0% | 0% | 79% | 0% |
 | FLX_FX_Fire | Thaumaturgy & effects | 1 | 55% | 60% | 53% | 7% | 0% | 40% | 0% |
 | TPortalEffect | Thaumaturgy & effects | 1 | 95% | 100% | 100% | 0% | 0% | 0% | 0% |
