@@ -5,7 +5,9 @@
 //! The headless load lights no fire of its own (the level's fires come
 //! from the game's start: the story's torch), so each run adds fires at
 //! the level's first lights: `FLAME_RUNS` lists `level:count:size` runs
-//! (default one torch, the story's, then sixteen 0.8 fires).
+//! (default none, the level alone, then one torch, the story's, then
+//! sixteen 0.8 fires): the difference to the run without fires is the
+//! fires' cost. Each run prints the mean and the median frame.
 //! After 300 frames (the fires settle), 600 frames are timed: the mean wall
 //! time of a frame's update and the process CPU time a frame (both threads
 //! in the free mode), in one world, behind the lockstep bridge on the
@@ -46,6 +48,7 @@ fn level_app(game: &std::sync::Arc<GameData>, level: &str, mode: Mode) -> App {
     bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin))
+        .add_plugins(bevy::log::LogPlugin::default())
         .add_plugins(exa_physics::PhysicsPlugin)
         .add_plugins((exa_world::fire::FirePlugin, exa_world::flame::FlamePlugin))
         .insert_resource(Game(game.clone()))
@@ -154,17 +157,21 @@ fn run(game: &std::sync::Arc<GameData>, level: &str, count: usize, size: f32, mo
     for _ in 0..300 {
         frame(&mut app);
     }
-    let frames = 600u32;
-    let (cpu, mut wall) = (cpu_time(), Duration::ZERO);
+    let frames = 900u32;
+    let cpu = cpu_time();
+    let mut walls = Vec::with_capacity(frames as usize);
     for _ in 0..frames {
         let started = Instant::now();
         app.update();
-        wall += started.elapsed();
+        walls.push(started.elapsed());
         if matches!(mode, Mode::Free) {
             std::thread::sleep(Duration::from_millis(16));
         }
     }
     let cpu = cpu_time() - cpu;
+    let wall: Duration = walls.iter().sum();
+    walls.sort_unstable();
+    let median = walls[walls.len() / 2];
     let world = app.world_mut();
     let live: usize = world
         .query::<&exa_world::flame::Flame>()
@@ -175,10 +182,18 @@ fn run(game: &std::sync::Arc<GameData>, level: &str, count: usize, size: f32, mo
         .query_filtered::<(), (With<exa_world::flame::Flame>, With<Mesh3d>)>()
         .iter(world)
         .count();
+    let (bodies, parts, awake) = world
+        .query::<&exa_physics::body::Ragdoll>()
+        .iter(world)
+        .fold((0, 0, 0), |(b, p, a), r| {
+            let up = r.sleep == exa_physics::body::Sleep::Awake;
+            (b + 1, p + r.parts.len(), a + usize::from(up))
+        });
     println!(
-        "{level} ({count} x {size}) {mode:?}: {} flames ({meshes} with meshes), {live} live particles; update {:?} a frame, process CPU {:?} a frame",
+        "{level} ({count} x {size}) {mode:?}: {} flames ({meshes} with meshes), {live} live particles, {bodies} bodies of {parts} parts in the frame ({awake} awake); update {:?} a frame (median {:?}), process CPU {:?} a frame",
         fires.len(),
         wall / frames,
+        median,
         cpu / frames,
     );
     if matches!(mode, Mode::Free) {
@@ -193,9 +208,13 @@ fn shipped_level_fire_frame_time() {
         println!("no installation: skipped");
         return;
     };
+    // The particle stage's own counts, logged every thousand ticks (the
+    // debug aid of `exa_world::particle_stage`).
+    // SAFETY: set before any thread of this test reads the environment.
+    unsafe { std::env::set_var("EXA_PARTICLE_TIMING", "1") };
     let game = std::sync::Arc::new(GameData::open(&dir).unwrap());
     let runs = std::env::var("FLAME_RUNS")
-        .unwrap_or_else(|_| "exanima01:1:0.2,exanima01:16:0.8".into());
+        .unwrap_or_else(|_| "exanima01:0:0,exanima01:1:0.2,exanima01:16:0.8".into());
     for one in runs.split(',') {
         let mut parts = one.split(':');
         let level = parts.next().unwrap_or("exanima01");

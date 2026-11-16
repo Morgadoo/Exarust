@@ -365,7 +365,7 @@ fn hanging(
     entity: Entity,
     parents: &Query<&ChildOf>,
     carriers: &Query<(), With<CarriedFire>>,
-    bodies: &Query<&Ragdoll>,
+    bodies: &Query<(Entity, Ref<Ragdoll>)>,
 ) -> (bool, Option<Entity>) {
     let mut carried = false;
     let mut part = None;
@@ -374,7 +374,7 @@ fn hanging(
         carried |= carriers.contains(ancestor);
         path.push(ancestor);
         if part.is_none()
-            && let Ok(body) = bodies.get(ancestor)
+            && let Ok((_, body)) = bodies.get(ancestor)
         {
             part = Some(
                 path.iter()
@@ -398,7 +398,7 @@ pub fn stage_flames(
     mut flames: Query<(Entity, &mut Flame, &GlobalTransform)>,
     parents: Query<&ChildOf>,
     carriers: Query<(), With<CarriedFire>>,
-    bodies: Query<&Ragdoll>,
+    bodies: Query<(Entity, Ref<Ragdoll>)>,
     transforms: Query<&GlobalTransform>,
 ) {
     let mut stage = stages
@@ -409,6 +409,17 @@ pub fn stage_flames(
         stage.clear_doses();
         stage.staged.clear();
         stage.grid = crate::cloth_parts::ClothGrid::of_scene(scene.as_deref().copied());
+        // The bodies' cells, kept from tick to tick while a flame meets
+        // bodies (a body unchanged since the last tick keeps its cells).
+        if flames.iter().any(|(_, f, _)| f.contacts) {
+            stage.refresh_index(
+                bodies
+                    .iter()
+                    .map(|(entity, body)| (entity, body.is_changed(), body.into_inner())),
+            );
+        } else {
+            stage.clear_index();
+        }
     }
     let mut order: Vec<Entity> = flames.iter().map(|(e, ..)| e).collect();
     order.sort_unstable();
@@ -430,7 +441,7 @@ pub fn stage_flames(
             .and_then(|(part, offset)| {
                 let pose = bodies
                     .iter()
-                    .flat_map(|b| b.parts.iter())
+                    .flat_map(|(_, b)| b.into_inner().parts.iter())
                     .find(|p| p.entity == part)?
                     .transform();
                 Some(node_frame(&(pose * offset), lift))
@@ -474,6 +485,17 @@ pub fn unstage_flames(stages: Option<ResMut<SolverStages>>, mut flames: Query<&m
     let Some(stage) = stages.get_mut::<ParticleSolve>() else {
         return;
     };
+    if let Some(r) = stage.take_report() {
+        let per = |micros: u64| micros as f64 / r.ticks as f64;
+        info!(
+            "particle stage: {:.1} us steps, {:.1} us body passes a tick; {:.0} parts near, {:.0} past the sphere gate, {:.0} met a tick",
+            per(r.step_micros),
+            per(r.contact_micros),
+            per(r.near),
+            per(r.gated),
+            per(r.met),
+        );
+    }
     for staged in std::mem::take(&mut stage.staged) {
         let StagedEmitter {
             entity,
@@ -513,7 +535,7 @@ fn frame_flames(
     )>,
     parents: Query<&ChildOf>,
     carriers: Query<(), With<CarriedFire>>,
-    bodies: Query<&Ragdoll>,
+    bodies: Query<(Entity, Ref<Ragdoll>)>,
 ) {
     for (entity, mut flame, view, fire, at) in &mut flames {
         // The load holds game time while the GI waits for the level's fires
