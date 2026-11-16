@@ -25,8 +25,14 @@
 //! the blast's does ([`super::blast_live::alert_known`]; the aim is cleared
 //! first, so only the distance weighs it).
 //!
-//! Not wired: the sounds, the light, the stun and the draw; and the
-//! contact's wear, which the wave's chunks do not keep.
+//! The sounds are the blast's (the wave shares its frame): the charge loop
+//! `thmfrc_cu01` from the start, `length·0.8·r` into its buffer in double
+//! precision (`r` the runtime stream's draw after the ring's), and the
+//! release `thmfrc_wav` at the pitch the throw draws
+//! ([`super::blast_sound::sound_blasts`]).
+//!
+//! Not wired: the light, the stun and the draw; and the contact's wear,
+//! which the wave's chunks do not keep.
 //!
 //! Evidence: the wave's start and tick, which share the blast's hook and
 //! contact handlers, read from `Exanima.exe`.
@@ -65,6 +71,10 @@ pub struct LiveWave {
     pub hooked: bool,
     /// The cast generation whose hook the wave took.
     pub generation: u64,
+    /// The runtime stream's draw the charge loop's start takes (after the
+    /// ring's draws), and the release's pitch once thrown.
+    pub charge_roll: f64,
+    pub release_pitch: Option<f32>,
 }
 
 /// The wave's start on its caster: cast motion 0x24 with the power id, and
@@ -90,13 +100,19 @@ pub fn new_wave(
     let hooked = start_wave(body);
     let generation = body.cast_generation;
     let seconds = (f64::from(tick_ms) * 0.001) as f32;
+    let wave = Wave::new(root, facing, tick_ms, &mut draws.0);
+    // The charge loop's start, `length·0.8·r` into its buffer, draws after
+    // the ring.
+    let charge_roll = draws.0.unit();
     LiveWave {
-        wave: Wave::new(root, facing, tick_ms, &mut draws.0),
+        wave,
         setup: WAVE_SETUP,
         caster,
         drain: cost * seconds,
         hooked,
         generation,
+        charge_roll,
+        release_pitch: None,
     }
 }
 
@@ -188,10 +204,13 @@ pub fn tick_wave(
     }
     // The throw clears the hook and the power id itself, not through the
     // cast end: the cast motion plays on.
-    if let WaveEvent::Release { .. } = event {
+    if let WaveEvent::Release { pitch, .. } = event {
         live.hooked = false;
         body.cast_hook = None;
         body.casting = 0;
+        // The release sound plays at the drawn pitch
+        // ([`super::blast_sound::sound_blasts`]).
+        live.release_pitch = Some(pitch);
     }
     event
 }
@@ -319,6 +338,28 @@ mod tests {
         assert_eq!(wave.wave.chunks.len(), 32);
     }
 
+    /// The charge loop's start takes the runtime stream's draw after the
+    /// ring's; a charging wave has no release yet.
+    #[test]
+    fn the_charge_loop_draws_after_the_ring() {
+        let mut body = CastBody::default();
+        let wave = live(&mut body);
+        let mut stream = Mt19937::new(1);
+        Wave::new(Vec3::ZERO, Vec3::Z, 12, &mut stream);
+        assert_eq!(wave.charge_roll, stream.unit());
+        assert_eq!(wave.release_pitch, None);
+        // The blast's frame levels its voices: charging, the loop at 0.4
+        // times the charge's share and no release.
+        assert_eq!(
+            crate::effects::blast::voice_levels(0.15, false, 1.0),
+            (Some(0.2), None)
+        );
+        assert_eq!(
+            crate::effects::blast::voice_levels(0.5, true, 0.7),
+            (Some(((0.9 - 0.5f64) * 0.444) as f32), Some(0.7))
+        );
+    }
+
     #[test]
     fn a_later_cast_fizzles_it_and_a_shortfall_ends_the_cast() {
         let mut body = CastBody::default();
@@ -362,6 +403,9 @@ mod tests {
             assert!(ticks < 100);
         }
         assert_eq!(wave.wave.state, WaveState::Thrown);
+        // The release sound's pitch is the throw's draw, `0.9 + 0.2·r`.
+        let pitch = wave.release_pitch.expect("the release sounds");
+        assert!((0.9..=1.1).contains(&pitch), "{pitch}");
         assert_eq!((body.casting, body.cast_hook), (0, None));
         // The throw is not the cast end: the cast motion plays on.
         assert_eq!(body.condition, casting::CASTING);

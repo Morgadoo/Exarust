@@ -1,6 +1,7 @@
 //! The force barricade's sounds, the hum and the impacts, and the one-shot
-//! sets the Force powers play from the simulation step ([`ForceSounded`]:
-//! the barricade's impacts, Force Strikes' end).
+//! sets the powers play from the simulation step ([`ForceSounded`]: the
+//! barricade's impacts, Force Strikes' end, Shock's charge and release,
+//! the displacements' start and come-back, the cast failures).
 //!
 //! - **The sounds** (the creator, once a session): the `thmfrc_bi` set is
 //!   the impact, the `thmfrc_bc01` buffer the hum.
@@ -22,6 +23,11 @@
 //!   `thmfrc_brf` set at the caster's place, volume 0.3 and pitch
 //!   `0.6 + 0.4·r` (`r` the engine generator's draw, the sum in double).
 //! - **The end**: the destructor stops the hum.
+//! - **A following voice** ([`ForceSounded::follow`]): Vanish and the Long
+//!   Door take a voice at their start that follows the body's place every
+//!   control tick; the come-back plays on it. Here the voice is kept by
+//!   the body's entity and follows the body's standing point each frame
+//!   until the body leaves.
 //!
 //! Evidence: the barricade's creator, entry, frame, body test and
 //! destructor, read from `Exanima.exe`. [inf: the sphere's place is carried
@@ -41,14 +47,29 @@ use super::torrent_sound::loop_offset;
 /// Centimetres a metre.
 const CM: f32 = 100.0;
 
-/// A one-shot of a set a Force power played in the simulation step: the
-/// set, its place (cm, in the world), volume and pitch.
+/// A one-shot of a set a power played in the simulation step: the set,
+/// its place (cm, in the world), volume and pitch, and the body whose
+/// following voice it plays on (none for a free one-shot).
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct ForceSounded {
     pub set: &'static str,
     pub at: Vec3,
     pub volume: f32,
     pub pitch: f32,
+    pub follow: Option<Entity>,
+}
+
+impl ForceSounded {
+    /// A free one-shot of `set` at `at` (cm).
+    pub fn at(set: &'static str, at: Vec3, volume: f32, pitch: f32) -> Self {
+        Self {
+            set,
+            at,
+            volume,
+            pitch,
+            follow: None,
+        }
+    }
 }
 
 /// The loaded hum buffer (`None` inside when it failed to load) and sets,
@@ -58,6 +79,8 @@ pub(crate) struct BarricadeVoices {
     hum: Option<Option<u32>>,
     sets: HashMap<&'static str, u32>,
     voices: HashMap<Entity, VoiceHandle>,
+    /// The bodies' following voices.
+    follows: HashMap<Entity, VoiceHandle>,
 }
 
 /// Each frame, after the walls' draw: the sets the steps sent play, a
@@ -65,6 +88,7 @@ pub(crate) struct BarricadeVoices {
 /// frame's volume and pitch; a wall that left the scene stops its hum.
 pub(crate) fn sound_barricades(
     walls: Query<(Entity, &LiveBarricade)>,
+    bodies: Query<&exa_physics::body::Ragdoll>,
     time: Res<Time<Fixed>>,
     mut impacts: MessageReader<ForceSounded>,
     mut audio: BlastAudio,
@@ -86,6 +110,17 @@ pub(crate) fn sound_barricades(
             info!("barricade {entity:?}: gone, its hum stopped");
         }
     }
+    let left: Vec<Entity> = state
+        .follows
+        .keys()
+        .copied()
+        .filter(|&e| !bodies.contains(e))
+        .collect();
+    for entity in left {
+        if let Some(handle) = state.follows.remove(&entity) {
+            env.free_handle(bank, handle);
+        }
+    }
     if !env.is_live() {
         impacts.clear();
         return;
@@ -95,11 +130,37 @@ pub(crate) fn sound_barricades(
             .sets
             .entry(impact.set)
             .or_insert_with(|| bank.load_set(game, sources, impact.set));
-        let voice = env.play_set(bank, set, impact.at / CM, impact.volume, impact.pitch, 0);
+        let voice = match impact.follow {
+            Some(body) => {
+                let handle = *state
+                    .follows
+                    .entry(body)
+                    .or_insert_with(|| env.new_handle());
+                env.play_set_attached(
+                    bank,
+                    set,
+                    handle,
+                    impact.at / CM,
+                    impact.volume,
+                    impact.pitch,
+                );
+                env.handle_voice(handle)
+            }
+            None => env.play_set(bank, set, impact.at / CM, impact.volume, impact.pitch, 0),
+        };
         info!(
-            "force sound: {} at {:?} cm, volume {:.3} pitch {:.3}, voice {voice:?}",
-            impact.set, impact.at, impact.volume, impact.pitch
+            "force sound: {} at {:?} cm, volume {:.3} pitch {:.3}, voice {voice:?}, follows {:?}",
+            impact.set, impact.at, impact.volume, impact.pitch, impact.follow
         );
+    }
+    // The following voices keep to their bodies' places.
+    for (&body, &handle) in &state.follows {
+        if let Ok(doll) = bodies.get(body)
+            && let Some(at) = standing_point(doll)
+            && let Some(voice) = env.handle_voice(handle).and_then(|id| env.voice_mut(id))
+        {
+            voice.position = at;
+        }
     }
     let alpha = time.overstep_fraction();
     for (entity, live) in &walls {
@@ -141,6 +202,20 @@ pub(crate) fn sound_barricades(
             }
         }
     }
+}
+
+/// A body's place for its following voice (m): its root across the floor
+/// at its lowest part's height. [inf: the original's place is the body's
+/// frame origin, which stands on its anchor.]
+pub(crate) fn standing_point(doll: &exa_physics::body::Ragdoll) -> Option<Vec3> {
+    let root = Vec3::from(doll.parts.first()?.transform().translation);
+    let lowest = doll
+        .parts
+        .iter()
+        .map(|part| part.transform().translation.y)
+        .fold(f32::INFINITY, f32::min);
+    let ground = if lowest.is_finite() { lowest } else { root.y };
+    Some(Vec3::new(root.x, ground, root.z))
 }
 
 #[cfg(test)]

@@ -267,7 +267,8 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::strike_body::StrikeChest>()
         .bridge_copy::<crate::CombatTarget>()
         .bridge_copy::<crate::strike_body::TangleCount>()
-        .bridge_copy::<crate::swing_voice::SwingVoice>();
+        .bridge_copy::<crate::swing_voice::SwingVoice>()
+        .bridge_copy::<crate::swing_voice::SwingSound>();
 }
 
 /// The combat's post-step: the strikers' sweep, the hits dealt and the

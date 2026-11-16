@@ -132,7 +132,8 @@ bus next to the rodio sources) are in.
 
 - A fighter's swing voice (`swing_voices`, from `exa_combat`'s
   `SwingVoiceCue`): the first attack tick in the swing's region restarts the
-  voice of its first held item on a `SwingHA` variant, silent, at 0.4 × W26,
+  voice of its first held item on a variant of the body's swing set
+  (`SwingHA`, or `ThmFrc_Swing` under Force Strikes), silent, at 0.4 × W26,
   and rustles its clothing foley (volume × (0.02r + 0.02), pitch
   0.4r + 0.8, then 400 ms plus a jitter under 100 before the next rustle);
   every attack tick sets the voice's volume W25 · 0.07f and pitch

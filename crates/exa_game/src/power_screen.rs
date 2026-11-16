@@ -94,6 +94,9 @@ pub struct PowerScreen {
     drag: Option<try_drag::Dragged>,
     /// Where the left button went down, until it has dragged or let go.
     press_origin: Option<[f32; 2]>,
+    /// The player body that last opened the tree: the same body opens it
+    /// on the domain it last showed, another on the Mind domain.
+    pub last_opener: Option<Entity>,
 }
 
 mod try_drag {
@@ -129,6 +132,7 @@ impl Default for PowerScreen {
             last_draw: 0,
             drag: None,
             press_origin: None,
+            last_opener: None,
         }
     }
 }
@@ -550,10 +554,12 @@ pub(crate) fn hotkeys(
     time: Res<Time>,
     mut screen: ResMut<PowerScreen>,
     control: Option<Res<crate::player_controls::PlayerControl>>,
+    players: Query<Entity, With<crate::player::PlayerBody>>,
 ) {
     let Some(bindings) = bindings else {
         return;
     };
+    let opener = players.iter().next();
     let Ok(window) = windows.single() else {
         return;
     };
@@ -570,6 +576,7 @@ pub(crate) fn hotkeys(
         domain_files,
         dirty,
         sound,
+        last_opener,
         ..
     } = &mut *screen;
     // While the tree is shown its form has the keys: every key the window
@@ -629,7 +636,13 @@ pub(crate) fn hotkeys(
         // A record that knows no power starts with the two default pairs,
         // as the tree's first opening seeds them.
         crate::thaum::tree::seed_defaults(record);
-        let domain = tree.domain;
+        // The same player body opens it on the domain it last showed;
+        // another (a new character, a possessed body) on the Mind domain.
+        let domain = crate::thaum::tree::open_domain(
+            opener.is_some() && *last_opener == opener,
+            tree.domain,
+        );
+        *last_opener = opener;
         let file = domain_files.get(usize::from(domain)).cloned().flatten();
         *texts = file
             .as_deref()
@@ -2422,6 +2435,55 @@ mod tests {
             .before(crate::gui_keys::GuiKeySet),
         );
         app
+    }
+
+    /// The tree opens on the domain it last showed when the same player
+    /// body opens it again, and on the Mind domain for another body.
+    #[test]
+    fn the_tree_reopens_on_its_domain_only_for_the_same_body() {
+        use crate::thaum::tree::{DOMAIN_FORCE, DOMAIN_MIND};
+        let key = Bindings::default()
+            .key_code(Action::PowerTree)
+            .expect("the tree's key");
+        let presses = vec![
+            (5, key),
+            (40, KeyCode::KeyW),
+            (80, key),
+            (120, KeyCode::KeyW),
+            (160, key),
+        ];
+        let mut app = scripted_tree_app(None, presses);
+        let first = app
+            .world_mut()
+            .spawn(crate::player::PlayerBody::new(0.0))
+            .id();
+        for _ in 0..70 {
+            app.update();
+        }
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(!screen.open);
+        assert_eq!(screen.last_opener, Some(first));
+        // The player last showed the Force domain.
+        app.world_mut().resource_mut::<PowerScreen>().tree.domain = DOMAIN_FORCE;
+        for _ in 70..90 {
+            app.update();
+        }
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(screen.open);
+        assert_eq!(screen.tree.domain, DOMAIN_FORCE);
+        for _ in 90..150 {
+            app.update();
+        }
+        assert!(!app.world().resource::<PowerScreen>().open);
+        // Another body (a new character) opens it on the Mind domain.
+        app.world_mut().despawn(first);
+        app.world_mut().spawn(crate::player::PlayerBody::new(0.0));
+        for _ in 150..170 {
+            app.update();
+        }
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(screen.open);
+        assert_eq!(screen.tree.domain, DOMAIN_MIND);
     }
 
     /// The tree's key, pressed the way `--press` presses it (after the

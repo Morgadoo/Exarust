@@ -93,11 +93,14 @@ const DEPTH_SHARE: f64 = 0.333;
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct KinesisPickHook(pub Option<Entity>);
 
-/// The hand lifted `body` while `caster`'s kinesis pick waited.
+/// The hand lifted `body` while `caster`'s kinesis pick waited, or (`None`)
+/// refused the press: the button kept for combat or the point out of
+/// reach. A refused press plays the cast failure (`ThaumFail01`) and ends
+/// the kinesis.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KinesisPicked {
     pub caster: Entity,
-    pub body: Entity,
+    pub body: Option<Entity>,
 }
 
 /// The cursor's ray this frame (m): origin and unit direction.
@@ -231,8 +234,26 @@ pub(crate) fn take_kinesis_picks(
     mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
 ) {
     for pick in picked.read() {
+        let Some(picked_body) = pick.body else {
+            // The press was refused: the failure sound, and the kinesis
+            // ends.
+            if let Ok(mut caster) = casters.get_mut(pick.caster)
+                && let Some(kinesis) = running(&mut caster)
+            {
+                kinesis.state = ENDING;
+                frame.send(|world| {
+                    if let Some(mut screen) =
+                        world.get_resource_mut::<crate::power_screen::PowerScreen>()
+                    {
+                        screen.sound = Some(crate::thaum::tree::FAIL_SOUND);
+                    }
+                });
+                info!("kinesis: the pick is refused, the kinesis ends");
+            }
+            continue;
+        };
         let (Ok(mut caster), Ok(mut body)) =
-            (casters.get_mut(pick.caster), props.get_mut(pick.body))
+            (casters.get_mut(pick.caster), props.get_mut(picked_body))
         else {
             continue;
         };
@@ -243,7 +264,7 @@ pub(crate) fn take_kinesis_picks(
             continue;
         };
         let mut bounds: Option<(Vec3, Vec3)> = None;
-        let handles = stand_ins.as_deref().and_then(|s| s.0.get(&pick.body));
+        let handles = stand_ins.as_deref().and_then(|s| s.0.get(&picked_body));
         for &(handle, _) in handles.into_iter().flatten() {
             if let Some(c) = physics.as_deref().and_then(|p| p.0.colliders.get(handle)) {
                 let aabb = c.compute_aabb();
@@ -252,21 +273,21 @@ pub(crate) fn take_kinesis_picks(
             }
         }
         let extents = bounds.map_or(Vec3::ZERO, |(lo, hi)| (hi - lo) * CM);
-        kinesis.target = Some(pick.body.to_bits());
+        kinesis.target = Some(picked_body.to_bits());
         let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-        commands.entity(pick.body).insert(UserStamp {
+        commands.entity(picked_body).insert(UserStamp {
             user: pick.caster,
             until_ms: hold_until(now),
         });
         kinesis.depth = pick_depth(extents);
         kinesis.aim = (centre * CM).to_array();
-        let radius = body_radius(pick.body, &body, physics.as_deref(), stand_ins.as_deref());
+        let radius = body_radius(picked_body, &body, physics.as_deref(), stand_ins.as_deref());
         // The shell names its hum; joining the scene, it draws its voice's
         // start from the effect stream.
         let hum = draws.as_mut().map_or(0.0, |d| d.0.unit());
         let shell = grab_body(
             &mut commands,
-            pick.body,
+            picked_body,
             &mut body,
             true,
             radius,
@@ -275,14 +296,14 @@ pub(crate) fn take_kinesis_picks(
             Some(hum),
         );
         kinesis.shell = Some(shell.to_bits());
-        kinesis.material = Some(pick.body.to_bits());
+        kinesis.material = Some(picked_body.to_bits());
         // The frame's sound bank plays it.
         frame.send(move |world| {
             play_on_frame(world, KINESIS_SOUND, PICK_VOLUME, pick_pitch, centre, None);
         });
         info!(
             "kinesis: holds {:?} at depth {:.1} cm under shell {shell:?}",
-            pick.body, kinesis.depth
+            picked_body, kinesis.depth
         );
     }
 }

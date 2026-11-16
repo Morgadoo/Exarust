@@ -3471,7 +3471,10 @@ fn kinesis_pick_at_frame(
                 "--kinesis-pick: frame {}: the kinesis takes {body:?}, {d:.2} m from the player",
                 *frames
             );
-            picks.write(exa_game::thaum::kinesis_live::KinesisPicked { caster, body });
+            picks.write(exa_game::thaum::kinesis_live::KinesisPicked {
+                caster,
+                body: Some(body),
+            });
         }
         None => warn!("--kinesis-pick: no prop body within {KINESIS_PICK_REACH} m"),
     }
@@ -5150,7 +5153,13 @@ mod kinesis_pick_tests {
         }
         app.world_mut().resource_mut::<KinesisPickHook>().0 = Some(caster);
         app.update();
-        assert_eq!(picked(&mut app), vec![KinesisPicked { caster, body: prop }]);
+        assert_eq!(
+            picked(&mut app),
+            vec![KinesisPicked {
+                caster,
+                body: Some(prop)
+            }]
+        );
         for _ in 0..3 {
             app.update();
         }

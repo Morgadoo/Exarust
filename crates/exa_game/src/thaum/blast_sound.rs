@@ -17,6 +17,9 @@
 //!   the release handle at the node, volume 0 until the frame levels it,
 //!   pitch `0.9 + 0.2·r` ([`crate::effects::blast::BlastEvents::released`]).
 //! - **The end**: the destructor frees both voices.
+//! - **The wave** shares the blast's frame and destructor: its start takes
+//!   the same charge loop (its start in double precision), its throw the
+//!   `thmfrc_wav` set at the pitch the tick draws.
 //!
 //! The node's place is the blast's bounds centre. [inf: the original's
 //! node takes the effect's bounds each frame; Exarust has no node.]
@@ -81,6 +84,26 @@ impl BlastAudio<'_> {
     }
 }
 
+/// How a charge loop's start is worked: the blast's in single precision,
+/// the wave's in double.
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    Single(f32),
+    Double(f64),
+}
+
+/// What the frame sounds of a blast or a wave (which shares the blast's
+/// frame).
+struct Sounding {
+    entity: Entity,
+    centre: Vec3,
+    charge_start: Start,
+    release_pitch: Option<f32>,
+    release_sound: &'static str,
+    charge_volume: Option<f32>,
+    release_volume: Option<f32>,
+}
+
 /// One blast's voices: the charge loop (freed once it fades out) and the
 /// release, and whether the release has played.
 #[derive(Debug, Clone, Copy)]
@@ -104,6 +127,7 @@ pub(crate) struct BlastVoices {
 /// frame's levels; a blast that left the scene frees its voices.
 pub(crate) fn sound_blasts(
     blasts: Query<(Entity, &LiveBlast)>,
+    waves: Query<(Entity, &super::wave_live::LiveWave)>,
     time: Res<Time<Fixed>>,
     mut audio: BlastAudio,
     mut state: Local<BlastVoices>,
@@ -120,7 +144,7 @@ pub(crate) fn sound_blasts(
         .voices
         .keys()
         .copied()
-        .filter(|&e| !blasts.contains(e))
+        .filter(|&e| !blasts.contains(e) && !waves.contains(e))
         .collect();
     for entity in gone {
         if let Some(voices) = state.voices.remove(&entity) {
@@ -135,8 +159,39 @@ pub(crate) fn sound_blasts(
         return;
     }
     let alpha = time.overstep_fraction();
-    for (entity, live) in &blasts {
-        let at = live.blast.centre / CM;
+    let sounding = blasts
+        .iter()
+        .map(|(entity, live)| {
+            let frame = live.blast.frame(alpha);
+            Sounding {
+                entity,
+                centre: live.blast.centre,
+                charge_start: Start::Single(live.sounds.charge_roll),
+                release_pitch: live.sounds.release_pitch,
+                release_sound: live.blast.setup.release_sound,
+                charge_volume: frame.charge_volume,
+                release_volume: frame.release_volume,
+            }
+        })
+        .chain(waves.iter().map(|(entity, live)| {
+            let (charge_volume, release_volume) = crate::effects::blast::voice_levels(
+                live.wave.charge,
+                live.wave.state == crate::effects::force_wave::WaveState::Thrown,
+                live.setup.release_volume,
+            );
+            Sounding {
+                entity,
+                centre: live.wave.centre,
+                charge_start: Start::Double(live.charge_roll),
+                release_pitch: live.release_pitch,
+                release_sound: live.setup.release_sound,
+                charge_volume,
+                release_volume,
+            }
+        }));
+    for sound in sounding {
+        let entity = sound.entity;
+        let at = sound.centre / CM;
         let voices = match state.voices.get(&entity).copied() {
             Some(voices) => voices,
             None => {
@@ -157,11 +212,16 @@ pub(crate) fn sound_blasts(
                         ) && let Some(voice) =
                             env.handle_voice(handle).and_then(|id| env.voice_mut(id))
                         {
-                            voice.offset =
-                                charge_offset(bank.buffer_secs(buffer), live.sounds.charge_roll);
+                            let length = bank.buffer_secs(buffer);
+                            voice.offset = match sound.charge_start {
+                                Start::Single(roll) => charge_offset(length, roll),
+                                Start::Double(roll) => {
+                                    super::torrent_sound::loop_offset(length, roll)
+                                }
+                            };
                             info!(
                                 "blast {entity:?}: {} loop at {:?} cm, start {:.3} s",
-                                BLAST_SETUP.charge_sound, live.blast.centre, voice.offset
+                                BLAST_SETUP.charge_sound, sound.centre, voice.offset
                             );
                         }
                         handle
@@ -176,9 +236,9 @@ pub(crate) fn sound_blasts(
             }
         };
         let mut voices = voices;
-        if let (false, Some(pitch)) = (voices.released, live.sounds.release_pitch) {
+        if let (false, Some(pitch)) = (voices.released, sound.release_pitch) {
             voices.released = true;
-            let name = live.blast.setup.release_sound;
+            let name = sound.release_sound;
             let set = *state
                 .releases
                 .entry(name)
@@ -186,12 +246,11 @@ pub(crate) fn sound_blasts(
             let played = env.play_set_attached(bank, set, voices.release, at, 0.0, pitch);
             info!(
                 "blast {entity:?}: {name} at {:?} cm, pitch {pitch:.3}, played {played}",
-                live.blast.centre
+                sound.centre
             );
         }
-        let frame = live.blast.frame(alpha);
         if let Some(charge) = voices.charge {
-            match frame.charge_volume {
+            match sound.charge_volume {
                 Some(volume) => {
                     if let Some(voice) = env.handle_voice(charge).and_then(|id| env.voice_mut(id)) {
                         voice.position = at;
@@ -205,7 +264,7 @@ pub(crate) fn sound_blasts(
                 }
             }
         }
-        if let Some(volume) = frame.release_volume
+        if let Some(volume) = sound.release_volume
             && let Some(voice) = env
                 .handle_voice(voices.release)
                 .and_then(|id| env.voice_mut(id))

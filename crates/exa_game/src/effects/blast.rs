@@ -1042,25 +1042,35 @@ pub struct BlastFrame {
 /// A chunk's colour bytes for the draw.
 pub type ChunkColour = [u8; 4];
 
+/// The frame's voice levels from the charge (the frame the blast and the
+/// wave share): while charging the charge loop at
+/// `0.4·min(charge·10/3, 1)` (1 past 0.3) and no release; once thrown the
+/// loop fading as `(0.9 − charge)·0.444` (`None`, freed, past 0.9) and the
+/// release at the setup's volume.
+pub fn voice_levels(charge: f32, thrown: bool, release: f32) -> (Option<f32>, Option<f32>) {
+    let charge = f64::from(charge);
+    if !thrown {
+        let v = if charge > 0.3 {
+            1.0
+        } else {
+            (charge * (10.0 / 3.0)) as f32
+        };
+        (Some((f64::from(v) * 0.4) as f32), None)
+    } else {
+        let charge = if charge > 0.9 {
+            None
+        } else {
+            Some(((0.9 - charge) * 0.444) as f32)
+        };
+        (charge, Some(release * 1.0))
+    }
+}
+
 impl Blast {
     /// The frame `t` of the way between the last two ticks.
     pub fn frame(&self, t: f32) -> BlastFrame {
-        let charge = f64::from(self.charge);
-        let (charge_volume, release_volume) = if self.state < THROWN {
-            let v = if charge > 0.3 {
-                1.0
-            } else {
-                (charge * (10.0 / 3.0)) as f32
-            };
-            (Some((f64::from(v) * 0.4) as f32), None)
-        } else {
-            let charge = if charge > 0.9 {
-                None
-            } else {
-                Some(((0.9 - charge) * 0.444) as f32)
-            };
-            (charge, Some(self.setup.release_volume * 1.0))
-        };
+        let (charge_volume, release_volume) =
+            voice_levels(self.charge, self.state >= THROWN, self.setup.release_volume);
         let first = &self.chunks[0];
         let radius = (1.0 - t) * first.previous_radius + first.radius * t;
         BlastFrame {
