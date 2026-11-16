@@ -2457,6 +2457,7 @@ dependencies = [
  "bevy",
  "exa_assets",
  "exa_combat",
+ "exa_items",
  "exa_physics",
 ]
 
@@ -2526,6 +2527,16 @@ dependencies = [
  "exa_formats",
  "exa_physics",
  "exa_render",
+]
+
+[[package]]
+name = "exa_oracle"
+version = "0.0.1"
+dependencies = [
+ "bevy",
+ "exa_combat",
+ "exa_physics",
+ "exa_world",
 ]
 
 [[package]]

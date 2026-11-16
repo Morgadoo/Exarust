@@ -1,0 +1,15 @@
+[package]
+name = "exa_oracle"
+description = "Replays recorded cases of the original's functions against the Rust ports, bit for bit"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy.workspace = true
+exa_combat.workspace = true
+exa_physics.workspace = true
+exa_world.workspace = true
+
+[lints]
+workspace = true

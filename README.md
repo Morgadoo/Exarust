@@ -84,6 +84,7 @@ crates/
   exa_ui         menus, inventory, HUD, manual; game font, FPS  (started)
   exa_game       player control, balance, torch; modes to come  (started)
   exa_tool       `exa-tool` CLI
+  exa_oracle     recorded calls of the original's functions replayed against the ports
   exarust        the game binary
 docs/            plan, architecture, formats, research
 ```
