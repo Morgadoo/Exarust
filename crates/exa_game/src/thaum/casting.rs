@@ -87,8 +87,9 @@ pub const FALLEN_OR_DYING: u32 = 0xA00;
 pub const SWING_WAITS: u32 = 0x34;
 /// The gait bit of a body that is stopping.
 pub const STOPPING: u32 = 0x20;
-/// The status bit of a vanished body.
-pub const VANISHED: u32 = 0x800;
+/// The status bit of a vanished body (the body's state flags,
+/// [`exa_combat::StateFlags::VANISHED`]).
+pub const VANISHED: u32 = exa_combat::StateFlags::VANISHED;
 /// The status bit that keeps Force and Displacement from the player.
 pub const POWERS_BLOCKED: u32 = 0x2_0000;
 /// The weapon-class bits of a weapon in hand (one-handed, two-handed,

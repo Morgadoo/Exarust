@@ -1274,7 +1274,7 @@ fn duellist(
         Option<Res<FollowLeader>>,
         Option<Res<freeze::StagingFreeze>>,
     ),
-    role_lists: Query<&crate::roles::Roles>,
+    (role_lists, state_flags): (Query<&crate::roles::Roles>, Query<&exa_combat::StateFlags>),
     ids: Query<&brain::CharacterId>,
     mut npcs: Query<(
         Entity,
@@ -1806,9 +1806,15 @@ fn duellist(
         let me_cm = feet * CM;
         blow.angle = atan2_xz(me_cm.x - foe_origin.x, me_cm.z - foe_origin.z);
         blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, blow.angle);
+        // A vanished target (Vanish, the Long Door) is dropped as a dead
+        // one is: the original's combat tick clears its target when the
+        // target's state flags carry the vanished bit.
+        let target_vanished = target_fighter_entity
+            .and_then(|e| state_flags.get(e).ok())
+            .is_some_and(|f| f.has(exa_combat::StateFlags::VANISHED));
         let foe = combat::Foe {
             condition: target_condition.0,
-            dead: target_condition.is_dead(),
+            dead: target_condition.is_dead() || target_vanished,
             reach_cm: reach_of(foe_key, &blades, unarmed_reach(target_fighter)) * CM,
             chest: foe_chest,
             step_goal: foe_step_cm,
@@ -2962,6 +2968,30 @@ mod tests {
         assert!((contact.closeness - (1.0 - 200.0 / 1200.0)).abs() < 1e-5);
         // Facing each other 2 m apart: the observer's view weight is 1.
         assert!((contact.view - 1.0).abs() < 1e-5, "{}", contact.view);
+    }
+
+    /// A target that vanishes (its state flags' vanished bit) is dropped as
+    /// a dead one is: with no focus the duellist leaves combat and forgets
+    /// it.
+    #[test]
+    fn the_duellist_drops_a_vanished_target() {
+        let (mut app, foe, _) = duel(2.0, false);
+        let target = app.world().get::<Duellist>(foe).unwrap().target;
+        app.world_mut().entity_mut(target).insert(Condition::NORMAL);
+        engage(&mut app, foe);
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        let combatant = app.world().get::<Combatant>(foe).unwrap();
+        assert_eq!(combatant.target, Some(target));
+        assert!(combatant.in_combat);
+        app.world_mut()
+            .entity_mut(target)
+            .insert(exa_combat::StateFlags(exa_combat::StateFlags::VANISHED));
+        step(&mut app);
+        let combatant = app.world().get::<Combatant>(foe).unwrap();
+        assert_eq!(combatant.target, None);
+        assert!(!combatant.in_combat);
     }
 
     /// It stands idle until the fight starts, then takes the guard, its

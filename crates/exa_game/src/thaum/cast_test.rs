@@ -2623,3 +2623,165 @@ fn ending_strikes_plays_the_end_set() {
     assert_eq!(sounds[0].pitch, strikes_end_pitch(roll.unit()));
     assert_eq!(sounds[0].at, Vec3::ZERO);
 }
+
+/// The vanish takes the body out of the world and brings it back, as the
+/// original's Vanish control does at its three turns: as the fade-out
+/// starts the body's state flags and status word take the vanished bit and
+/// the body and the item it holds are disabled; the come-back enables both
+/// and lets the body settle for 1000 ticks; the fade-in's end clears the
+/// bit and the settling. The tendril image goes up at the cast, freezes and
+/// fades at the fade-out's end, a new one goes up at the come-back and it
+/// fades at the fade-in's end.
+#[test]
+fn a_vanish_takes_its_body_out_and_brings_it_back() {
+    use crate::thaum::power::displacement::{FADING_IN, FADING_OUT, HOLDING, TAIL};
+    use crate::thaum::vanish_body::RETURN_SETTLE;
+    use exa_combat::StateFlags;
+    use exa_physics::grip::{GripSpec, HeldGrip, HeldKind};
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let caster = caster(&mut app, &[VANISH]);
+    app.world_mut().entity_mut(caster).insert(StateFlags::NONE);
+    let key = app.world().get::<Ragdoll>(caster).unwrap().parts[0].entity;
+    let item = app
+        .world_mut()
+        .spawn((
+            ragdoll(),
+            HeldGrip {
+                spec: GripSpec {
+                    hand: 0,
+                    links: vec![],
+                    second_hand: None,
+                    arm: None,
+                    extra: None,
+                },
+                scale: 1.0,
+                size: 1.0,
+                second_hand_factor: 1.0,
+                flip: false,
+                class: 0x10,
+                soft_weld: false,
+                kind: HeldKind::Weapon,
+                holder_key: key,
+                hands: [None, None],
+                arms: [None, None],
+                links: None,
+                released: false,
+                head_extra: 0.0,
+            },
+        ))
+        .id();
+    cast(&mut app, caster);
+    let image = |app: &App| match &app.world().get::<PowerCaster>(caster).unwrap().active[..] {
+        [entry] => match &entry.class {
+            ActiveClass::Vanish(p) => (p.base.phase, p.node.image),
+            _ => panic!("not a vanish"),
+        },
+        _ => (0, None),
+    };
+    let first = image(&app).1.and_then(Entity::try_from_bits);
+    let first = first.expect("the cast puts the tendril image up");
+    // A body without muscles is of size 1: the image is 12.
+    let size = app.world().get::<LiveWisps>(first).unwrap().wisps.size;
+    assert_eq!(size, BODY_WISP_SIZE);
+    let step = |app: &mut App, tick: u64| {
+        app.insert_resource(BodyTicks(tick));
+        app.world_mut().run_schedule(FixedUpdate);
+        app.update();
+    };
+    let vanished = |app: &App| {
+        let flags = app.world().get::<StateFlags>(caster).unwrap();
+        let status = app
+            .world()
+            .get::<PowerCaster>(caster)
+            .unwrap()
+            .body
+            .status_bits;
+        (
+            flags.has(StateFlags::VANISHED),
+            status & casting::VANISHED != 0,
+        )
+    };
+    let disabled = |app: &App, e| app.world().get::<Ragdoll>(e).unwrap().disabled();
+    let mut tick = 1;
+    while image(&app).0 != FADING_OUT {
+        assert_eq!(vanished(&app), (false, false));
+        step(&mut app, tick);
+        tick += 1;
+    }
+    assert_eq!(vanished(&app), (true, true));
+    assert!(disabled(&app, caster) && disabled(&app, item));
+    assert!(!app.world().get::<LiveWisps>(first).unwrap().wisps.ended());
+    while image(&app).0 != HOLDING {
+        step(&mut app, tick);
+        tick += 1;
+    }
+    let wisps = &app.world().get::<LiveWisps>(first).unwrap().wisps;
+    assert!(wisps.ended(), "the fade-out's end ends the image");
+    assert_eq!(image(&app).1, None);
+    // Pressed again: the power lets go and the body comes back.
+    cast(&mut app, caster);
+    while image(&app).0 != FADING_IN {
+        step(&mut app, tick);
+        tick += 1;
+    }
+    assert_eq!(
+        vanished(&app),
+        (true, true),
+        "still vanished while it fades in"
+    );
+    assert!(!disabled(&app, caster) && !disabled(&app, item));
+    let body = app.world().get::<Ragdoll>(caster).unwrap();
+    assert!(0 < body.settling() && body.settling() <= RETURN_SETTLE);
+    let second = image(&app).1.and_then(Entity::try_from_bits);
+    let second = second.expect("the come-back puts a new image up");
+    assert_ne!(second, first);
+    assert!(!app.world().get::<LiveWisps>(second).unwrap().wisps.ended());
+    while image(&app).0 != TAIL {
+        step(&mut app, tick);
+        tick += 1;
+    }
+    assert_eq!(vanished(&app), (false, false));
+    assert_eq!(app.world().get::<Ragdoll>(caster).unwrap().settling(), 0);
+    assert!(app.world().get::<LiveWisps>(second).unwrap().wisps.ended());
+    assert_eq!(image(&app).1, None);
+}
+
+/// A Long Door that comes back while its body is collapsing places the
+/// body where it stands, not at the door's destination.
+#[test]
+fn a_collapsing_long_door_comes_back_where_it_stands() {
+    use crate::thaum::power::displacement::{FADING_IN, LongDoor};
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let caster = caster(&mut app, &[]);
+    let mut door = LongDoor::new(0, Some([500.0, 0.0, 0.0]), false, 0.0);
+    door.base.phase = crate::thaum::power::displacement::HOLDING;
+    door.base.deadline = 0;
+    {
+        let mut state = app.world_mut().get_mut::<PowerCaster>(caster).unwrap();
+        state.body.condition = casting::COLLAPSING;
+        state.active.push(ActiveEntry {
+            id: LONG_DOOR,
+            cast_id: LONG_DOOR,
+            state: READY,
+            class: ActiveClass::LongDoor(door),
+            tick_cost: 0.0,
+            entity: None,
+            companions: Vec::new(),
+            throw_view: None,
+        });
+    }
+    app.insert_resource(BodyTicks(1));
+    app.world_mut().run_schedule(FixedUpdate);
+    app.update();
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert!(
+        matches!(&state.active[0].class, ActiveClass::LongDoor(p) if p.base.phase == FADING_IN)
+    );
+    let body = app.world().get::<Ragdoll>(caster).unwrap();
+    assert!(
+        body.parts[0].transform().translation.length() < 1e-5,
+        "the collapsing body stays where it stands"
+    );
+}

@@ -246,6 +246,11 @@ impl StateFlags {
     /// nothing clears it. In Exarust only the play flag `--flat-floor`
     /// sets it, on the player.
     pub const SPLAY: u32 = 0x1000;
+    /// Vanished: a Vanish or a Long Door has taken the body out of sight,
+    /// from its fade-out's start to its fade-in's end. A duellist drops a
+    /// vanished target, the player's footprint is not moved while it is
+    /// set, and the instant Displacement powers refuse such a body.
+    pub const VANISHED: u32 = 0x800;
     /// Blows on it are turned: the striker recoils and nothing is dealt.
     /// The golem sentry sets it on a statue with its sleep scales (the
     /// latch), and the golem wake clears it.

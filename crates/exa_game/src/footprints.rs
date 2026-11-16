@@ -6,7 +6,10 @@
 //! before it moves: an NPC's every tick (collapsing or dead too, while it
 //! keeps its controller); the player's only while it is not walking (any
 //! condition but the walk's), so a standing or fighting player is in an
-//! NPC's way and a walking one is not. An NPC walking a planned route
+//! NPC's way and a walking one is not. A vanished player
+//! ([`exa_combat::StateFlags::VANISHED`]) neither stamps nor lifts: the
+//! original's player tick skips the stamp call, so the footprint stays
+//! where the body vanished until it shows again. An NPC walking a planned route
 //! (a roam or patrol leg, a flight, a chase) at 1 cm a tick or more keeps
 //! its footprint off, as the original's AI tick gates its stamp
 //! ([`exa_ai::brain::stamps_footprint`]). A character that leaves takes its
@@ -65,6 +68,7 @@ pub fn keep_footprints(
             Has<PlayerBody>,
             Option<&exa_ai::route_walk::AiRoute>,
             Option<&Transform>,
+            Option<&exa_combat::StateFlags>,
         ),
         With<Fighter>,
     >,
@@ -77,11 +81,14 @@ pub fn keep_footprints(
         prints.forget();
     }
     seen.clear();
-    for (who, parent, condition, player, route, model) in &characters {
+    for (who, parent, condition, player, route, model, flags) in &characters {
         let Ok((capsule, at)) = roots.get(parent.parent()) else {
             continue;
         };
         seen.insert(who);
+        if player && flags.is_some_and(|f| f.has(exa_combat::StateFlags::VANISHED)) {
+            continue;
+        }
         let on = if player {
             stamps(true, condition.copied())
         } else {
@@ -239,5 +246,56 @@ mod tests {
         assert_eq!(total(&app), 63 + 8 * 32 + 12 * 16);
         let at = app.world().resource::<NavFootprints>().of(npc);
         assert!(at.is_some_and(|p| (p - Vec3::new(-0.45, 0.0, 0.15)).length() < 1e-6));
+    }
+
+    /// A standing player stamps; once vanished its footprint stays where
+    /// it was while the body moves, and it follows the body again once the
+    /// vanished bit clears.
+    #[test]
+    fn a_vanished_players_footprint_stays_put() {
+        let mut app = App::new();
+        app.insert_resource(grid())
+            .init_resource::<NavFootprints>()
+            .add_systems(Update, keep_footprints);
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                Transform::from_xyz(0.15, 0.0, 0.15),
+            ))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Condition::NORMAL,
+                PlayerBody::new(0.0),
+                ChildOf(root),
+            ))
+            .id();
+        app.update();
+        let pen = |app: &App, x, z| {
+            app.world()
+                .resource::<NavGrid>()
+                .cell(x, z, Layer::Lower)
+                .penalty
+        };
+        assert_eq!(pen(&app, 20, 20), 63);
+        app.world_mut()
+            .entity_mut(player)
+            .insert(exa_combat::StateFlags(exa_combat::StateFlags::VANISHED));
+        app.world_mut()
+            .entity_mut(root)
+            .insert(Transform::from_xyz(-0.45, 0.0, 0.15));
+        app.update();
+        // Still centred where it vanished: two cells along is its edge.
+        assert_eq!(pen(&app, 20, 20), 63, "the footprint stays where it was");
+        assert_eq!(pen(&app, 18, 20), 16);
+        app.world_mut()
+            .entity_mut(player)
+            .insert(exa_combat::StateFlags::NONE);
+        app.update();
+        assert_eq!(pen(&app, 18, 20), 63);
+        assert_eq!(pen(&app, 20, 20), 16);
     }
 }

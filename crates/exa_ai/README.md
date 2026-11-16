@@ -35,7 +35,9 @@ state (`combat`), once per body tick: it enters combat in its guard with
 its eagerness at a half, and each tick weighs up to seventeen places
 (where it stands, eight steps and eight long steps) through the position
 score (`place`, with the foe's published arc), keeping its contact with
-the target through the combatant's perception pass (`combatant`); it
+the target through the combatant's perception pass (`combatant`), and
+dropping a target that vanishes (its state flags' vanished bit) as it drops
+a dead one; it
 steps to the cheapest, strikes from the cheapest strike place through the original's attack choice (`fight`) and executor
 (`exa_combat::attack`; a side attack's clip is the side starter's pick,
 aimed at the foe's parry for a shield or two weapons, else drawn without

@@ -915,12 +915,47 @@ caster's body, the summon's light. `play exanima67 --at -177.4,-3.65,36.1
 quarters of its health or less); `play arena --powers 0x604 --debug-cast
 0@200` the player's.
 
-The vanish's, the Long Door's and the Summon's shell restore and clear
-walks act on the body's physics parts: the restore gives a part that
-carries the shell mark state bit 0x1000 for up to 1000 physics steps
-(clearing 0x900) and takes 0x800 from the others; the clear takes 0x1000
-away. Those bits belong to the physics part's step and are not modelled in
-`exa_physics` yet, so the walks stay unported.
+### The vanishing body
+
+`exa_game::thaum::vanish_body`. Vanish and the Long Door change the body
+itself at three of their turns, after the casters' walk in the same body
+step:
+
+- **The vanish** (the charge's end, as the fade-out starts): the body's
+  state flags and its status word take the vanished bit 0x800; the body
+  and the items its hands hold are disabled (the body-to-body stage leaves
+  them out, so nothing meets the vanished body, and a bite stuck in it
+  breaks on its next pass); the body drops its first breakable grab that
+  still holds (`exa_combat::bite::BiteHold::drop_first_grab`).
+- **The come-back**: the bodies are enabled again, the character's body
+  also loses its kinematic bit and settles for 1000 ticks (gravity without
+  inertia); then it is placed. A Long Door whose body is collapsing (its
+  condition's 0x800) comes back where it stands instead of at its
+  destination.
+- **The show** (the fade-in's end): the vanished bit and the settling
+  clear.
+
+While the bit is set the instant Displacement gate refuses the body, a
+duellist drops it as a target as it drops a dead one (and leaves combat
+without a focus), and the player's footprint stays where it vanished.
+
+The tendril image: a player's cast puts the body's wisps up (after the
+shell's two draws); the fade-out's end freezes and fades them; the
+come-back (and an AI door's found place) puts up a new set, which the
+fade-in's end fades out. Every body image (constant displacement, the
+summoned demon, a vanish) is sized 12 times the body's size. The original
+queues the come-back's image to the next frame; Exarust makes it in the
+same step. Over a shell lent by a running Constant Displacement the
+original also ends the constant's image and hands the new one to it;
+Exarust leaves the constant's image alone and makes none for the vanish.
+
+The Summon's disable of the demon's bodies at its arrival (disabled and
+kinematic), their enable with the settling when its shell opens, and the
+settling's clear at its release are not wired: without the held body's
+sleep word a kinematic demon would meet no floor. The shells' stamps are
+the effects' clock, not the original's scaled scene time (its time-scale
+helper, `exa_physics::dynamics::Clock::scale_since`), whose base against
+the frame clock the shell compares with is not established.
 `play arena --opponent --undying --powers 0x20603 --press Tab@100,C@120,Q@140`
 logs each pass (`a blow on … phases through`) and each restore.
 
