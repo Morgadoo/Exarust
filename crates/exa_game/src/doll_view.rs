@@ -1453,6 +1453,7 @@ pub(crate) fn equip_dropped(
             Option<&mut Hands>,
             Has<crate::torch::CarriesTorch>,
             Option<&exa_character::record::CharacterData>,
+            Option<&exa_character::held::HeldMoveset>,
         ),
         Without<DollHands>,
     >,
@@ -1522,6 +1523,7 @@ pub(crate) fn equip_dropped(
                     p,
                     kind,
                     insight,
+                    entry.6.map(|held| u32::from(held.weapon_class)),
                     |id| {
                         crate::view_trust::held_value(&crate::view_trust::ItemValues::of(
                             live.as_deref(),
@@ -1638,7 +1640,7 @@ pub(crate) fn equip_dropped(
         let Some(flags) = flags else {
             continue;
         };
-        let Some((player, mut p, mut outfit, mut hands, torch, _)) =
+        let Some((player, mut p, mut outfit, mut hands, torch, _, _)) =
             target.and_then(|t| bodies.get_mut(t).ok())
         else {
             continue;
@@ -1946,11 +1948,14 @@ pub fn wear_room_over(
 /// What a weapon's take-in into the record's hands displaces, weighed
 /// ([`possession::displaced_value`]) by the same inputs as [`hold_item`]:
 /// the main hand's item (and whether it is a light), the off hand's, the
-/// class word guessed from the main hand's grip, and the near hand.
+/// body's weapon class word `class` (what its held items made of it,
+/// [`exa_character::held::HeldMoveset`]; guessed from the main hand's
+/// grip for a body without one, [`class_word`]), and the near hand.
 pub fn displaced_by(
     p: &Possessions,
     kind: possession::ItemKind,
     off_wanted: bool,
+    class: Option<u32>,
     value: impl Fn(u32) -> f32,
     kind_of: impl Fn(u32) -> Option<possession::ItemKind>,
 ) -> f32 {
@@ -1968,7 +1973,7 @@ pub fn displaced_by(
         kind.light,
         main,
         off,
-        class_word(main_kind.map(|k| k.grip())),
+        class.unwrap_or_else(|| class_word(main_kind.map(|k| k.grip()))),
         off_wanted,
         value,
     )
@@ -2946,11 +2951,24 @@ mod tests {
         };
         let value = |id: u32| id as f32 * 10.0;
         let kind_of = |_| Some(one);
-        assert_eq!(displaced_by(&p, one, false, value, kind_of), 10.0);
-        assert_eq!(displaced_by(&p, two, false, value, kind_of), 30.0);
+        assert_eq!(displaced_by(&p, one, false, None, value, kind_of), 10.0);
+        assert_eq!(displaced_by(&p, two, false, None, value, kind_of), 30.0);
         assert_eq!(
-            displaced_by(&Possessions::default(), one, false, value, kind_of),
+            displaced_by(&Possessions::default(), one, false, None, value, kind_of),
             0.0
+        );
+        // A light taken in reads the body's own class word: a one-handed
+        // class weighs the off hand, a two-handed body's the main hand,
+        // whatever the main hand's grip would suggest.
+        let torch = possession::ItemKind { light: true, ..one };
+        assert_eq!(displaced_by(&p, torch, false, None, value, kind_of), 20.0);
+        assert_eq!(
+            displaced_by(&p, torch, false, Some(0x10), value, kind_of),
+            20.0
+        );
+        assert_eq!(
+            displaced_by(&p, torch, false, Some(0x20), value, kind_of),
+            10.0
         );
     }
 

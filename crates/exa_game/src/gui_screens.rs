@@ -5082,13 +5082,22 @@ mod tests {
     #[test]
     fn the_inventory_bind_charges_the_pack_with_the_worn_bulk() {
         use exa_formats::objdb::{Item, LOCAL};
+        // Each copy weighs as the template its header names (10 + its id).
         let item = |id: u32, bulk: u8| Item {
             model: format!("item{id}"),
             equip_lock: bulk,
+            parent: if id < 10 { LOCAL | (id + 10) } else { 0 },
             ..Item::parse(id, &[]).expect("an empty item")
         };
         let mut catalogue = exa_items::catalogue::ItemCatalogue::default();
-        catalogue.set_level_items(&[item(1, 3), item(2, 5), item(3, 7)]);
+        catalogue.set_level_items(&[
+            item(1, 0),
+            item(2, 0),
+            item(3, 0),
+            item(11, 3),
+            item(12, 5),
+            item(13, 7),
+        ]);
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<GameScreens>()

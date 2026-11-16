@@ -1302,4 +1302,146 @@ pub(crate) mod tests {
             &Possessions::default()
         );
     }
+
+    /// The golem suit's crystal runs out in its worn tick: the tick turns
+    /// the suit off (golem-suit byte clear, the race's standing stance
+    /// factor back), its byte goes into the item's record, and the
+    /// equipment refresh that follows reads the spent suit: the armour pass
+    /// adds its two to the encumbrance (held at 1) and registers it
+    /// unpowered.
+    #[test]
+    fn a_spent_golem_suit_is_written_back_and_weighs_on_its_wearer() {
+        use exa_formats::objdb::Burden;
+        use exa_physics::body::Ragdoll;
+        let mut body = vec![0u8; 0x220];
+        body[0x214] = Burden::GOLEM_SUIT;
+        body[0x218] = 1;
+        body[0x219] = 0xfd;
+        let mut section = Vec::new();
+        section.extend_from_slice(&0x1000u32.to_le_bytes());
+        section.extend_from_slice(&((8 + body.len()) as u32).to_le_bytes());
+        section.extend_from_slice(&body);
+        let mut file = Vec::new();
+        file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
+        for word in [10u32, 0, 0, section.len() as u32] {
+            file.extend_from_slice(&word.to_le_bytes());
+        }
+        file.extend_from_slice(&[0; 16]);
+        file.extend_from_slice(&section);
+        let db = exa_formats::rdb::Database::parse(&file).unwrap();
+        let catalogue = ItemCatalogue::of_database(&db);
+        let mut objects = exa_formats::objdb::ObjectDb::default();
+        objects.base = exa_formats::objdb::Store::from_records([(10u32, 0u32, section.as_slice())]);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(catalogue)
+            .insert_resource(exa_assets::live_objects::LiveObjects::of(objects))
+            .insert_resource(exa_physics::body::BodyTicks(10))
+            .add_plugins(EquipPlugin)
+            .add_systems(
+                Update,
+                crate::gui_screens::register_level_items.before(refresh_encumbrance),
+            );
+        exa_physics::sim_app::add_frame_commands(&mut app);
+        let worn = Possessions {
+            worn: vec![exa_formats::characters::ItemRef { id: 10, flags: 0 }],
+            ..Default::default()
+        };
+        let specials = exa_formats::encumbrance::WornSpecials::of_worn([(
+            10,
+            app.world().resource::<ItemCatalogue>().burden(10).unwrap(),
+        )]);
+        let mut ragdoll = Ragdoll::new(&[]).with_drive();
+        ragdoll.drive.as_mut().unwrap().set_item_use([2.0, 2.0]);
+        let e = app
+            .world_mut()
+            .spawn((
+                worn,
+                exa_combat::Fighter::default(),
+                exa_physics::body::Physical::default(),
+                crate::item_effects::WornEffects::of_specials(&specials, 0).unwrap(),
+                ragdoll,
+            ))
+            .id();
+        app.update();
+        let race_stance = exa_physics::body::RaceMuscles::HUMAN.stance;
+        // The registration powers it; one tick of two impact counters takes
+        // its byte from 0xfd to 0xff, and the suit goes off.
+        app.world_mut().run_schedule(bevy::app::FixedMain);
+        {
+            let drive = app
+                .world()
+                .get::<Ragdoll>(e)
+                .unwrap()
+                .drive
+                .clone()
+                .unwrap();
+            assert!(!drive.golem_powered);
+            assert_eq!(drive.stance(), race_stance);
+        }
+        let live = app
+            .world()
+            .resource::<exa_assets::live_objects::LiveObjects>();
+        assert_eq!(live.db().section(10, 0x1000).unwrap()[0x219], 0xff);
+        // The frame's next pass reads the spent suit.
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<ItemCatalogue>()
+                .burden(10)
+                .map(|b| b.powered),
+            Some(false)
+        );
+        // The dead suit's two, held at the encumbrance's cap of 1.
+        let fighter = app.world().get::<exa_combat::Fighter>(e).unwrap();
+        assert_eq!(fighter.stats.encumbrance, 1.0);
+        let physical = app.world().get::<exa_physics::body::Physical>(e).unwrap();
+        assert_eq!(physical.stats.encumbrance, 1.0);
+        let effects = app
+            .world()
+            .get::<crate::item_effects::WornEffects>(e)
+            .unwrap();
+        assert_eq!(effects.items[0].charge, 0xff);
+    }
+
+    /// A powered suit's registration gives its wearer the suit's standing
+    /// stance factor, and its tick switching it on again keeps it.
+    #[test]
+    fn a_powered_golem_suit_sets_the_suit_stance() {
+        use exa_formats::objdb::Burden;
+        use exa_physics::body::Ragdoll;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(exa_physics::body::BodyTicks(10))
+            .add_systems(FixedUpdate, crate::item_effects::run_worn_effects);
+        exa_physics::sim_app::add_frame_commands(&mut app);
+        let suit = exa_formats::encumbrance::WornSpecials {
+            effects: vec![exa_formats::encumbrance::EffectItem {
+                special: Burden::GOLEM_SUIT,
+                id: 9,
+                power_flags: 1,
+                charge: 0x10,
+            }],
+            ..Default::default()
+        };
+        let e = app
+            .world_mut()
+            .spawn((
+                exa_combat::Fighter::default(),
+                crate::item_effects::WornEffects::of_specials(&suit, 0).unwrap(),
+                Ragdoll::new(&[]).with_drive(),
+            ))
+            .id();
+        app.world_mut().run_schedule(bevy::app::FixedMain);
+        let drive = app
+            .world()
+            .get::<Ragdoll>(e)
+            .unwrap()
+            .drive
+            .clone()
+            .unwrap();
+        assert!(drive.golem_powered);
+        assert_eq!(drive.stance(), crate::item_effects::WORN_STANCE);
+    }
 }

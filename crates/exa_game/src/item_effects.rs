@@ -24,18 +24,25 @@
 //!   Its check ([`sharpen_tick`]) raises the slash byte by two every eighth
 //!   run of the list until 0x8c, spending one of the socketed Power
 //!   Crystal B's charge, and rewrites the record's slash share from it.
-//! - **Worn items** ([`register_worn`], [`step_worn`]): an odd item kind with
-//!   a counter byte below 0xff lights the item (0.75) and fades its skin
-//!   material to `1 − byte/255`; otherwise a body word gains two and the
-//!   material fades to zero. The tick steps an odd kind's byte by one (ten
-//!   with the fast bit) per impact counter above one, fades the material by
-//!   it, and turns the light on while the byte is still rising and off once
-//!   it is not.
+//! - **Worn items** ([`register_worn`], [`step_worn`]): the golem suit. An
+//!   odd item kind with a counter byte below 0xff powers it (the body's
+//!   golem-suit byte, and its standing stance factor 0.75) and fades its
+//!   skin material to `1 − byte/255`; otherwise the wearer's encumbrance
+//!   gains two and the material fades to zero. The tick steps an odd kind's
+//!   byte by one (ten with the fast bit) per impact counter above one, fades
+//!   the material by it, and switches the suit on while the byte is still
+//!   rising (stance factor 0.75) and off once it is not (the race's stance
+//!   factor); either switch runs the body's equipment refresh again (the
+//!   armour pass, the step reach, the view's encumbrance dots).
 //! - **Apparel** ([`part_glow`], [`step_apparel`]): the same odd-kind test
 //!   gives the apparel value 1 or 0; the tick steps an odd kind's byte by the
 //!   second impact counter alone and turns the garment's effect on while the
-//!   byte rises and the value is under 0.9, off once it stops and the value
-//!   is over 0.1.
+//!   byte rises and the stored value is under 0.9, off once it stops and
+//!   the value is over 0.1; either switch runs the equipment refresh again,
+//!   whose armour pass registers the value anew from the byte.
+//! - **The bytes** are the item's own: every tick that moves one writes it
+//!   into the item's record ([`write_back`]), so the armour pass, the
+//!   panels and a save read the spent charge.
 //! - **The focus item** ([`focus_slot`]): an item whose power record names
 //!   effect 4 in either hand sets the body's slot word to 0x100 (and any
 //!   other word to 0); when the bit goes the running powers past the
@@ -82,8 +89,9 @@ pub const HELD_EFFECTS_BIT: u32 = 2;
 
 /// The slash byte at which a self-sharpening blade stops sharpening (0x8c).
 pub const SHARPEN_CAP: u8 = 0x8c;
-/// The worn item's light while it is on (0.75).
-pub const WORN_LIGHT: f32 = 0.75;
+/// The standing stance factor a powered golem suit gives its wearer (0.75;
+/// off, the race's own).
+pub const WORN_STANCE: f32 = 0.75;
 /// What a newly worn unlit item adds to the body's word (2).
 pub const WORN_IMPACT: f32 = 2.0;
 /// The HUD time the charge shows the player (1000 ms).
@@ -280,17 +288,19 @@ pub fn charge_tick(
 /// A worn item's state after registration.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WornState {
-    /// The item glows.
+    /// The suit is powered (the body's golem-suit byte).
     pub lit: bool,
-    /// The body's light value (its own when the item stays dark).
+    /// The body's standing stance factor ([`WORN_STANCE`] when powered;
+    /// an unpowered suit leaves it as it was).
     pub light: f32,
-    /// The body word an unlit item adds two to (its role is not traced).
+    /// The wearer's encumbrance, which an unpowered suit adds two to.
     pub counter: f32,
 }
 
-/// Registers a worn item: an odd kind with a counter byte below 0xff lights
-/// the item at 0.75 and fades its material to `1 − byte/255` (in double);
-/// otherwise the body's word gains two and the material fades to zero.
+/// Registers a worn item: an odd kind with a counter byte below 0xff powers
+/// the suit, sets the stance factor 0.75 and fades its material to
+/// `1 − byte/255` (in double); otherwise the encumbrance gains two and the
+/// material fades to zero.
 /// Returns the state and the fade.
 pub fn register_worn(kind: u16, sub: u8, counter: f32, light: f32) -> (WornState, f32) {
     let lit = kind & 1 != 0 && sub != 0xff;
@@ -298,7 +308,7 @@ pub fn register_worn(kind: u16, sub: u8, counter: f32, light: f32) -> (WornState
         (
             WornState {
                 lit,
-                light: WORN_LIGHT,
+                light: WORN_STANCE,
                 counter,
             },
             byte_fade(sub),
@@ -324,9 +334,9 @@ fn byte_fade(sub: u8) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlowAction {
     None,
-    /// Turn the glow on (the body's light becomes 0.75).
+    /// Switch the suit on (the body's stance factor becomes 0.75).
     On,
-    /// Turn the glow off (the body's light takes the item's own value).
+    /// Switch it off (the stance factor takes the race's value).
     Off,
 }
 
@@ -336,9 +346,9 @@ pub struct WornStep {
     pub sub: u8,
     /// The material's fade, written for an odd kind only.
     pub fade: Option<f32>,
-    /// Whether the item's light is on after the tick.
+    /// Whether the suit is on after the tick.
     pub lit: bool,
-    /// The light value the body takes.
+    /// The stance factor the body takes.
     pub light: f32,
     pub action: GlowAction,
 }
@@ -373,7 +383,7 @@ pub fn step_worn(kind: u16, sub: &mut u8, lit: bool, light: f32, counters: [f32;
     let rising = rise(kind, sub, count);
     let fade = (kind & 1 != 0).then(|| byte_fade(*sub));
     let (lit, light, action) = match (rising, lit) {
-        (true, false) => (true, WORN_LIGHT, GlowAction::On),
+        (true, false) => (true, WORN_STANCE, GlowAction::On),
         (false, true) => (false, light, GlowAction::Off),
         _ => (lit, light, GlowAction::None),
     };
@@ -462,7 +472,7 @@ pub enum EffectTick {
     Charge,
     /// A hand item's power-record effect.
     Hand(ItemEffectKind),
-    /// A worn item's light.
+    /// A worn golem suit's switch.
     Worn,
     /// An apparel item's effect.
     Apparel,
@@ -530,13 +540,25 @@ pub struct WornEffects {
 }
 
 /// What one run of a body's list did, for the caller to apply.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EffectRun {
     /// The list ran this tick.
     pub ran: bool,
     /// The healing ticks advanced a charge (the player's HUD would show
     /// for [`CHARGE_HUD_MS`]).
     pub flash: bool,
+    /// The items whose counter byte the run changed, with the new byte:
+    /// the original's ticks write the byte in the item's own record
+    /// ([`write_back`]).
+    pub writes: Vec<(u32, u8)>,
+    /// The golem suit's switch: `Some(true)` when its worn tick turned it
+    /// on (the body's standing stance factor becomes [`WORN_STANCE`]),
+    /// `Some(false)` when it turned it off (the race's stance factor).
+    pub suit: Option<bool>,
+    /// A worn or apparel switch ran: the body's equipment refresh follows
+    /// (the armour pass, the step reach and the view's encumbrance dots,
+    /// [`write_back`]).
+    pub refresh: bool,
 }
 
 impl WornEffects {
@@ -589,13 +611,18 @@ impl WornEffects {
     /// list runs, or with an empty list the impact counters are cleared.
     /// A healing entry heals `red` toward `max` ([`charge_tick`]); the
     /// worn and apparel entries step their items' bytes ([`step_worn`],
-    /// [`step_apparel`]), their light and garment switches having no
-    /// drawing counterpart yet. Every entry stays: a worn item does not
-    /// leave a spawned body.
+    /// [`step_apparel`]). Every entry stays: a worn item does not leave a
+    /// spawned body. The changed bytes are listed in the outcome for the
+    /// item records ([`EffectRun::writes`]).
     ///
     /// A golem suit's tick reads and writes the body's golem-suit byte
     /// `golem_powered`: on while its charge still rises, off once it does
-    /// not.
+    /// not; either switch asks for the body's equipment refresh
+    /// ([`EffectRun::suit`], [`EffectRun::refresh`]). The gauntlets' tick
+    /// compares the body's stored weightless share `weightless` (the
+    /// armour pass's registration, not the byte read again) with its
+    /// hysteresis, and its switches ask for the refresh too.
+    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
         now_ms: u32,
@@ -603,6 +630,7 @@ impl WornEffects {
         max: f32,
         is_player: bool,
         golem_powered: &mut bool,
+        weightless: f32,
     ) -> EffectRun {
         let mut outcome = EffectRun::default();
         if self.next_run_ms >= now_ms {
@@ -615,6 +643,7 @@ impl WornEffects {
         }
         outcome.ran = true;
         let impacts = self.list.impacts;
+        let before: Vec<(u32, u8)> = self.items.iter().map(|i| (i.id, i.charge)).collect();
         let items = &mut self.items;
         self.list.tick(|entry| {
             let Some(item) = items.iter_mut().find(|item| item.id as i32 == entry.id) else {
@@ -630,21 +659,78 @@ impl WornEffects {
                 }
                 EffectTick::Worn => {
                     match step_worn(kind, &mut item.charge, *golem_powered, 0.0, impacts).action {
-                        GlowAction::On => *golem_powered = true,
-                        GlowAction::Off => *golem_powered = false,
+                        GlowAction::On => {
+                            *golem_powered = true;
+                            outcome.suit = Some(true);
+                            outcome.refresh = true;
+                        }
+                        GlowAction::Off => {
+                            *golem_powered = false;
+                            outcome.suit = Some(false);
+                            outcome.refresh = true;
+                        }
                         GlowAction::None => {}
                     }
                 }
                 EffectTick::Apparel => {
-                    let value = part_glow(kind, item.charge);
-                    step_apparel(kind, &mut item.charge, value, impacts[1]);
+                    let step = step_apparel(kind, &mut item.charge, weightless, impacts[1]);
+                    outcome.refresh |= step.on || step.off;
                 }
                 EffectTick::Hand(_) => {}
             }
             true
         });
+        outcome.writes = self
+            .items
+            .iter()
+            .filter(|item| !before.contains(&(item.id, item.charge)))
+            .map(|item| (item.id, item.charge))
+            .collect();
         outcome
     }
+}
+
+/// The item record's section whose body holds a worn item's power flag
+/// and counter byte (the apparel section).
+pub const EFFECT_SECTION: u32 = crate::crystal_drain::APPAREL_SECTION;
+/// Where the counter byte lies in that section's body.
+pub const COUNTER_AT: usize = crate::crystal_drain::APPAREL_SOCKET + 1;
+
+/// The frame's side of a run: the changed counter bytes written into their
+/// items' records in the live database (the item catalogue reads them again
+/// before the next armour pass), and, after a golem suit's or gauntlets'
+/// switch, the body's equipment refresh: its next pass runs whatever the
+/// worn list says ([`crate::equip::ArmourPassSeen`] cleared, the
+/// possessions marked changed), so the encumbrance (and the step reach
+/// read from it), the worn registrations and the inventory view's
+/// encumbrance dots follow the spent or recharged crystal. Run on the
+/// frame's world after the step.
+pub fn write_back(
+    world: &mut bevy::prelude::World,
+    body: bevy::prelude::Entity,
+    writes: &[(u32, u8)],
+    refresh: bool,
+) {
+    if !writes.is_empty()
+        && let Some(mut live) = world.get_resource_mut::<exa_assets::live_objects::LiveObjects>()
+    {
+        for &(id, byte) in writes {
+            if !live.write_section_byte(id, EFFECT_SECTION, COUNTER_AT, byte) {
+                bevy::log::debug!("worn effects: item {id:#x} has no record to take its byte");
+            }
+        }
+    }
+    if !refresh {
+        return;
+    }
+    let Ok(mut entity) = world.get_entity_mut(body) else {
+        return;
+    };
+    entity.remove::<crate::equip::ArmourPassSeen>();
+    if let Some(mut possessions) = entity.get_mut::<exa_items::possession::Possessions>() {
+        bevy::prelude::DetectChangesMut::set_changed(&mut possessions);
+    }
+    bevy::log::debug!("worn effects: equipment refresh on {body:?}");
 }
 
 /// Runs every spawned body's worn effects once a fixed tick, after the
@@ -652,10 +738,14 @@ impl WornEffects {
 /// list from the body tick right after the focus tick [guess: Exarust's
 /// body tick has no such slot, so the run sits with the health tick]):
 /// a healing item heals the fighter's red health, and on the player a
-/// step of it holds the HUD's bars shown for 1000 ms.
+/// step of it holds the HUD's bars shown for 1000 ms. A golem suit's
+/// registration and switches write the body's golem-suit byte and standing
+/// stance factor here; the bytes and the equipment refresh go to the frame
+/// ([`write_back`]).
 pub fn run_worn_effects(
     ticks: Option<bevy::prelude::Res<exa_physics::body::BodyTicks>>,
     mut bodies: bevy::prelude::Query<(
+        bevy::prelude::Entity,
         &mut WornEffects,
         &mut exa_combat::Fighter,
         bevy::prelude::Has<crate::player::PlayerBody>,
@@ -664,7 +754,7 @@ pub fn run_worn_effects(
     mut frame: Option<bevy::prelude::ResMut<exa_physics::sim_app::FrameCommands>>,
 ) {
     let now_ms = ticks.as_ref().map_or(0, |t| t.millis() as u32);
-    for (mut effects, mut fighter, is_player, mut body) in &mut bodies {
+    for (entity, mut effects, mut fighter, is_player, mut body) in &mut bodies {
         let max = fighter.health.max;
         let mut red = fighter.health.red;
         // The two use counters are the body's: its tick feeds them
@@ -673,16 +763,21 @@ pub fn run_worn_effects(
         if let Some(d) = drive.as_ref() {
             effects.list.impacts = d.item_use();
         }
-        // The armour pass's golem-suit registration, once.
+        // The armour pass's golem-suit registration, once: powered, the
+        // standing stance factor is the suit's (unpowered leaves it).
         if effects.pending_power.is_some() {
             let power = effects.pending_power.take();
             if let (Some(power), Some(d)) = (power, drive.as_mut()) {
                 d.golem_powered = power;
+                if power && d.stance().to_bits() != WORN_STANCE.to_bits() {
+                    d.set_stance(WORN_STANCE);
+                }
             }
         }
         let mut powered = drive.as_ref().is_some_and(|d| d.golem_powered);
         let fed = effects.list.impacts;
-        let run = effects.run(now_ms, &mut red, max, is_player, &mut powered);
+        let weightless = fighter.stats.weightless;
+        let run = effects.run(now_ms, &mut red, max, is_player, &mut powered, weightless);
         if run.ran {
             bevy::log::debug!(
                 "worn effects ran: use counters {:?} -> {:?}, {} entries",
@@ -698,6 +793,19 @@ pub fn run_worn_effects(
             if d.golem_powered != powered {
                 d.golem_powered = powered;
             }
+            // The suit's switch: on, the suit's stance factor; off, the
+            // race's.
+            match run.suit {
+                Some(true) => d.set_stance(WORN_STANCE),
+                Some(false) => d.set_stance(d.race.stance),
+                None => {}
+            }
+        }
+        if (!run.writes.is_empty() || run.refresh)
+            && let Some(frame) = frame.as_mut()
+        {
+            let (writes, refresh) = (run.writes.clone(), run.refresh);
+            frame.send(move |world| write_back(world, entity, &writes, refresh));
         }
         if run.ran && red.to_bits() != fighter.health.red.to_bits() {
             fighter.health.red = red;
@@ -1009,27 +1117,35 @@ mod tests {
         let mask = specials(&[(Burden::HEALING, 7, 2, 0)]);
         let mut effects = WornEffects::of_specials(&mask, HELD_EFFECTS_BIT).unwrap();
         let mut red = 0.1f32;
-        assert!(!effects.run(0, &mut red, 0.25, false, &mut false).ran);
-        let run = effects.run(12, &mut red, 0.25, true, &mut false);
+        assert!(!effects.run(0, &mut red, 0.25, false, &mut false, 0.0).ran);
+        let run = effects.run(12, &mut red, 0.25, true, &mut false, 0.0);
         assert!(run.ran && run.flash);
         assert_eq!(red, (0.1f32 as f64 + 0.25f32 as f64 * 0.004) as f32);
         assert_eq!(effects.items[0].charge, 1);
         assert_eq!(effects.next_run_ms, 1012);
-        assert!(!effects.run(1012, &mut red, 0.25, false, &mut false).ran);
-        assert!(effects.run(1013, &mut red, 0.25, false, &mut false).ran);
+        assert!(
+            !effects
+                .run(1012, &mut red, 0.25, false, &mut false, 0.0)
+                .ran
+        );
+        assert!(
+            effects
+                .run(1013, &mut red, 0.25, false, &mut false, 0.0)
+                .ran
+        );
         assert_eq!(effects.items[0].charge, 2);
         let mut full = 0.2495f32;
-        effects.run(3000, &mut full, 0.25, true, &mut false);
+        effects.run(3000, &mut full, 0.25, true, &mut false, 0.0);
         assert_eq!(full, 0.25);
         assert_eq!(effects.items[0].charge, 2);
         // A spent crystal (0xFF) or a record kind other than 2 heals nothing.
         effects.items[0].charge = 0xff;
         let mut low = 0.1f32;
-        effects.run(5000, &mut low, 0.25, false, &mut false);
+        effects.run(5000, &mut low, 0.25, false, &mut false, 0.0);
         assert_eq!(low, 0.1);
         let other = specials(&[(Burden::HEALING, 7, 1, 0)]);
         let mut other = WornEffects::of_specials(&other, HELD_EFFECTS_BIT).unwrap();
-        other.run(12, &mut low, 0.25, false, &mut false);
+        other.run(12, &mut low, 0.25, false, &mut false, 0.0);
         assert_eq!(low, 0.1);
     }
 
@@ -1040,9 +1156,31 @@ mod tests {
         let mut effects = WornEffects::default();
         effects.list.impacts = [3.0, 2.0];
         let mut red = 0.1;
-        assert!(!effects.run(5, &mut red, 0.25, false, &mut false).ran);
+        assert!(!effects.run(5, &mut red, 0.25, false, &mut false, 0.0).ran);
         assert_eq!(effects.list.impacts, [0.0, 0.0]);
         assert_eq!(effects.next_run_ms, 1005);
+    }
+
+    /// The gauntlets' tick compares the body's stored weightless share, not
+    /// the byte read again: a spent pair the armour pass already registered
+    /// as unpowered (0) asks for no refresh; one still registered powered
+    /// (1) is switched off. The moved byte is listed for the item's record.
+    #[test]
+    fn the_gauntlets_tick_reads_the_stored_share_and_lists_its_byte() {
+        use exa_formats::objdb::Burden;
+        let gauntlets = specials(&[(Burden::LIGHT_SHIELD, 12, 1, 0xfe)]);
+        let run = |stored: f32| {
+            let mut effects = WornEffects::of_specials(&gauntlets, 0).unwrap();
+            effects.list.impacts = [0.0, 1.5];
+            let mut red = 0.0;
+            effects.run(5, &mut red, 0.0, false, &mut false, stored)
+        };
+        let off = run(1.0);
+        assert!(off.ran && off.refresh);
+        assert_eq!(off.writes, vec![(12, 0xff)]);
+        let quiet = run(0.0);
+        assert!(!quiet.refresh);
+        assert_eq!(quiet.writes, vec![(12, 0xff)]);
     }
 
     /// The fixed-tick system heals a spawned fighter wearing a healing mask.
