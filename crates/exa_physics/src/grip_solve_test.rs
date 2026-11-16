@@ -43,6 +43,7 @@ fn pivot(on_item: [f32; 4], on_hand: [f32; 4], shares: (f32, f32)) -> GripLink {
         flags: PIVOT,
         shares,
         anchor: None,
+        normal: Vec3::ZERO,
     }
 }
 
@@ -138,6 +139,31 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
     assert_eq!(holder.parts[0].positions, hand_before);
     let point = item_body.point_at(0, &[1.0, 0.0, 0.0, 0.0]).unwrap();
     assert!((point - anchor).length() < 0.001);
+}
+
+/// A plane link (the shield's parry link) pulls the item by its offset
+/// less 0.8 of its part along the link's axis: an anchor 1 cm off along
+/// the axis and 1 cm across it moves the point 0.2 cm and 1 cm.
+#[test]
+fn a_plane_link_keeps_a_fifth_of_its_pull_along_its_axis() {
+    use crate::grip::PLANE;
+    let item = Entity::from_raw_u32(1).unwrap();
+    let hand = Entity::from_raw_u32(2).unwrap();
+    let mut item_body = rigid(item, Vec3::new(0.0, 0.01, 0.0), 1.0);
+    let mut holder = rigid(hand, Vec3::ZERO, 1.0);
+    let start = item_body.point_at(0, &[1.0, 0.0, 0.0, 0.0]).unwrap();
+    let mut plane = pivot([1.0, 0.0, 0.0, 0.0], [0.0; 4], (1.0, 0.0));
+    plane.hand = None;
+    plane.flags = PLANE;
+    plane.anchor = Some(start + Vec3::new(0.01, 0.0, 0.01));
+    plane.normal = Vec3::X;
+    let mut stage = solver(item, hand, links(plane));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    let moved = item_body.point_at(0, &[1.0, 0.0, 0.0, 0.0]).unwrap() - start;
+    assert!(
+        (moved - Vec3::new(0.002, 0.0, 0.01)).length() < 1e-4,
+        "{moved}"
+    );
 }
 
 /// A dropped item keeps every state bit it had except the strike flags the

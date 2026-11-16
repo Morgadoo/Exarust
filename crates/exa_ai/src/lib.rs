@@ -4179,6 +4179,7 @@ mod tests {
             flags,
             shares: (1.0, 0.0),
             anchor: None,
+            normal: Vec3::ZERO,
         };
         let grip = HeldGrip {
             spec: GripSpec {
