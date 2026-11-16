@@ -598,14 +598,23 @@ impl LoyaltyTarget {
     /// the negated relation, ten more when the loyal body itself has the
     /// learnt technique bit `0x10000`) is below it.
     pub fn adjust(&mut self, amount: f32, relation: f32, own_technique: bool) -> bool {
-        self.trust += amount;
-        let negated = -relation;
-        let mut limit = (f64::from(negated) * LOYALTY_RELATION_WEIGHT) as f32;
-        if own_technique {
-            limit += LOYALTY_MASK_BONUS;
-        }
-        limit < self.trust
+        trust_holds(&mut self.trust, amount, relation, own_technique)
     }
+}
+
+/// The loyalty marker's limit test on a trust word (the original runs the
+/// same routine on the possession marker's trust word): the trust grows by
+/// `amount`, then answers whether the limit (a tenth of the negated
+/// relation, in double and narrowed, ten more with the loyal body's learnt
+/// technique bit `0x10000`) is below it.
+pub fn trust_holds(trust: &mut f32, amount: f32, relation: f32, own_technique: bool) -> bool {
+    *trust += amount;
+    let negated = -relation;
+    let mut limit = (f64::from(negated) * LOYALTY_RELATION_WEIGHT) as f32;
+    if own_technique {
+        limit += LOYALTY_MASK_BONUS;
+    }
+    limit < *trust
 }
 
 /// The caster's half of Command Dead.

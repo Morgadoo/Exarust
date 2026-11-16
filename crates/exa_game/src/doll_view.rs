@@ -1182,13 +1182,27 @@ pub fn held_mark(id: u32, flags: u32) -> possession::HeldMark {
     }
 }
 
-/// Takes a shield into the off hand, freeing it first.
-pub fn hold_shield(p: &mut Possessions, id: u32, flags: u32) {
+/// Takes a shield into the off hand by the shield take
+/// ([`exa_items::doll::take_shield`]): the off hand's item is taken out
+/// first (its carried copy loses the held mark), the record's off hand takes
+/// the shield with all its flags. The answer's `clears_part` (no weapon
+/// class bits in the class word guessed from the main hand's grip) is the
+/// world body's return to empty-hand words, which Exarust's hands refresh
+/// writes after the hands change (`exa_character::body_words`); the figure
+/// has no physics.
+pub fn hold_shield(
+    p: &mut Possessions,
+    id: u32,
+    flags: u32,
+    kind_of: impl Fn(u32) -> Option<possession::ItemKind>,
+) -> exa_items::doll::ShieldTaken {
     let old = p.out[1];
     if old.id != 0 {
         possession::release_held(&mut p.carried, old.id, 1);
     }
-    p.out[1] = Hand { id, flags };
+    let main_kind = (p.out[0].id != 0).then(|| kind_of(p.out[0].id).unwrap_or_default());
+    let off = (old.id != 0).then_some((old.id, exa_items::doll::HeldPlace::Shield));
+    exa_items::doll::take_shield(off, id, flags, p, class_word(main_kind.map(|k| k.grip())))
 }
 
 /// The inventory's give-back of an item a take-in freed from a hand: the
@@ -1259,6 +1273,7 @@ fn equip_dropped(
         Without<DollHands>,
     >,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
+    (mut trust, live): (crate::view_trust::ViewTrust, Option<Res<LiveObjects>>),
 ) {
     // The character the inventory is bound to: its figure takes the drop.
     let target = screens.inventory_bound(player_bodies.iter().next());
@@ -1300,12 +1315,45 @@ fn equip_dropped(
                         exa_ui::character_view::insight_known(skill.points, &skill.techniques)
                     })
                 });
+        // With the mind window set the drop weighs the change: the
+        // apparel's wear room over what the body wears, or the weapon's
+        // desirability and what its take-in displaces from the hands.
+        let mind_cost = screens.inventory_mind_window;
+        let (apparel_cost, weapon_value, displaced) = match target.and_then(|t| bodies.get(t).ok())
+        {
+            Some(entry) if mind_cost => {
+                let p = entry.1;
+                let values = crate::view_trust::ItemValues::of(live.as_deref(), drop.id);
+                let apparel_cost = values
+                    .apparel
+                    .as_ref()
+                    .map_or(0.0, |piece| wear_room_over(live.as_deref(), &p.worn, piece));
+                let displaced = displaced_by(
+                    p,
+                    kind,
+                    insight,
+                    |id| {
+                        crate::view_trust::held_value(&crate::view_trust::ItemValues::of(
+                            live.as_deref(),
+                            id,
+                        ))
+                    },
+                    |id| catalogue.and_then(|c| c.kind(id)),
+                );
+                (apparel_cost, values.desirability(), displaced)
+            }
+            _ => (0.0, 0.0, 0.0),
+        };
         let plan = figure_drop(DropFacts {
             id: drop.id,
             flags: drop.flags,
             from_panel: drop.source == Panel::PlayerPack,
             shown: true,
             other_panel: true,
+            mind_cost,
+            apparel_cost,
+            weapon_value,
+            displaced,
             has_apparel,
             has_weapon: kind.weapon.is_some(),
             has_shield: kind.shield,
@@ -1313,6 +1361,21 @@ fn equip_dropped(
             insight,
             ..DropFacts::default()
         });
+        // The change goes into the bound body's trust before the item is
+        // taken; a binding that ends closes the window and the drop does
+        // nothing.
+        if let (Some(cost), Some(body)) = (plan.cost, target)
+            && trust.change(body, cost)
+        {
+            info!(
+                "character view: the drop of {:#x} ends the shown body's binding; \
+                 the inventory closes",
+                drop.id
+            );
+            cancel(&mut screens, drop);
+            screens.close(exa_ui::game_gui::GameScreen::Inventory);
+            continue;
+        }
         let Some(worn_now) = target
             .and_then(|t| bodies.get(t).ok())
             .map(|entry| entry.1.worn.clone())
@@ -1455,7 +1518,9 @@ fn equip_dropped(
                         commands.entity(player).insert(mark);
                     }
                 } else {
-                    hold_shield(&mut p, drop.id, flags);
+                    hold_shield(&mut p, drop.id, flags, |id| {
+                        catalogue.and_then(|c| c.kind(id))
+                    });
                 }
                 // The hands the take-in freed give their items back to the
                 // pack ([`give_back_displaced`]).
@@ -1618,6 +1683,64 @@ fn scripted_doll_drop(
             right_half: entry.near,
         });
     }
+}
+
+/// The wear room a piece of apparel adds over what a body wears
+/// ([`exa_ai::search::wear_room`]), its pieces read from the live
+/// database's records.
+pub fn wear_room_over(
+    live: Option<&LiveObjects>,
+    worn: &[ItemRef],
+    piece: &exa_ai::search::Apparel,
+) -> f32 {
+    let items: std::collections::BTreeMap<u32, exa_ai::search::Loot> = worn
+        .iter()
+        .filter_map(|w| {
+            let values = crate::view_trust::ItemValues::of(live, w.id);
+            Some((
+                w.id,
+                exa_ai::search::Loot::Apparel(Box::new(values.apparel?)),
+            ))
+        })
+        .collect();
+    let pack = exa_ai::search::Pack {
+        carried: Vec::new(),
+        worn: worn.iter().map(|w| w.id).collect(),
+        hands: [0; 4],
+        locked: false,
+    };
+    exa_ai::search::wear_room(&items, &pack, piece)
+}
+
+/// What a weapon's take-in into the record's hands displaces, weighed
+/// ([`possession::displaced_value`]) by the same inputs as [`hold_item`]:
+/// the main hand's item (and whether it is a light), the off hand's, the
+/// class word guessed from the main hand's grip, and the near hand.
+pub fn displaced_by(
+    p: &Possessions,
+    kind: possession::ItemKind,
+    off_wanted: bool,
+    value: impl Fn(u32) -> f32,
+    kind_of: impl Fn(u32) -> Option<possession::ItemKind>,
+) -> f32 {
+    let main_kind = (p.out[0].id != 0).then(|| kind_of(p.out[0].id).unwrap_or_default());
+    let main = main_kind.map(|k| possession::Holding {
+        id: p.out[0].id,
+        light: k.light,
+    });
+    let off = (p.out[1].id != 0).then_some(possession::Holding {
+        id: p.out[1].id,
+        light: false,
+    });
+    possession::displaced_value(
+        kind.grip(),
+        kind.light,
+        main,
+        off,
+        class_word(main_kind.map(|k| k.grip())),
+        off_wanted,
+        value,
+    )
 }
 
 /// A refused drop: the source's drag is cancelled and its entry stays.
@@ -1862,8 +1985,10 @@ mod tests {
         hold_item(&mut p, 6, 0x10, sword, false, kinds);
         assert_eq!(p.out[0], Hand { id: 6, flags: 0 });
         assert_eq!(p.carried[0].flags, 0);
-        hold_shield(&mut p, 7, 0);
+        let taken = hold_shield(&mut p, 7, 0, kinds);
         assert_eq!(p.out[1], Hand { id: 7, flags: 0 });
+        // A one-hander in the main hand: its class bits keep the part.
+        assert!(!taken.clears_part && !taken.frees_off);
         hold_item(&mut p, 8, 0x20, great, false, kinds);
         assert_eq!(p.out, [Hand { id: 8, flags: 0 }, Hand::default()]);
         // A one-hander asked for the off hand (the pointer's right half
@@ -2261,6 +2386,89 @@ mod tests {
         assert_eq!(screens.pack.entries.len(), 2);
         assert!(p.carried.iter().any(|c| c.id == old && c.flags & HELD == 0));
         assert!(p.carried.iter().any(|c| c.id == new && c.flags & HELD != 0));
+    }
+
+    /// A weapon dropped on a bound body's figure, with the inventory's
+    /// mind window set, raises the body's trust by twice its desirability
+    /// less what it displaces (an empty hand: 0). Against a hostile body
+    /// (its limit 10) the 4.8 is not enough: the binding ends, the window
+    /// closes and the weapon is not taken.
+    #[test]
+    fn a_weapon_drop_on_a_bound_body_changes_its_trust() {
+        use exa_formats::objdb::{ObjectDb, Store};
+        let run = |relation: f32| {
+            let payload = crate::view_trust::weapon_payload();
+            let mut db = ObjectDb::default();
+            db.local = Store::from_records([(0x21, 0x4000, payload.as_slice())]);
+            let weapon = exa_formats::objdb::LOCAL | 0x21;
+            let mut catalogue = ItemCatalogue::default();
+            catalogue.set_level_cards(&[(0x21, payload.clone())], None);
+            let mut app = App::new();
+            app.init_resource::<GameScreens>()
+                .init_resource::<PanelIcons>()
+                .init_resource::<DollItems>()
+                .insert_resource(catalogue)
+                .insert_resource(LiveObjects::of(db))
+                .add_message::<DollDrop>()
+                .add_systems(Update, equip_dropped);
+            let (_, body) = crate::view_trust::bound_pair(app.world_mut(), relation);
+            {
+                let mut screens = app.world_mut().resource_mut::<GameScreens>();
+                screens.task.screen = (1280, 720);
+                screens.show_inventory(true, true, 4, true, 3);
+                screens.inventory_body = Some(body);
+                screens.inventory_mind_window = true;
+            }
+            app.world_mut().write_message(DollDrop {
+                source: Panel::Container(0x99),
+                id: weapon,
+                flags: 0,
+                icon: 0,
+                bulk: 0,
+                right_half: false,
+            });
+            app.update();
+            let held = app.world().get::<Possessions>(body).unwrap().out[0].id == weapon;
+            let open = app
+                .world()
+                .resource::<GameScreens>()
+                .find(exa_ui::game_gui::GameScreen::Inventory)
+                .is_some();
+            let (trust, runs) = crate::view_trust::marker_trust(app.world(), body);
+            (held, open, trust, runs)
+        };
+        let (held, open, trust, runs) = run(0.0);
+        assert!(held && open && runs);
+        assert!((trust - 4.8).abs() < 1e-5);
+        let (held, open, trust, runs) = run(-100.0);
+        assert!(!held && !open && !runs);
+        assert!((trust - 4.8).abs() < 1e-5);
+    }
+
+    /// The displaced weight follows the take-in's branches: a one-handed
+    /// weapon weighs the main hand's item; a two-handed one both hands'.
+    #[test]
+    fn the_displaced_weight_reads_the_record_hands() {
+        let one = possession::ItemKind {
+            weapon: Some(0x10),
+            ..Default::default()
+        };
+        let two = possession::ItemKind {
+            weapon: Some(0x20),
+            ..Default::default()
+        };
+        let p = Possessions {
+            out: [Hand { id: 1, flags: 0 }, Hand { id: 2, flags: 0 }],
+            ..Default::default()
+        };
+        let value = |id: u32| id as f32 * 10.0;
+        let kind_of = |_| Some(one);
+        assert_eq!(displaced_by(&p, one, false, value, kind_of), 10.0);
+        assert_eq!(displaced_by(&p, two, false, value, kind_of), 30.0);
+        assert_eq!(
+            displaced_by(&Possessions::default(), one, false, value, kind_of),
+            0.0
+        );
     }
 
     #[test]

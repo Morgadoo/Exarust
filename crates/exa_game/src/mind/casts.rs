@@ -1501,8 +1501,13 @@ pub fn end_binding_by(body: &mut MindBody, owner: BodyId) -> bool {
 }
 
 /// Ends the first Loyalty or possession marker whose own test fails (the
-/// character view asks each marker whether it still holds).
-pub fn end_failed_binding(body: &mut MindBody, holds: impl Fn(&MindPower) -> bool) -> bool {
+/// character view asks each marker in turn whether it still holds; the
+/// test may write the marker, as the trust change does). Answers whether
+/// one ended.
+pub fn end_failed_binding(
+    body: &mut MindBody,
+    mut holds: impl FnMut(&mut MindPower) -> bool,
+) -> bool {
     for power in &mut body.powers {
         let id = power.id & MARK_MASK;
         if (id == LOYALTY_MARK || id == POSSESSION_MARK) && !holds(power) {
@@ -1511,6 +1516,39 @@ pub fn end_failed_binding(body: &mut MindBody, holds: impl Fn(&MindPower) -> boo
         }
     }
     false
+}
+
+/// The character view's trust change on a bound body (the mind cost of an
+/// equipment change: a drag off its figure lowers the trust, a drop onto it
+/// or a cancelled drag raises it). Each Loyalty or possession marker in
+/// turn takes `amount` into its trust word and runs the Loyalty marker's
+/// limit test ([`crate::thaum::power::mind::trust_holds`]) against the
+/// body's relation toward the marker's caster (`relation`); the first that
+/// fails ends, and the change answers true (the view then closes its
+/// window). Markers past it keep their trust. `own_technique` is the body's
+/// learnt technique bit `0x10000`.
+pub fn change_binding_trust(
+    body: &mut MindBody,
+    amount: f32,
+    relation: impl Fn(Option<BodyId>) -> f32,
+    own_technique: bool,
+) -> bool {
+    use crate::thaum::power::mind::trust_holds;
+    end_failed_binding(body, |power| {
+        let caster = power.caster;
+        match &mut power.class {
+            MindClass::LoyaltyMark(mark) => {
+                let relation = relation(mark.caster.or(caster));
+                trust_holds(&mut mark.trust, amount, relation, own_technique)
+            }
+            MindClass::Possession(mark) => {
+                trust_holds(&mut mark.trust, amount, relation(caster), own_technique)
+            }
+            // A marker of another layout: the original reads its words as
+            // the Loyalty marker's; Exarust keeps none, so it holds.
+            _ => true,
+        }
+    })
 }
 
 /// Whether a body carries a Loyalty or possession marker.
@@ -2035,5 +2073,37 @@ mod tests {
         spirit.caster = Some(4);
         caster.powers.push(spirit);
         assert_eq!(end_spirit_or_control(&mut caster), Some(SPIRIT_FORM));
+    }
+
+    /// The view's trust change: the marker's trust takes the amount, and
+    /// it holds only while the limit from the body's relation toward the
+    /// marker's caster stays below it; a failing marker ends.
+    #[test]
+    fn the_views_trust_change_ends_a_marker_past_its_limit() {
+        let trust = |body: &MindBody| match &body.powers[0].class {
+            MindClass::LoyaltyMark(mark) => mark.trust,
+            _ => f32::NAN,
+        };
+        let mut body = living(2);
+        let mut mark = MindPower::new(LOYALTY_MARK, MindClass::LoyaltyMark(LoyaltyTarget::new(1)));
+        mark.caster = Some(1);
+        body.powers.push(mark);
+        // A friendly relation (+50): the limit is -5, so a drop's +3 holds.
+        let friendly = |caster: Option<BodyId>| if caster == Some(1) { 50.0 } else { 0.0 };
+        assert!(!change_binding_trust(&mut body, 3.0, friendly, false));
+        assert_eq!(trust(&body), 3.0);
+        // A drag off the figure lowers the trust: -9 leaves it at -6,
+        // below the limit: the marker ends.
+        assert!(change_binding_trust(&mut body, -9.0, friendly, false));
+        assert_eq!(trust(&body), -6.0);
+        assert_eq!(body.powers[0].state(), ENDING);
+        // The learnt technique bit raises the limit by ten.
+        let mut held = living(3);
+        held.powers.push(MindPower::new(
+            POSSESSION_MARK,
+            MindClass::Possession(crate::thaum::power::mind::Possession::new()),
+        ));
+        assert!(!change_binding_trust(&mut held, 1.0, |_| 0.0, false));
+        assert!(change_binding_trust(&mut held, 0.0, |_| 0.0, true));
     }
 }
