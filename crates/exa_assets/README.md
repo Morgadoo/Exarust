@@ -29,15 +29,37 @@ splits on the groups, and up to three damped distance blends elsewhere
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Skinning). The shipped
 human and ogre bodies are checked watertight. The weights run in the model
 build on the compute pool; a mesh that ships weights keeps them. The
-builder's group stack limits are `skin::GroupStack` (sixteen frames of
-group centres in centimetres; only the separate empty push skips the
-limit). `skin::auto_skin_build` returns each part's frame for its children
-(`pushed`; empty for a mesh that keeps a shipped skin stream or finds no
-group), and the per-node model build walks the tree from its roots handing
-each child its parent's frame (`skin::ParentFrame`), so a garment child's
-nearest-joint match carries its group centres through its node transform
+per-node model build walks the tree from its roots over the builder's group
+stack as the original lays it out (`skin::GroupStack`: frames of a count and
+room for eight centres in centimetres, back to back): each part reads the
+top frame, pushes its groups' centres (`pushed` from
+`skin::auto_skin_build`; empty for a mesh that keeps a skin stream or finds
+no group) for its children and pops after them. A push past sixteen frames
+is refused with the original's "Skinning group stack overflow." and its pop
+still counts down; a garment root starts on an empty frame, which tests no
+limit; centres past the eighth run on into the next frame's words, where a
+child's push overwrites them (shipped: the two golem bodies and
+`uwc2harna`). A garment child's nearest-joint match carries its group
+centres through its node transform (`skin::ParentFrame`)
 and compares them with the parent part's centres as the stack's reader
 does (a parent centre only lowers the bar and is never taken).
+
+Body skin (`body_skin`): a race with a morph body hands its skin to the
+garment pieces whose render word carries `0x200000`, as the original's race
+loader and morph transfer do. `body_skin::merged_body` merges the race's
+base parts (unmorphed, skinned by the seam builder) into one editable mesh
+in the first root's frame and welds it; `body_skin_records` gives every
+base position of the morph set its nearest merged record, and
+`ModelLoader::morph_body` attaches them (`MorphBody::with_skin`). The
+transfer then yields each such piece's records (`PartMorph::skin`), which
+`morph::given_skins` turns into per-vertex weights the model build's skin
+pass keeps in place of the seam weights (the node pushes an empty frame, as
+a node keeping a stream does). A garment on a race with a morph body is
+transferred whatever the physique: below the smallest weight it keeps its
+shape and takes only the skin, under the key `<model>#<race>`. The records
+are built once per race (about 2 ms in the test profile); a garment's
+records once per race and model, with its share of the morphs; nothing runs
+per frame.
 Skinned linked-body objects (`prop_skin`): a model root mesh with render
 word `0x400000` (22 shipped objects, 105 meshes: sacks, mattresses, the two
 flails and the hanging growths) is the original's `_SKIN` build. Its bones
@@ -604,13 +626,15 @@ transferred once per race and model (a garment piece from the frame of the
 base body part its node names), then the meshes are morphed (normals and
 boxes refitted) and the body parts' translations moved with their joints
 before skinning; the body's parts are skinned on the morphed shape, a
-garment from the unmorphed body. Weights that change nothing, and races
-without a morph body, return the shared model. The controller's
+garment on its unmorphed shape (its pieces with render bit `0x200000` from
+the body's skin records, see Body skin). Weights that change nothing
+return the shared body model, and a garment's skin-only variant on a race
+with a morph body; races without a morph body return the shared model. The controller's
 registration helpers for numbered target nodes are `morph_part_ordinal`
 (the name's second and third characters as a number, which
 `bake_morph_parts` sorts by), `numbered_target_deltas`, `control_matches`
-(a rotated control triangle against its reference, within 1e-8) and
-`nearest_records` (each base point's nearest candidate, 0 by default). See
+(a rotated control triangle against its reference, within 1e-8); the
+body's nearest records are `exa_formats::morph::nearest_skin_records`. See
 [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Morph sets).
 
 Mesh editing (pure, no Bevy types): `mesh_edit::EditMesh` is a decoded

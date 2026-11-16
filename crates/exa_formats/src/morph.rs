@@ -27,7 +27,7 @@
 //!   moved origins, so the skeleton and the joints follow the physique.
 
 use crate::characters::CharacterRecord;
-use crate::rfc::{Mesh, Node, NodeBody, Scene};
+use crate::rfc::{Mesh, Node, NodeBody, Scene, SkinWeights};
 use crate::{Error, Result};
 
 /// A position or offset, metres.
@@ -56,6 +56,22 @@ pub const MIN_WEIGHT: f32 = f32::from_bits(0x33ff_ffd7);
 /// How far from a part's element the transfer looks for the body's surface,
 /// metres (10 cm).
 pub const REACH: f32 = 0.1;
+
+/// Render-word bit of a garment piece that takes the body's skin weights
+/// through the transfer instead of building its own from its seams.
+pub const BODY_SKIN: u32 = 0x20_0000;
+/// Triangle-flag bits (byte 2's two high classes) whose corners the skin
+/// transfer relaxes towards their neighbours.
+pub const RELAXED_FACES: u32 = 0xC0_0000;
+/// Passes of that relaxation.
+const RELAX_PASSES: usize = 3;
+/// A skin record with no joint.
+const NO_SKIN: SkinWeights = SkinWeights {
+    bones: [0; 4],
+    weights: [0.0; 4],
+};
+/// The nearest-position search's starting bound (3.4e38).
+const FAR: f32 = f32::from_bits(0x7f7f_c99e);
 
 /// The morph set of a race's morph body.
 #[derive(Debug, Clone, PartialEq)]
@@ -409,6 +425,13 @@ pub fn element_positions(mesh: &Mesh) -> Vec<Vec3> {
 /// `mesh`'s triangles over its position elements; triangles naming a
 /// missing vertex or element are left out.
 fn element_triangles(mesh: &Mesh) -> Vec<[u32; 3]> {
+    element_triangle_list(mesh).into_iter().flatten().collect()
+}
+
+/// `mesh`'s triangles over its position elements, one per triangle in
+/// order (`None` for one naming a missing vertex or element), so they line
+/// up with the per-triangle flags.
+fn element_triangle_list(mesh: &Mesh) -> Vec<Option<[u32; 3]>> {
     let element = |v: u32| {
         mesh.position_ids
             .get(v as usize)
@@ -419,7 +442,7 @@ fn element_triangles(mesh: &Mesh) -> Vec<[u32; 3]> {
         .as_chunks::<3>()
         .0
         .iter()
-        .filter_map(|t| Some([element(t[0])?, element(t[1])?, element(t[2])?]))
+        .map(|t| Some([element(t[0])?, element(t[1])?, element(t[2])?]))
         .collect()
 }
 
@@ -624,17 +647,133 @@ pub struct MorphBody {
     /// The body's frame in its file (its landmarks are offset by the
     /// frame's translation, its positions placed by the whole frame).
     pub frame: Frame,
+    /// The body's skin record at each base position, when the race hands
+    /// its skin on to the garments ([`nearest_skin_records`]); `None`
+    /// leaves every garment to its own seams.
+    pub skin: Option<Vec<SkinWeights>>,
     triangles: Vec<[u32; 3]>,
     grid: Grid,
 }
 
 /// A part's or garment's share of the morphs, as the transfer makes it:
 /// per target, how far its origin moves (model space) and how far each of
-/// its position elements moves in its own frame (metres).
+/// its position elements moves in its own frame (metres); and for a piece
+/// whose render word asks for it ([`BODY_SKIN`]) on a body with skin
+/// records, the skin record of each position element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartMorph {
     pub origin: Vec<Vec3>,
     pub positions: Vec<Vec<Vec3>>,
+    pub skin: Option<Vec<SkinWeights>>,
+}
+
+/// Merges `src`'s joints into `dest` at `scale`, as the original's
+/// four-slot merge does: a scale below [`MIN_WEIGHT`] merges nothing (NaN
+/// merges); each source joint up to the first below 1 adds `weight·scale`
+/// to the slot holding it, or takes the slot after the last used one while
+/// one is free.
+pub fn merge_skin(dest: &mut SkinWeights, src: &SkinWeights, scale: f32) {
+    if scale < MIN_WEIGHT {
+        return;
+    }
+    let mut last = (0..4).rev().find(|&k| (dest.bones[k] as i32) > 0);
+    for k in 0..4 {
+        let joint = src.bones[k] as i32;
+        if joint < 1 {
+            return;
+        }
+        let held = last.and_then(|l| (0..=l).find(|&s| dest.bones[s] as i32 == joint));
+        match held {
+            Some(s) => dest.weights[s] += src.weights[k] * scale,
+            None => {
+                let next = last.map_or(0, |l| l + 1);
+                if next < 4 {
+                    dest.bones[next] = src.bones[k];
+                    dest.weights[next] = src.weights[k] * scale;
+                    last = Some(next);
+                }
+            }
+        }
+    }
+}
+
+/// Divides a record's weights through its last used slot (slots up to the
+/// first joint below 1) by their sum. With `drop_negative` a negative weight
+/// is set to 0 and left out of the sum (NaN stays in it), as the transfer's
+/// first normalisation does; the relaxation's does not test the sign.
+pub fn normalise_skin(record: &mut SkinWeights, drop_negative: bool) {
+    let mut sum = 0.0f32;
+    let mut last = None;
+    for k in 0..4 {
+        if (record.bones[k] as i32) < 1 {
+            break;
+        }
+        if drop_negative && record.weights[k] < 0.0 {
+            record.weights[k] = 0.0;
+        } else {
+            sum += record.weights[k];
+        }
+        last = Some(k);
+    }
+    if let Some(last) = last {
+        let scale = 1.0 / sum;
+        for w in &mut record.weights[..=last] {
+            *w *= scale;
+        }
+    }
+}
+
+/// The body's skin record at each of `points` (the morph set's base
+/// positions): the record of the nearest of `positions` (squared distance
+/// `(dx² + dy²) + dz²`, strictly below the best so far from 3.4e38, so the
+/// first of equally near positions; the first record when none is nearer).
+/// `positions` and `records` are the race body's parts merged into one mesh
+/// and welded. The search walks the positions in order of x outward from
+/// the point and stops once dx² alone passes the best; it returns what the
+/// original's scan of every position returns.
+pub fn nearest_skin_records(
+    points: &[Vec3],
+    positions: &[Vec3],
+    records: &[SkinWeights],
+) -> Vec<SkinWeights> {
+    let n = positions.len().min(records.len());
+    let mut order: Vec<u32> = (0..n as u32)
+        .filter(|&i| !positions[i as usize][0].is_nan())
+        .collect();
+    order.sort_by(|&a, &b| positions[a as usize][0].total_cmp(&positions[b as usize][0]));
+    let xs: Vec<f32> = order.iter().map(|&i| positions[i as usize][0]).collect();
+    points
+        .iter()
+        .map(|&p| {
+            if n == 0 {
+                return NO_SKIN;
+            }
+            let mut best = (FAR, usize::MAX);
+            let consider = |best: &mut (f32, usize), i: usize| {
+                let d = dist_sq(p, positions[i]);
+                if d < best.0 || (d == best.0 && i < best.1) {
+                    *best = (d, i);
+                }
+            };
+            let start = xs.partition_point(|&x| x < p[0]);
+            // Upward, then downward; dx² never exceeds the sum it starts.
+            for (k, &x) in xs.iter().enumerate().skip(start) {
+                let dx = x - p[0];
+                if dx * dx > best.0 {
+                    break;
+                }
+                consider(&mut best, order[k] as usize);
+            }
+            for k in (0..start).rev() {
+                let dx = xs[k] - p[0];
+                if dx * dx > best.0 {
+                    break;
+                }
+                consider(&mut best, order[k] as usize);
+            }
+            records[if best.1 == usize::MAX { 0 } else { best.1 }]
+        })
+        .collect()
 }
 
 impl MorphBody {
@@ -682,8 +821,19 @@ impl MorphBody {
         Some(Self {
             set,
             frame,
+            skin: None,
             triangles,
             grid,
+        })
+    }
+
+    /// The body with the skin record of each base position, which garments
+    /// asking for the body's skin take through the transfer; refused when
+    /// the counts differ.
+    pub fn with_skin(mut self, records: Vec<SkinWeights>) -> Option<Self> {
+        (records.len() == self.set.base.len()).then(|| {
+            self.skin = Some(records);
+            self
         })
     }
 
@@ -803,7 +953,122 @@ impl MorphBody {
             origin.push(lift);
             positions.push(deltas);
         }
-        PartMorph { origin, positions }
+        let skin = match &self.skin {
+            Some(records) if mesh.render_flags & BODY_SKIN != 0 => {
+                Some(self.transfer_skin(records, mesh, &elements, &found, &neighbours))
+            }
+            _ => None,
+        };
+        PartMorph {
+            origin,
+            positions,
+            skin,
+        }
+    }
+
+    /// The skin-weight branch of the transfer, for a piece whose render
+    /// word asks for the body's skin: per position element, the body records
+    /// of the nearest surface's corners merged at their barycentric weights
+    /// (a negative one merges nothing); elements off the body cleared and
+    /// filled from their neighbours already set, at 1/distance and not
+    /// divided, pass after pass; every record normalised (negative weights
+    /// to 0); then the corners of the triangles flagged [`RELAXED_FACES`],
+    /// in triangle and corner order, relaxed three times to half their own
+    /// record and half of each neighbour's at 1/distance, read from the
+    /// records before the pass, and normalised again.
+    fn transfer_skin(
+        &self,
+        records: &[SkinWeights],
+        mesh: &Mesh,
+        elements: &[Vec3],
+        found: &[Option<(usize, [f32; 3])>],
+        neighbours: &[Vec<u32>],
+    ) -> Vec<SkinWeights> {
+        let n = elements.len();
+        let record = |v: u32| records.get(v as usize).copied().unwrap_or(NO_SKIN);
+        let mut skin = vec![NO_SKIN; n];
+        for (out, f) in skin.iter_mut().zip(found) {
+            if let Some((t, b)) = f {
+                for (k, &v) in self.triangles[*t].iter().enumerate() {
+                    merge_skin(out, &record(v), b[k]);
+                }
+            }
+        }
+        let inverse_distance = |a: usize, b: usize| 1.0 / dist_sq(elements[a], elements[b]).sqrt();
+        let unmatched: Vec<usize> = (0..n).filter(|&e| found[e].is_none()).collect();
+        let mut done: Vec<bool> = found.iter().map(Option::is_some).collect();
+        loop {
+            let mut set_now = Vec::new();
+            for &e in &unmatched {
+                if done[e] {
+                    continue;
+                }
+                let mut out = NO_SKIN;
+                let mut total = 0.0f32;
+                for &nb in &neighbours[e] {
+                    let nb = nb as usize;
+                    if !done[nb] {
+                        continue;
+                    }
+                    let w = inverse_distance(e, nb);
+                    merge_skin(&mut out, &skin[nb], w);
+                    total += w;
+                }
+                skin[e] = out;
+                if total > 0.0 {
+                    set_now.push(e);
+                }
+            }
+            if set_now.is_empty() {
+                break;
+            }
+            for e in set_now {
+                done[e] = true;
+            }
+        }
+        for r in &mut skin {
+            normalise_skin(r, true);
+        }
+        // The relaxed corners, each once, in the order first met.
+        let mut relaxed: Vec<usize> = Vec::new();
+        if let Some(flags) = &mesh.triangle_flags {
+            for (t, &f) in element_triangle_list(mesh).iter().zip(flags) {
+                let Some(t) = t else { continue };
+                if f & RELAXED_FACES == 0 {
+                    continue;
+                }
+                for &e in t {
+                    let e = e as usize;
+                    if !relaxed.contains(&e) {
+                        relaxed.push(e);
+                    }
+                }
+            }
+        }
+        for _ in 0..RELAX_PASSES {
+            let mixed: Vec<SkinWeights> = relaxed
+                .iter()
+                .map(|&e| {
+                    let mut out = skin[e];
+                    for k in 0..4 {
+                        if (out.bones[k] as i32) < 1 {
+                            break;
+                        }
+                        out.weights[k] *= 0.5;
+                    }
+                    for &nb in &neighbours[e] {
+                        let nb = nb as usize;
+                        merge_skin(&mut out, &skin[nb], inverse_distance(e, nb) * 0.5);
+                    }
+                    out
+                })
+                .collect();
+            for (&e, mut r) in relaxed.iter().zip(mixed) {
+                normalise_skin(&mut r, false);
+                skin[e] = r;
+            }
+        }
+        skin
     }
 }
 

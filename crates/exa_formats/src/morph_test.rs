@@ -423,6 +423,7 @@ fn morphed_origins_move_the_joints() {
     let part = |origin: Vec3| PartMorph {
         origin: vec![origin],
         positions: vec![vec![[0.0, 0.05, 0.0], [0.0; 3], [0.0; 3]]],
+        skin: None,
     };
     let parts = vec![
         Some(part([0.0, 0.1, 0.0])),
@@ -713,4 +714,191 @@ fn transfer_weights_are_solved_on_the_plane() {
     let above = plane_barycentric([0.0, 0.0, 1.0], [a, b, c], [0.25, 0.25, 3.0]);
     assert!(close3(above, [0.5, 0.25, 0.25]), "{above:?}");
     assert_eq!(face_normal(a, b, [2.0, 0.0, 0.0]), [0.0; 3]);
+}
+
+fn rec(bones: [u32; 4], weights: [f32; 4]) -> SkinWeights {
+    SkinWeights { bones, weights }
+}
+
+#[test]
+fn skin_records_merge_into_four_slots() {
+    let mut r = rec([3, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]);
+    merge_skin(&mut r, &rec([3, 5, 0, 7], [0.5, 0.5, 1.0, 1.0]), 2.0);
+    // Joint 3 adds, 5 takes the next slot; the source stops at its first
+    // joint below 1, so 7 is never read.
+    assert_eq!(r.bones, [3, 5, 0, 0]);
+    assert_eq!(r.weights, [2.0, 1.0, 0.0, 0.0]);
+    // A scale below the smallest weight merges nothing; NaN merges.
+    let before = r;
+    merge_skin(&mut r, &rec([9, 0, 0, 0], [1.0; 4]), 1e-8);
+    merge_skin(&mut r, &rec([9, 0, 0, 0], [1.0; 4]), -1.0);
+    assert_eq!(r, before);
+    merge_skin(&mut r, &rec([9, 0, 0, 0], [1.0; 4]), f32::NAN);
+    assert_eq!(r.bones, [3, 5, 9, 0]);
+    assert!(r.weights[2].is_nan());
+    // A full record takes no new joint but still adds to the ones it holds.
+    let mut full = rec([1, 2, 3, 4], [1.0; 4]);
+    merge_skin(&mut full, &rec([6, 4, 0, 0], [1.0, 1.0, 0.0, 0.0]), 1.0);
+    assert_eq!(full.bones, [1, 2, 3, 4]);
+    assert_eq!(full.weights, [1.0, 1.0, 1.0, 2.0]);
+    // An empty slot below the last used one is not refilled.
+    let mut gap = rec([0, 2, 0, 0], [0.0, 1.0, 0.0, 0.0]);
+    merge_skin(&mut gap, &rec([5, 0, 0, 0], [1.0; 4]), 1.0);
+    assert_eq!(gap.bones, [0, 2, 5, 0]);
+}
+
+#[test]
+fn skin_records_normalise_through_their_last_slot() {
+    let mut r = rec([1, 2, 3, 0], [1.0, -1.0, 3.0, 9.0]);
+    normalise_skin(&mut r, true);
+    assert_eq!(r.weights, [0.25, 0.0, 0.75, 9.0]);
+    let mut r = rec([1, 2, 0, 0], [1.0, -0.5, 0.0, 0.0]);
+    normalise_skin(&mut r, false);
+    assert_eq!(r.weights, [2.0, -1.0, 0.0, 0.0]);
+    // No joint: nothing; all weights zero: 1/0 makes NaN.
+    let mut none = rec([0; 4], [2.0; 4]);
+    normalise_skin(&mut none, true);
+    assert_eq!(none.weights, [2.0; 4]);
+    let mut zero = rec([4, 0, 0, 0], [0.0; 4]);
+    normalise_skin(&mut zero, true);
+    assert!(zero.weights[0].is_nan());
+}
+
+/// The sorted search returns what a scan of every position in order
+/// returns, ties to the first.
+#[test]
+fn the_nearest_record_is_the_first_of_the_nearest() {
+    let positions: Vec<Vec3> = (0..200)
+        .map(|i| {
+            let f = i as f32;
+            [
+                ((f * 0.37).sin() * 0.5).round() * 0.1,
+                (f * 0.11).cos(),
+                (f * 0.07).sin(),
+            ]
+        })
+        .chain([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [f32::NAN, 0.0, 0.0]])
+        .collect();
+    let records: Vec<SkinWeights> = (0..positions.len())
+        .map(|i| rec([i as u32 + 1, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]))
+        .collect();
+    let points: Vec<Vec3> = (0..300)
+        .map(|i| {
+            let f = i as f32;
+            [(f * 0.13).sin() * 0.06, (f * 0.29).cos(), (f * 0.05).cos()]
+        })
+        .chain([[0.0; 3], [f32::NAN, 0.0, 0.0], [1e30, 0.0, 0.0]])
+        .collect();
+    let got = nearest_skin_records(&points, &positions, &records);
+    for (p, g) in points.iter().zip(&got) {
+        let mut best = (FAR, 0);
+        for (i, q) in positions.iter().enumerate() {
+            let d = dist_sq(*p, *q);
+            if d < best.0 {
+                best = (d, i);
+            }
+        }
+        assert_eq!(g.bones[0], best.1 as u32 + 1, "{p:?}");
+    }
+    assert!(nearest_skin_records(&[[0.0; 3]], &[], &[]) == vec![NO_SKIN]);
+}
+
+/// The square body with a record per corner: corners 0 and 3 on bone 1,
+/// corners 1 and 2 on bone 2.
+fn skinned_square() -> MorphBody {
+    let a = rec([1, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]);
+    let b = rec([2, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]);
+    square_body().with_skin(vec![a, b, b, a]).unwrap()
+}
+
+#[test]
+fn a_piece_asking_for_the_body_skin_takes_it_through_the_transfer() {
+    let body = skinned_square();
+    assert!(square_body().with_skin(vec![NO_SKIN]).is_none());
+    // In the part's space (placed 1.02 m up, the body at -0.02): element 0
+    // over the middle of the body's edge x = 0, element 1 over corner 2,
+    // element 2 30 cm up and away (filled from its neighbours), element 3
+    // a metre off and alone (never reached).
+    let mut part = mesh(
+        &[
+            [0.0, -0.01, -0.5],
+            [0.5, -0.01, 0.5],
+            [0.25, 0.3, 0.0],
+            [3.0, 1.0, 3.0],
+            [3.1, 1.0, 3.0],
+            [3.0, 1.0, 3.1],
+        ],
+        &[[0, 1, 2], [3, 4, 5]],
+    );
+    let mut frame = IDENTITY;
+    frame[3] = [0.0, 1.02, 0.0];
+    assert_eq!(body.transfer(&part, &frame).skin, None);
+    part.render_flags = BODY_SKIN;
+    part.triangle_flags = Some(vec![0, 0]);
+    let m = body.transfer(&part, &frame);
+    let skin = m.skin.clone().unwrap();
+    assert_eq!(skin.len(), 6);
+    // Halfway between corners 0 and 1: half each bone.
+    assert_eq!(skin[0].bones, [1, 2, 0, 0]);
+    assert!(close(skin[0].weights[0], 0.5) && close(skin[0].weights[1], 0.5));
+    // On corner 2: bone 2 takes it all (the other corners weigh nothing).
+    let on_two: f32 = (0..4)
+        .filter(|&k| skin[1].bones[k] == 2)
+        .map(|k| skin[1].weights[k])
+        .sum();
+    assert!(close(on_two, 1.0), "{:?}", skin[1]);
+    // Off the body: its neighbour (element 0, the next corner) at 1/d,
+    // normalised: element 0's split.
+    assert_eq!(skin[2].bones, [1, 2, 0, 0]);
+    assert!(close(skin[2].weights[0], 0.5), "{:?}", skin[2]);
+    // Never reached: no joint at all.
+    assert_eq!(skin[3], NO_SKIN);
+    // The shape's share is the same with or without the skin.
+    part.render_flags = 0;
+    assert_eq!(body.transfer(&part, &frame).positions, m.positions);
+    // A body without records gives no skin.
+    part.render_flags = BODY_SKIN;
+    assert_eq!(square_body().transfer(&part, &frame).skin, None);
+}
+
+#[test]
+fn flagged_corners_relax_towards_their_neighbours() {
+    let body = skinned_square();
+    let mut part = mesh(
+        &[[-0.5, -0.01, -0.5], [0.5, -0.01, -0.5], [0.5, -0.01, 0.5]],
+        &[[0, 1, 2]],
+    );
+    part.render_flags = BODY_SKIN;
+    let mut frame = IDENTITY;
+    frame[3] = [0.0, 1.02, 0.0];
+    part.triangle_flags = Some(vec![0]);
+    let plain = body.transfer(&part, &frame).skin.unwrap();
+    assert_eq!(plain[0].bones, [1, 0, 0, 0]);
+    part.triangle_flags = Some(vec![RELAXED_FACES]);
+    let relaxed = body.transfer(&part, &frame).skin.unwrap();
+    // Corner 0 (bone 1) takes half of itself and half of corner 1 (bone 2,
+    // its next corner) at 1/d per pass, normalised, three times; corner 1
+    // and 2 likewise, from the records before each pass.
+    assert_eq!(relaxed[0].bones, [1, 2, 0, 0]);
+    let sum: f32 = relaxed[0].weights.iter().sum();
+    assert!(close(sum, 1.0));
+    // By hand, each pass reading the records before it.
+    let mut r: Vec<SkinWeights> = plain.clone();
+    for _ in 0..3 {
+        let before = r.clone();
+        for (e, nb) in [(0usize, 1usize), (1, 2), (2, 0)] {
+            let mut out = before[e];
+            for k in 0..4 {
+                if out.bones[k] < 1 {
+                    break;
+                }
+                out.weights[k] *= 0.5;
+            }
+            let d = dist_sq(part.positions[e], part.positions[nb]);
+            merge_skin(&mut out, &before[nb], (1.0 / d.sqrt()) * 0.5);
+            normalise_skin(&mut out, false);
+            r[e] = out;
+        }
+    }
+    assert_eq!(relaxed, r);
 }
