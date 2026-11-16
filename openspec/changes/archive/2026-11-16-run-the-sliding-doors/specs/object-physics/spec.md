@@ -15,6 +15,25 @@ The system SHALL register every free or hung body tree (a top body and its body 
 - **WHEN** a registered prop 30 cm over the floor is ticked 500 times
 - **THEN** its particles stay exactly where its node placed them and it stays asleep
 
+#### Scenario: Shoved
+- **WHEN** a prop 10 cm over the floor takes a 0.5 m/s blow
+- **THEN** it wakes to 256, lands, slides about 6 cm and sleeps again 140 ticks later, resting on the floor
+
+#### Scenario: Gravity at the centre of mass
+- **WHEN** a body with point masses 2, 4, 8 and 8 is integrated once from rest
+- **THEN** its particles fall 2, 1, 0.5 and 0.5 times 0.142352 cm
+
+#### Scenario: Equal masses fall at g
+- **WHEN** a body with four equal point masses is integrated once from rest
+- **THEN** each particle falls 0.142352 cm
+
+### Requirement: Signal routing
+A mechanism signal SHALL be dispatched by the records of the placed object whose id (tag bits included) is its target: a door order SHALL run on the door rules of every door body under the object's node, each woken; a class 5 push on the push surface under it; relays and jobs SHALL not run.
+
+#### Scenario: A lever and its portcullis
+- **WHEN** a lever of `exanima01` is turned onto its other detent
+- **THEN** it signals its portcullis, which takes the signalled open
+
 ### Requirement: Sliding leaf body
 A door's sliding leaf SHALL register on its slider links with the door's sliding rules, its travel link the first whose body point is 30–160 cm up, reading shut at a fraction of 0.995 or more; each awake tick, right after the leaf's integration and before the link passes, it SHALL feed the link's fraction to the sliding step and write the step's fraction and smoothing back, a command's fraction written into the link first.
 
