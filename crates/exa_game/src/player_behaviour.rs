@@ -1,6 +1,6 @@
 //! The player behaviour's own rules, outside its steering: the aim point's
 //! soft height lock and raised surface, the gamepad aim's point and screen
-//! ease, the near-contact list, the strongest engaged enemy and the late
+//! ease (run by [`crate::pad_cursor`]), the near-contact list, the strongest engaged enemy and the late
 //! swing's practice check.
 //! Rules: `docs/PLAYER.md`.
 //!
@@ -43,7 +43,7 @@ pub const AIM_EASE_MARGIN: f64 = 0.1;
 /// fully within it.
 pub const AIM_LOCK_RADII: f32 = 2.0;
 /// Without a lock, a picked surface raises the aim point at most this far
-/// (cm) above the player's ground.
+/// (cm) above the player's pelvis.
 pub const RAISED_SURFACE_MAX_CM: f32 = 200.0;
 /// The strongest engaged enemy must lie within the player's reach (cm)
 /// plus this, and in front of its heading by more than 0.3 of its distance
@@ -104,12 +104,6 @@ pub fn aim_factor(aim_speed: f32) -> f32 {
 /// The screen cursor after one tick of the gamepad ease: the point moves
 /// [`aim_factor`] of the way toward the asked screen point.
 pub fn aim_cursor_step(current: Vec2, want: Vec2, aim_speed: f32) -> Vec2 {
-    current + (want - current) * aim_factor(aim_speed)
-}
-
-/// The aim point in the world after one tick of the gamepad ease (Exarust
-/// eases the world point by the screen ease's factor).
-pub fn aim_point_step(current: Vec3, want: Vec3, aim_speed: f32) -> Vec3 {
     current + (want - current) * aim_factor(aim_speed)
 }
 
@@ -203,11 +197,11 @@ pub fn bone_lock_radius(viewport_px: f32, projection_scale: f32, depth: f32) -> 
 
 /// The aim point without a lock: the cursor's point on the aim plane, or the
 /// point the cursor's pick met (`hit`, not the player's own body) when it
-/// lies above the plane's point and below the player's ground plus 200 cm;
-/// the whole hit point is taken.
-pub fn aim_raised(plane_point: Vec3, hit: Option<Vec3>, ground: f32) -> Vec3 {
+/// lies above the plane's point and below the player's pelvis (`pelvis`,
+/// the body's frame height) plus 200 cm; the whole hit point is taken.
+pub fn aim_raised(plane_point: Vec3, hit: Option<Vec3>, pelvis: f32) -> Vec3 {
     match hit {
-        Some(hit) if hit.y > plane_point.y && ground + RAISED_SURFACE_MAX_CM > hit.y => hit,
+        Some(hit) if hit.y > plane_point.y && pelvis + RAISED_SURFACE_MAX_CM > hit.y => hit,
         _ => plane_point,
     }
 }
@@ -584,9 +578,6 @@ mod tests {
         // At 2.25 the factor is one: it arrives at once.
         let fast = aim_cursor_step(Vec2::ZERO, want, 2.25);
         assert!((fast - want).length() < 1e-4);
-        // The world point eases by the same factor.
-        let p = aim_point_step(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), 0.29);
-        assert!((p.x - 4.6656).abs() < 1e-4, "{p}");
         // The point is 250·|aim| + 50 cm out.
         assert_eq!(aim_distance(0.0), 50.0);
         assert_eq!(aim_distance(1.0), 300.0);

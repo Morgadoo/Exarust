@@ -1723,8 +1723,8 @@ pub(crate) fn pad_keys(
 /// compared in double) is over 0.01, about a tenth of a full stick, and
 /// otherwise leaves the cursor to the mouse. (It then places the cursor
 /// `250·|aim| + 50` cm out and eases the screen cursor there by
-/// `(0.4·AimSpeed + 0.1)²` a tick, the one use of AimSpeed; Exarust turns
-/// its combat aim to the stick's yaw directly.)
+/// `(0.4·AimSpeed + 0.1)²` a tick, the one use of AimSpeed:
+/// `pad_cursor::aim_cursor`.)
 pub fn aim_engaged(aim: Vec3) -> bool {
     f64::from(aim.z * aim.z + aim.x * aim.x) > 0.01
 }

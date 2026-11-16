@@ -523,25 +523,54 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
     turn_between(yaw, cursor) > beyond
 }
 
-/// The point under the cursor on the player's aim plane, for the right
-/// mouse button, combat facing and the world cursor.
+/// The behaviour's aim point (its class slot 32): the point under the
+/// cursor on the player's aim plane, its height locked onto the
+/// auto-target or raised onto a picked surface. The powers aim with it,
+/// and the behaviour's cursor read takes it during an Overhead Swing.
 #[derive(Resource, Default, Debug, Clone)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
+
+/// The cursor's plain point on the player's aim plane (no lock, no raise):
+/// what the behaviour's cursor read takes for the steering, the combat
+/// facing and the world cursor outside an Overhead Swing.
+#[derive(Resource, Default, Debug, Clone)]
+pub(crate) struct CursorPlane(pub(crate) Option<Vec3>);
+
+/// The body action whose cursor read takes the aim point: Overhead Swing.
+const OVERHEAD_ACTION: u32 = 12;
+
+/// The cursor point the behaviour's read takes for a body playing
+/// `action`: the aim point during an Overhead Swing, else the plain plane
+/// point.
+fn behaviour_cursor(
+    motions: Option<&Motions>,
+    action: &str,
+    plane: Option<&CursorPlane>,
+    aim: &CursorGround,
+) -> Option<Vec3> {
+    let overhead = motions.is_some_and(|m| m.action_index(action) == Some(OVERHEAD_ACTION));
+    match plane {
+        Some(plane) if !overhead => plane.0,
+        _ => aim.0,
+    }
+}
 
 /// The cursor's aim pick reaches this far along its ray (m), as the
 /// navigation pick does.
 const AIM_PICK_RANGE: f32 = 40.0;
 
-/// The skeleton's bone numbers the aim point's bone lock reads: the head,
-/// the belly and the pelvis, three points away from the chest it locks
-/// from. [guess: the original reads the target's head record's own points;
-/// Exarust stands these three part origins in for them.]
-const AIM_BONES: [usize; 3] = [10, 8, 1];
+/// The skeleton's bone numbers the aim point's bone lock reads, in the
+/// original's order: the head, then the two lower legs that carry the
+/// feet's contacts (their nodes' points, the knees). [inf: the original
+/// takes the head part's point moved along its up axis by an extent of the
+/// part; Exarust takes the head part's origin.]
+const AIM_BONES: [usize; 3] = [10, 3, 6];
 
-/// The aim point with a locked target: the target's chest as the lock's
-/// root and three of its bones, projected to the window, with the pixel
-/// radius 80 cm makes at the root's depth. Returns the locked height when a
-/// bone lies within twice the radius of the cursor.
+/// The aim point with a locked target: the target's pelvis part (the body
+/// itself, its part list's first) as the lock's root and three of its
+/// parts, projected to the window, with the pixel radius 80 cm makes at
+/// the root's depth. Returns the locked height when a bone lies within
+/// twice the radius of the cursor.
 fn aim_locked_height(
     plane: f32,
     cursor: Vec2,
@@ -552,7 +581,10 @@ fn aim_locked_height(
     target: (&GlobalTransform, &Ragdoll),
 ) -> Option<f32> {
     let (gt, ragdoll) = target;
-    let root = stance::chest_point(gt, Some(ragdoll));
+    let root = ragdoll
+        .parts
+        .first()
+        .map_or(gt.translation(), |p| Vec3::from(p.transform().translation));
     let root_screen = window_point(camera, eye, window, root)?;
     let Projection::Perspective(perspective) = projection else {
         return None;
@@ -596,14 +628,15 @@ fn aim_locked_height(
 /// player's ground, its height locked onto the auto-target's bones when one
 /// shows within twice the pixel radius 80 cm makes at the target's depth,
 /// else raised onto the surface the cursor's pick meets when that lies
-/// above the plane's point and under the player's ground plus 200 cm.
+/// above the plane's point and under the player's pelvis plus 200 cm. The
+/// plain plane point is kept too ([`CursorPlane`]).
 ///
 /// The aim plane's normal is the world's up, as the original's; the pick is
 /// the level's fixed geometry (the original's navigation pick also admits
 /// non-solid nodes; Exarust's fixed colliders stand in).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cursor_ground(
-    mut ground: ResMut<CursorGround>,
+    (mut ground, mut plain): (ResMut<CursorGround>, ResMut<CursorPlane>),
     scripted: Res<exa_ui::ScriptedPointer>,
     look: Res<CursorLook>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -615,12 +648,14 @@ pub(crate) fn cursor_ground(
     pad: Option<Res<crate::pad_cursor::PadCursor>>,
 ) {
     ground.0 = None;
+    plain.0 = None;
     let (Ok(window), Ok((camera, eye, projection)), Some((player, children))) =
         (windows.single(), cameras.single(), players.iter().next())
     else {
         return;
     };
-    let body = children.and_then(|c| c.iter().find_map(|child| bodies.get(child).ok()));
+    let body_entity = children.and_then(|c| c.iter().find(|child| bodies.contains(*child)));
+    let body = body_entity.and_then(|e| bodies.get(e).ok());
     // While the controls hold the mouse the GUI's pointer is the aim
     // point's screen point (`cursor_look`), not the re-centred one; while
     // the pad drives the screen cursor it is the eased point
@@ -647,6 +682,7 @@ pub(crate) fn cursor_ground(
     let Some(plane_point) = at(plane) else {
         return;
     };
+    plain.0 = Some(plane_point);
     let locked = body.and_then(|pb| {
         let target = pb.aim_target()?;
         let (gt, ragdoll) = targets.get(target).ok()?;
@@ -670,12 +706,17 @@ pub(crate) fn cursor_ground(
         .filter(|distance| *distance > 0.0)
         .map(|distance| ray.origin + *ray.direction * distance);
     // The raise rule's 200 cm is in centimetres: the points go to the
-    // rule's own units and back.
+    // rule's own units and back. Its cap is over the player's pelvis (the
+    // body's frame height), the feet without a body.
     const PER_M: f32 = 100.0;
+    let pelvis = body_entity
+        .and_then(|e| targets.get(e).ok())
+        .and_then(|(_, ragdoll)| ragdoll?.parts.first())
+        .map_or(ground_y, |p| p.transform().translation.y);
     let raised = crate::player_behaviour::aim_raised(
         plane_point * PER_M,
         hit.map(|at| at * PER_M),
-        ground_y * PER_M,
+        pelvis * PER_M,
     );
     ground.0 = Some(raised / PER_M);
 }
@@ -687,6 +728,7 @@ impl Plugin for PlayerPlugin {
         exa_physics::sim_app::add_frame_commands(app);
         bridge_player_types(app);
         app.init_resource::<CursorGround>()
+            .init_resource::<CursorPlane>()
             .init_resource::<AttackButton>()
             .init_resource::<Bindings>()
             .init_resource::<CursorLook>()
@@ -742,7 +784,10 @@ impl Plugin for PlayerPlugin {
                     .after(exa_combat::parry::aim_foe_parries),
             )
             .add_systems(FixedPreUpdate, (follow_activation_centre, follow_body_camera))
-            .add_systems(Update, (begin_play_session, end_play_session))
+            .add_systems(
+                Update,
+                (begin_play_session, end_play_session, release_on_death),
+            )
             .add_systems(
                 Update,
                 (
@@ -787,6 +832,7 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy_in_resource::<crate::hw_config::HardwareConfig>()
         .bridge_copy_in_resource::<crate::idle_orbit::IdleWatch>()
         .bridge_copy_in_resource::<crate::player::LookCapture>()
+        .bridge_copy_in_resource::<crate::player::CursorPlane>()
         .bridge_snapshot_resource::<crate::pad_cursor::PadCursor>()
         .bridge_copy_in_resource::<crate::pad_cursor::PadView>()
         .bridge_copy_in_resource::<crate::spectate::SpectateSession>()
@@ -1256,6 +1302,29 @@ pub(crate) fn cursor_look(
     }
 }
 
+/// The behaviour's death hook (its class slot 25, which the body's death
+/// routine calls as its condition becomes dead): the desk's GUI capture is
+/// let go (a form dragged under the pointer gets its release). The hook
+/// also frees the pointer's confinement, which Exarust never sets, and
+/// sets the behaviour's state word that stops its footwork, which a dead
+/// body's condition stops in Exarust.
+pub(crate) fn release_on_death(
+    bodies: Query<&Condition, With<PlayerBody>>,
+    mut was_dead: Local<bool>,
+    screens: Option<ResMut<crate::gui_screens::GameScreens>>,
+) {
+    let dead = bodies.iter().next().is_some_and(|c| c.is_dead());
+    if dead && !*was_dead {
+        if let Some(mut screens) = screens
+            && screens.task.pointer.capture.is_some()
+        {
+            info!("player death: the desk's capture is let go");
+            screens.task.set_capture(None);
+        }
+    }
+    *was_dead = dead;
+}
+
 /// The controls' mouse capture answered that it took the frame's mouse:
 /// held, started, let go, or pinning the pointer while the camera aligns.
 /// The desk then skips its own mouse-move processing (the hover and a
@@ -1359,12 +1428,13 @@ pub(crate) fn steer_player(
         Has<Attacking>,
         Option<&exa_combat::condition::StateFlags>,
     )>,
-    (targets, spectate, look, control, pad_cursor): (
+    (targets, spectate, look, control, pad_cursor, plane): (
         Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
         Option<Res<crate::spectate::SpectateSession>>,
         Option<Res<LookCapture>>,
         Option<Res<crate::player_controls::PlayerControl>>,
         Option<Res<crate::pad_cursor::PadCursor>>,
+        Option<Res<CursorPlane>>,
     ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
@@ -1514,10 +1584,10 @@ pub(crate) fn steer_player(
             }
             let line = |from: Vec3, to: Vec3| line_walk(nav.as_deref(), &physics, from, to);
             // While the idle camera turns the cursor is not read.
-            let to_cursor = cursor
-                .0
-                .filter(|_| idle.as_ref().is_none_or(|i| i.follows_cursor))
-                .map(|c| c - standing);
+            let to_cursor =
+                behaviour_cursor(motions.as_deref(), &anim.action, plane.as_deref(), &cursor)
+                    .filter(|_| idle.as_ref().is_none_or(|i| i.follows_cursor))
+                    .map(|c| c - standing);
             // Head Pain (action 45, the memory recall a story event plays)
             // drops the movement request and keeps the combat mode.
             let plays_head_pain = motions.as_deref().is_some_and(|m| {
@@ -2223,9 +2293,9 @@ fn follow_body_camera(
 /// while an attack is requested.
 #[allow(clippy::type_complexity)]
 pub(crate) fn player_combat(
-    cursor: Res<CursorGround>,
+    (cursor, plane): (Res<CursorGround>, Option<Res<CursorPlane>>),
     look: Res<CursorLook>,
-    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    motions: Option<Res<Motions>>,
     players: Query<&GlobalTransform, With<Player>>,
     mut bodies: Query<(
         Entity,
@@ -2233,32 +2303,33 @@ pub(crate) fn player_combat(
         &mut Locomotion,
         Option<&Condition>,
         Has<Fallen>,
+        Option<&Animator>,
     )>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
     };
-    let pad_active = pad_status.as_ref().is_some_and(|s| s.active());
     // While the controls hold the mouse the cursor's point is not read:
     // Cursor Look's target is the cursor's direction, the orbit leaves the
     // aim as it was.
-    let captured = look.active && !pad_active;
+    let captured = look.active;
     let look_aim = look.capture().look;
     if captured && look_aim.is_none() {
         return;
     }
-    for (entity, mut pb, mut req, condition, fallen) in &mut bodies {
+    for (entity, mut pb, mut req, condition, fallen, anim) in &mut bodies {
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
-        // The point under the cursor (the pad's screen cursor's while the
-        // stick drives it, `pad_cursor`).
+        // The behaviour's cursor point (the pad's screen cursor's while the
+        // stick drives it, `pad_cursor`): the plain plane point, the aim
+        // point during an Overhead Swing.
+        let action = anim.map_or("", |a| a.action.as_str());
         let aim = if captured {
             look_aim
         } else {
-            cursor
-                .0
+            behaviour_cursor(motions.as_deref(), action, plane.as_deref(), &cursor)
                 .and_then(|point| aim_from(player.translation(), point))
         };
         if let Some(aim) = aim {
@@ -4136,7 +4207,7 @@ mod tests {
     }
 
     /// A motion set whose action 45 is Head Pain (the memory recall), with
-    /// Idle and Walk before it.
+    /// Walk, Overhead Swing (12) and Idle before it.
     fn head_pain_motions() -> Motions {
         use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
         let clip = Clip {
@@ -4150,6 +4221,7 @@ mod tests {
         };
         let mut names: Vec<String> = (0..45).map(|i| format!("Action {i}")).collect();
         names[0] = "Walk".into();
+        names[12] = "Overhead Swing".into();
         names[21] = "Idle".into();
         names.push("Head Pain".into());
         let set = MotionSet {
@@ -4197,6 +4269,63 @@ mod tests {
             "Idle",
             exa_combat::condition::StateFlags::SHOCK_STAGGER
         ));
+    }
+
+    /// The behaviour's cursor read takes the plain plane point, and the aim
+    /// point (the bone lock's and the raise's) only during an Overhead
+    /// Swing.
+    #[test]
+    fn the_cursor_read_takes_the_aim_point_only_in_an_overhead_swing() {
+        let raw = |action: &str| {
+            let (mut app, body) = steered_app(action, Stance::Idle);
+            app.insert_resource(head_pain_motions())
+                .insert_resource(CursorPlane(Some(Vec3::new(2.0, 0.8, 0.0))))
+                .insert_resource(CursorGround(Some(Vec3::new(0.0, 1.5, 2.0))));
+            app.world_mut()
+                .get_mut::<PlayerBody>(body)
+                .unwrap()
+                .set_combat(false);
+            behaviour_tick(&mut app);
+            app.world()
+                .get::<PlayerBody>(body)
+                .unwrap()
+                .cursor()
+                .unwrap()
+        };
+        let (yaw, distance) = raw("Idle");
+        assert!((yaw - yaw_of(Vec3::X)).abs() < 1e-5 && (distance - 2.0).abs() < 1e-5);
+        let (yaw, _) = raw("Overhead Swing");
+        assert!((yaw - yaw_of(Vec3::Z)).abs() < 1e-5, "{yaw}");
+    }
+
+    /// The player's death lets the desk's GUI capture go, once.
+    #[test]
+    fn the_players_death_lets_the_desks_capture_go() {
+        let mut app = App::new();
+        app.init_resource::<crate::gui_screens::GameScreens>()
+            .add_systems(Update, release_on_death);
+        let body = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), Condition::NORMAL))
+            .id();
+        let form: exa_ui::gui_core::FormId = 3;
+        app.world_mut()
+            .resource_mut::<crate::gui_screens::GameScreens>()
+            .task
+            .pointer
+            .capture = Some(form);
+        app.update();
+        let held = |app: &App| {
+            app.world()
+                .resource::<crate::gui_screens::GameScreens>()
+                .task
+                .pointer
+                .capture
+        };
+        assert_eq!(held(&app), Some(form));
+        *app.world_mut().get_mut::<Condition>(body).unwrap() = Condition::DEAD;
+        app.update();
+        assert_eq!(held(&app), None);
     }
 
     /// The placements' call of the behaviour's heading store rests the
