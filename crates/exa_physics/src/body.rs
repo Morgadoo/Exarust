@@ -3425,9 +3425,18 @@ impl Ragdoll {
         self.drive.as_ref().is_some_and(|d| d.step_told_ai())
     }
 
-    /// This tick's jolt told the body's behaviour (it locomoted).
+    /// This tick's jolt told the body's behaviour (it locomoted): the AI's
+    /// soft stop reads it (`exa_ai::route_walk::soft_stop_jolted_routes`).
     pub fn jolt_told(&self) -> bool {
         self.drive.as_ref().is_some_and(|d| d.steps.jolt_told)
+    }
+
+    /// Marks this tick's jolt as told, as the balance tick's jolt does for
+    /// a locomoting body (for a caller standing in for that tick).
+    pub fn tell_jolt(&mut self) {
+        if let Some(d) = self.drive.as_mut() {
+            d.steps.jolt_told = true;
+        }
     }
 
     /// The legs whose feet planted this tick (the walk's gait plants), in

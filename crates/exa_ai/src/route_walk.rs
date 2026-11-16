@@ -612,6 +612,32 @@ pub fn walk(route: &mut AiRoute, body: &mut WalkBody, gaze: &mut Gaze, ask: Walk
     walked
 }
 
+/// The jolt's soft stop: a moving body whose balance tick was jolted (its
+/// chest jerked past the jolt threshold, [`exa_physics::body::Ragdoll::jolt_told`])
+/// is soft-stopped, as the original's body tick calls its behaviour's soft
+/// stop right after the jolt, before the behaviour runs. Exarust's jolt is
+/// measured in the movement stage, so the stop lands at the next AI tick,
+/// before its states. [Exarust: AI bodies only; whether the player's
+/// behaviour takes the same stop is not traced.]
+pub fn soft_stop_jolted_routes(
+    nav: Option<Res<NavGrid>>,
+    mut npcs: Query<(&mut AiRoute, &ChildOf, Walking)>,
+    roots: Query<&GlobalTransform, With<CharacterBody>>,
+) {
+    let grid = nav.as_deref();
+    for (mut route, parent, (mut req, motor, mut driven, ragdoll)) in &mut npcs {
+        let Some(body) = ragdoll.filter(|b| b.jolt_told()) else {
+            continue;
+        };
+        let Ok(root) = roots.get(parent.parent()) else {
+            continue;
+        };
+        let at = DriveBody::of(root.translation(), motor, Some(body));
+        stop_request(&mut route, &mut req, &mut driven.0, &at, grid);
+        info!("jolt soft stop: {:?}", parent.parent());
+    }
+}
+
 /// The body's request side of a stop a state makes when it loses the
 /// character: the soft stop on the request and the driver (the route
 /// itself is ended by the caller).
@@ -880,6 +906,52 @@ pub fn walk_routes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A route-following body whose last balance tick was jolted is soft
+    /// stopped before its states run: the route ends, the request takes
+    /// the stopping bit; without a jolt it walks on.
+    #[test]
+    fn a_jolt_soft_stops_a_walking_body() {
+        use exa_physics::body::locomotion::{Locomotion, flags};
+        let run = |jolted: bool| {
+            let mut app = App::new();
+            app.add_systems(Update, soft_stop_jolted_routes);
+            let root = app
+                .world_mut()
+                .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+                .id();
+            let mut route = AiRoute::default();
+            route.start(
+                vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 800.0)],
+                0,
+                crate::route_walk::Walker::Follow,
+            );
+            let (req, motor) = Locomotion::facing(0.0);
+            let mut body = exa_physics::body::Ragdoll::new(&[]).with_drive();
+            if jolted {
+                body.tell_jolt();
+            }
+            let npc = app
+                .world_mut()
+                .spawn((
+                    route,
+                    req,
+                    motor,
+                    crate::drive::Driven::default(),
+                    body,
+                    ChildOf(root),
+                ))
+                .id();
+            app.update();
+            let world = app.world();
+            (
+                world.get::<AiRoute>(npc).unwrap().following,
+                world.get::<Locomotion>(npc).unwrap().flags & flags::STOPPING != 0,
+            )
+        };
+        assert_eq!(run(true), (false, true));
+        assert_eq!(run(false), (true, false));
+    }
 
     fn route(points: Vec<Vec3>, urgency: i32) -> AiRoute {
         let mut r = AiRoute::default();

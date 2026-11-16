@@ -175,6 +175,8 @@ impl Plugin for AiPlugin {
                     pass_turn::rotate_pass_turn,
                     brain::perceive_all,
                     brain_clock_mark(1),
+                    // The jolt's soft stop, before the behaviour runs.
+                    route_walk::soft_stop_jolted_routes,
                     brain::ai_tick,
                     brain_clock_mark(2),
                     // While the staging freeze holds the states, the idle
