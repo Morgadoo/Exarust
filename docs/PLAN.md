@@ -1599,6 +1599,8 @@ the death CONTINUE rebuilds the player from the saved record (a bug fixed: the r
 
 the factory paint job's shade scratch, the texture-only overlay regions (fullers, axe holes), the steel normal's mirrored-tile turn and the Gemstone alpha job with its refracting material are ported; the apparel job takes its tile offsets from the item's paint seed and its wear table by the stored material byte; the painter's passes share each region's coverage and split rows over threads (about 30 percent less wall time on both generators). Readings corrected (every factory region reads the scratch; the old strength table is the wear table). DEC-12 opened (the generated textures' GPU job queue, surface cache and program builders as engine-replaced): its twenty rows keep their state until the owner decides. Picture checks owed: a fuller sword, a gem weapon, a mirrored cap.
 
+the fires' particle systems are simulation objects as the original's sector objects are: each fixed step stages every flame into the solver's object stage, which ticks it (a carried flame at its part's solver pose) and meets the bodies with it, and the doses reach the characters' burn; behind the bridge the flame is the step's snapshot and the frame's light and sound half stays on the frame, so the draw never flickers and the light walk is unchanged in both simulation modes; the draw takes the original's render fraction (one to two ticks, an old reading had it a tick behind); the beds and portal sparks meet no body; the body passes read a kept cell index (about 30 to 45 microseconds a tick for 32 flames on exanima01). Torch and brazier scenes and determinism runs owed.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
