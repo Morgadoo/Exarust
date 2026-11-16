@@ -112,10 +112,9 @@ impl Tiling {
     }
 
     /// An apparel block's tiling: one target texel per painted texel and the
-    /// four offsets the job draws from the record's seed (`MatTile.zw`, then
-    /// `DmgTile.zw`). A guess labelled as such: the pack shows the four
-    /// draws in the block's fields, but only the procedural programs read
-    /// them.
+    /// four offsets the job draws from the item's paint seed (`MatTile.zw`,
+    /// then `DmgTile.zw`): the layer-list builder stores the four draws in
+    /// the block's tile fields, which every pass's uniform set-up reads.
     pub fn apparel(seed: u32) -> Self {
         let [a, b, c, d] = jitters(seed);
         Self {
@@ -142,6 +141,11 @@ impl Tiling {
     /// is inside.
     fn drawn(&self, x: usize, w: usize) -> bool {
         (x as f32 + 0.5) < self.crop * w as f32
+    }
+
+    /// [`Tiling::drawn`] for the atlas painter's scratch pass.
+    pub(crate) fn covers_column(&self, x: usize, w: usize) -> bool {
+        self.drawn(x, w)
     }
 
     /// The vertical texture scale a family's programs apply: only the
@@ -433,6 +437,8 @@ pub fn finish(material: u8) -> Finish {
 }
 
 /// The material a layer paints with: material 0 takes the first of its set.
+/// An unknown or empty set leaves 0, which the material lookup reports as
+/// invalid and paints as ClothBasic ([`program_material`]).
 pub fn layer_material(layer: &Layer) -> u8 {
     if layer.material != 0 {
         return layer.material;
@@ -440,7 +446,7 @@ pub fn layer_material(layer: &Layer) -> u8 {
     procedural::random_set(layer.random_set)
         .first()
         .copied()
-        .unwrap_or(1)
+        .unwrap_or(0)
 }
 
 /// Library textures of a material, in the order its colour pass reads them.
@@ -614,6 +620,10 @@ struct Texel {
     quality: f32,
     damage: f32,
     dirt: f32,
+    /// `sign(ShdTile.xy)`: a factory region's tile is its atlas rectangle,
+    /// whose size is negative on a mirrored axis; the steel normal program
+    /// turns the item normal by it. (1, 1) without a tile.
+    tile_sign: Vec2,
 }
 
 /// A layer's textures at one painted texel.
@@ -679,6 +689,18 @@ impl Samples<'_> {
 
     fn colour(&self, i: usize, f: Finish) -> Vec3 {
         self.tex(List::Colour, i, f).unwrap_or(Vec3::splat(0.5))
+    }
+
+    /// Colour-list entry `i` with its alpha channel.
+    fn colour4(&self, i: usize, f: Finish) -> [f32; 4] {
+        let Some(tex) = self.layer.library.get(i).copied().flatten() else {
+            return [0.5; 4];
+        };
+        let Some(uv) = sample_uv(f, List::Colour, i) else {
+            return [0.5; 4];
+        };
+        let (sx, sy) = self.texel_of(tex, uv);
+        tex.at4(sx, sy)
     }
 
     fn spec(&self, i: usize, f: Finish) -> Vec3 {
@@ -1283,6 +1305,61 @@ fn gem(t: &Texel, s: &Samples, family: Family) -> Vec3 {
     mat = mix(mat, rst, a);
     let lit = shd * (2.0 - shd);
     mat * lit * 1.4
+}
+
+/// Whether a material's alpha program builds: the materials flagged for
+/// an alpha pass are Gemstone and Resin, but the shipped `textures.flb`
+/// holds only `gemstone_a`, so Resin's compile fails and its slot stays
+/// empty. [guess] An empty slot's draw (program 0) is taken to leave the
+/// alpha alone; no shipped alpha job was seen with a resin layer.
+pub fn has_alpha_program(material: u8) -> bool {
+    let m = program_material(material);
+    m.passes.alpha && m.family == Family::Gemstone
+}
+
+/// `gemstone_a`: the gem's opacity before the mask, `2·(1 − g + (1 −
+/// quality map)(1 − Quality))²`, where `g` is its sheen (shade, wear and
+/// condition) dimmed where dirt settles.
+fn gem_a(t: &Texel, s: &Samples, family: Family) -> f32 {
+    let (shd, damage, dirt, quality) = (t.shade, t.damage, t.dirt, t.quality);
+    let qlt = s.colour(1, family).x;
+    let rst = s.colour4(2, family);
+    let scf = s.colour(3, family).x;
+    let a = shd * shd * 4.5;
+    let a = (a - 0.9).clamp(0.0, 1.0);
+    let d = (a * scf * 2.0).clamp(0.0, 1.0);
+    let r = rst[3];
+    let a = shd * r * 2.0;
+    let a = d + a * 0.5;
+    let a = 1.0 - a;
+    let a = a * a;
+    let d = (a * a * dirt * 1.5).clamp(0.0, 1.0);
+    let a = shd * shd;
+    let a = a - rst[0] * 2.0 + 0.5;
+    let a = (a * a * 6.0).min(1.0);
+    let d = d * (1.0 - a);
+    let mat = rst[1] * 0.65 + 0.25;
+    let mat = mat * 1.3;
+    let a = quality * quality;
+    let a = qlt * 1.2 * (1.0 - a) + a;
+    let mat = mat * a * 0.9;
+    let scf = 1.0 - scf * damage;
+    let scf = (scf * scf * 1.5).min(1.0);
+    let a = shd * (2.0 - shd);
+    let g = a * (0.3 + mat * 0.6) * 2.3;
+    let g = g * (0.25 + scf * 0.75);
+    let a = damage * (1.0 - quality) * 0.3;
+    let g = (g * (1.3 + a)).clamp(0.0, 1.0);
+    let r = s.colour(5, family).y;
+    let b = d * (1.0 - shd) * 1.5;
+    let b = (b * 1.5).min(1.0);
+    let a = r * b + 0.4 * (1.0 - b);
+    let a = 1.0 - (0.4 - a).abs() * 4.0;
+    let a = a * a;
+    let g = g * a;
+    let a = 1.0 - g;
+    let a = a + (1.0 - qlt) * (1.0 - quality);
+    a * a * 2.0
 }
 
 fn planks(t: &Texel, s: &Samples) -> Vec3 {
@@ -2118,9 +2195,19 @@ pub fn paint(
 }
 
 /// An apparel layer's tint and wear weight: its palette colour on the
-/// linear ramp and its material's wear weight.
-pub fn apparel_tint(material: u8, colour: u8) -> (Vec3, f32) {
-    (palette_colour(colour), program_material(material).wear)
+/// linear ramp and the wear weight the job's table holds for the layer's
+/// stored material byte (`stored`, before a random set replaces a 0). The
+/// table is indexed by that byte, so a layer that draws its material from a
+/// set takes entry 0 (1.0), not its drawn material's weight. [guess] Bytes
+/// past 25 (no shipped appearance has one) read 1.0; the original reads
+/// past its 26-entry table.
+pub fn apparel_tint(stored: u8, colour: u8) -> (Vec3, f32) {
+    let wear = if stored == 0 {
+        1.0
+    } else {
+        procedural::material(stored).wear
+    };
+    (palette_colour(colour), wear)
 }
 
 /// Paints an item: every layer's finish over its mask, in order, on black,
@@ -2166,8 +2253,10 @@ pub fn paint_sized(
         condition,
         tiling,
         size: (w, h),
+        shade_tile: None,
     };
-    job.colour_and_normal(&mut canvas.colour, &mut canvas.normal);
+    let covers = job.covers();
+    job.colour_and_normal_with(&covers, &mut canvas.colour, &mut canvas.normal);
     let normal_bytes: Vec<[u8; 2]> = canvas.normal.iter().map(|&n| normal_byte(n)).collect();
     // The specular pass reads the normal target back from its bytes.
     let painted_normal: Option<Vec<Vec2>> = item_normal.map(|_| {
@@ -2176,7 +2265,7 @@ pub fn paint_sized(
             .map(|&[x, y]| normal_texel(x, y))
             .collect()
     });
-    job.surface(painted_normal.as_deref(), &mut canvas.surface);
+    job.surface_with(&covers, painted_normal.as_deref(), &mut canvas.surface);
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     Painted {
         colour: canvas
@@ -2243,12 +2332,58 @@ pub struct RegionJob<'a> {
     pub condition: Condition,
     pub tiling: Tiling,
     pub size: (usize, usize),
+    /// A factory region's shade tile: its passes read the shade from the
+    /// job's shade scratch at the region's atlas rectangle instead of from
+    /// its own shade texture. `None` for an apparel job.
+    pub shade_tile: Option<ShadeTile<'a>>,
+}
+
+/// The shade a factory region's passes read (region flag 1, which the
+/// factory sets on every region): the job's one-channel shade scratch,
+/// sampled nearest with clamped edges at `vrTex · ShdTile.xy + ShdTile.zw`,
+/// where `ShdTile` is the region's atlas rectangle (size, then offset) and
+/// the blade programs scale its height by their `UVScale`.
+#[derive(Debug, Clone, Copy)]
+pub struct ShadeTile<'a> {
+    /// The scratch texels, one byte each, row by row.
+    pub scratch: &'a [u8],
+    pub width: usize,
+    pub height: usize,
+    /// The region's atlas rectangle: offset x, y, then size x, y.
+    pub rect: [f32; 4],
+}
+
+impl ShadeTile<'_> {
+    /// The scratch shade at region texel (`x`, `y`) of a `w` × `h` region,
+    /// the tile's height scaled by `scale`.
+    fn at(&self, x: usize, y: usize, w: usize, h: usize, scale: f32) -> f32 {
+        let [ox, oy, sx, sy] = self.rect;
+        let u = (x as f32 + 0.5) / w as f32 * sx + ox;
+        let v = (y as f32 + 0.5) / h as f32 * (sy * scale) + oy;
+        let tx = ((u * self.width as f32).floor() as i64).clamp(0, self.width as i64 - 1);
+        let ty = ((v * self.height as f32).floor() as i64).clamp(0, self.height as i64 - 1);
+        f32::from(self.scratch[ty as usize * self.width + tx as usize]) / 255.0
+    }
+
+    /// `sign(ShdTile.xy)`, as GLSL's `sign` (zero stays zero).
+    fn sign(&self) -> Vec2 {
+        let s = |v: f32| {
+            if v > 0.0 {
+                1.0
+            } else if v < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        };
+        Vec2::new(s(self.rect[2]), s(self.rect[3]))
+    }
 }
 
 impl RegionJob<'_> {
     /// Every layer's coverage of every texel: its mask (times the emblem
     /// picture for a painted pattern), zero past the crop.
-    fn covers(&self) -> Vec<Vec<f32>> {
+    pub fn covers(&self) -> Vec<Vec<f32>> {
         let (w, h) = self.size;
         let tiling = self.tiling;
         self.layers
@@ -2272,32 +2407,96 @@ impl RegionJob<'_> {
 
     fn texel(&self, layer: &PaintLayer<'_>, x: usize, y: usize) -> Texel {
         let (w, h) = self.size;
+        let scale = self.tiling.uv_scale_for(finish(layer.material));
+        let (shade, tile_sign) = match &self.shade_tile {
+            Some(tile) => (tile.at(x, y, w, h, scale), tile.sign()),
+            None => (sample_stretched(self.shade, x, y, w, h, scale).x, Vec2::ONE),
+        };
         Texel {
-            shade: sample_stretched(
-                self.shade,
-                x,
-                y,
-                w,
-                h,
-                self.tiling.uv_scale_for(finish(layer.material)),
-            )
-            .x,
+            shade,
             colour: layer.tint,
             weight: layer.wear,
             quality: self.condition.quality,
             damage: self.condition.damage,
             dirt: self.condition.dirt,
+            tile_sign,
+        }
+    }
+
+    /// The alpha pass of an alpha job (the original's `_procmatr` items):
+    /// every layer whose material compiles an alpha program multiplies the
+    /// colour target's alpha (`alpha`, one value per texel, 0..1 as the
+    /// target stores it) by its program's output over its mask. The target
+    /// blends `ZERO, SRC_COLOR` and the colour channels' output is 1, so
+    /// only the alpha changes; each draw is stored as a byte.
+    pub fn alpha(&self, alpha: &mut [u8]) {
+        let (w, h) = self.size;
+        for layer in self.layers {
+            if !has_alpha_program(layer.material) {
+                continue;
+            }
+            let family = finish(layer.material);
+            for y in 0..h {
+                for x in 0..w {
+                    if !self.tiling.drawn(x, w) {
+                        continue;
+                    }
+                    let samples = Samples {
+                        layer,
+                        painted_normal: None,
+                        tiling: self.tiling,
+                        x,
+                        y,
+                        w,
+                        h,
+                    };
+                    let t = self.texel(layer, x, y);
+                    let mask = sample_stretched(layer.mask, x, y, w, h, 1.0).x;
+                    let a = gem_a(&t, &samples, family);
+                    // `a · alpha + (1 − alpha)`, clamped by the unorm target
+                    // before the blend multiplies.
+                    let src = (a * mask + (1.0 - mask)).clamp(0.0, 1.0);
+                    let o = &mut alpha[y * w + x];
+                    *o = byte(f32::from(*o) / 255.0 * src);
+                }
+            }
         }
     }
 
     /// The colour and normal passes over every layer, blended into `out`
     /// and `normal_out` (one texel per target texel).
     pub fn colour_and_normal(&self, out: &mut [Vec3], normal_out: &mut [Vec2]) {
+        self.colour_and_normal_with(&self.covers(), out, normal_out);
+    }
+
+    /// [`RegionJob::colour_and_normal`] with the layers' coverage
+    /// ([`RegionJob::covers`]) computed once for all passes.
+    pub fn colour_and_normal_with(
+        &self,
+        covers: &[Vec<f32>],
+        out: &mut [Vec3],
+        normal_out: &mut [Vec2],
+    ) {
         let (w, h) = self.size;
-        let covers = self.covers();
-        for (layer, cover) in self.layers.iter().zip(&covers) {
+        in_bands(w, h, out, normal_out, |rows, out, normal_out| {
+            self.colour_rows(covers, rows, out, normal_out);
+        });
+    }
+
+    /// The colour and normal passes over rows `rows`, whose texels `out`
+    /// and `normal_out` hold (every layer in order at each texel).
+    fn colour_rows(
+        &self,
+        covers: &[Vec<f32>],
+        rows: std::ops::Range<usize>,
+        out: &mut [Vec3],
+        normal_out: &mut [Vec2],
+    ) {
+        let (w, h) = self.size;
+        let first = rows.start;
+        for (layer, cover) in self.layers.iter().zip(covers) {
             let family = finish(layer.material);
-            for y in 0..h {
+            for y in rows.clone() {
                 for x in 0..w {
                     let cover = cover[y * w + x];
                     if cover <= 0.0 {
@@ -2314,7 +2513,8 @@ impl RegionJob<'_> {
                     };
                     let t = self.texel(layer, x, y);
                     let c = colour_of(family, layer.material, &t, &samples);
-                    let o = &mut out[y * w + x];
+                    let at = (y - first) * w + x;
+                    let o = &mut out[at];
                     *o = mix(*o, c.clamp(Vec3::ZERO, Vec3::ONE), cover);
                     if layer.pattern.is_some() {
                         continue;
@@ -2323,7 +2523,7 @@ impl RegionJob<'_> {
                         let s = self.tiling.uv_scale_for(family);
                         let item = unit_xy(sample_stretched(item, x, y, w, h, s));
                         let n = normal_of(family, layer.material, &t, &samples, item);
-                        let o = &mut normal_out[y * w + x];
+                        let o = &mut normal_out[at];
                         *o += (n.clamp(Vec2::NEG_ONE, Vec2::ONE) - *o) * cover;
                     }
                 }
@@ -2335,14 +2535,39 @@ impl RegionJob<'_> {
     /// `surface`; it reads the painted normal target (`Nrm`) when there is
     /// one.
     pub fn surface(&self, painted_normal: Option<&[Vec2]>, surface: &mut [Vec3]) {
+        self.surface_with(&self.covers(), painted_normal, surface);
+    }
+
+    /// [`RegionJob::surface`] with the layers' coverage computed once.
+    pub fn surface_with(
+        &self,
+        covers: &[Vec<f32>],
+        painted_normal: Option<&[Vec2]>,
+        surface: &mut [Vec3],
+    ) {
         let (w, h) = self.size;
-        let covers = self.covers();
-        for (layer, cover) in self.layers.iter().zip(&covers) {
+        let mut none: Vec<Vec2> = Vec::new();
+        in_bands(w, h, surface, &mut none, |rows, surface, _| {
+            self.surface_rows(covers, painted_normal, rows, surface);
+        });
+    }
+
+    /// The specular pass over rows `rows`, whose texels `surface` holds.
+    fn surface_rows(
+        &self,
+        covers: &[Vec<f32>],
+        painted_normal: Option<&[Vec2]>,
+        rows: std::ops::Range<usize>,
+        surface: &mut [Vec3],
+    ) {
+        let (w, h) = self.size;
+        let first = rows.start;
+        for (layer, cover) in self.layers.iter().zip(covers) {
             if layer.pattern.is_some() {
                 continue;
             }
             let family = finish(layer.material);
-            for y in 0..h {
+            for y in rows.clone() {
                 for x in 0..w {
                     let cover = cover[y * w + x];
                     if cover <= 0.0 {
@@ -2359,12 +2584,57 @@ impl RegionJob<'_> {
                     };
                     let t = self.texel(layer, x, y);
                     let v = surface_of(family, layer.material, &t, &samples);
-                    let f = &mut surface[y * w + x];
+                    let f = &mut surface[(y - first) * w + x];
                     *f = mix(*f, v.clamp(Vec3::ZERO, Vec3::ONE), cover);
                 }
             }
         }
     }
+}
+
+/// Runs `pass` over the rows of a `w` × `h` target in bands, the bands
+/// split over the machine's threads (up to eight). Every texel's passes
+/// read only the job's sources and write only that texel, so the result is
+/// the same however the rows are split; the band boundaries depend only on
+/// the height. `b` may be empty (a pass with one target); otherwise it is
+/// split alongside `a`.
+fn in_bands<A: Send, B: Send>(
+    w: usize,
+    h: usize,
+    a: &mut [A],
+    b: &mut [B],
+    pass: impl Fn(std::ops::Range<usize>, &mut [A], &mut [B]) + Sync,
+) {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(8)
+        .min(h);
+    // Small regions are not worth the threads.
+    if workers <= 1 || w * h < 64 * 64 {
+        pass(0..h, a, b);
+        return;
+    }
+    let rows = h.div_ceil(workers);
+    let a_bands: Vec<&mut [A]> = a.chunks_mut(rows * w).collect();
+    let mut b_bands: Vec<&mut [B]> = if b.is_empty() {
+        Vec::new()
+    } else {
+        b.chunks_mut(rows * w).collect()
+    };
+    std::thread::scope(|scope| {
+        let pass = &pass;
+        for (i, a) in a_bands.into_iter().enumerate() {
+            let b: &mut [B] = if b_bands.is_empty() {
+                &mut []
+            } else {
+                std::mem::take(&mut b_bands[i])
+            };
+            scope.spawn(move || {
+                let first = i * rows;
+                pass(first..(first + rows).min(h), a, b);
+            });
+        }
+    });
 }
 
 fn colour_of(family: Finish, _material: u8, t: &Texel, s: &Samples) -> Vec3 {
@@ -2432,7 +2702,9 @@ fn normal_of(family: Finish, material: u8, t: &Texel, s: &Samples, item: Vec2) -
             if material == 13 || material == 15 {
                 metal_n(t, s, item, Family::SteelPlate)
             } else {
-                metal_n(t, s, item, Family::Steel)
+                // `steel_n` turns the item normal by `sign(ShdTile.xy)`
+                // before it adds the wear.
+                metal_n(t, s, item * t.tile_sign, Family::Steel)
             }
         }
         Family::SteelPlate => metal_n(t, s, item, Family::SteelPlate),
@@ -2445,6 +2717,12 @@ fn normal_of(family: Finish, material: u8, t: &Texel, s: &Samples, item: Vec2) -
         Family::Resin => gem_n(t, s, item, Family::Resin),
         Family::PlanksPainted => planks_n(t, s, item),
     }
+}
+
+/// The red channel of `t` at painted texel (`x`, `y`) of a `w` × `h`
+/// region, as every pass samples a region's own maps (shade, masks).
+pub(crate) fn sample_at(t: &Texels, x: usize, y: usize, w: usize, h: usize) -> f32 {
+    sample_scaled(t, x, y, w, h).x
 }
 
 /// A texture sampled at the paint's resolution (masks may be smaller).
@@ -2530,7 +2808,286 @@ mod tests {
         assert_eq!(layer_material(&l(1, 0)), 1);
         assert_eq!(layer_material(&l(2, 0)), 5);
         assert_eq!(layer_material(&l(15, 0)), 23);
-        assert_eq!(layer_material(&l(0, 0)), 1);
+        assert_eq!(layer_material(&l(0, 0)), 0);
+    }
+
+    /// The wear table is indexed by the stored material byte: a layer that
+    /// draws its material from a set reads entry 0 (1.0) even when the
+    /// drawn material's own entry differs (Velvet's 0.8, the grip
+    /// materials' 0.5).
+    #[test]
+    fn apparel_wear_follows_the_stored_byte() {
+        assert_eq!(apparel_tint(0, 0).1, 1.0);
+        assert_eq!(apparel_tint(4, 0).1, 0.8);
+        assert_eq!(apparel_tint(12, 0).1, 0.75);
+        assert_eq!(apparel_tint(21, 0).1, 0.5);
+        // Set 4's first material is Velvet (wear 0.8); stored 0 reads 1.
+        let layer = Layer {
+            mask: 1,
+            random_set: 4,
+            material: 0,
+            colour: 0,
+        };
+        assert_eq!(procedural::material(layer_material(&layer)).wear, 1.0);
+        let layer = Layer {
+            random_set: 3,
+            ..layer
+        };
+        assert_eq!(layer_material(&layer), 1);
+    }
+
+    /// A one-texel gem layer's library for the alpha pass: quality map
+    /// 100, the rust map (60, 140, 0, 200), scuffs 90, the last map's
+    /// green 180.
+    fn gem_library() -> Vec<Option<Texels>> {
+        let px = |rgba: [u8; 4]| {
+            Some(Texels {
+                width: 1,
+                height: 1,
+                rgba: rgba.to_vec(),
+            })
+        };
+        vec![
+            px([128, 128, 128, 255]),
+            px([100, 100, 100, 255]),
+            px([60, 140, 0, 200]),
+            px([90, 90, 90, 255]),
+            px([128, 128, 128, 255]),
+            px([0, 180, 0, 255]),
+        ]
+    }
+
+    /// `gemstone_a` at one texel, checked against the program evaluated
+    /// independently in single precision (numpy float32, the program's
+    /// statement order): shade 128, Quality 0.6, Damage 0.3, Dirt 0.4 give
+    /// 0x3e1b910e (0.15192053).
+    #[test]
+    fn the_gem_alpha_program_matches_its_source() {
+        let library = gem_library();
+        let mask = flat(1, 255);
+        let layer = PaintLayer {
+            mask: &mask,
+            material: 23,
+            tint: Vec3::ONE,
+            wear: 1.0,
+            library: library.iter().map(Option::as_ref).collect(),
+            specular: vec![],
+            normals: vec![],
+            pattern: None,
+        };
+        let t = Texel {
+            shade: 128.0 / 255.0,
+            colour: Vec3::ONE,
+            weight: 1.0,
+            quality: 0.6,
+            damage: 0.3,
+            dirt: 0.4,
+            tile_sign: Vec2::ONE,
+        };
+        let s = Samples {
+            layer: &layer,
+            painted_normal: None,
+            tiling: Tiling::default(),
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        };
+        assert_eq!(gem_a(&t, &s, Family::Gemstone).to_bits(), 0x3e1b_910e);
+        // The pass: full mask on an opaque target stores round(0.1519·255)
+        // = 39; a half mask (128) over alpha 200 stores
+        // round(200 · (a·m + 1 − m)) = 115. Resin compiles no alpha program
+        // and leaves the alpha alone.
+        let shade = flat(1, 128);
+        let half = flat(1, 128);
+        let condition = Condition {
+            quality: 0.6,
+            damage: 0.3,
+            dirt: 0.4,
+        };
+        for (mask, start, material, expected) in [
+            (&mask, 255u8, 23u8, 39u8),
+            (&half, 200, 23, 115),
+            (&mask, 255, 24, 255),
+        ] {
+            let layers = [PaintLayer {
+                mask,
+                material,
+                ..PaintLayer {
+                    mask,
+                    material: 23,
+                    tint: Vec3::ONE,
+                    wear: 1.0,
+                    library: library.iter().map(Option::as_ref).collect(),
+                    specular: vec![],
+                    normals: vec![],
+                    pattern: None,
+                }
+            }];
+            let job = RegionJob {
+                shade: &shade,
+                item_normal: None,
+                layers: &layers,
+                condition,
+                tiling: Tiling::default(),
+                size: (1, 1),
+                shade_tile: None,
+            };
+            let mut alpha = [start];
+            job.alpha(&mut alpha);
+            assert_eq!(alpha[0], expected, "material {material}");
+        }
+    }
+
+    /// The steel normal program turns the item normal by the sign of its
+    /// shade tile: a factory region mirrored along x (a negative atlas
+    /// width) paints its item normal's x reversed. At full quality and no
+    /// damage the wear terms vanish and the output is the turned normal.
+    #[test]
+    fn a_mirrored_steel_region_turns_its_item_normal() {
+        let shade = flat(1, 128);
+        let mask = flat(1, 255);
+        let item = Texels {
+            width: 1,
+            height: 1,
+            rgba: vec![255, 128, 255, 255],
+        };
+        let layers = [PaintLayer {
+            mask: &mask,
+            material: 12,
+            tint: Vec3::ONE,
+            wear: 1.0,
+            library: vec![],
+            specular: vec![],
+            normals: vec![],
+            pattern: None,
+        }];
+        let scratch = [128u8];
+        let normal_x = |width: f32| {
+            let job = RegionJob {
+                shade: &shade,
+                item_normal: Some(&item),
+                layers: &layers,
+                condition: Condition {
+                    quality: 1.0,
+                    damage: 0.0,
+                    dirt: 0.0,
+                },
+                tiling: Tiling::default(),
+                size: (1, 1),
+                shade_tile: Some(ShadeTile {
+                    scratch: &scratch,
+                    width: 1,
+                    height: 1,
+                    rect: [0.5 - width * 0.5, 0.0, width, 1.0],
+                }),
+            };
+            let mut colour = [Vec3::ZERO];
+            let mut normal = [Vec2::ZERO];
+            job.colour_and_normal(&mut colour, &mut normal);
+            normal_byte(normal[0])[0]
+        };
+        assert_eq!(normal_x(1.0), 255);
+        assert_eq!(normal_x(-1.0), 0);
+    }
+
+    /// A shade tile reads the scratch texel under each region texel,
+    /// mirrored rectangles included, and a blade's `UVScale` stretches the
+    /// read down the scratch (clamped at its edge).
+    #[test]
+    fn a_shade_tile_reads_the_scratch_under_the_region() {
+        let (w, h) = (4usize, 4usize);
+        let scratch: Vec<u8> = (0..(w * h) as u8).map(|i| i * 10).collect();
+        for rect in [
+            [0.0, 0.0, 1.0, 1.0],
+            [0.5, 0.25, 0.5, 0.5],
+            [0.0, 1.0, 1.0, -0.5],
+            [1.0, 0.0, -0.5, 1.0],
+        ] {
+            let tile = ShadeTile {
+                scratch: &scratch,
+                width: w,
+                height: h,
+                rect,
+            };
+            let size = (
+                (rect[2].abs() * w as f32) as usize,
+                (rect[3].abs() * h as f32) as usize,
+            );
+            for (r, a) in crate::atlas::region_texels(size, rect, (w, h)) {
+                let (x, y) = (r % size.0, r / size.0);
+                assert_eq!(
+                    tile.at(x, y, size.0, size.1, 1.0),
+                    f32::from(scratch[a]) / 255.0,
+                    "{rect:?} texel {r}"
+                );
+            }
+        }
+        // A 1×2 region over the top half read at twice its height: its
+        // texel centres (¼ and ¾ of the region) land at v = ¼ and ¾ of the
+        // scratch, rows 1 and 3.
+        let tile = ShadeTile {
+            scratch: &scratch,
+            width: w,
+            height: h,
+            rect: [0.0, 0.0, 0.25, 0.5],
+        };
+        assert_eq!(tile.at(0, 0, 1, 2, 2.0), 40.0 / 255.0);
+        assert_eq!(tile.at(0, 1, 1, 2, 2.0), 120.0 / 255.0);
+        // Past the scratch's edge the read clamps to the last row.
+        assert_eq!(tile.at(0, 0, 1, 2, 8.0), 120.0 / 255.0);
+    }
+
+    /// The passes split a large region's rows over threads; the texels are
+    /// the same as one serial sweep's.
+    #[test]
+    fn banded_passes_paint_the_serial_texels() {
+        let n = 128;
+        let shade = grey(n, |x, y| ((x * 7 + y * 3) % 256) as u8);
+        let mask = grey(n, |x, y| if (x / 8 + y / 8) % 3 == 0 { 0 } else { 200 });
+        let library: Vec<Option<Texels>> = (0..6)
+            .map(|k| {
+                Some(grey(16, move |x, y| {
+                    ((x * 13 + y * 5 + k * 40) % 256) as u8
+                }))
+            })
+            .collect();
+        let normal = grey(n, |x, y| ((x + y) % 256) as u8);
+        let layers = [PaintLayer {
+            mask: &mask,
+            material: 12,
+            tint: palette_colour(0x23),
+            wear: 0.75,
+            library: library.iter().map(Option::as_ref).collect(),
+            specular: library.iter().take(5).map(Option::as_ref).collect(),
+            normals: library.iter().take(5).map(Option::as_ref).collect(),
+            pattern: None,
+        }];
+        let job = RegionJob {
+            shade: &shade,
+            item_normal: Some(&normal),
+            layers: &layers,
+            condition: Condition {
+                quality: 0.4,
+                damage: 0.5,
+                dirt: 0.3,
+            },
+            tiling: Tiling::apparel(77),
+            size: (n, n),
+            shade_tile: None,
+        };
+        let covers = job.covers();
+        let (mut colour, mut normals) = (vec![Vec3::ZERO; n * n], vec![Vec2::ZERO; n * n]);
+        job.colour_and_normal_with(&covers, &mut colour, &mut normals);
+        let (mut colour1, mut normals1) = (vec![Vec3::ZERO; n * n], vec![Vec2::ZERO; n * n]);
+        job.colour_rows(&covers, 0..n, &mut colour1, &mut normals1);
+        assert_eq!(colour, colour1);
+        assert_eq!(normals, normals1);
+        let mut surface = vec![Vec3::ZERO; n * n];
+        job.surface_with(&covers, Some(&normals), &mut surface);
+        let mut surface1 = vec![Vec3::ZERO; n * n];
+        job.surface_rows(&covers, Some(&normals), 0..n, &mut surface1);
+        assert_eq!(surface, surface1);
     }
 
     #[test]
@@ -2549,6 +3106,7 @@ mod tests {
             pattern: None,
         };
         let appearance = Appearance {
+            seed: 0,
             quality: 255,
             damage: 0,
             dirt: 0,
@@ -2883,6 +3441,7 @@ mod tests {
     #[test]
     fn the_factory_condition_remaps_only_the_damage() {
         let appearance = Appearance {
+            seed: 0,
             quality: 160,
             damage: 64,
             dirt: 32,
@@ -3035,6 +3594,7 @@ mod tests {
                 quality: 0.75,
                 damage: 0.14,
                 dirt: 0.1,
+                tile_sign: Vec2::ONE,
             };
             let shade = flat(2, 128);
             let layer = PaintLayer {

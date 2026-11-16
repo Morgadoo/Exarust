@@ -25,6 +25,27 @@ pub struct BenchRound {
     /// Factory atlases painted, and their time.
     pub factories: usize,
     pub factory_time: Duration,
+    /// The same spans in the process's CPU time, every thread's (Linux's
+    /// `/proc/self/stat`, 10 ms ticks; `None` elsewhere), which other
+    /// processes on a shared machine disturb less than the wall clock.
+    pub apparel_cpu: Option<Duration>,
+    pub factory_cpu: Option<Duration>,
+}
+
+/// The process's user and system time so far, every thread's, from
+/// `/proc/self/stat` (fields 14 and 15, in the kernel's 100 Hz ticks).
+fn process_cpu() -> Option<Duration> {
+    let s = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // The command name may hold spaces: the fields follow its last ')'.
+    let rest = s.get(s.rfind(')')? + 2..)?;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some(Duration::from_millis((utime + stime) * 10))
+}
+
+fn since(start: Option<Duration>) -> Option<Duration> {
+    Some(process_cpu()?.saturating_sub(start?))
 }
 
 /// The apparel jobs of the object database: one per distinct worn model
@@ -125,6 +146,7 @@ pub fn run(game: &GameData, rounds: usize, limit: usize) -> Vec<BenchRound> {
         loader.cache.forget_painted();
         let mut round = BenchRound::default();
         let start = Instant::now();
+        let cpu = process_cpu();
         for (stem, appearance) in &apparel {
             if let Paint::Job(job) = loader.paint_job(stem, appearance) {
                 let painted = job.paint();
@@ -133,13 +155,16 @@ pub fn run(game: &GameData, rounds: usize, limit: usize) -> Vec<BenchRound> {
             }
         }
         round.apparel_time = start.elapsed();
+        round.apparel_cpu = since(cpu);
         let start = Instant::now();
+        let cpu = process_cpu();
         for (name, weapon) in &factories {
             if loader.factory_weapon(name, Some(weapon)).is_some() {
                 round.factories += 1;
             }
         }
         round.factory_time = start.elapsed();
+        round.factory_cpu = since(cpu);
         out.push(round);
     }
     out

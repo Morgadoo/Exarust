@@ -509,14 +509,25 @@ fn main() -> Result<()> {
                 .enumerate()
             {
                 let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+                let cpu = |d: Option<std::time::Duration>, n: usize| {
+                    d.map_or(String::new(), |d| {
+                        format!(
+                            ", cpu {:.1} ms ({:.2} each)",
+                            ms(d),
+                            ms(d) / n.max(1) as f64
+                        )
+                    })
+                };
                 println!(
-                    "round {i}: {} apparel sets {:.1} ms ({:.2} ms each), {} factory atlases {:.1} ms ({:.2} ms each)",
+                    "round {i}: {} apparel sets {:.1} ms ({:.2} ms each{}), {} factory atlases {:.1} ms ({:.2} ms each{})",
                     r.apparel,
                     ms(r.apparel_time),
                     ms(r.apparel_time) / r.apparel.max(1) as f64,
+                    cpu(r.apparel_cpu, r.apparel),
                     r.factories,
                     ms(r.factory_time),
                     ms(r.factory_time) / r.factories.max(1) as f64,
+                    cpu(r.factory_cpu, r.factories),
                 );
             }
             Ok(())

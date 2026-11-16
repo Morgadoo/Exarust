@@ -181,6 +181,33 @@ buffer whose content depends on draw order, the second a hang.
 
 **Blocks:** one `partial` row (the wisps' strip draw).
 
+### DEC-12. Generated textures on the CPU
+**Question:** the original generates its item, apparel and skin textures
+as GL render jobs (a 256-slot job ring flushed on the GL thread, a 64-slot
+surface cache of render targets, a shade scratch target, programs compiled
+from `textures.flb` and from strings in the executable). Exarust paints the
+same texels on the CPU, on Bevy's task pool, into Bevy images. Close the
+job ring, the surface cache, the target allocators and the program builders
+as engine-replaced, or reproduce the GL jobs on wgpu?
+
+**Facts:** found again by the `texgen` lane (2026-11-16); earlier audits
+left these rows `partial`/`uncalled` with "no DEC". What a player sees is
+the painted texels; the CPU painter reproduces each program's arithmetic
+(checked program by program against its source: the procedural families,
+`shademapa`, `gemstone_a`, `chargen_d/s/n`, the beard overlays, the
+decomposition passes) and the blend of each draw, storing bytes between
+draws as the targets do. It samples the source maps nearest where the GPU
+filters them linearly (still `partial` where it shows). The queue and cache
+change only when a texture appears and how memory is reused.
+
+**Recommendation:** engine-replaced, on the condition that every program a
+job draws has its arithmetic matched on the CPU; a program not yet matched
+keeps its row open. Reproducing the GL jobs on wgpu would add a second
+painter for no visible gain.
+
+**Blocks:** about twenty rows of FLX_Materials_Procedural and
+FLX_Character_Textures (the lane rates them `engine` under this condition).
+
 ## Taken
 
 | date | decision |

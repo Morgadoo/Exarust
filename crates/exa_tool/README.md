@@ -14,6 +14,7 @@
 | `extract <pack> <dir> [--filter s] [--inner e]` | write entries with guessed extensions |
 | `paint <model> <stem> <out.png>` | paint an apparel texture set with the appearance of the first item worn as the model (`paint braies_a braies__aa b.png`) |
 | `factory <name> <out.png> [--seed n] [--quality q]` | assemble a factory weapon as the game does (one merged mesh) and write its painted atlas, the atlas with the mesh's texture coordinates drawn over it (`*.uv.png`) and its surface map (`*.surface.png`) (`factory "GlmHalbrd A" h.png`) |
+| `paint-bench [--rounds n] [--limit k]` | time the CPU texture generators: every apparel item of the object database painted with its appearance and every factory recipe painted into its atlas, after a warm-up round that decodes their textures |
 | `rsq [entry]` | the skeleton with its body links, the actions, and the movesets numbered with the moveset each parent resolves to |
 | `clips <base> [config]` | the clip table a character with this base moveset (its race's own, `Default` for a human) and held-item config (`0x1` One Handed, `0x10010001` with the torch; hex or decimal) plays: every action with the moveset its clip comes from (`clips Ogre 0x1`) |
 | `races` | every race of `races.rdb`: names, model, movesets, health, flag words, the body scalars and the body controller's factors, the stats (reach, weapon factors, AI, footsteps, voice) and the gait table with brake distances |
@@ -27,6 +28,7 @@
 | `corpus bodies` | per model pack: models with bodies, undecodable bodies, models with links and hung from the world, slider bodies, cloth markers |
 | `corpus tracks` | every node keyframe track of every chunk tree, nested packs included: file, node and parent, mode, duration and keys (s, cm) |
 | `corpus materials` | every material record a mesh group draws with, tallied per pack by material type; type-2 (smoke) users listed with their flags, fall-off, layers and key words; the plug-in masks (all 1); the records with both a diffuse and an opacity layer, which image the shared colour slot keeps and where the node is |
+| `corpus factories` | parse every weapon factory; the parts by their paint-region flags (overlay, mask-gated shade, alternate normal) and how many sit in recipes an item names; two generated examples |
 | `corpus meshes` | decode every chunk tree; per-pack table and reasons for unsupported records |
 | `corpus levels` | grids, props and placed characters of every level; placed humans covered at the groin and their worn items with a `Characters.rpk` model |
 | `corpus images` | every image by format word and storage; decodes the uncompressed ones and checks that RGB8 normal maps hold z in blue |

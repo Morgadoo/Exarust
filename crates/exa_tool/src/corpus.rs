@@ -412,10 +412,29 @@ pub fn factories(game: &GameData) -> Result<()> {
         "{ok} factories parsed (v0 {}, v1 {}, v2 {}), {failed} failed",
         versions[0], versions[1], versions[2]
     );
+    // The recipes items name (`@<factory>` models in the object database).
+    let named: std::collections::BTreeSet<String> = game
+        .pack(exa_rpk::PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .and_then(|b| exa_formats::rdb::Database::parse(b).ok())
+        .map(|db| {
+            exa_formats::objdb::items(&db)
+                .into_iter()
+                .filter_map(|i| i.model.strip_prefix('@').map(str::to_ascii_lowercase))
+                .collect()
+        })
+        .unwrap_or_default();
     for (bit, parts) in &flagged {
         let shown: Vec<&str> = parts.iter().take(12).map(String::as_str).collect();
+        let used = parts
+            .iter()
+            .filter(|p| {
+                let factory = p.split(':').next().unwrap_or("");
+                named.contains(&factory.trim_end_matches(".fty").to_ascii_lowercase())
+            })
+            .count();
         println!(
-            "part flag {bit:#x}: {} parts, e.g. {}",
+            "part flag {bit:#x}: {} parts ({used} in recipes an item names), e.g. {}",
             parts.len(),
             shown.join(", ")
         );

@@ -1390,6 +1390,7 @@ mod tests {
         let record = exa_formats::objdb::Item {
             model: model_name.into(),
             appearance: Some(exa_formats::objdb::Appearance {
+                seed: 0,
                 quality: 160,
                 damage: 0,
                 dirt: 0,

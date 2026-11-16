@@ -1704,6 +1704,10 @@ impl ModelLoader<'_> {
             });
             layers.extend(emblem);
         }
+        // The job builder keeps a region only when its first mask loads.
+        if layers.is_empty() {
+            return None;
+        }
         let item_normal = self.texels(&format!("{stem}n"));
         // The target is the part's atlas rectangle: the region quad stretches
         // the source texture (shade, masks, normal) over it, so painting at
@@ -1740,32 +1744,43 @@ impl ModelLoader<'_> {
         name: &str,
         size: (usize, usize),
         regions: &[(FactoryPaint, [f32; 4])],
+        alpha_job: bool,
     ) -> Handle<ExaMaterial> {
-        let mut key = format!("{}|{}x{}", name.to_ascii_lowercase(), size.0, size.1);
+        let mut key = format!(
+            "{}|{}x{}|{}",
+            name.to_ascii_lowercase(),
+            size.0,
+            size.1,
+            alpha_job
+        );
         for (paint, rect) in regions {
             key.push_str(&format!("|{}@{:?}", paint.key(), rect));
         }
         if let Some(h) = self.cache.factory_painted.get(&key) {
             return h.clone();
         }
-        let jobs: Vec<(PaintJob, [f32; 4])> = regions
+        let jobs: Vec<(PaintJob, [f32; 4], u32)> = regions
             .iter()
-            .filter_map(|(paint, rect)| Some((self.factory_region(paint)?, *rect)))
+            .filter_map(|(paint, rect)| {
+                Some((self.factory_region(paint)?, *rect, paint.part_flags))
+            })
             .collect();
-        let layers: Vec<Vec<PaintLayer<'_>>> = jobs.iter().map(|(job, _)| job.layers()).collect();
+        let layers: Vec<Vec<PaintLayer<'_>>> =
+            jobs.iter().map(|(job, _, _)| job.layers()).collect();
         let drawn: Vec<AtlasRegion<'_>> = jobs
             .iter()
             .zip(&layers)
-            .map(|((job, rect), layers)| AtlasRegion {
+            .map(|((job, rect, part_flags), layers)| AtlasRegion {
                 job: job.region(layers),
                 rect: *rect,
+                part_flags: *part_flags,
             })
             .collect();
-        let atlas = crate::atlas::paint(size.0, size.1, &drawn);
+        let atlas = crate::atlas::paint(size.0, size.1, &drawn, alpha_job);
         let (w, h) = (atlas.width as u32, atlas.height as u32);
-        // The colour target has no alpha channel (an alpha job's sRGB-alpha
-        // target is not reproduced): the atlas is opaque.
-        let alpha = false;
+        // A plain job's colour target has no alpha channel (it is opaque);
+        // an alpha job's sRGB-alpha target carries the gem layers' alpha,
+        // which `_procmatr` refracts through.
         let set = PaintedSet {
             key: PaintKey::Factory(name.to_ascii_lowercase(), key),
             colour: painted_image(w, h, atlas.colour, Painted::COLOUR),
@@ -1773,7 +1788,8 @@ impl ModelLoader<'_> {
             normal: atlas
                 .normal
                 .map(|n| painted_image(w, h, n, Painted::NORMAL)),
-            alpha,
+            alpha: false,
+            refract: alpha_job,
         };
         self.painted_material(set)
     }
@@ -1882,7 +1898,7 @@ impl ModelLoader<'_> {
             };
             let material = layer_material(layer);
             let (lib, spec, normals) = self.material_texels(material);
-            let (tint, wear) = apparel_tint(material, layer.colour);
+            let (tint, wear) = apparel_tint(layer.material, layer.colour);
             layers.push(OwnedLayer {
                 mask,
                 material,
@@ -1901,7 +1917,9 @@ impl ModelLoader<'_> {
             item_normal,
             layers,
             condition,
-            tiling: Tiling::default(),
+            // The job draws its four library-tile offsets from the item's
+            // paint seed, as a factory job draws them from seed B.
+            tiling: Tiling::apparel(appearance.seed),
             target: None,
         })
     }
@@ -1915,6 +1933,7 @@ impl ModelLoader<'_> {
             surface,
             normal,
             alpha,
+            refract,
         } = painted;
         let mut mat = ExaMaterial {
             params: ExaParams {
@@ -1931,6 +1950,21 @@ impl ModelLoader<'_> {
         if alpha {
             mat.alpha_mode = AlphaMode::Mask(0.5);
             mat.params.flags |= flags::TWO_SIDED;
+        }
+        if refract {
+            // `_procmatr` is `_procmat1` with the refraction mode (material
+            // word `0x360207`): drawn opaque, its colour mixed with the scene
+            // field behind it by the colour's alpha. Its glossiness (1)
+            // picks the high field, its zero refraction word reads as
+            // strength 1.
+            mat.params.flags2 |= exa_render::material::flags2::REFRACTION;
+            if exa_render::refraction::field_of(PROCMATR_WORD, PROCMAT_SHADER_WORD, 1.0)
+                == Some(exa_render::shader_uniforms::RefractionMap::SceneHigh)
+            {
+                mat.params.flags2 |= exa_render::material::flags2::FRAME_HIGH;
+            }
+            mat.params.opacity_falloff.w =
+                crate::texture::hundredths_to_f32(crate::texture::f32_to_hundredths(1.0));
         }
         mat.normal_map = match normal {
             Some(image) => Some(self.images.add(image)),
@@ -2897,6 +2931,9 @@ pub struct FactoryPaint {
     /// The user's texture detail; below 3 the target is half size and the
     /// tiles double.
     pub texture_detail: u32,
+    /// The recipe part's flag word: its paint-region bits choose how its
+    /// shade enters the job's shade scratch ([`crate::atlas::region_flags`]).
+    pub part_flags: u32,
 }
 
 impl FactoryPaint {
@@ -2904,7 +2941,7 @@ impl FactoryPaint {
     pub fn key(&self) -> String {
         let c = &self.condition;
         format!(
-            "{}|{},{},{}|{:?}|{},{}|{}|{}|{:?}|{}|{}",
+            "{}|{},{},{}|{:?}|{},{}|{}|{}|{:?}|{}|{}|{:x}",
             self.stem.to_ascii_lowercase(),
             c.quality,
             c.damage,
@@ -2916,7 +2953,8 @@ impl FactoryPaint {
             self.uv_scale,
             self.pattern_position,
             self.texture_crop,
-            self.texture_detail
+            self.texture_detail,
+            self.part_flags
         )
     }
 }
@@ -3191,6 +3229,12 @@ pub struct PaintJob {
     target: Option<(usize, usize)>,
 }
 
+/// The material word of the run-time `_procmatr` template (`_procmat1`'s
+/// `0x360007` with the refraction mode `0x200`).
+pub const PROCMATR_WORD: u32 = 0x0036_0207;
+/// The shader word of both run-time templates.
+pub const PROCMAT_SHADER_WORD: u32 = 0x4800;
+
 /// A painted texture set's images, for [`ModelLoader::painted_material`].
 pub struct PaintedSet {
     key: PaintKey,
@@ -3199,6 +3243,9 @@ pub struct PaintedSet {
     normal: Option<Image>,
     /// The shade map cuts the item out.
     alpha: bool,
+    /// The factory's alpha job: the run-time material is `_procmatr`,
+    /// which refracts through the colour target's alpha.
+    refract: bool,
 }
 
 impl PaintedSet {
@@ -3242,6 +3289,7 @@ impl PaintJob {
             surface: painted_image(w, h, t.surface, Painted::SURFACE),
             normal: t.normal.map(|n| painted_image(w, h, n, Painted::NORMAL)),
             alpha: t.alpha,
+            refract: false,
             key: t.key,
         }
     }
@@ -3275,6 +3323,7 @@ impl PaintJob {
             condition: self.condition,
             tiling: self.tiling,
             size: self.target.unwrap_or((self.shade.width, self.shade.height)),
+            shade_tile: None,
         }
     }
 
@@ -4122,6 +4171,7 @@ mod tests {
 
     fn condition(quality: u8, damage: u8) -> Appearance {
         Appearance {
+            seed: 0,
             quality,
             damage,
             dirt: 0,
@@ -5306,6 +5356,7 @@ mod tests {
                 .all(|(_, b)| b.is_none())
         );
         let braies = Appearance {
+            seed: 0,
             quality: 160,
             damage: 64,
             dirt: 0,
@@ -5358,6 +5409,21 @@ mod tests {
             panic!("the braies have a shade map")
         };
         assert_eq!(job.layers.len(), 2);
+        // The template's paint seed (the body word before the block) places
+        // the job's library tiles.
+        let body = items(&db).into_iter().find(|i| i.id == 8).unwrap();
+        let seed = body.appearance.unwrap().seed;
+        assert_eq!(job.tiling, Tiling::apparel(seed));
+        // Each layer's wear weight is the table's entry for its stored
+        // material byte: a layer drawing from a set reads entry 0.
+        for (stored, layer) in braies.used_layers().zip(&job.layers) {
+            let expected = if stored.material == 0 {
+                1.0
+            } else {
+                exa_formats::procedural::material(stored.material).wear
+            };
+            assert_eq!(layer.wear, expected);
+        }
     }
 
     /// The speckle blood shows through (skipped without the game): texels
