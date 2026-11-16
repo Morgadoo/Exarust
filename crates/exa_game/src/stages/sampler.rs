@@ -418,7 +418,11 @@ fn overlay(pose: &mut ClipPose, gait: Option<(&Clip, f32)>, bracket: &Bracket) {
 
 /// Step 4, the femur posture: each thigh's clip turn is multiplied by a
 /// small turn about the femur axis (`exa_physics::body::femur_posture_turn`,
-/// the legs in the body's order); the turn stays in the clip chain.
+/// the legs in the body's order); the turn stays in the clip chain. The
+/// original's product takes the clip turn first and the posture second,
+/// which is the posture applied after the clip turn (`posture * clip` in
+/// glam's order, its axis in the parent's frame), with the engine's sums
+/// ([`exa_physics::engine_math::quaternion_product`]).
 pub(crate) fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPosture) -> ClipPose {
     for (leg, joint) in body.legs().iter().enumerate() {
         let Some(thigh) = body.parts.get(joint.shin).and_then(|p| p.parent) else {
@@ -431,7 +435,7 @@ pub(crate) fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPo
         else {
             continue;
         };
-        *turn *= femur_posture_turn(posture, leg);
+        *turn = exa_physics::engine_math::quaternion_product(*turn, femur_posture_turn(posture, leg));
     }
     pose
 }
@@ -644,6 +648,41 @@ mod tests {
         };
         assert_eq!(spine_of(0.01), vec![(2, true), (3, false)]);
         assert_eq!(spine_of(0.03), vec![]);
+    }
+
+    /// The femur posture turns each thigh after its clip turn (`posture *
+    /// clip`, the axis in the parent's frame), as the original's product of
+    /// the clip turn and the posture: not the clip turn after the posture.
+    #[test]
+    fn the_femur_posture_follows_the_clip_turn() {
+        let part = |bone: usize, parent: Option<usize>, foot: Option<Vec3>| PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.05),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let body = Ragdoll::new(&[
+            part(1, None, None),
+            part(2, Some(0), None),
+            part(3, Some(1), Some(Vec3::new(0.0, -0.4, 0.0))),
+        ]);
+        assert_eq!(body.legs().len(), 1);
+        let clip = Quat::from_axis_angle(Vec3::new(1.0, 0.3, 0.0).normalize(), 1.2);
+        let pose = ClipPose {
+            rotations: vec![Quat::IDENTITY, clip, Quat::IDENTITY],
+            root: Vec3::ZERO,
+        };
+        let posed = femur_posture(pose, &body, FemurPosture::Splayed);
+        let turn = exa_physics::body::femur_posture_turn(FemurPosture::Splayed, 0);
+        assert!(posed.rotations[1].abs_diff_eq(turn * clip, 1e-6));
+        assert!(!posed.rotations[1].abs_diff_eq(clip * turn, 1e-4));
     }
 
     /// The head look's input: the smoothed cursor 0.5 rad aside of a frame
