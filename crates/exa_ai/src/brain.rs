@@ -276,6 +276,12 @@ pub struct Npc {
     /// Released or charging blasts the combat tick steps away from. A wave
     /// has no step of its own. Replaced each sight.
     pub blast_steps: Vec<crate::combat::BlastStep>,
+    /// The goal entity its search points at, created at the first pick
+    /// ([`crate::entity::GoalEntity`]).
+    pub goal: Option<crate::entity::GoalEntity>,
+    /// The pick flag: the search holds an object it picked, and the target
+    /// pass weighs the goal entity first.
+    pub goal_picked: bool,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -476,7 +482,57 @@ impl Npc {
             force_sights: Vec::new(),
             wall_steps: Vec::new(),
             blast_steps: Vec::new(),
+            goal: None,
+            goal_picked: false,
         }
+    }
+
+    /// The search's pick: the goal entity is linked to the picked object
+    /// at `at_cm` and the pick flag is set ([`crate::entity::pick`]).
+    pub fn pick_goal(&mut self, brain: Entity, at_cm: Vec3) {
+        crate::entity::pick(&mut self.goal, &mut self.goal_picked, brain, at_cm);
+    }
+
+    /// The search lets its object go ([`crate::entity::release`]).
+    pub fn release_goal(&mut self) {
+        crate::entity::release(&mut self.goal, &mut self.goal_picked);
+    }
+
+    /// Where contact `id` is when it is the goal entity: its linked object's
+    /// place (cm), the origin unlinked; none for any other contact.
+    pub fn goal_point(&self, id: u64) -> Option<Vec3> {
+        self.goal
+            .filter(|g| g.id == id)
+            .map(|g| g.linked_cm.unwrap_or(Vec3::ZERO))
+    }
+
+    /// Whether the brain attends its goal entity.
+    pub fn attends_goal(&self) -> bool {
+        self.goal.is_some_and(|g| self.pass.attention == Some(g.id))
+    }
+
+    /// The goal entity as the target pass weighs it while the pick flag
+    /// holds: its contact (the one the brain keeps, else a new object
+    /// contact) assessed from `head_cm`, at its linked place.
+    fn goal_sighting(&self, head_cm: Vec3) -> Option<contacts::Sighting> {
+        let goal = self.goal.filter(|_| self.goal_picked)?;
+        let mut contact = self
+            .contacts
+            .iter()
+            .find(|c| c.id == goal.id)
+            .copied()
+            .unwrap_or(ContactRecord {
+                id: goal.id,
+                object: true,
+                ..ContactRecord::default()
+            });
+        goal.assess(head_cm, &mut contact);
+        Some(contacts::Sighting {
+            contact,
+            character: false,
+            position_cm: goal.linked_cm.unwrap_or(Vec3::ZERO),
+            room: -1,
+        })
     }
 
     /// The brain of `record`: its traits and the personality they give,
@@ -616,6 +672,8 @@ impl Npc {
             self.integration.restraint = p.restraint;
             self.integration.soothe_scale = p.eagerness;
         }
+        // The integration never raises the goal entity's attention.
+        self.integration.scripted = self.goal.map(|g| g.id);
         self.integration.courage = courage;
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
@@ -652,6 +710,8 @@ impl Npc {
             )
             .is_some()
         };
+        // The goal entity under the search's pick, weighed first.
+        let goal_sighting = self.goal_sighting(place.at_cm);
         let report = contacts::target_pass(
             contacts::PassInput {
                 contacts: &mut self.contacts,
@@ -668,7 +728,8 @@ impl Npc {
                 asleep,
                 in_combat,
                 attended: None,
-                scripted: None,
+                scripted: goal_sighting,
+                goal: self.goal.map(|g| g.id),
                 cursor: self.cursor,
                 attended_id: attended,
                 greet_gates: (self.integration.notice_scale, self.integration.readiness),
@@ -679,6 +740,27 @@ impl Npc {
             &mut way_out,
         );
         self.fled = fled;
+        // Debug aid (`RUST_LOG=exa_ai::pass=debug`): how the pass weighed the
+        // goal entity under the search's pick.
+        if let Some(goal) = goal_sighting {
+            debug!(
+                target: "exa_ai::pass",
+                "goal entity {:#x} weighed: noticed {:.2}, attention {:.2}, concern {:.2}, \
+                 hostility {:.2}; outcome {:?}, attends {:?}, other contacts {:?}",
+                goal.contact.id,
+                goal.contact.noticed,
+                goal.contact.attention,
+                goal.contact.concern,
+                goal.contact.hostility,
+                report.outcome,
+                report.attention,
+                self.contacts
+                    .iter()
+                    .filter(|c| c.id != goal.contact.id)
+                    .map(|c| (c.id, c.level, c.noticed, c.attention, c.concern, c.hostility))
+                    .collect::<Vec<_>>()
+            );
+        }
         let mut report = report;
         if let contacts::Outcome::Flee { id, .. } = report.outcome {
             // The pass's flee outcome calls the flee start with the level
@@ -760,6 +842,7 @@ impl Npc {
             self.integration.restraint = p.restraint;
             self.integration.soothe_scale = p.eagerness;
         }
+        self.integration.scripted = self.goal.map(|g| g.id);
         self.integration.courage = self.morale.courage;
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
@@ -1436,6 +1519,7 @@ pub fn ai_tick(
             Option<&mut exa_physics::body::Ragdoll>,
             Option<&mut Roles>,
             Option<&CharacterId>,
+            Has<exa_physics::body::locomotion::Locomotion>,
         ),
         Option<&GlobalTransform>,
         &Fighter,
@@ -1491,7 +1575,7 @@ pub fn ai_tick(
         mut npc,
         mut combatant,
         mut duellist,
-        (mut flags, mut body, mut roles, character_id),
+        (mut flags, mut body, mut roles, character_id, on_locomotion),
         gt,
         fighter,
         mut condition,
@@ -1904,6 +1988,8 @@ pub fn ai_tick(
         let attended = npc.pass.attention.map(|id| {
             let at = if Some(id) == target_id {
                 target_cm
+            } else if let Some(goal) = npc.goal_point(id) {
+                goal
             } else {
                 places
                     .iter()
@@ -1915,8 +2001,8 @@ pub fn ai_tick(
                     crate::walker::notice_score(c.concern, c.hostility, c.noticed, c.attention)
                 }),
                 yaw: motion::yaw_of(at - observer_cm),
-                // The running game sets no scripted focus.
-                focus_held: false,
+                // The goal entity under the search's pick.
+                focus_held: npc.goal_picked && npc.goal.is_some_and(|g| g.id == id),
             }
         });
         // Entering combat marks the body in combat; the idle states clear
@@ -2029,8 +2115,22 @@ pub fn ai_tick(
                 let facing = npc.facing(transform.rotation);
                 let encumbrance = fighter.stats.encumbrance;
                 motion::turn_towards(&mut npc.turn, facing, encumbrance, now, &mut roll);
-                let offset = npc.turn.offset;
-                npc.turn_model(&mut transform, offset);
+                // A body on its locomotion is turned by its heading, which
+                // the heading block after the stand writes (the look chain
+                // without the in-combat mark, else the look snap after the
+                // state); a body without muscles is turned to the eased yaw.
+                if !on_locomotion {
+                    let offset = npc.turn.offset;
+                    npc.turn_model(&mut transform, offset);
+                } else if !npc.alert.marked {
+                    out_of_combat_look(
+                        &mut npc,
+                        facing,
+                        body.as_deref()
+                            .is_some_and(exa_physics::body::Ragdoll::stepping),
+                        condition.0 == combatant::CONDITION_ATTACKING,
+                    );
+                }
             }
             npc.roll = roll;
             continue;
@@ -2041,9 +2141,10 @@ pub fn ai_tick(
             write_sleeper(&mut condition, flags.as_deref_mut(), &sleeper);
         }
         // Out of combat the AI sways its look about its heading and the
-        // body turns to that heading. Exarust turns the model directly: the
-        // original lets the body's locomotion turn it, and the running game
-        // ticks no locomotion request for an NPC.
+        // body turns to that heading: a body on its locomotion by the
+        // heading the look chain writes ([`crate::drive::publish`]), one
+        // without muscles by Exarust's stand-in, which turns the model to
+        // the eased yaw.
         let waiting = !npc.sleeping && !fighting;
         if waiting
             && presence.is_none_or(|p| p.moves())
@@ -2143,45 +2244,24 @@ pub fn ai_tick(
             }
             // The look chain: the body's own look and smoothing directions
             // follow the head's offset, then the gait helper turns the look
-            // toward the heading and writes the body's look when it lags.
-            if npc.gaze.body_look == Vec3::ZERO {
-                npc.gaze.body_look = motion::dir_of(facing);
-                npc.gaze.body_smooth = motion::dir_of(facing);
-                npc.gaze.body_heading = motion::dir_of(facing);
-                npc.gaze.look = facing;
+            // toward the heading and writes the body's heading when it lags.
+            // It is the heading block of a body without the in-combat mark:
+            // a body on its locomotion with the mark runs the look snap
+            // after the state instead ([`crate::drive::after_state`]).
+            if !(on_locomotion && npc.alert.marked) {
+                out_of_combat_look(
+                    &mut npc,
+                    facing,
+                    body.as_deref()
+                        .is_some_and(exa_physics::body::Ragdoll::stepping),
+                    condition.0 == combatant::CONDITION_ATTACKING,
+                );
             }
-            let turn = npc.turn;
-            let (body_look, body_smooth) = (npc.gaze.body_look, npc.gaze.body_smooth);
-            let heading_yaw = motion::yaw_of(npc.gaze.body_heading);
-            let chain = motion::look_chain(
-                &mut npc.gaze,
-                &turn,
-                motion::BodyLook {
-                    look: body_look,
-                    smooth: body_smooth,
-                    heading_yaw,
-                    facing_yaw: facing,
-                    // [guess: the running game has no stepping flag for an
-                    // NPC body.]
-                    stepping: false,
-                    attacking: condition.0 == combatant::CONDITION_ATTACKING,
-                    in_combat: false,
-                    // [guess: the running game has no object the brain looks
-                    // at; its live look target stays empty.]
-                    look_target_live: false,
-                },
-            );
-            npc.gaze.body_look = chain.look;
-            npc.gaze.body_smooth = chain.smooth;
-            if let Some(heading) = chain.heading.or(chain.turn) {
-                npc.gaze.body_heading = heading;
-            }
-            // The original turns the body's physical facing through its own
-            // locomotion; the running game ticks none for an NPC, so the
-            // model turns with the eased look, look plus sway, as before. A
-            // brain that follows a route is turned by its walk
+            // A body without muscles has no locomotion to turn it: Exarust
+            // turns its model with the eased look, look plus sway. A brain
+            // that follows a route is turned by its walk
             // ([`crate::route_walk::walk_routes`]).
-            if npc.flight.is_none() && !following {
+            if !on_locomotion && npc.flight.is_none() && !following {
                 let offset = npc.turn.offset;
                 npc.turn_model(&mut transform, offset);
             }
@@ -2190,6 +2270,47 @@ pub fn ai_tick(
     }
     if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
         clock.passed = ticks.0;
+    }
+}
+
+/// The AI tick's out-of-combat heading block for a body facing `facing`
+/// (a yaw): a brain that has never turned takes the facing as its body
+/// directions and its look; then the look chain
+/// ([`motion::look_chain`]): the body's own look and smoothing directions
+/// follow the head's offset, then the gait helper turns the look toward
+/// the heading and writes the body's heading when it lags past 30°. A body
+/// that is stepping or attacking takes its look as its smoothing and
+/// heading instead.
+pub fn out_of_combat_look(npc: &mut Npc, facing: f32, stepping: bool, attacking: bool) {
+    if npc.gaze.body_look == Vec3::ZERO {
+        npc.gaze.body_look = motion::dir_of(facing);
+        npc.gaze.body_smooth = motion::dir_of(facing);
+        npc.gaze.body_heading = motion::dir_of(facing);
+        npc.gaze.look = facing;
+    }
+    let turn = npc.turn;
+    let (body_look, body_smooth) = (npc.gaze.body_look, npc.gaze.body_smooth);
+    let heading_yaw = motion::yaw_of(npc.gaze.body_heading);
+    let chain = motion::look_chain(
+        &mut npc.gaze,
+        &turn,
+        motion::BodyLook {
+            look: body_look,
+            smooth: body_smooth,
+            heading_yaw,
+            facing_yaw: facing,
+            stepping,
+            attacking,
+            in_combat: false,
+            // [guess: the running game has no object the brain looks at;
+            // its live look target stays empty.]
+            look_target_live: false,
+        },
+    );
+    npc.gaze.body_look = chain.look;
+    npc.gaze.body_smooth = chain.smooth;
+    if let Some(heading) = chain.heading.or(chain.turn) {
+        npc.gaze.body_heading = heading;
     }
 }
 
@@ -2470,6 +2591,11 @@ pub fn flee_walk(
         if let Some((req, ..)) = walking.as_mut() {
             req.cursor = req.heading;
             req.desired = req.heading;
+            // The body's look direction is the brain's too: the heading
+            // block after the state writes it into the request again.
+            if npc.gaze.body_heading != Vec3::ZERO {
+                npc.gaze.body_look = npc.gaze.body_heading;
+            }
         }
         let feet_cm = root_gt.translation() * 100.0;
         let at_cm = gt.translation() * 100.0;
@@ -3219,6 +3345,82 @@ mod tests {
         let p = npc.personality.unwrap();
         assert!((p.skill - 0.5).abs() < 1e-6 && (p.courage - 0.7).abs() < 1e-6);
         assert_eq!(roll, 1);
+    }
+
+    /// The search's goal entity in the target pass: while the pick flag
+    /// holds, the pass weighs it first and, with nothing that outranks it,
+    /// attends it; its contact enters the brain's list as an object with the
+    /// weight as its noticed level, and the integration never raises its
+    /// attention. Once the search lets it go, a calm pass keeps attending
+    /// it (attended, it scores 3 more: a character noticed a little more
+    /// does not take it away); a character it watches (concern over 1)
+    /// takes the attention.
+    #[test]
+    fn the_target_pass_attends_the_search_goal() {
+        let brain = Entity::from_raw_u32(3).unwrap();
+        let mut npc = Npc::new([0.0; 4]);
+        npc.integration.active = true;
+        let sight = contacts::FoeSight {
+            foe: None,
+            sees_foe: false,
+            foe_point: bevy::math::Vec3::ZERO,
+            foe_ground_y: 0.0,
+            foe_room: 0,
+            focus: None,
+        };
+        let pass = |npc: &mut Npc, visible: &[contacts::Sighting]| {
+            let mut roll = 7;
+            npc.run_pass(
+                visible,
+                sight,
+                &|_| 1.0e6,
+                false,
+                false,
+                (1.0, 1.0),
+                false,
+                0,
+                &mut roll,
+                &FleePlace::default(),
+            )
+        };
+        // Nothing picked: nothing attended.
+        pass(&mut npc, &[]);
+        assert_eq!(npc.pass.attention, None);
+        npc.pick_goal(brain, Vec3::new(0.0, 0.0, 300.0));
+        let id = crate::entity::goal_id(brain);
+        pass(&mut npc, &[]);
+        assert_eq!(npc.pass.attention, Some(id));
+        assert!(npc.attends_goal());
+        let c = *npc.contacts.iter().find(|c| c.id == id).unwrap();
+        assert!(c.object);
+        assert_eq!(c.sighting, 5.0);
+        assert_eq!(c.attention, 0.0);
+        for _ in 0..20 {
+            pass(&mut npc, &[]);
+        }
+        let c = npc.contacts.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(c.attention, 0.0, "the goal's attention never rises");
+        assert_eq!(npc.goal_point(id), Some(Vec3::new(0.0, 0.0, 300.0)));
+        // Let go: the calm pass keeps attending it, unlinked at the origin.
+        npc.release_goal();
+        pass(&mut npc, &[]);
+        assert_eq!(npc.pass.attention, Some(id));
+        assert_eq!(npc.goal_point(id), Some(Vec3::ZERO));
+        // A character it watches outranks the goal's notice.
+        let hostile = contacts::Sighting {
+            contact: ContactRecord {
+                id: 1,
+                sighting: 1.0,
+                concern: 1.5,
+                ..ContactRecord::default()
+            },
+            character: true,
+            position_cm: bevy::math::Vec3::ZERO,
+            room: -1,
+        };
+        npc.pick_goal(brain, Vec3::new(0.0, 0.0, 300.0));
+        pass(&mut npc, &[hostile]);
+        assert_eq!(npc.pass.attention, Some(1));
     }
 
     /// A hostile rating enters the fight through the target pass at level

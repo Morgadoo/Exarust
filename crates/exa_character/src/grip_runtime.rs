@@ -4,7 +4,8 @@
 //! The original's body tick derives the grip mode from a motion when it
 //! starts (a knocked-down body mode 0, Idle or Walk mode 2, Stab 3, and 1
 //! for the other clips), and its locomotion routine sets it on every tick
-//! it runs (1 running or in combat, else 2); a changed mode runs the table
+//! it runs (1 running or in combat, else 2); the AI's chase sets mode 1
+//! while it follows its route ([`GripModeAsk`]); a changed mode runs the table
 //! entry's callback, which switches the two-hander's second hand, arm and
 //! stab links or slides the polearm's main link
 //! ([`exa_physics::grip::tick_mode`]). A
@@ -24,6 +25,14 @@ use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
 use exa_physics::body::Ragdoll;
 use exa_physics::grip::{GripKind, HeldGrip, HeldKind, tick_mode};
 use exa_physics::grip_solve::GripSolveSet;
+
+/// The grip mode a character's AI sets on its body in its tick (the chase
+/// sets mode 1 every tick it follows its route), ahead of the mode a motion
+/// start derives and the one the locomotion routine writes later in the
+/// same body tick, which win over it. The AI writes it each tick (none when
+/// it sets no mode); a mode it set stays the body's until another is set.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GripModeAsk(pub Option<i32>);
 
 /// The weapon data a flip rebuilds its record from.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -274,6 +283,7 @@ pub fn animate_grips(
         &Condition,
         Option<&crate::held::BurningGrip>,
         Option<&exa_physics::body::locomotion::Locomotor>,
+        Option<&GripModeAsk>,
     )>,
     motions: Option<Res<Motions>>,
 ) {
@@ -288,7 +298,7 @@ pub fn animate_grips(
         let Some(&(owner, holder_body)) = holders.get(&grip.holder_key) else {
             continue;
         };
-        let Ok((anim, condition, burning_grip, locomotor)) = owners.get(owner) else {
+        let Ok((anim, condition, burning_grip, locomotor, asked)) = owners.get(owner) else {
             continue;
         };
         let clip = motions
@@ -303,8 +313,11 @@ pub fn animate_grips(
         // The mode a motion start derives, or the one the locomotion
         // routine wrote on this tick.
         let locomotion = locomotor.filter(|l| l.locomoted).map(|l| l.grip_mode);
+        // The AI's mode comes first in the tick: what it set stands unless
+        // a motion start or the locomotion sets another.
+        let current = asked.and_then(|a| a.0).unwrap_or(links.mode);
         let mode = tick_mode(
-            links.mode,
+            current,
             links.motion,
             clip,
             condition.has(Condition::DOWN.0),
@@ -498,6 +511,7 @@ impl Plugin for GripRuntimePlugin {
 fn bridge_grip_runtime_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<crate::grip_runtime::FlipWeaponRequest>()
+        .bridge_copy::<crate::grip_runtime::GripModeAsk>()
         .bridge_copy::<crate::grip_runtime::HeldAbility>()
         .bridge_copy::<crate::grip_runtime::HeldItemSpec>()
         .bridge_copy::<crate::grip_runtime::HeldRecord>()
@@ -1094,6 +1108,21 @@ mod tests {
             "{}",
             blade.record.slash
         );
+        // The AI sets mode 1 (the chase following its route): with no clip
+        // start and no locomotion this tick, it is the mode; once the AI
+        // sets none, the mode stays.
+        let mode = |app: &App| {
+            let grip = app.world().get::<HeldGrip>(item_e).unwrap();
+            grip.links.as_ref().unwrap().mode
+        };
+        app.world_mut()
+            .entity_mut(owner)
+            .insert(GripModeAsk(Some(1)));
+        app.update();
+        assert_eq!(mode(&app), 1);
+        app.world_mut().entity_mut(owner).insert(GripModeAsk(None));
+        app.update();
+        assert_eq!(mode(&app), 1);
     }
 
     /// The held items' contact mobility: the base times the setter's
