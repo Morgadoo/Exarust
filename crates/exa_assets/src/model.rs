@@ -810,7 +810,7 @@ impl ModelLoader<'_> {
                     .groups
                     .iter()
                     .map(|g| {
-                        manager_material(self.game, &scene, &g.material)
+                        manager_material(self.game, scene, &g.material)
                             .map_or(0, |m| material_split_flags(&m))
                     })
                     .collect(),

@@ -35,7 +35,10 @@ pub enum Changes {
 /// game installs it ([`LiveObjects::set_factory`]) once its data is open,
 /// as the original's migration calls its item factory.
 #[derive(Clone)]
-pub struct FactoryHook(pub std::sync::Arc<dyn Fn(&str, &mut [u8]) + Send + Sync>);
+pub struct FactoryHook(pub std::sync::Arc<FactoryFn>);
+
+/// The pass's signature: the factory's name and the weapon body it rebuilds.
+pub type FactoryFn = dyn Fn(&str, &mut [u8]) + Send + Sync;
 
 impl std::fmt::Debug for FactoryHook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

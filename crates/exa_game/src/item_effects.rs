@@ -742,6 +742,7 @@ pub fn write_back(
 /// registration and switches write the body's golem-suit byte and standing
 /// stance factor here; the bytes and the equipment refresh go to the frame
 /// ([`write_back`]).
+#[allow(clippy::type_complexity)]
 pub fn run_worn_effects(
     ticks: Option<bevy::prelude::Res<exa_physics::body::BodyTicks>>,
     mut bodies: bevy::prelude::Query<(

@@ -2767,8 +2767,14 @@ fn sample_stretched(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: f
 
 /// [`sample_stretched`] with the alpha channel.
 fn sample_stretched4(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: f32) -> [f32; 4] {
-    if scale == 1.0 && t.width == w && t.height == h {
-        return t.at4(x as i64, y as i64);
+    if scale == 1.0 {
+        if t.width == w && t.height == h {
+            return t.at4(x as i64, y as i64);
+        }
+        if t.width > w || t.height > h {
+            // Minified: the nearest texel of the full image.
+            return t.at4((x * t.width / w) as i64, (y * t.height / h) as i64);
+        }
     }
     let rows = t.height as f32 * scale;
     let (step_u, step_v) = (t.width as f32 / w as f32, rows / h as f32);
