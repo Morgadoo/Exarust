@@ -1517,6 +1517,10 @@ a scanned player's story death runs the original's record strip: the dead body k
 
 the in-game GUI unit's remaining links: the heartbeat fades out over a second from deaths, knock-outs and the fade reset; the HUD takes the player's shield, the power bar's flag and the bars' holds from quick-bar casts and healing; Raise Dead and Command Dead close the corpse's loot window and a mark's end closes the released body's inventory; the AI search reads the GUI's open-container registry; the focus loss reaches the menu and power tree tasks; container popups follow unit changes; a bound body's inventory sets its mind window, where a drag can break the hold; a game save writes the open packs into the carried lists (F31, F32, F34-F38). Grid scenes owed while the GPU is on hold.
 
+GameModes is the scene's live mode word, entered by the Character and Spectate mode starts, and each mode gives the chase camera its own record (F361, F362 fixed); the controller's flag word is the record's, so the cut-away scene lift is unreachable. Window points use the original's view-to-screen routine, which fixed the lift warp landing at twice the window size under supersampling. The post sharpen follows the supersample level as the original sets it (none with supersampling off). The free camera pans with the pad under the Spectate record. Grid scenes owed while the GPU is on hold, including the sharpen's picture change.
+
+the living placement of a character body is ported (word resets, the pose lowered onto the frame, matrix foot anchors, the feet centre, the chest restarted, no wake) and run in the fixed step with each caller's frame-height rule, replacing the rigid moves: the arena's kept bodies between rounds and the tournament's next fight, the golem's pose reset, the revive's roaming bodies, the surviving player's level placement and the hub entry, each followed by the held re-place. Heights are absolute as in the original. Scenes and determinism runs owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
