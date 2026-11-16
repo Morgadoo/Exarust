@@ -375,7 +375,13 @@ fn prepare_icon_scenes(
                 None
             }
         };
-        let variant = icons.pending[index].variant;
+        // The render variant: the cache variant's top bits, the effect bit
+        // from the model flags and the weapon bit from a weapon section.
+        let variant = exa_items::item_icon::render_variant(
+            icons.pending[index].variant,
+            model_info.flags,
+            model_info.weapon_section,
+        );
         let turned = framing(variant, false).turned;
         let hide_star = model_info.flags & 0x5f == 9;
         let scene = IconScene::from_model(
@@ -397,6 +403,9 @@ fn prepare_icon_scenes(
             continue;
         };
         icons.pending[index].scene = Some(scene);
+        // From here the pending icon carries its render variant (the
+        // content stream's request, which takes the cache variant, is done).
+        icons.pending[index].variant = variant;
         budget -= 1;
         index += 1;
     }
@@ -1088,6 +1097,66 @@ mod tests {
             icons.cache.entries[0]
         );
         assert!(icons.atlas.image.pixels.iter().any(|&b| b != 0));
+    }
+
+    /// A shipped weapon's icon is rendered with the weapon bit: the weapon
+    /// light preset (skipped without an installation).
+    #[test]
+    fn a_shipped_weapons_icon_renders_with_the_weapon_preset() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(bytes) = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+        else {
+            return;
+        };
+        let Ok(db) = exa_formats::rdb::Database::parse(bytes) else {
+            return;
+        };
+        let items = exa_formats::objdb::items(&db);
+        let item = items
+            .iter()
+            .find(|item| item.model.starts_with('@') && item.has_weapon)
+            .expect("the shipped database has factory weapons");
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<ModelCache>()
+            .init_resource::<PanelIcons>()
+            .insert_resource(ItemCatalogue::of_database(&db))
+            .insert_resource(Game(std::sync::Arc::new(data)))
+            .add_systems(Update, prepare_icon_scenes);
+        let catalogue = app.world().resource::<ItemCatalogue>().clone();
+        assert!(catalogue.model(item.id).unwrap().weapon_section);
+        let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+        let (handle, _) = icons.reserve(item.id, 0, Some(&catalogue));
+        assert_eq!(handle, 1);
+        for _ in 0..4 {
+            app.update();
+        }
+        let icons = app.world().resource::<PanelIcons>();
+        let pending = icons.pending.front().expect("the scene waits for the paint");
+        assert!(pending.scene.is_some(), "{} has no scene", item.name);
+        let variant = pending.variant;
+        assert_ne!(variant & exa_items::icon_cache::variant::WEAPON, 0);
+        // The cache keeps its key: the weapon bit is the render's only.
+        assert_eq!(icons.cache.entries[0].variant & exa_items::icon_cache::variant::WEAPON, 0);
+        let (_, plan) = exa_items::item_icon::scene_plan(
+            variant,
+            false,
+            pending.model_flags,
+            pending.scene.as_ref().unwrap().bounds,
+            64,
+            ALPHA_GLOBAL,
+        );
+        assert_eq!(plan.framing.sun, (-0.16, 0.6516));
     }
 
     /// A shipped apparel item's icon scene takes the material its

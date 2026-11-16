@@ -45,6 +45,9 @@ pub struct ItemModel {
     /// paints an apparel model's run-time (`&`) materials from it, the same
     /// paint job an equipped item takes, before it draws the icon.
     pub appearance: Option<exa_formats::objdb::Appearance>,
+    /// The record has a weapon section (`0x4000`): the icon render lights
+    /// it with the weapon preset ([`crate::item_icon::render_variant`]).
+    pub weapon_section: bool,
 }
 
 /// Item kinds and container children of the game's object database, by
@@ -193,6 +196,7 @@ impl ItemCatalogue {
                     flags: item.model_flags,
                     weapon: item.weapon,
                     appearance: item.appearance,
+                    weapon_section: item.has_weapon,
                 },
             );
         }
@@ -379,18 +383,23 @@ impl ItemCatalogue {
             // [guess: the original's section lookup inherits through the
             // template as its model lookup does].
             let mut appearance = None;
+            // The weapon section the same way [guess: the original's
+            // section test walks the template chain as its lookup does].
+            let mut weapon_section = false;
             for _ in 0..8 {
                 let Some(record) = at else { break };
                 if bulk.is_none() && !record.model.is_empty() {
                     bulk = Some(record.equip_lock);
                 }
                 appearance = appearance.or(record.appearance);
+                weapon_section |= record.has_weapon;
                 if !record.model.is_empty() {
                     model = Some(ItemModel {
                         model: record.model.clone(),
                         flags: record.model_flags,
                         weapon: record.weapon,
                         appearance,
+                        weapon_section,
                     });
                     break;
                 }
@@ -851,6 +860,7 @@ mod tests {
                 flags: 1,
                 weapon: None,
                 appearance: None,
+                weapon_section: false,
             },
         );
         catalogue.bulk.insert(40, 12);
@@ -904,6 +914,7 @@ mod tests {
                 flags: 0,
                 weapon: None,
                 appearance: Some(shirt),
+                weapon_section: false,
             },
         );
         let record = |id: u32, parent: u32, appearance: Option<Appearance>| Item {
