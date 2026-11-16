@@ -98,7 +98,9 @@ pub fn refresh_encumbrance(
 ///   wears its core item, an item without an apparel section
 ///   ([`exa_formats::character_stats::golem_rules`]).
 ///
-/// A body's first frame keeps what its spawn set.
+/// A body's first frame keeps what its spawn set. A change that leaves the
+/// worn list and the out set's items as the last pass saw them (an item
+/// taken from or given to the carried list) runs no pass ([`ArmourPassSeen`]).
 #[allow(clippy::type_complexity)]
 pub fn refresh_worn_specials(
     mut commands: Commands,
@@ -110,6 +112,7 @@ pub fn refresh_worn_specials(
             &mut exa_combat::Fighter,
             Option<&mut crate::item_effects::WornEffects>,
             Option<&mut crate::thaum::cast::PowerCaster>,
+            Option<&mut ArmourPassSeen>,
         ),
         Changed<Possessions>,
     >,
@@ -117,7 +120,19 @@ pub fn refresh_worn_specials(
     let Some(catalogue) = catalogue.as_deref() else {
         return;
     };
-    for (entity, possessions, mut fighter, effects, caster) in &mut bodies {
+    for (entity, possessions, mut fighter, effects, caster, seen) in &mut bodies {
+        let now = ArmourPassSeen::of(&possessions);
+        match seen {
+            Some(mut seen) => {
+                if *seen == now {
+                    continue;
+                }
+                *seen = now;
+            }
+            None => {
+                commands.entity(entity).insert(now);
+            }
+        }
         if possessions.is_added() {
             continue;
         }
@@ -199,6 +214,258 @@ pub fn refresh_worn_specials(
             "armour pass on {entity:?}: rules {:#x}, second wind {}, ward {}, suit {suit}, \
              focus bonus {}",
             rules.0, specials.second_wind, specials.mind_ward, specials.focus_regen
+        );
+    }
+}
+
+/// What the armour pass last saw of a body's equipment: its worn items
+/// (ids and flags) and the out set's two item ids. The original runs the
+/// pass from the equipment jobs' finalisers and the re-dress, not on every
+/// change of the record's lists, so a change of the carried list alone runs
+/// none, and a mark written straight onto the body between two passes (the
+/// core crystal dropped on a golem's figure clears its coreless mark
+/// without wearing it, [`core_shown`]) stands until the body's next
+/// equipment change.
+#[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
+pub struct ArmourPassSeen {
+    worn: Vec<(u32, u32)>,
+    out: [u32; 2],
+}
+
+impl ArmourPassSeen {
+    pub fn of(p: &Possessions) -> Self {
+        Self {
+            worn: p.worn.iter().map(|w| (w.id, w.flags)).collect(),
+            out: p.out.map(|h| h.id),
+        }
+    }
+}
+
+/// The coreless mark: the body rule bit a golem race carries while it wears
+/// no core crystal ([`exa_formats::character_stats::BodyRules::NO_RED_REGENERATION`]).
+/// The armour pass sets it on a golem race and clears it for a worn core
+/// ([`exa_formats::character_stats::golem_rules`]); it blocks the golem's
+/// wake ([`exa_ai::golem::WAKE_EXEMPT`], the same bit), its rise and its
+/// red regeneration.
+pub const CORELESS: u32 = exa_formats::character_stats::BodyRules::NO_RED_REGENERATION;
+
+/// The glow parameter of a golem's skin material the take-off fades out.
+pub const GLOW_PARAMETER: &str = "go";
+
+/// A core crystal dropped on a golem's figure and shown over it: the body's
+/// coreless mark is cleared at once. The record's lists do not take the
+/// crystal, so no armour pass runs; the mark stays clear until the body's
+/// next equipment change runs one ([`ArmourPassSeen`]). Run on the frame's
+/// world (a queued command of the view's drop).
+pub fn core_shown(world: &mut World, body: Entity) {
+    let Some(mut fighter) = world.get_mut::<exa_combat::Fighter>(body) else {
+        return;
+    };
+    let had = fighter.stats.rules.0 & CORELESS != 0;
+    fighter.stats.rules.0 &= !CORELESS;
+    info!("core shown over {body:?}: coreless mark cleared (it was {had})");
+}
+
+/// The core crystal shown over a golem's figure dragged off it: the body's
+/// coreless mark is set, the glow of its skin material fades to 0, and a
+/// body that does not rest as a statue (its brain's statue byte) collapses
+/// (as a lethal wound starts a collapse, [`crate::mind::runtime::lay_down`]),
+/// posted for the next simulation step as the frame's other writes to
+/// simulation data are. Run on the frame's world (a queued command of the
+/// view's release). [Exarust gap: no live skin material takes the glow
+/// fade, which is logged.]
+pub fn core_taken_off(world: &mut World, body: Entity) {
+    if let Some(mut fighter) = world.get_mut::<exa_combat::Fighter>(body) {
+        fighter.stats.rules.0 |= CORELESS;
+    }
+    let statue = world
+        .get::<exa_ai::brain::Npc>(body)
+        .is_some_and(|npc| npc.statue);
+    info!(
+        "core taken off {body:?}: coreless mark set, skin glow `{GLOW_PARAMETER}` to 0 \
+         (not faded live){}",
+        if statue {
+            "; a resting statue does not collapse"
+        } else {
+            "; it collapses"
+        }
+    );
+    if statue {
+        return;
+    }
+    const WHY: &str = "core taken off";
+    match world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
+        Some(mut fixed) => fixed.run(crate::mind::runtime::lay_down, (body, WHY)),
+        None => {
+            if let Err(e) =
+                world.run_system_cached_with(crate::mind::runtime::lay_down, (body, WHY))
+            {
+                warn!("{WHY}: {e}");
+            }
+        }
+    }
+}
+
+/// An item dragged off a body's equipment panel (the loot window's): when
+/// the body, without it, passes the core test for it
+/// ([`exa_items::possession::takes_core`]: its race takes the item as its
+/// core and it wears no crystal), the core crystal has left it and it reacts
+/// as to the figure's take-off ([`core_taken_off`]). Run on the frame's
+/// world after the item left the worn list.
+pub fn core_left_equipment(world: &mut World, body: Entity, id: u32) {
+    let Some(race) = world
+        .get::<exa_character::record::CharacterData>(body)
+        .map(|data| data.record.race)
+    else {
+        return;
+    };
+    if !world.contains_resource::<crate::doll_view::DollItems>() {
+        return;
+    }
+    let worn: Vec<u32> = world
+        .get::<Possessions>(body)
+        .map(|p| p.worn.iter().map(|w| w.id).collect())
+        .unwrap_or_default();
+    let flags = world.resource_scope(|world, mut items: Mut<crate::doll_view::DollItems>| {
+        items.ensure(world.get_resource::<exa_assets::Game>());
+        items.race(race).map(|r| r.flags)
+    });
+    if flags.is_some_and(|flags| exa_items::possession::takes_core(flags, id & ID_MASK, &worn)) {
+        core_taken_off(world, body);
+    }
+}
+
+/// A body to re-dress from its record, as the loadout form's close and
+/// the trade system ask the character view's re-dress for.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Redress(pub Entity);
+
+/// The record word's bits naming a company role (the profession's high
+/// nibble, [`crate::hirelings::role_word`]): the loadout form's close
+/// re-dresses every level body that carries one.
+pub const ROLE_BITS: u32 = 0xF000_0000;
+
+/// The loadout form's close re-dresses the bodies on the roster and
+/// specialist pages (not on the hire or event pages): the player first,
+/// then every level body whose record word carries a company role
+/// ([`ROLE_BITS`]), in the level's order. The close's page is the one the
+/// form showed ([`crate::hub_forms::HubForms::closed_loadout`]).
+pub fn redress_at_loadout_close(
+    windows: Option<ResMut<crate::hub_windows::HubWindows>>,
+    players: Query<Entity, With<crate::player::PlayerBody>>,
+    bodies: Query<(Entity, &exa_character::record::CharacterData)>,
+    mut redress: MessageWriter<Redress>,
+) {
+    let Some(page) = windows.and_then(|mut w| w.forms.closed_loadout.take()) else {
+        return;
+    };
+    if page != crate::manage::PAGE_ROSTER && page != crate::manage::PAGE_SPECIALIST {
+        return;
+    }
+    let mut count = 0;
+    for player in &players {
+        redress.write(Redress(player));
+        count += 1;
+    }
+    let mut level: Vec<(Entity, u32)> = bodies
+        .iter()
+        .filter(|(_, data)| data.record.profession() & ROLE_BITS != 0)
+        .map(|(entity, _)| (entity, entity.index().index()))
+        .collect();
+    level.sort_by_key(|&(_, index)| index);
+    for (entity, _) in level {
+        redress.write(Redress(entity));
+        count += 1;
+    }
+    info!("loadout form closed on page {page}: {count} bodies re-dressed");
+}
+
+/// The character view's re-dress of a world body from its record: the
+/// underwear rule on the worn list, the apparel re-dressed (Exarust's
+/// outfit follows the worn list through its refit), then the hand models
+/// made to show the record's out set: the original swaps the record's
+/// other set with its out set, writes into the out set what the hand models
+/// hold (a two-hander once) and builds the hand-scene job, which attaches
+/// each hand that differs, then swaps back. Exarust's hand models are the
+/// body's [`Hands`] and its main hand's [`exa_character::Wielded`], made
+/// from the out set ([`hands_of`], Exarust's carried torch kept); a body
+/// whose hands already show it changes nothing.
+#[allow(clippy::type_complexity)]
+pub fn redress_bodies(
+    mut commands: Commands,
+    mut asks: MessageReader<Redress>,
+    catalogue: Option<Res<ItemCatalogue>>,
+    (mut items, game): (
+        Option<ResMut<crate::doll_view::DollItems>>,
+        Option<Res<exa_assets::Game>>,
+    ),
+    mut bodies: Query<(
+        &mut Possessions,
+        Option<&exa_character::record::CharacterData>,
+        Option<&mut Hands>,
+        Has<CarriesTorch>,
+        Option<&exa_character::Wielded>,
+    )>,
+) {
+    let catalogue = catalogue.as_deref();
+    for &Redress(body) in asks.read() {
+        let Ok((mut p, data, hands, torch, wielded)) = bodies.get_mut(body) else {
+            continue;
+        };
+        let mut underwear = false;
+        if let Some(items) = items.as_deref_mut() {
+            items.ensure(game.as_deref());
+            let mut record = exa_character::record::CharacterData::of_record(
+                exa_formats::characters::CharacterRecord {
+                    worn: p.worn.clone(),
+                    race: data.map_or(0, |d| d.record.race),
+                    ..Default::default()
+                },
+            );
+            if record.ensure_underwear(|id| items.get(id))
+                && let Some(braies) = record.record.worn.last().copied()
+            {
+                p.worn.push(exa_formats::characters::ItemRef::new(
+                    braies.id,
+                    braies.flags,
+                ));
+                underwear = true;
+            }
+        }
+        let mut next = hands_of(&p, |id| catalogue.and_then(|c| c.kind(id)));
+        let mut hands_changed = false;
+        if let Some(mut hands) = hands {
+            if torch {
+                next = keep_torch(next, &hands);
+            }
+            hands_changed = hands.set_if_neq(next);
+        }
+        let main = p.out[0].id;
+        let model = catalogue
+            .filter(|_| main != 0)
+            .and_then(|c| c.model(main))
+            .map(|model| exa_character::Wielded {
+                model: model.model.clone(),
+                weapon: model.weapon,
+            });
+        let wielded_changed = model.as_ref() != wielded;
+        if wielded_changed {
+            match model {
+                Some(model) => {
+                    commands.entity(body).insert(model);
+                }
+                None => {
+                    commands.entity(body).remove::<exa_character::Wielded>();
+                }
+            }
+        }
+        info!(
+            "re-dress {body:?}: out {:#x}/{:#x}; hands {}, main model {}{}",
+            p.out[0].id,
+            p.out[1].id,
+            if hands_changed { "changed" } else { "kept" },
+            if wielded_changed { "changed" } else { "kept" },
+            if underwear { ", the braies put on" } else { "" }
         );
     }
 }
@@ -419,6 +686,13 @@ pub struct EquipPlugin;
 impl Plugin for EquipPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<exa_combat::condition::WeaponSwapDue>()
+            .add_message::<Redress>()
+            .add_systems(
+                Update,
+                (redress_at_loadout_close, redress_bodies)
+                    .chain()
+                    .before(refresh_encumbrance),
+            )
             .add_systems(
                 Update,
                 swap_at_switch_point.before(exa_items::catalogue::swap_weapon_sets),
@@ -765,6 +1039,126 @@ mod tests {
         wear(&mut app, &[]);
         app.update();
         assert_eq!(state(&app), (false, 0x160));
+    }
+
+    /// The loadout form closed on the roster or a specialist's page
+    /// re-dresses the player and every body with a company role: hands
+    /// that do not show the record's out set are made to (here the
+    /// catalogue knows no item, so the record's hands are empty); a body
+    /// without a role and a close on the hire or event page change nothing.
+    #[test]
+    fn the_loadout_close_redresses_the_player_and_the_company() {
+        let held = || Hands {
+            main: Some(HeldItem::weapon(0x521)),
+            ..Default::default()
+        };
+        let run = |page: u32| {
+            let mut app = App::new();
+            app.init_resource::<ItemCatalogue>()
+                .init_resource::<crate::hub_windows::HubWindows>()
+                .add_plugins(EquipPlugin);
+            let record = |profession: u32| {
+                let mut data = exa_character::record::CharacterData::default();
+                data.record.set_profession(profession);
+                data
+            };
+            let body = |app: &mut App, extra: Option<u32>| {
+                let mut entity = app.world_mut().spawn((
+                    Possessions {
+                        out: [Hand { id: 6, flags: 0 }, Hand::default()],
+                        ..Default::default()
+                    },
+                    held(),
+                ));
+                if let Some(profession) = extra {
+                    entity.insert(record(profession));
+                }
+                entity.id()
+            };
+            let player = body(&mut app, None);
+            app.world_mut()
+                .entity_mut(player)
+                .insert(crate::player::PlayerBody::new(0.0));
+            let merchant = body(&mut app, Some(0x4000_0000));
+            let stranger = body(&mut app, Some(0x0000_0100));
+            app.update();
+            {
+                let mut windows = app
+                    .world_mut()
+                    .resource_mut::<crate::hub_windows::HubWindows>();
+                windows.forms.arsenal = Some(crate::manage::ArsenalForm::open(page));
+                windows.forms.remove(crate::hub_forms::FormWindow::Loadout);
+                assert_eq!(windows.forms.closed_loadout, Some(page));
+            }
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<crate::hub_windows::HubWindows>()
+                    .forms
+                    .closed_loadout,
+                None
+            );
+            [player, merchant, stranger].map(|b| app.world().get::<Hands>(b).unwrap().is_empty())
+        };
+        for page in [crate::manage::PAGE_ROSTER, crate::manage::PAGE_SPECIALIST] {
+            assert_eq!(run(page), [true, true, false], "page {page}");
+        }
+        for page in [crate::manage::PAGE_HIRE, crate::manage::PAGE_EVENT] {
+            assert_eq!(run(page), [false, false, false], "page {page}");
+        }
+    }
+
+    /// The AL crystal dragged off a golem's equipment panel (the loot
+    /// window's): the golem, which now takes it as its core, is marked
+    /// coreless; any other item, or a body still wearing a crystal, is not.
+    #[test]
+    fn a_core_off_the_loot_equipment_marks_the_golem() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let game = exa_assets::Game(std::sync::Arc::new(data));
+        let races = exa_formats::races::RaceDb::new(crate::scene_bodies::game_races(&game));
+        let golem = (0..=u8::MAX)
+            .find(|&b| races.of_character(b).flags & exa_items::possession::TAKES_CORE_AL != 0)
+            .expect("the shipped race table has a race that takes the AL crystal");
+        let al = exa_items::possession::crystal::AL;
+        let mut world = World::new();
+        world.insert_resource(game);
+        world.init_resource::<crate::doll_view::DollItems>();
+        let body = |world: &mut World, worn: &[u32]| {
+            let mut fighter = exa_combat::Fighter::default();
+            fighter.stats.rules.0 = 0x40;
+            world
+                .spawn((
+                    Possessions {
+                        worn: worn
+                            .iter()
+                            .map(|&id| exa_formats::characters::ItemRef::new(id, 0))
+                            .collect(),
+                        ..Default::default()
+                    },
+                    exa_character::record::CharacterData::of_record(
+                        exa_formats::characters::CharacterRecord {
+                            race: golem,
+                            ..Default::default()
+                        },
+                    ),
+                    fighter,
+                ))
+                .id()
+        };
+        let rules = |world: &World, e| world.get::<exa_combat::Fighter>(e).unwrap().stats.rules.0;
+        let bare = body(&mut world, &[]);
+        core_left_equipment(&mut world, bare, 7);
+        assert_eq!(rules(&world, bare), 0x40);
+        core_left_equipment(&mut world, bare, al);
+        assert_eq!(rules(&world, bare), CORELESS | 0x40);
+        let still = body(&mut world, &[exa_items::possession::crystal::A]);
+        core_left_equipment(&mut world, still, al);
+        assert_eq!(rules(&world, still), 0x40);
     }
 
     #[test]
