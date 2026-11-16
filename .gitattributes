@@ -1,0 +1,7 @@
+# Lanes append requirements to the same spec files in parallel; a union
+# merge keeps both sides. `openspec validate --all --strict` runs in every
+# round's checks and rejects a broken or duplicated requirement, so a bad
+# union cannot land unnoticed. READMEs and findings.md are left out on
+# purpose: their lines are edited in place, where a union would keep both
+# the old and the new line.
+openspec/specs/*/spec.md merge=union
