@@ -643,15 +643,15 @@ impl HudShowUntil {
 
 /// The frame texture, when loaded.
 #[derive(Resource)]
-struct Texture(FrameTexture);
+pub(crate) struct Texture(FrameTexture);
 
 /// The HUD node.
 #[derive(Component)]
-struct HudNode;
+pub(crate) struct HudNode;
 
 /// Fades, last frame's values and the painted image.
 #[derive(Resource, Default)]
-struct HudState {
+pub(crate) struct HudState {
     bars: Fade,
     gauge: Fade,
     /// Last frame's yellow health and focus.
@@ -667,7 +667,12 @@ pub(crate) fn plugin(app: &mut App) {
         .init_resource::<HudState>()
         .init_resource::<HudShowUntil>()
         .add_systems(Startup, spawn)
-        .add_systems(Update, draw.in_set(DrawHud));
+        .add_systems(
+            Update,
+            draw.after(crate::fade::draw)
+                .in_set(DrawHud)
+                .in_set(exa_physics::FramePhase::Draw),
+        );
 }
 
 /// Under the world cursor, over the heartbeat border.
@@ -697,7 +702,7 @@ fn spawn(mut commands: Commands, game: Option<Res<Game>>) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw(
+pub(crate) fn draw(
     hud: Res<HudBars>,
     gui: Res<GuiScale>,
     time: Res<Time<Virtual>>,

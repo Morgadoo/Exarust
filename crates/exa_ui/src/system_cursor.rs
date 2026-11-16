@@ -224,7 +224,9 @@ pub(crate) fn plugin(app: &mut App) {
         .init_resource::<MenuCursor>()
         .add_systems(
             Update,
-            (build_menu_cursor_for_screen, apply_pointer).chain(),
+            (build_menu_cursor_for_screen, apply_pointer)
+                .chain()
+                .in_set(exa_physics::FramePhase::Cursor),
         );
 }
 

@@ -43,7 +43,7 @@ const BAR_WIDTH: f32 = 420.0;
 const BAR_HEIGHT: f32 = 6.0;
 
 #[derive(Component)]
-struct LoadingScreen;
+pub(crate) struct LoadingScreen;
 
 #[derive(Component)]
 struct LoadingText;
@@ -78,7 +78,8 @@ pub(crate) fn plugin(app: &mut App) {
                 update.run_if(resource_exists::<LoadingStatus>),
                 hide.run_if(resource_removed::<LoadingStatus>),
             )
-                .chain(),
+                .chain()
+                .in_set(exa_physics::FramePhase::Draw),
         );
 }
 
@@ -382,7 +383,7 @@ fn update(
     }
 }
 
-fn hide(mut screens: Query<&mut Visibility, (With<LoadingScreen>, Without<Camera>)>) {
+pub(crate) fn hide(mut screens: Query<&mut Visibility, (With<LoadingScreen>, Without<Camera>)>) {
     for mut visibility in &mut screens {
         *visibility = Visibility::Hidden;
     }
