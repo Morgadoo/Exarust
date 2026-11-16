@@ -65,7 +65,9 @@ impl Plugin for LimpPlugin {
         )
         .add_systems(
             FixedPreUpdate,
-            place_on_ground.after(crate::player::steer_player),
+            (place_living, place_on_ground)
+                .chain()
+                .after(crate::player::steer_player),
         )
         .add_systems(
             FixedUpdate,
@@ -84,6 +86,7 @@ impl Plugin for LimpPlugin {
 fn bridge_limp_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<crate::limp::GroundPlacement>()
+        .bridge_copy::<crate::limp::LivingPlacement>()
         .bridge_copy::<exa_ai::route_walk::AiRoute>()
         .bridge_copy::<LimpKept>()
         .bridge_copy::<exa_combat::condition::DeathClock>()
@@ -812,6 +815,165 @@ fn place_on_ground(
                 .iter()
                 .map(|(g, a)| (g.map(|g| (g * CM).round()), (a * CM).round()))
                 .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Where a living placement's frame takes the pelvis's height from
+/// ([`LivingPlacement`]). The original's callers write the frame's height
+/// before they call the placement: the arena's kept-body reset its stand
+/// height word, the golem's pose reset its pelvis-target word, the save
+/// landing the floor it probed plus that word and 5 cm, the revive's
+/// roaming reset the standing position's (the pelvis's own) height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FrameHeight {
+    /// The frame's own height is the pelvis's (m).
+    Given,
+    /// The freshly sampled pose's stand height (cm) over the frame's
+    /// height ([`exa_physics::body::PlacementHeights::stand`]).
+    Stand,
+    /// The pose's pelvis target plus this many cm over the frame's height
+    /// ([`exa_physics::body::PlacementHeights::target`]).
+    Target(f32),
+}
+
+/// The original's living placement of a body at a matrix, asked by the
+/// arena's kept-body reset, the golem's pose reset, the revive's roaming
+/// reset and the level placement of a surviving player. The next fixed
+/// step places the body ([`place_living`]); the controller (the capsule at
+/// the feet) goes to the frame's place across the ground.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct LivingPlacement {
+    /// The frame's turn and place (m). Unless the height is
+    /// [`FrameHeight::Given`], its height is the floor the rule adds the
+    /// pelvis height to, where the controller's feet go.
+    pub frame: Affine3A,
+    pub height: FrameHeight,
+    /// The held items are put back in the hands after it
+    /// ([`exa_physics::grip::ReplaceHeld`]), as every caller but the story
+    /// respawn's and the save load's portal placement does.
+    pub replace_held: bool,
+}
+
+impl LivingPlacement {
+    /// A placement facing `yaw` at `at` (m), its height by `height`, the
+    /// held items re-placed after it.
+    pub fn at(at: Vec3, yaw: f32, height: FrameHeight) -> Self {
+        Self {
+            frame: Affine3A::from_rotation_translation(Quat::from_rotation_y(yaw), at),
+            height,
+            replace_held: true,
+        }
+    }
+
+    /// The pelvis's height (m) for a pose whose heights are `heights`.
+    pub fn pelvis_height(&self, heights: Option<exa_physics::body::PlacementHeights>) -> f32 {
+        let base = self.frame.translation.y;
+        match (self.height, heights) {
+            (FrameHeight::Given, _) | (_, None) => base,
+            (FrameHeight::Stand, Some(h)) => base + h.stand / CM,
+            (FrameHeight::Target(extra), Some(h)) => base + (h.target + extra) / CM,
+        }
+    }
+}
+
+/// Runs each asked living placement ([`Ragdoll::place_living`]): the
+/// current clip sampled by the pose-only sampler (routed by the body's
+/// femur posture, twist and hunch as they stand), the frame's height from
+/// its rule, the locomotion's placement words and facing
+/// ([`Locomotor::placed`]), the body put on the frame, then the held items
+/// re-placed in the hands. The controller's root goes to the frame's place
+/// (its height kept for a [`FrameHeight::Given`] frame, else the frame's
+/// floor) with its follow, ground and fall cleared, and the model takes
+/// the frame's turn. Logs the placement at info level.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn place_living(
+    mut commands: Commands,
+    mut asked: Query<(Entity, &LivingPlacement, &mut Ragdoll, Option<&ChildOf>)>,
+    motions: Option<Res<Motions>>,
+    animators: Query<(&Animator, Option<&Stature>)>,
+    parents: Query<&ChildOf>,
+    mut transforms: ParamSet<(
+        Query<(&Transform, Option<&BodyPart>)>,
+        Query<&mut Transform>,
+    )>,
+    mut capsules: Query<&mut CharacterBody>,
+    mut states: Query<(
+        Option<&Condition>,
+        Option<&mut Locomotor>,
+        Option<&exa_combat::Fighter>,
+        Option<&mut Locomotion>,
+    )>,
+) {
+    for (root, placement, mut body, parent) in &mut asked {
+        commands.entity(root).remove::<LivingPlacement>();
+        let Some(motions) = motions.as_deref() else {
+            continue;
+        };
+        let entities: Vec<(Entity, usize)> =
+            body.parts.iter().map(|p| (p.entity, p.bone)).collect();
+        let routing = states
+            .get(root)
+            .ok()
+            .map(|(c, m, f, _)| PlacementRouting::of(&body, c, m, f));
+        let posed = posed_parts(
+            root,
+            entities.into_iter(),
+            motions,
+            &animators,
+            &parents,
+            &transforms.p0(),
+            routing.map(|r| (&*body, r)),
+        );
+        let Some((posed, pelvis, _, unconscious)) = posed else {
+            continue;
+        };
+        let heights = body.placement_heights(&posed, pelvis, unconscious);
+        let mut frame = placement.frame;
+        let floor = frame.translation.y;
+        frame.translation.y = placement.pelvis_height(heights);
+        let turn = Quat::from_mat3a(&frame.matrix3);
+        let place = Vec3::from(frame.translation);
+        let mut writes = transforms.p1();
+        let turn_about = match parent.map(ChildOf::parent) {
+            Some(capsule) if writes.contains(capsule) => {
+                let mut at = writes.get_mut(capsule).expect("checked");
+                let y = match placement.height {
+                    FrameHeight::Given => at.translation.y,
+                    _ => floor,
+                };
+                at.translation = Vec3::new(place.x, y, place.z);
+                if let Ok(mut capsule) = capsules.get_mut(capsule) {
+                    capsule.follow = None;
+                    capsule.ground = None;
+                    capsule.vertical_velocity = 0.0;
+                }
+                at.rotation
+            }
+            _ => Quat::IDENTITY,
+        };
+        if let Ok(mut model) = writes.get_mut(root) {
+            model.rotation = turn_about.inverse() * turn;
+        }
+        if let Ok((_, Some(mut motor), _, Some(mut req))) = states.get_mut(root) {
+            motor.placed(&mut req, Vec3::from(frame.matrix3.z_axis));
+        }
+        if !body.place_living(frame, &posed, pelvis) {
+            continue;
+        }
+        if placement.replace_held {
+            commands.entity(root).insert(exa_physics::grip::ReplaceHeld);
+        }
+        info!(
+            "living placement {root:?}: pelvis at ({:.2}, {:.2}, {:.2}) m by {:?} (stand {:.1} cm, target {:.1} cm), yaw {:.1} deg",
+            place.x,
+            place.y,
+            place.z,
+            placement.height,
+            heights.map_or(f32::NAN, |h| h.stand),
+            heights.map_or(f32::NAN, |h| h.target),
+            exa_physics::body::locomotion::heading_of(Vec3::from(frame.matrix3.z_axis))
+                .to_degrees()
         );
     }
 }
@@ -2389,6 +2551,98 @@ pub(crate) mod tests {
         world.insert_resource(walk_and_run(false));
         assert_eq!(ankle(&mut world, AnkleSample::Jog), Some(0.5));
         assert_eq!(ankle(&mut world, AnkleSample::Sprint), Some(0.5));
+    }
+
+    /// An app with the body solver and the limp plugin's own schedule
+    /// (the living placement in the fixed step's first stage), stepping one
+    /// fixed tick per update.
+    pub(crate) fn placement_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, BodyPlugin))
+            .insert_resource(Time::<Fixed>::from_hz(exa_physics::STEP_HZ))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+                1.0 / exa_physics::STEP_HZ,
+            )))
+            .insert_resource(Physics::default())
+            .insert_resource(motions())
+            .init_resource::<Assets<Mesh>>()
+            .add_message::<exa_ai::presence::Entered>()
+            .add_plugins(LimpPlugin);
+        app
+    }
+
+    /// The living placement, run by the limp plugin's fixed step: the
+    /// pelvis goes to the frame (its height by the frame's rule), the
+    /// controller to the frame's place across the ground with its follow,
+    /// ground and fall cleared, the model to the frame's turn, the
+    /// locomotion's placement words and facing are written, and the held
+    /// items are asked to be put back.
+    #[test]
+    fn the_living_placement_puts_a_body_on_its_frame() {
+        for height in [
+            FrameHeight::Given,
+            FrameHeight::Stand,
+            FrameHeight::Target(5.0),
+        ] {
+            let mut app = placement_app();
+            let world = app.world_mut();
+            let mut capsule = CharacterBody::default();
+            capsule.follow = Some(START);
+            capsule.ground = Some(0.3);
+            capsule.vertical_velocity = -2.0;
+            let character = world
+                .spawn((Transform::from_translation(START), capsule))
+                .id();
+            let root = spawn_body(world, character);
+            let (mut req, mut motor) = Locomotion::facing(YAW);
+            req.moving = true;
+            req.free_walk = true;
+            req.flags = exa_physics::body::locomotion::flags::RUN;
+            motor.turning = true;
+            world.entity_mut(root).insert((req, motor));
+            app.update();
+            let at = Vec3::new(10.0, 0.5, 6.0);
+            let placement = LivingPlacement::at(at, 1.0, height);
+            app.world_mut().entity_mut(root).insert(placement);
+            app.update();
+            let world = app.world();
+            assert!(!world.entity(root).contains::<LivingPlacement>());
+            assert!(
+                world
+                    .entity(root)
+                    .contains::<exa_physics::grip::ReplaceHeld>()
+            );
+            let body = world.get::<Ragdoll>(root).unwrap();
+            let pelvis = body.parts[0].transform().translation;
+            // The fixture's pose has no feet: its stand height is 0 and its
+            // target twice the scale plus 5 cm.
+            let scale = body.drive.as_ref().unwrap().stats.scale;
+            let want_y = match height {
+                FrameHeight::Given | FrameHeight::Stand => 0.5,
+                FrameHeight::Target(extra) => 0.5 + ((2.0 * scale + 5.0) + extra) / CM,
+            };
+            // The step after the placement lets it fall one tick (no level).
+            let pelvis = Vec3::from(pelvis);
+            assert!(
+                (pelvis.with_y(0.0) - Vec3::new(10.0, 0.0, 6.0)).length() < 1e-4
+                    && (pelvis.y - want_y).abs() < 0.01,
+                "{height:?}: {pelvis:?}"
+            );
+            // The controller went to the frame's place across the ground.
+            let t = world.get::<Transform>(character).unwrap().translation;
+            assert!(
+                (t.with_y(0.0) - Vec3::new(10.0, 0.0, 6.0)).length() < 0.01,
+                "{height:?}: {t:?}"
+            );
+            let turn = world.get::<Transform>(root).unwrap().rotation;
+            assert!(turn.angle_between(Quat::from_rotation_y(1.0)) < 1e-5);
+            let (req, motor) = (
+                world.get::<Locomotion>(root).unwrap(),
+                world.get::<Locomotor>(root).unwrap(),
+            );
+            assert!(!req.moving && !req.free_walk && req.flags == 0 && !motor.turning);
+            assert!((motor.yaw - 1.0).abs() < 1e-3, "{}", motor.yaw);
+        }
     }
 
     /// Moves the character as its controller would, once a tick.

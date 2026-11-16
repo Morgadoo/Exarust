@@ -555,10 +555,19 @@ fn a_placement_resets_the_twist_and_takes_the_matrix_heading() {
         twist_before: Quat::from_rotation_y(0.3),
         reach: 200.0,
         yaw: 2.0,
+        turning: true,
         ..Locomotor::default()
     };
-    let mut req = Locomotion::default();
+    let mut req = Locomotion {
+        moving: true,
+        free_walk: true,
+        flags: flags::RUN | flags::SPRINT,
+        ..Locomotion::default()
+    };
     let heading = body.placed(&mut req, Vec3::new(1.0, 0.5, 1.0));
+    // The matrix placement's moving, free-walk, flag-word and turn resets.
+    assert!(!req.moving && !req.free_walk && !body.turning);
+    assert_eq!(req.flags, 0);
     assert_eq!(body.twist, Quat::IDENTITY);
     assert_eq!(body.twist_before, Quat::IDENTITY);
     assert_eq!(body.reach, 0.0);

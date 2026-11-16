@@ -157,6 +157,15 @@ pub(super) fn cm<T: Mul<f32, Output = T>>(x: T) -> T {
 /// A pin on a part: the part and the point's weights on its particles.
 pub(super) type Pin = (usize, [f32; 4]);
 
+/// The samplers' heights for a placement's pose (cm,
+/// [`Ragdoll::placement_heights`]): the stand height and the pelvis target
+/// over it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacementHeights {
+    pub stand: f32,
+    pub target: f32,
+}
+
 /// A leg as the balance reads it: a lower leg carrying a foot contact.
 #[derive(Debug, Clone)]
 pub struct Leg {
@@ -1704,6 +1713,23 @@ impl Ragdoll {
         pelvis: usize,
         unconscious: bool,
     ) -> Option<f32> {
+        self.placement_heights(posed, pelvis, unconscious)
+            .map(|h| h.target)
+    }
+
+    /// The samplers' two heights for the pose `posed` (cm), as
+    /// [`Ragdoll::placement_target`] reads them: the stand height (the
+    /// clip root over the lowest posed foot contact less the sole, the
+    /// original's stand-height word the arena's kept-body reset puts its
+    /// frame at) and the not-walking pelvis target over it (the
+    /// pelvis-target word the golem's pose reset and the save landing put
+    /// their frames at). None without a drive or a pelvis.
+    pub fn placement_heights(
+        &self,
+        posed: &[Affine3A],
+        pelvis: usize,
+        unconscious: bool,
+    ) -> Option<PlacementHeights> {
         use super::pose_heights::{
             ContactHeight, PelvisAim, placement_pelvis_target, stand_heights,
         };
@@ -1730,7 +1756,10 @@ impl Ragdoll {
             progress: 0.0,
             factor: 1.0,
         };
-        Some(placement_pelvis_target(heights.stand, root, &aim))
+        Some(PlacementHeights {
+            stand: heights.stand,
+            target: placement_pelvis_target(heights.stand, root, &aim),
+        })
     }
 
     /// The original's placement on the ground, as its player behaviour runs
@@ -1801,6 +1830,80 @@ impl Ragdoll {
         self.wake();
         self.reset_link_lengths();
         Some(height)
+    }
+
+    /// The original's placement of a living body at a matrix (its spawn,
+    /// the save landing, the arena's kept bodies between rounds, the
+    /// golem's pose reset, the revive's roaming reset and the practice
+    /// fights), read in its assembly. `frame` is the character frame (m):
+    /// its turn, and the pelvis's place at its origin (the callers put the
+    /// pelvis height in it); `posed` is the clip's pose freshly sampled in
+    /// the body root's space, `pelvis` the root part.
+    ///
+    /// Before the parts, the body's words start afresh: tone and energy 1,
+    /// no carry, the step radius base 60 cm, no step under way (the
+    /// standing position and the step target are taken anew from the
+    /// frame on the next tick, Exarust's own initial rule for them), and
+    /// the legs' IK corrections the identity
+    /// ([`Ragdoll::clear_leg_corrections`]). Then every part is put at the
+    /// pose lowered by the pelvis's posed height onto the frame, at rest
+    /// ([`super::placement::placed_parts`]); each foot's anchor, step
+    /// target, previous anchor and ground take its posed contact on the
+    /// frame less the clip root, unrotated, raised by the sole and lowered
+    /// 8 cm ([`super::placement::matrix_foot_anchor`]), and its state is
+    /// cleared; the feet centre is the anchors' mean, the chest point is
+    /// taken anew on the placed parts as last tick's too with no velocity;
+    /// the character frame is taken anew from the placed pelvis. The body
+    /// wakes. Returns false, leaving the body alone, when the pose does not
+    /// fit the body.
+    ///
+    /// Not here: the facing and the locomotion words (the caller's
+    /// [`super::locomotion::Locomotor::placed`]), the pins (the original
+    /// puts each 5 cm under its posed point on the frame; Exarust's support
+    /// pins are taken from the pose each pass), the child bodies on the
+    /// parts' nodes, the cloth, and the behaviour's hook.
+    pub fn place_living(&mut self, frame: Affine3A, posed: &[Affine3A], pelvis: usize) -> bool {
+        if posed.len() != self.parts.len() || pelvis >= posed.len() {
+            return false;
+        }
+        if let Some(drive) = self.drive.as_mut() {
+            drive.tone = 1.0;
+            drive.energy = 1.0;
+            drive.carry = Vec3::ZERO;
+            drive.steps.stepping = false;
+            drive.steps.placed = false;
+            drive.steps.radius_base = steps::BASE_REENTRY;
+        }
+        self.clear_leg_corrections();
+        self.place_at(&super::placement::placed_parts(posed, pelvis, frame));
+        // The anchor arithmetic is the original's, in centimetres.
+        let mut frame_cm = frame;
+        frame_cm.translation *= CM;
+        let root = Vec3::from(posed[pelvis].translation) * CM;
+        let sole = self.sole * CM;
+        for leg in &mut self.legs {
+            let contact = posed[leg.shin].transform_point3(leg.point) * CM;
+            let at = super::placement::matrix_foot_anchor(frame_cm, contact, root, sole) / CM;
+            leg.anchor = at;
+            leg.at = at;
+            leg.before = at;
+            leg.ground = Some(at.y);
+            leg.state = FootState(0);
+        }
+        let chest = self.chest_point();
+        let anchors: Vec<Vec3> = self.legs.iter().map(|l| l.anchor).collect();
+        if let (Some(chest), Some(drive)) = (chest, self.drive.as_mut()) {
+            // With no leg the original scales its zero sum by 1/0: NaN.
+            let feet = super::placement::mean_point(&anchors, Vec3::splat(f32::NAN));
+            drive.balance.placed(chest, feet);
+        }
+        if let Some(drive) = self.drive.as_mut() {
+            drive.root = None;
+            drive.anchor = None;
+            drive.frame = None;
+        }
+        self.wake();
+        true
     }
 
     /// One leg's clip reach in the placement's height rule (cm): the thigh

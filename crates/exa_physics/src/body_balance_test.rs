@@ -1399,3 +1399,109 @@ fn the_balance_pass_puts_each_grip_back_at_full() {
     body.measure_balance(floor().as_slice());
     assert!(body.legs().iter().all(|l| l.grip == 1.0));
 }
+
+/// The living placement at a matrix, as the original's assembly reads:
+/// the body's words start afresh (tone and energy 1, no carry, no step
+/// under way, the radius base 60 cm, the legs' IK corrections the
+/// identity), the pose goes on the frame with the pelvis at its origin,
+/// each foot's anchor, step target, previous anchor and ground take its
+/// posed contact on the frame less the clip root, raised by the sole and
+/// lowered 8 cm (cm, single precision), every foot state is cleared, the
+/// feet centre is the anchors' mean, and the chest restarts on the placed
+/// parts with no velocity.
+#[test]
+fn the_living_placement_puts_the_pose_on_the_frame() {
+    let mut body = biped();
+    let posed: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+    body.aim(Affine3A::IDENTITY, posed.clone());
+    {
+        let drive = body.drive.as_mut().unwrap();
+        drive.tone = 0.3;
+        drive.energy = 0.4;
+        drive.carry = Vec3::new(0.0, -1.0, 0.0);
+        drive.steps.stepping = true;
+        drive.steps.placed = true;
+        drive.steps.radius_base = 30.0;
+        drive.balance.record_chest(Vec3::new(3.0, 1.0, 0.0));
+        drive.balance.record_chest(Vec3::new(4.0, 1.0, 0.0));
+    }
+    for leg in &mut body.legs {
+        leg.state = FootState(FootState::TOUCHING | FootState::ANCHORED);
+        leg.knee_shown = true;
+        leg.hip_shown = true;
+    }
+    let frame =
+        Affine3A::from_rotation_translation(Quat::from_rotation_y(0.5), Vec3::new(2.0, 1.2, -1.0));
+    assert!(body.place_living(frame, &posed, 0));
+    let pelvis = Vec3::from(body.parts[0].transform().translation);
+    assert!(
+        (pelvis - Vec3::new(2.0, 1.2, -1.0)).length() < 1e-5,
+        "{pelvis:?}"
+    );
+    let lowered = Affine3A::from_translation(-Vec3::Y * posed[0].translation.y);
+    for (p, pose) in body.parts.iter().zip(&posed) {
+        let want = frame * lowered * *pose;
+        assert!(
+            (Vec3::from(p.transform().translation) - Vec3::from(want.translation)).length() < 1e-4
+        );
+        assert_eq!(p.positions, p.previous);
+    }
+    let root = Vec3::from(posed[0].translation) * CM;
+    let sole = body.sole * CM;
+    for leg in &body.legs {
+        let contact = posed[leg.shin].transform_point3(leg.point) * CM;
+        let mut f = frame;
+        f.translation *= CM;
+        let mut want = f.transform_point3(contact) - root;
+        want.y = (want.y + sole) - 8.0;
+        let want = want / CM;
+        assert!(
+            (leg.anchor - want).length() < 1e-6,
+            "{:?} {want:?}",
+            leg.anchor
+        );
+        assert_eq!((leg.at, leg.before), (leg.anchor, leg.anchor));
+        assert_eq!(leg.ground, Some(leg.anchor.y));
+        assert_eq!(leg.state, FootState(0));
+        assert!(!leg.knee_shown && !leg.hip_shown);
+    }
+    let drive = body.drive.as_ref().unwrap();
+    assert_eq!((drive.tone, drive.energy), (1.0, 1.0));
+    assert_eq!(drive.carry, Vec3::ZERO);
+    assert!(!drive.steps.stepping && !drive.steps.placed);
+    assert_eq!(drive.steps.radius_base, 60.0);
+    assert!(drive.root.is_none() && drive.anchor.is_none() && drive.frame.is_none());
+    let chest = body.chest_point().unwrap();
+    let b = drive.balance();
+    assert_eq!(b.chest(), Some(chest));
+    assert_eq!(
+        (b.fast_velocity(), b.slow_velocity()),
+        (Vec3::ZERO, Vec3::ZERO)
+    );
+    let mean = (body.legs[0].anchor + body.legs[1].anchor) * (1.0 / 2.0);
+    assert!((b.feet_centre() - mean).length() < 1e-6);
+    assert!(!body.asleep());
+    // A pose that does not fit the body leaves it alone.
+    assert!(!body.place_living(frame, &posed[..2], 0));
+}
+
+/// The placement's two heights of the biped's own pose: the stand height
+/// is the pelvis over the lowest contact less the sole, and the
+/// not-walking target over it is the stand height plus twice the scale
+/// and 5 cm.
+#[test]
+fn the_placement_heights_are_the_stand_and_its_target() {
+    let body = biped();
+    let posed: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+    let h = body.placement_heights(&posed, 0, false).unwrap();
+    let root = posed[0].translation.y * CM;
+    let lowest = body
+        .legs
+        .iter()
+        .map(|l| posed[l.shin].transform_point3(l.point).y * CM - body.sole * CM)
+        .fold(5000.0f32, f32::min);
+    assert_eq!(h.stand, root - lowest);
+    let scale = body.drive.as_ref().unwrap().stats.scale;
+    assert_eq!(h.target, (h.stand + 2.0 * scale) + 5.0);
+    assert_eq!(body.placement_target(&posed, 0, false), Some(h.target));
+}
