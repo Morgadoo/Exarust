@@ -9,6 +9,7 @@ pub mod capture;
 pub mod cube_shadows;
 pub mod draw_state;
 pub mod electricity;
+pub mod exit_wait;
 pub mod flame;
 pub mod flame_row;
 pub mod force_effects;
@@ -89,7 +90,7 @@ impl Plugin for RenderPlugin {
             (flame::FlamePlugin, flame_row::FlameRowPlugin),
             (electricity::ElectricityPlugin, force_effects::ForceEffectsPlugin),
             (spray::SprayPlugin, rain::RainPlugin),
-            stain::StainPlugin,
+            (stain::StainPlugin, exit_wait::ExitWaitPlugin),
             (benchmark::BenchmarkPlugin, supersample::SupersamplePlugin),
             (
                 lights::LightsPlugin,

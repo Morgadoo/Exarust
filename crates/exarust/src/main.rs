@@ -185,6 +185,8 @@
 //!                                     schedules, by direction (the simulation thread's hand-off)
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
 //!          --draw-trace <file.csv>    the player's drawn pelvis, the camera and the render fraction each frame
+//!          --frame-digest <file.csv>  debug: hashes of each frame's picture inputs past the loading screen (cameras,
+//!                                     lights, drawn meshes, materials, images, GI), to find where two runs part
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
@@ -344,6 +346,7 @@
 mod app_skips_test;
 mod column;
 mod draw_trace;
+mod frame_digest;
 mod frame_loop;
 mod grid;
 #[cfg(test)]
@@ -592,6 +595,8 @@ pub struct Options {
     pub joint_trace: Option<PathBuf>,
     /// Write where the frame drew the player each frame (`--draw-trace`).
     pub draw_trace: Option<PathBuf>,
+    /// Write hashes of each frame's picture inputs (`--frame-digest`).
+    pub frame_digest: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
     pub pair_trace: Option<PathBuf>,
     /// Every frame advances game time by exactly 1/60 s, so that runs
@@ -1102,6 +1107,7 @@ fn main() -> AppExit {
         user.save_store_at_exit();
     }
     exa_physics::exit_trace::stage("main: returns");
+    exa_physics::exit_trace::report_live_threads();
     exit
 }
 
@@ -1370,6 +1376,7 @@ fn parse_command_line(all: Vec<String>) -> Result<(Options, View, Option<PathBuf
             }
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
             "--draw-trace" => options.draw_trace = args.next().map(PathBuf::from),
+            "--frame-digest" => options.frame_digest = args.next().map(PathBuf::from),
             "--pair-trace" => options.pair_trace = args.next().map(PathBuf::from),
             "--fixed-frames" => options.fixed_frames = true,
             "--sim-speed" => {
@@ -2176,6 +2183,18 @@ fn build_app(
         }
     }
     app.add_plugins(draw_trace::DrawTracePlugin);
+    if let Some(path) = options.frame_digest.as_deref() {
+        match frame_digest::FrameDigest::create(path) {
+            Ok(digest) => {
+                app.insert_resource(digest);
+            }
+            Err(e) => {
+                eprintln!("cannot write the frame digest: {e}");
+                return Err(AppExit::from_code(2));
+            }
+        }
+    }
+    app.add_plugins(frame_digest::FrameDigestPlugin);
     if let Some(trace) = pair_trace {
         app.insert_resource(trace);
     }
@@ -2244,6 +2263,17 @@ fn build_app(
                 filter: format!("{},rodio::stream=off", bevy::log::DEFAULT_FILTER),
                 ..default()
             });
+    if options.fixed_frames && shell != Shell::Headless {
+        // A scripted run compiles each new pipeline in the frame that asks
+        // for it: compiled on the task pool, a mesh whose material needs a
+        // new pipeline variant (a bloodied or stained skin, a power's
+        // effect) is left out of the frames until its compile finishes,
+        // which differs from run to run.
+        plugins = plugins.set(bevy::render::RenderPlugin {
+            synchronous_pipeline_compilation: true,
+            ..default()
+        });
+    }
     if shell == Shell::Headless {
         // No OS window, no renderer and nothing to run the frames: the
         // check updates the App itself. The primary window stays (as
@@ -2273,6 +2303,8 @@ fn build_app(
             size: UVec2::new(w, h),
             // A scripted run repeats only without the host's mouse.
             ignore_input: options.fixed_frames,
+            // A scripted run's frames reach the frame file at a fixed lag.
+            lockstep_readback: options.fixed_frames,
         });
     } else {
         app.add_plugins(plugins);
