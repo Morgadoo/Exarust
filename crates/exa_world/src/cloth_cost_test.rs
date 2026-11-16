@@ -201,6 +201,68 @@ pub(super) fn hair_scene_in_level(
     (app, hairs, heads, characters)
 }
 
+/// The solver's side of the game's path without its physics: the bodies
+/// split and ordered as [`exa_physics::body::step_bodies`] hands them to
+/// the solver, and the stages' object-contact hook called with them (the
+/// cloths' body contacts), so the benches time the cloth stage as the game
+/// runs it rather than its no-solver stand-in. The bodies do not move.
+fn solver_lists(
+    mut stages: ResMut<exa_physics::body::SolverStages>,
+    mut bodies: Query<(Entity, &mut Ragdoll)>,
+) {
+    let mut ordered: Vec<(Entity, Mut<Ragdoll>)> = bodies.iter_mut().collect();
+    ordered.sort_unstable_by(|(a, ra), (b, rb)| exa_physics::body::walk_order((*a, ra), (*b, rb)));
+    let (mut awake, mut sleeping): (Vec<Mut<Ragdoll>>, Vec<Mut<Ragdoll>>) =
+        (Vec::new(), Vec::new());
+    for (_, body) in ordered {
+        if body.asleep() {
+            sleeping.push(body);
+        } else {
+            awake.push(body);
+        }
+    }
+    {
+        let mut awake: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
+        let mut sleeping: Vec<&mut Ragdoll> = sleeping
+            .iter_mut()
+            .map(|b| b.bypass_change_detection())
+            .collect();
+        for s in stages.all() {
+            s.sim_object_contacts(&mut awake, &mut sleeping);
+        }
+    }
+    for body in &mut sleeping {
+        if !body.asleep() {
+            body.set_changed();
+        }
+    }
+}
+
+/// Puts [`solver_lists`] between the stage's two halves.
+fn with_solver_lists(app: &mut App) {
+    app.add_systems(
+        FixedUpdate,
+        solver_lists
+            .after(crate::cloth_stage::stage_cloths)
+            .before(crate::cloth_stage::finish_cloths),
+    );
+}
+
+/// The mean of each of the stage's pieces over `splits` (ms), as a line.
+fn split_line(splits: &[[u64; 6]]) -> String {
+    let n = splits.len().max(1) as f64;
+    let names = ["index", "plan", "step", "bucket", "contacts", "end"];
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let sum: u64 = splits.iter().map(|s| s[i]).sum();
+            format!("{name} {:.3}", sum as f64 / n / 1000.0)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Turns each head a little about y, as a frame's propagation would.
 pub(super) fn turn_heads(app: &mut App, heads: &[Entity], frame: usize) {
     for (i, &head) in heads.iter().enumerate() {
@@ -237,8 +299,10 @@ pub(super) fn checksum(app: &App, hairs: &[Entity]) -> u64 {
 #[ignore = "a timing bench: run with --release --ignored --nocapture"]
 fn cloth_cost_of_fifteen_hairs() {
     let (mut app, hairs, heads) = hair_scene();
+    with_solver_lists(&mut app);
     let mut tick_micros = Vec::new();
     let mut frame_micros = Vec::new();
+    let mut splits = Vec::new();
     let mut counted = 0u64;
     for frame in 0..100 {
         turn_heads(&mut app, &heads, frame);
@@ -247,6 +311,7 @@ fn cloth_cost_of_fifteen_hairs() {
             app.world_mut().run_schedule(FixedUpdate);
             tick_micros.push(started.elapsed().as_micros() as u64);
             counted += app.world().resource::<ClothDebug>().last_micros;
+            splits.push(app.world().resource::<ClothDebug>().last_split);
         }
         let started = std::time::Instant::now();
         app.world_mut()
@@ -277,6 +342,7 @@ fn cloth_cost_of_fifteen_hairs() {
         last.bodies,
         last.particles,
     );
+    println!("cloth split (ms): {}", split_line(&splits));
     println!("cloth checksum: {:016x}", checksum(&app, &hairs));
     assert_eq!(last.awake as usize, HAIRS);
 }
@@ -290,8 +356,10 @@ fn cloth_cost_of_fifteen_hairs() {
 #[ignore = "a timing bench: run with --release --ignored --nocapture"]
 fn cloth_cost_of_fifteen_hairs_in_a_level() {
     let (mut app, hairs, heads, characters) = hair_scene_in_level(4_800);
+    with_solver_lists(&mut app);
     let mut parts = Vec::new();
     let mut stage = Vec::new();
+    let mut splits = Vec::new();
     for frame in 0..100 {
         turn_heads(&mut app, &heads, frame);
         for _ in 0..4 {
@@ -305,6 +373,7 @@ fn cloth_cost_of_fifteen_hairs_in_a_level() {
             let debug = app.world().resource::<ClothDebug>();
             parts.push(debug.last_parts_micros);
             stage.push(debug.last_micros);
+            splits.push(debug.last_split);
         }
     }
     let mean = |v: &[u64]| v.iter().sum::<u64>() as f64 / v.len() as f64 / 1000.0;
@@ -336,6 +405,7 @@ fn cloth_cost_of_fifteen_hairs_in_a_level() {
         last.parts,
         last.bodies,
     );
+    println!("level cloth split (ms): {}", split_line(&splits[4..]));
     println!("level cloth checksum: {:016x}", checksum(&app, &hairs));
     assert_eq!(last.awake as usize, HAIRS);
 }

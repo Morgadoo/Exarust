@@ -10,7 +10,9 @@
 //! gives the same cells as a full re-bucket. The stage then reads only the
 //! cells around its cloths, each cell's parts in the order a full re-bucket
 //! would have linked them (the bodies' walk order this tick, then each
-//! body's part order).
+//! body's part order). A changed body whose parts all stay in their cells
+//! (an awake body moves a few centimetres a tick) keeps its links, since
+//! linking it again would leave every cell with the same parts.
 
 use bevy::ecs::entity::EntityHashMap;
 use bevy::platform::collections::HashMap;
@@ -209,6 +211,14 @@ impl PartCells {
     /// Links `body`'s parts in their cells under `entry` (unlinking what it
     /// held first) and records it.
     fn link(&mut self, entity: Entity, mut entry: BodyCells, body: &Ragdoll, grid: ClothGrid) {
+        // A body whose parts all stay in their cells (an awake body moves a
+        // few centimetres a tick) keeps its links: unlinking and linking it
+        // again would leave every list holding the same parts, and a cell's
+        // parts are read sorted, so their order in the list does not count.
+        if Self::same_cells(&entry, body, grid) {
+            self.bodies.insert(entity, entry);
+            return;
+        }
         self.unlink(entity, &mut entry);
         entry.place = body.list_place();
         if entry.place != 0 {
@@ -227,6 +237,34 @@ impl PartCells {
             self.cells.entry(cell).or_default().push((entity, index));
         }
         self.bodies.insert(entity, entry);
+    }
+
+    /// Whether linking `body` afresh would give `entry` exactly what it
+    /// holds: the same place, the same part entities and every linked part
+    /// in the same cell. An entry that holds nothing yet (a new body) never
+    /// matches.
+    fn same_cells(entry: &BodyCells, body: &Ragdoll, grid: ClothGrid) -> bool {
+        if entry.entities.is_empty()
+            || entry.place != body.list_place()
+            || entry.entities.len() != body.parts.len()
+        {
+            return false;
+        }
+        let mut linked = entry.linked.iter();
+        for (index, part) in body.parts.iter().enumerate() {
+            if entry.entities[index] != part.entity {
+                return false;
+            }
+            if part.pairing.out || part.spheres.is_empty() {
+                continue;
+            }
+            let now = part.transform();
+            let cell = grid.key_of(part.pairing.mesh.world_centre(&now) * 100.0);
+            if linked.next() != Some(&(index, cell)) {
+                return false;
+            }
+        }
+        linked.next().is_none()
     }
 
     /// Takes a body's parts out of the cells and the owner lookup, leaving
@@ -408,6 +446,45 @@ mod tests {
         );
         assert_eq!(index.owner_of(gone), None);
         assert_eq!(index.linked(), 5);
+    }
+
+    /// A changed body whose parts stay in their cells keeps its links: the
+    /// cells' lists stay as they were, and the index still matches a fresh
+    /// one; one that leaves its cell is linked afresh.
+    #[test]
+    fn a_body_that_stays_in_its_cells_keeps_its_links() {
+        let mut world = World::new();
+        let ids: Vec<Entity> = (0..3).map(|_| world.spawn_empty().id()).collect();
+        let mut bodies = vec![
+            body(&mut world, Vec3::new(1.0, 0.0, 1.0), 3),
+            body(&mut world, Vec3::new(2.0, 0.0, 1.5), 2),
+            body(&mut world, Vec3::new(13.0, 0.0, 1.0), 2),
+        ];
+        let grid = ClothGrid::Cells { origin: (0, 0) };
+        let cells: Vec<(i32, i32)> = (-1..4).flat_map(|x| (-1..2).map(move |z| (x, z))).collect();
+        let mut index = PartCells::new();
+        index.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), grid);
+        type Raw = Vec<((i32, i32), Vec<(Entity, usize)>)>;
+        let raw = |index: &PartCells| {
+            let mut all: Raw = index.cells.iter().map(|(k, v)| (*k, v.clone())).collect();
+            all.sort_by_key(|(k, _)| *k);
+            all
+        };
+        let before = raw(&index);
+        // One centimetre on: every part stays in its cell.
+        bodies[0].translate(Vec3::new(0.01, 0.0, 0.0));
+        index.refresh(walk(&ids, &bodies, [true, false, false]).into_iter(), grid);
+        assert_eq!(raw(&index), before);
+        let mut fresh = PartCells::new();
+        fresh.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), grid);
+        assert_eq!(snapshot(&index, &cells), snapshot(&fresh, &cells));
+        // Six metres on: the body's parts leave their cell.
+        bodies[0].translate(Vec3::new(6.0, 0.0, 0.0));
+        index.rebucket(ids[0], &bodies[0], grid);
+        assert_ne!(raw(&index), before);
+        let mut fresh = PartCells::new();
+        fresh.refresh(walk(&ids, &bodies, [true; 3]).into_iter(), grid);
+        assert_eq!(snapshot(&index, &cells), snapshot(&fresh, &cells));
     }
 
     /// The nine cells around each centre, once each.

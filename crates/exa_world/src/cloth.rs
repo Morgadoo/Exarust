@@ -249,6 +249,11 @@ pub struct ClothDebug {
     pub last_micros: u64,
     /// Its parts split in the last tick (µs): bucketing the body parts.
     pub last_parts_micros: u64,
+    /// Its pieces in the last tick (µs), for the cost bench: the part
+    /// index before the solver, the plan, the cloths' own steps, the
+    /// solver hook's bucketing of the parts around the cloths, the cloths'
+    /// body contacts and their end after the solver.
+    pub last_split: [u64; 6],
     /// Frames the mesh write-back ran since the last log, the meshes it
     /// wrote and its time (µs).
     pub frames: u32,

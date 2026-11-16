@@ -34,6 +34,17 @@
 //! Steps 1 and 3 read and write only the cloths, which nothing else in the
 //! solver touches, so running them outside it gives the same bits as
 //! running them at the original's two points inside it.
+//!
+//! The stage's cost: each awake cloth's step goes to the compute pool as
+//! soon as its plan is made, so the pool's threads wake while the plan goes
+//! on; the hook resolves each cell's parts to the solver's slots once for
+//! every cloth that reads it, and a particle-mode cloth's gather makes its
+//! own pre-test; the hook's lists and the staged cloths are kept from tick
+//! to tick; a piece with fewer than two cloths to work on runs on the
+//! calling thread. The three pieces still meet the pool three times a tick
+//! where the stage before the body contacts moved into the solver met it
+//! once (each meeting waits for the pool's threads to wake): the order
+//! fixes that floor.
 
 use bevy::ecs::entity::EntityHashMap;
 use bevy::math::Affine3A;
@@ -94,6 +105,10 @@ struct Staged {
     skipped: bool,
     /// Its debug line so far.
     work: ClothWork,
+    /// Its node's rustle flag, read before its end of tick.
+    rustling: bool,
+    /// Its end of tick, for the sequential end of the stage.
+    outcome: Option<ClothOutcome>,
     /// The parts offered to it, and the ones that pushed it with their
     /// countdowns (debug only).
     offered: Vec<Entity>,
@@ -127,6 +142,71 @@ pub struct ClothSolve {
     plan_micros: u64,
     step_micros: u64,
     contact_micros: u64,
+    /// The part of the contacts spent bucketing the parts around the
+    /// cloths (µs), before any cloth meets them.
+    bucket_micros: u64,
+    /// The hook's lists, kept from tick to tick so a tick allocates
+    /// nothing: each body's slot, the cells around the cloths, and (without
+    /// a solver) the sleepers by place.
+    slots: EntityHashMap<Slot>,
+    cells: AroundCells,
+    scanned: bevy::platform::collections::HashMap<u64, usize>,
+}
+
+/// The cells around the tick's cloths, each with its linked parts sorted
+/// as a full re-bucket links them; the lists are kept for the next tick.
+#[derive(Default)]
+struct AroundCells {
+    /// Each cell's list in `lists`.
+    at: bevy::platform::collections::HashMap<(i32, i32), usize>,
+    lists: Vec<Vec<LinkedPart>>,
+    /// Each list's parts whose body the solver holds, by its slot.
+    ready: Vec<Vec<(Slot, usize)>>,
+}
+
+impl AroundCells {
+    fn clear(&mut self) {
+        self.at.clear();
+    }
+
+    /// Reads `cell` from `index` unless it was read this tick.
+    fn read(&mut self, cell: (i32, i32), index: &PartCells) {
+        let next = self.at.len();
+        if let bevy::platform::collections::hash_map::Entry::Vacant(v) = self.at.entry(cell) {
+            v.insert(next);
+            if self.lists.len() <= next {
+                self.lists.push(Vec::new());
+            }
+            index.sorted_in(cell, &mut self.lists[next]);
+        }
+    }
+
+    /// Resolves every list's bodies into their slots (a body the solver
+    /// does not hold is left out), once the slots are known.
+    fn resolve(&mut self, slots: &EntityHashMap<Slot>) {
+        let used = self.at.len();
+        if self.ready.len() < used {
+            self.ready.resize_with(used, Vec::new);
+        }
+        for (linked, ready) in self.lists[..used].iter().zip(&mut self.ready) {
+            ready.clear();
+            ready.extend(
+                linked
+                    .iter()
+                    .filter_map(|at| slots.get(&at.body).map(|&slot| (slot, at.part))),
+            );
+        }
+    }
+
+    /// A cell's parts with their bodies' slots, in the cell's order.
+    fn get(&self, cell: &(i32, i32)) -> Option<&[(Slot, usize)]> {
+        self.at.get(cell).map(|&i| self.ready[i].as_slice())
+    }
+
+    /// Every part read this tick.
+    fn parts(&self) -> impl Iterator<Item = &LinkedPart> {
+        self.lists[..self.at.len()].iter().flatten()
+    }
 }
 
 impl std::fmt::Debug for ClothSolve {
@@ -171,7 +251,8 @@ impl ClothSolve {
             // The bodies the solver moved this tick are re-bucketed where
             // they are now (the original's bounds pass buckets them before
             // the objects meet them); a body still asleep has not moved.
-            let mut slots: EntityHashMap<Slot> = EntityHashMap::default();
+            let mut slots = std::mem::take(&mut self.slots);
+            slots.clear();
             let grid = self.grid;
             self.rebucketed = 0;
             for (i, body) in awake.iter().enumerate() {
@@ -196,30 +277,27 @@ impl ClothSolve {
             // full re-bucket links it (the original buckets the bodies in
             // its bounds pass; an object's push does not move a body to
             // another cell within the tick).
-            let mut cells: bevy::platform::collections::HashMap<(i32, i32), Vec<LinkedPart>> =
-                bevy::platform::collections::HashMap::default();
+            let mut cells = std::mem::take(&mut self.cells);
+            cells.clear();
             for one in &self.staged {
                 for cell in grid.around(one.plan.cell) {
-                    cells.entry(cell).or_insert_with(|| {
-                        let mut linked = Vec::new();
-                        self.index.sorted_in(cell, &mut linked);
-                        linked
-                    });
+                    cells.read(cell, &self.index);
                 }
             }
             // The sleepers linked there, found in the solver's list by
             // their place (the list is in walk order: the place from the
             // largest down) or, without a solver, by a scan.
-            let scanned: bevy::platform::collections::HashMap<u64, usize> = if self.sorted {
-                Default::default()
-            } else {
-                sleeping
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| (b.list_place(), i))
-                    .collect()
-            };
-            for at in cells.values().flatten() {
+            let mut scanned = std::mem::take(&mut self.scanned);
+            scanned.clear();
+            if !self.sorted {
+                scanned.extend(
+                    sleeping
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| (b.list_place(), i)),
+                );
+            }
+            for at in cells.parts() {
                 if slots.contains_key(&at.body) {
                     continue;
                 }
@@ -242,6 +320,10 @@ impl ClothSolve {
                     slots.insert(at.body, Slot::Sleeping(i));
                 }
             }
+            cells.resolve(&slots);
+            if let Some(t) = started {
+                self.bucket_micros = t.elapsed().as_micros() as u64;
+            }
             // One cloth at a time in the list's order where it may push a
             // body; a run of particle-mode cloths (the hair: they push no
             // body, only read them) runs at once, which reads the same
@@ -258,7 +340,7 @@ impl ClothSolve {
                     let mut run = &mut staged[i..end];
                     if run.len() < 2 {
                         for one in run.iter_mut() {
-                            self.prepare(one, &slots, &cells, awake, sleeping);
+                            self.prepare(one, &cells, awake, sleeping);
                         }
                     } else {
                         let pool = bevy::tasks::ComputeTaskPool::get_or_init(
@@ -267,18 +349,21 @@ impl ClothSolve {
                         use bevy::tasks::ParallelSliceMut;
                         run.par_splat_map_mut(pool, None, |_, chunk| {
                             for one in chunk.iter_mut() {
-                                self.prepare(one, &slots, &cells, awake, sleeping);
+                                self.prepare(one, &cells, awake, sleeping);
                             }
                         });
                     }
                     i = end;
                 } else {
-                    let meeting = self.prepare(&mut staged[i], &slots, &cells, awake, sleeping);
+                    let meeting = self.prepare(&mut staged[i], &cells, awake, sleeping);
                     self.push(&mut staged[i], &meeting, awake, sleeping);
                     i += 1;
                 }
             }
             self.staged = staged;
+            self.slots = slots;
+            self.cells = cells;
+            self.scanned = scanned;
         } else {
             for one in &mut self.staged {
                 if one.plan.asleep {
@@ -300,8 +385,7 @@ impl ClothSolve {
     fn prepare(
         &self,
         one: &mut Staged,
-        slots: &EntityHashMap<Slot>,
-        cells: &bevy::platform::collections::HashMap<(i32, i32), Vec<LinkedPart>>,
+        cells: &AroundCells,
         awake: &[&mut Ragdoll],
         sleeping: &[&mut Ragdoll],
     ) -> Vec<(Slot, usize)> {
@@ -317,12 +401,9 @@ impl ClothSolve {
             let Some(linked) = cells.get(&cell) else {
                 continue;
             };
-            for at in linked {
-                let Some(&slot) = slots.get(&at.body) else {
-                    continue;
-                };
+            for &(slot, index) in linked {
                 let body = body_ref(slot, awake, sleeping);
-                let Some(part) = body.parts.get(at.part) else {
+                let Some(part) = body.parts.get(index) else {
                     continue;
                 };
                 if !body_meets_objects(body)
@@ -331,7 +412,7 @@ impl ClothSolve {
                 {
                     continue;
                 }
-                offered.push((slot, at.part));
+                offered.push((slot, index));
             }
         }
         one.work.parts = offered.len() as u32;
@@ -343,35 +424,42 @@ impl ClothSolve {
         }
         // The pre-test is against the cloth where its own step left it.
         let (object, _) = cloth_bound(&one.cloth, &plan.at);
-        let meeting: Vec<(Slot, usize)> = offered
-            .iter()
-            .copied()
-            .filter(|&(slot, part)| {
-                let body = body_ref(slot, awake, sleeping);
-                sector::object_meets_part(object, &part_view(body, part))
-            })
-            .collect();
         let mut contacts = ObjectContacts::default();
+        let meeting: Vec<(Slot, usize)>;
         if plan.particle_mode {
-            let parts = meeting.iter().map(|&(slot, part)| {
+            // The particle mode's gather makes the pre-test itself, and
+            // numbers the parts as offered (the debug tags).
+            meeting = Vec::new();
+            let parts = offered.iter().map(|&(slot, part)| {
                 let body = body_ref(slot, awake, sleeping);
                 let view = part_view(body, part);
                 let owner = plan.owner == Some(body.parts[part].entity);
                 (view, owner)
             });
             contacts.gather_particle_bodies(&plan.to_object, object, parts);
-            // The gather numbers the parts it was given; keep the offered
-            // list's numbering for the debug tags.
             one.work.bodies = contacts.particle_bodies.len() as u32;
         } else {
+            meeting = offered
+                .iter()
+                .copied()
+                .filter(|&(slot, part)| {
+                    let body = body_ref(slot, awake, sleeping);
+                    sector::object_meets_part(object, &part_view(body, part))
+                })
+                .collect();
             one.work.bodies = meeting.len() as u32;
         }
+        let met = if plan.particle_mode {
+            !contacts.particle_bodies.is_empty()
+        } else {
+            !meeting.is_empty()
+        };
         if let Some(t) = bodies_started {
             one.work.body_micros = t.elapsed().as_micros() as u64;
         }
         // A sleeping cloth that no body reaches, in a frame that did not
         // move, is the level stage's fixed point: nothing to do.
-        if plan.asleep && !plan.moved && meeting.is_empty() {
+        if plan.asleep && !plan.moved && !met {
             one.work.skipped = 1;
             one.skipped = true;
             return Vec::new();
@@ -521,6 +609,7 @@ pub(crate) fn stage_cloths(
     stage.staged.clear();
     stage.contacted = false;
     stage.contact_micros = 0;
+    stage.bucket_micros = 0;
     stage.rebucketed = 0;
     stage.on = on;
     stage.live = live_contacts.0 && physics.is_some() && statics.is_some();
@@ -558,11 +647,20 @@ pub(crate) fn stage_cloths(
     // The sequential half, in the object list's order: each cloth's frame,
     // owner and own character, its carry into the frame, and the object
     // list's re-bucket before its step.
-    let mut plans: EntityHashMap<ClothPlan> = EntityHashMap::default();
+    let mut staged = std::mem::take(&mut stage.staged);
+    staged.clear();
     let order = std::mem::take(&mut objects.order);
-    for (id, &entity) in order.iter().enumerate() {
+    // Whether the steps go to the pool: two awake cloths or more (the plan
+    // leaves every cloth's countdown as it found it).
+    let awake = instances
+        .iter()
+        .filter(|(_, instance, _)| instance.cloth.sleep > 0)
+        .count();
+    let index = &stage.index;
+    let objects = &mut *objects;
+    let mut plan_one = |id: usize, entity: Entity| -> Option<Staged> {
         let Ok((_, mut instance, at)) = instances.get_mut(entity) else {
-            continue;
+            return None;
         };
         let particle_mode = instance.cloth.record.particle_mode();
         let frame = at.affine();
@@ -593,7 +691,7 @@ pub(crate) fn stage_cloths(
         // particles keep their world motion when the owner moves its node.
         let owner = if particle_mode {
             own.iter().copied().find_map(|e| {
-                let body = stage.index.owner_of(e)?;
+                let body = index.owner_of(e)?;
                 let (_, body) = bodies.get(body).ok()?;
                 Some((e, body.countdown()))
             })
@@ -626,9 +724,11 @@ pub(crate) fn stage_cloths(
         } else {
             gravity_world
         };
-        plans.insert(
+        // The cloth leaves its node for the tick (the solver's cloth stage
+        // holds it).
+        Some(Staged {
             entity,
-            ClothPlan {
+            plan: ClothPlan {
                 id,
                 cell: grid.key_of_cell(cell),
                 to_object,
@@ -642,68 +742,75 @@ pub(crate) fn stage_cloths(
                 gravity,
                 at: *at,
             },
-        );
-    }
-    objects.order = order;
-    let planned = on.then(std::time::Instant::now);
+            cloth: std::mem::take(&mut instance.cloth),
+            integrated: None,
+            skipped: false,
+            work: ClothWork::default(),
+            offered: Vec::new(),
+            pushers: Vec::new(),
+            started: None,
+            rustling: false,
+            outcome: None,
+        })
+    };
     // Every awake cloth's own step at once: each reads only itself and the
     // wind, and writes only itself.
-    let stepped = std::sync::Mutex::new(Vec::with_capacity(plans.len()));
-    let step = |entity: Entity, instance: &mut ClothInstance| {
-        let Some(plan) = plans.get(&entity) else {
-            return;
-        };
+    let wind = &wind.0;
+    let step = |one: &mut Staged| {
+        let plan = &one.plan;
         let step_started = on.then(std::time::Instant::now);
-        let mut work = ClothWork {
-            asleep: u32::from(plan.asleep),
-            ..ClothWork::default()
-        };
+        one.work.asleep = u32::from(plan.asleep);
         // The wind meets the cloth in the world: its particles are in
         // the node's frame, in centimetres.
-        let integrated = if plan.asleep {
-            None
-        } else {
+        if !plan.asleep {
             let to_world = Affine3A::from_scale(Vec3::splat(100.0))
                 * plan.frame
                 * Affine3A::from_scale(Vec3::splat(0.01));
-            let at = cloth::WindAt {
-                wind: &wind.0,
-                to_world,
-            };
-            cloth::integrate(&mut instance.cloth, plan.gravity, Some(at))
-        };
+            let at = cloth::WindAt { wind, to_world };
+            one.integrated = cloth::integrate(&mut one.cloth, plan.gravity, Some(at));
+        }
         if let Some(t) = step_started {
-            work.step_micros = t.elapsed().as_micros() as u64;
+            one.work.step_micros = t.elapsed().as_micros() as u64;
         }
-        let cloth = std::mem::take(&mut instance.cloth);
-        if let Ok(mut stepped) = stepped.lock() {
-            stepped.push(Staged {
-                entity,
-                plan: plan.clone(),
-                cloth,
-                integrated,
-                skipped: false,
-                work,
-                offered: Vec::new(),
-                pushers: Vec::new(),
-                started: step_started,
-            });
-        }
+        one.started = step_started;
     };
     // Fewer than two awake cloths (a level whose banners sleep) step on
     // this thread: the pool's dispatch would cost more than the work.
-    if plans.values().filter(|p| !p.asleep).count() < 2 {
-        for (entity, mut instance, _) in &mut instances {
-            step(entity, &mut instance);
+    // Otherwise each awake cloth's step goes to the pool as soon as it is
+    // planned, so the pool's threads wake while the plan goes on.
+    let mut planned = None;
+    if awake < 2 {
+        for (id, &entity) in order.iter().enumerate() {
+            if let Some(mut one) = plan_one(id, entity) {
+                step(&mut one);
+                staged.push(one);
+            }
         }
+        planned = on.then(std::time::Instant::now);
     } else {
-        instances
-            .par_iter_mut()
-            .batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
-            .for_each(|(entity, mut instance, _)| step(entity, &mut instance));
+        let step = &step;
+        let pool = bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+        let stepped = pool.scope(|s| {
+            for (id, &entity) in order.iter().enumerate() {
+                let Some(mut one) = plan_one(id, entity) else {
+                    continue;
+                };
+                if one.plan.asleep {
+                    step(&mut one);
+                    staged.push(one);
+                } else {
+                    s.spawn(async move {
+                        step(&mut one);
+                        one
+                    });
+                }
+            }
+            planned = on.then(std::time::Instant::now);
+        });
+        staged.extend(stepped);
+        staged.sort_unstable_by_key(|one| one.plan.id);
     }
-    let mut staged = stepped.into_inner().unwrap_or_default();
-    staged.sort_unstable_by_key(|s| s.plan.id);
+    objects.order = order;
     stage.staged = staged;
     if let (Some(t), Some(indexed), Some(planned)) = (started, indexed, planned) {
         let micros = |a: std::time::Instant, b: std::time::Instant| {
@@ -734,11 +841,34 @@ fn walk_bodies<'a>(
 }
 
 /// What a cloth's end of tick leaves for the sequential end of the stage.
+#[derive(Debug)]
 struct ClothOutcome {
-    index: usize,
     after: Option<Vec3>,
     line: Option<crate::cloth::ClothTick>,
     rustle: Option<cloth::ClothRustled>,
+    /// The node's rustle flag after the tick, when the tick set it.
+    rustling: Option<bool>,
+    /// Whether the tick moved the cloth (the frame's write-back takes it).
+    stale: bool,
+}
+
+/// Runs `f` over the staged cloths: on this thread when fewer than two of
+/// them have work (`working`), as the pool's dispatch would cost more than
+/// the work, otherwise at once on the compute pool.
+fn each_cloth(mut staged: &mut [Staged], working: usize, f: impl Fn(&mut Staged) + Send + Sync) {
+    if working < 2 {
+        for one in staged.iter_mut() {
+            f(one);
+        }
+        return;
+    }
+    let pool = bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+    use bevy::tasks::ParallelSliceMut;
+    staged.par_splat_map_mut(pool, None, |_, chunk| {
+        for one in chunk.iter_mut() {
+            f(one);
+        }
+    });
 }
 
 /// The stage after the solver (see the module): every cloth's pass after
@@ -765,7 +895,6 @@ pub(crate) fn finish_cloths(
         return;
     };
     let on = stage.on;
-    let started = on.then(std::time::Instant::now);
     if !stage.contacted && !stage.staged.is_empty() {
         let (mut awake, mut sleeping) = walk_bodies(&mut bodies);
         let mut awake_refs: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
@@ -784,54 +913,51 @@ pub(crate) fn finish_cloths(
             }
         }
     }
+    // The contacts' time is counted apart: the end's own starts here.
+    let started = on.then(std::time::Instant::now);
     let live = stage.live;
-    let staged: EntityHashMap<std::sync::Mutex<Option<Staged>>> = std::mem::take(&mut stage.staged)
-        .into_iter()
-        .map(|s| (s.entity, std::sync::Mutex::new(Some(s))))
-        .collect();
-    let outcomes = std::sync::Mutex::new(Vec::with_capacity(staged.len()));
+    let mut staged = std::mem::take(&mut stage.staged);
+    // Each cloth's node as it stands now, and its rustle flag; a cloth
+    // whose node is gone is dropped.
+    staged.retain_mut(|one| {
+        let Ok((_, instance, at)) = instances.get(one.entity) else {
+            return false;
+        };
+        one.plan.at = *at;
+        one.rustling = instance.rustling;
+        true
+    });
     let (physics, statics) = (physics.as_deref(), statics.as_deref());
-    let finish = |entity: Entity, instance: &mut ClothInstance, at: &GlobalTransform| {
-        let Some(slot) = staged.get(&entity) else {
-            return;
-        };
-        let Some(one) = slot.lock().ok().and_then(|mut s| s.take()) else {
-            return;
-        };
-        let outcome = finish_one(one, instance, at, live, physics, statics);
-        if let Ok(mut outcomes) = outcomes.lock() {
-            outcomes.push(outcome);
-        }
-    };
     // As the own steps: fewer than two cloths with a tick to end end here.
     let ticking = staged
-        .values()
-        .filter(|s| {
-            s.lock().is_ok_and(|s| {
-                s.as_ref()
-                    .is_some_and(|s| !s.skipped && s.integrated.is_some())
-            })
-        })
+        .iter()
+        .filter(|s| !s.skipped && s.integrated.is_some())
         .count();
-    if ticking < 2 {
-        for (entity, mut instance, at) in &mut instances {
-            finish(entity, &mut instance, at);
-        }
-    } else {
-        instances
-            .par_iter_mut()
-            .batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
-            .for_each(|(entity, mut instance, at)| finish(entity, &mut instance, at));
-    }
-    let mut outcomes = outcomes.into_inner().unwrap_or_default();
-    outcomes.sort_unstable_by_key(|o| o.index);
+    each_cloth(&mut staged, ticking, |one| {
+        one.outcome = Some(finish_one(one, live, physics, statics));
+    });
     let mut total = ClothWork::default();
     debug.cloths.clear();
-    // The object list's re-bucket after each step, as the original's, in
-    // its order.
-    for outcome in outcomes {
+    // The cloths back on their nodes, then the object list's re-bucket
+    // after each step, as the original's, in its order.
+    for one in &mut staged {
+        let Some(outcome) = one.outcome.take() else {
+            continue;
+        };
+        if let Ok((_, mut instance, _)) = instances.get_mut(one.entity) {
+            instance.cloth = std::mem::take(&mut one.cloth);
+            if outcome.stale {
+                // The frame's mesh write-back takes the particles once,
+                // after the frame's last tick
+                // ([`crate::cloth::write_cloth_meshes`]).
+                instance.stale_mesh = true;
+            }
+            if let Some(rustling) = outcome.rustling {
+                instance.rustling = rustling;
+            }
+        }
         if let Some(after) = outcome.after {
-            objects.grid.migrate(outcome.index, after);
+            objects.grid.migrate(one.plan.id, after);
         }
         if let Some(rustle) = outcome.rustle {
             rustles.write(rustle);
@@ -841,31 +967,49 @@ pub(crate) fn finish_cloths(
             debug.cloths.push(line);
         }
     }
+    // The list is kept (emptied) for the next tick.
+    staged.clear();
+    stage.staged = staged;
     if let Some(t) = started {
+        // The parts split is the bucketing (the index and the hook's cells
+        // around the cloths), as the cloths' own contacts count with their
+        // steps.
+        let finish_micros = t.elapsed().as_micros() as u64;
+        let touch_micros = stage.contact_micros.saturating_sub(stage.bucket_micros);
         total.rebucketed = stage.rebucketed;
-        total.parts_micros = stage.index_micros + stage.contact_micros;
+        total.parts_micros = stage.index_micros + stage.bucket_micros;
         total.plan_micros = stage.plan_micros;
-        total.cloths_micros = stage.step_micros + t.elapsed().as_micros() as u64;
+        total.cloths_micros = stage.step_micros + touch_micros + finish_micros;
         total.micros = total.parts_micros + total.plan_micros + total.cloths_micros;
         debug.last_micros = total.micros;
         debug.last_parts_micros = total.parts_micros;
+        debug.last_split = [
+            stage.index_micros,
+            stage.plan_micros,
+            stage.step_micros,
+            stage.bucket_micros,
+            touch_micros,
+            finish_micros,
+        ];
         debug.tick(total, &names, &parents);
     }
 }
 
 /// One cloth's end of tick: its pass after the collisions, the level
-/// contact, the tick's end, and the cloth back on its node.
+/// contact and the tick's end (its node's transform is `one.plan.at`, read
+/// after the solver).
 fn finish_one(
-    mut one: Staged,
-    instance: &mut ClothInstance,
-    at: &GlobalTransform,
+    one: &mut Staged,
     live: bool,
     physics: Option<&Physics>,
     statics: Option<&exa_physics::StaticColliders>,
 ) -> ClothOutcome {
     let mut after = None;
     let mut rustle = None;
+    let mut rustling = None;
+    let mut stale = false;
     let plan = &one.plan;
+    let at = &plan.at;
     let mut work = one.work;
     if !one.skipped
         && let Some(integrated) = one.integrated.take()
@@ -927,16 +1071,14 @@ fn finish_one(
         // order once every cloth has stepped).
         let (moved_to, _) = cloth_bound(cloth, at);
         after = Some(moved_to.centre);
-        // The frame's mesh write-back takes the particles once, after the
-        // frame's last tick ([`crate::cloth::write_cloth_meshes`]).
-        instance.stale_mesh = true;
+        stale = true;
         // The rustle loop at the cloth's centre while it plays, and once
         // when it stops.
         if let Some(sound) = cloth.record.rustle
-            && (cloth.rustle || instance.rustling)
+            && (cloth.rustle || one.rustling)
         {
             let playing = cloth.rustle;
-            instance.rustling = playing;
+            rustling = Some(playing);
             rustle = Some(cloth::ClothRustled {
                 cloth: one.entity,
                 sound,
@@ -947,19 +1089,19 @@ fn finish_one(
             });
         }
     }
-    instance.cloth = one.cloth;
     let line = one.started.map(|t| {
         work.micros = t.elapsed().as_micros() as u64;
-        work.particles = instance.cloth.particles.len() as u32;
-        work.sleep = instance.cloth.sleep;
-        work.pins = instance.cloth.pins.len() as u32;
+        work.particles = one.cloth.particles.len() as u32;
+        work.sleep = one.cloth.sleep;
+        work.pins = one.cloth.pins.len() as u32;
         (one.entity, work, std::mem::take(&mut one.pushers))
     });
     ClothOutcome {
-        index: one.plan.id,
         after,
         line,
         rustle,
+        rustling,
+        stale,
     }
 }
 
