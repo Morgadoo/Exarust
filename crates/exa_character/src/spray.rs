@@ -82,13 +82,16 @@ impl Plugin for SprayPlugin {
                         .run_if(resource_exists::<Game>)
                         .run_if(not(resource_exists::<SprayAssets>))
                         .run_if(|s: Res<BloodSprays>| !s.jets.is_empty()),
-                    draw_sprays.before(exa_world::room_view::track_rooms).run_if(resource_exists::<SprayAssets>),
+                    draw_sprays
+                        .before(exa_world::room_view::track_rooms)
+                        .run_if(resource_exists::<SprayAssets>),
                 )
                     .chain()
                     // The blows of this frame, the parts and the camera where
                     // this frame puts them.
                     .after(TransformSystems::Propagate)
-                    .after(CombatSystems).in_set(exa_physics::FramePostPhase::Placed),
+                    .after(CombatSystems)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             )
             // On the bodies' poses of the tick; the tick's bleeding blows
             // start their jets after it, in the post-step that dealt them,

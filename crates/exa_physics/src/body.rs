@@ -2944,7 +2944,9 @@ impl Plugin for BodyPlugin {
             .add_systems(FixedUpdate, deal_shoves.before(TickBehaviour))
             // After every frame system that moves a character or a body
             // root (the drawn controller, turns, a get-up's teleport).
-            .add_systems(PostUpdate, draw_bodies.before(TransformSystems::Propagate).in_set(crate::FramePostPhase::Prepare));
+            .add_systems(PostUpdate, draw_bodies
+                .before(TransformSystems::Propagate)
+                .in_set(crate::FramePostPhase::Prepare));
         bridge_body_types(app);
     }
 }

@@ -195,7 +195,8 @@ impl Plugin for AiPlugin {
             )
             // The scene's forget broadcast stays a frame system: it reads
             // the frame's removals.
-            .add_systems(Update, brain::forget_removed.in_set(exa_physics::FramePhase::Session));
+            .add_systems(Update, brain::forget_removed
+            .in_set(exa_physics::FramePhase::Session));
     }
 }
 

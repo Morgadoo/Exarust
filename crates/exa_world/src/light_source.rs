@@ -538,8 +538,11 @@ impl Plugin for LightSourcePlugin {
                 FixedUpdate,
                 fade_from_levers.before(exa_physics::body::TickBehaviour),
             )
-            .add_systems(Update, flicker_lights.in_set(exa_physics::FramePhase::World))
-            .add_systems(PostUpdate, apply_light_state.in_set(exa_physics::FramePostPhase::Prepare).after(exa_render::material::mark_shadowless));
+            .add_systems(Update, flicker_lights
+            .in_set(exa_physics::FramePhase::World))
+            .add_systems(PostUpdate, apply_light_state
+                .in_set(exa_physics::FramePostPhase::Prepare)
+                .after(exa_render::material::mark_shadowless));
     }
 }
 

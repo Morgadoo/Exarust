@@ -85,15 +85,23 @@ impl Plugin for CharacterPlugin {
         .add_systems(
             Update,
             (
-                apply_skin_looks.after(exa_world::flame::load_flame_assets).run_if(resource_exists::<Game>),
-                hair::attach_hair.before(exa_assets::texture_stream::run_texture_loader).run_if(resource_exists::<Game>),
+                apply_skin_looks
+                    .after(exa_world::flame::load_flame_assets)
+                    .run_if(resource_exists::<Game>),
+                hair::attach_hair
+                    .before(exa_assets::texture_stream::run_texture_loader)
+                    .run_if(resource_exists::<Game>),
                 load_underwear_items
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),
                 keep_underwear.run_if(resource_exists::<UnderwearItems>),
                 refit::request_refits,
-                equip_outfits.after(exa_combat::weapon_blood::clear_at_world_reset).after(exa_combat::swing::pace_swings),
-                finish_skin_composites.after(crate::offhand::attach_off_hands).run_if(resource_exists::<Game>),
+                equip_outfits
+                    .after(exa_combat::weapon_blood::clear_at_world_reset)
+                    .after(exa_combat::swing::pace_swings),
+                finish_skin_composites
+                    .after(crate::offhand::attach_off_hands)
+                    .run_if(resource_exists::<Game>),
                 held::choose_held_movesets,
             )
                 .chain()
@@ -101,7 +109,8 @@ impl Plugin for CharacterPlugin {
                 // frame they appear: a skinned mesh drawn before it is
                 // bound fails wgpu validation (a skinned pipeline with the
                 // unskinned mesh bind group).
-                .before(exa_anim::AnimSystems).in_set(exa_physics::FramePhase::World),
+                .before(exa_anim::AnimSystems)
+                .in_set(exa_physics::FramePhase::World),
         );
     }
 }

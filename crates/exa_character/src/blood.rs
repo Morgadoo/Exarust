@@ -76,8 +76,14 @@ impl Plugin for BloodPlugin {
                 (
                     paint_debug_wounds.run_if(resource_exists::<DebugWounds>),
                     bleed_wounds,
-                    paint_wounds.before(exa_physics::build_static_colliders).after(crate::spray::fire_debug_sprays).after(exa_world::nav::view::collect_source).after(exa_world::room_view::give_lights_lids),
-                    bloody_debug_weapons.after(exa_world::nav::view::finish_build).run_if(resource_exists::<DebugWeaponBlood>),
+                    paint_wounds
+                        .before(exa_physics::build_static_colliders)
+                        .after(crate::spray::fire_debug_sprays)
+                        .after(exa_world::nav::view::collect_source)
+                        .after(exa_world::room_view::give_lights_lids),
+                    bloody_debug_weapons
+                        .after(exa_world::nav::view::finish_build)
+                        .run_if(resource_exists::<DebugWeaponBlood>),
                     load_stain_gradient
                         .run_if(resource_exists::<Game>)
                         .run_if(not(resource_exists::<StainGradient>))
@@ -90,7 +96,8 @@ impl Plugin for BloodPlugin {
                     // Vertices are taken where this frame's pose puts them,
                     // after the combat's wounds bled.
                     .after(TransformSystems::Propagate)
-                    .after(CombatSystems).in_set(exa_physics::FramePostPhase::Placed),
+                    .after(CombatSystems)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             );
     }
 }

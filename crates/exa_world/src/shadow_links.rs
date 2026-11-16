@@ -69,7 +69,8 @@ impl Plugin for ShadowLinksPlugin {
                     .before(crate::scene_live::run_scene)
                     .before(LightsSystems::Cubes)
                     .before(VisibilitySystems::CheckVisibility)
-                    .in_set(LightCells).in_set(exa_physics::FramePostPhase::View),
+                    .in_set(LightCells)
+                    .in_set(exa_physics::FramePostPhase::View),
             )
             .add_systems(
                 PostUpdate,
@@ -80,7 +81,8 @@ impl Plugin for ShadowLinksPlugin {
                     .after(crate::scene_live::run_scene)
                     .before(LightsSystems::Cubes)
                     .before(VisibilitySystems::CheckVisibility)
-                    .in_set(LightCells).in_set(exa_physics::FramePostPhase::View),
+                    .in_set(LightCells)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
     }
 }
