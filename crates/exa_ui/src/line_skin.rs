@@ -480,15 +480,17 @@ pub fn draw_open_span(unit: i32, x: i32, y: i32, width: i32, view: SpanView) -> 
     }
 }
 
-/// What the maximised window frame reads.
+/// What the wide window frame reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowFramePlace {
-    /// The style word: bit 4 makes the frame bind its own ink and test the
-    /// owner, bit 0x40 picks the hot ink.
-    pub style: u32,
+    /// The form's state word: bit 4 (a form held by another form, not a
+    /// task) makes the frame bind its own ink and test the owner, bit 0x40
+    /// picks the hot ink.
+    pub state: u32,
     /// The window's top within its owner.
     pub y: i32,
-    pub owner_state: u32,
+    /// The owner's attribute word (bit 1 its title).
+    pub owner_attributes: u32,
     pub width: i32,
     pub height: i32,
 }
@@ -508,29 +510,31 @@ pub struct WindowFrame {
     pub quads: Vec<SliderQuad>,
 }
 
-/// Draws a maximised window's frame: the doubled top bar, the left and
-/// right bars and the four corner arms around them, and the bottom bar. The
-/// side lengths are 0 and two units with style bit 4 (which also binds the
-/// ink and draws the outer top bar unless the window sits within a unit of
-/// its owner's top while the owner is focused), else 0 and four units. The
-/// arms reach two units outside and six in. The skin's side lengths go back
-/// to two and four units afterwards.
+/// Draws a wide window's frame (the corner-frame style with attribute
+/// 0x40_0000: the drop-down list and the palette swatch popup): the top
+/// bar, the left and right bars and the four corner arms around them, and
+/// the bottom bar. The side lengths are 0 and two units for a held form
+/// (state bit 4, which also binds the ink and draws the top bar once more
+/// first unless the window sits within a unit of a titled owner's top),
+/// else 0 and four units. The arms reach two units outside and six in. The
+/// skin's side lengths go back to two and four units afterwards. Checked
+/// against the assembly: every term is a whole number.
 pub fn draw_window_frame(unit: i32, place: WindowFramePlace) -> WindowFrame {
     let two = i64::from(unit) << 1;
     let six = (i64::from(unit) << 2) + two;
-    let held = (place.style & 4) != 0;
+    let held = (place.state & 4) != 0;
     let third = if held { two } else { i64::from(unit) << 2 };
     let w = i64::from(place.width);
     let h = i64::from(place.height);
     let mut quads = Vec::with_capacity(9);
     let ink = if held {
-        if place.y >= unit || (place.owner_state & 1) == 0 {
+        if place.y >= unit || (place.owner_attributes & 1) == 0 {
             quads.push(quad64(
                 WIDE_BAR,
                 [(six, 0), (six, two), (w - six, two), (w - six, 0)],
             ));
         }
-        Some(if (place.style & 0x40) == 0 {
+        Some(if (place.state & 0x40) == 0 {
             WindowFrameInk::Normal
         } else {
             WindowFrameInk::Hot
@@ -688,17 +692,22 @@ pub struct LineForm {
     /// The title's x (centred in the form's width); its baseline is the
     /// main font's ascent and its ink the label group's seventh shade.
     pub title_x: Option<i32>,
-    /// The ink of the panel frame's quads (the corner frame's are idle).
+    /// The ink of the panel frame's quads (from [`LineForm::panel_from`]).
     pub ink: LineFormInk,
+    /// The ink of the corner frame's quads (before
+    /// [`LineForm::panel_from`]): idle, or the wide window frame's own ink
+    /// on a held form.
+    pub corner_ink: LineFormInk,
+    /// The index of the panel frame's first quad in [`LineForm::frame`].
+    pub panel_from: usize,
     /// The frame quads from the skin atlas, in drawing order.
     pub frame: Vec<SliderQuad>,
     /// The panel frame's edge mask: 1 top, 2 left, 4 right, 8 bottom for a
     /// held panel within a unit of its owner's client edge (all four for a
     /// free one).
     pub edges: u32,
-    /// False when the form takes a frame branch that is not ported here
-    /// (the wide frame, or a scroll bar with no place given); its frame
-    /// quads are then missing.
+    /// False when a panel with the scroll bar attribute is given no scroll
+    /// place; its frame quads are then missing.
     pub complete: bool,
     /// The frame quads drawn in the hover ink ([`hover_ink`]) instead of
     /// the frame's: the scroll bar's upper arrow under the mark -9, its
@@ -707,6 +716,42 @@ pub struct LineForm {
     /// The quads the form draw adds after the frame, in the hover ink: the
     /// close mark under the mark -4.
     pub late: Vec<SliderQuad>,
+}
+
+/// The wide panel frame's twelve quads (the panel style with attribute
+/// 0x40_0000): the top bar and its two caps a unit above and below the top
+/// edge, the left bar and its caps across the left edge, the bottom bar and
+/// its caps, the right bar and its caps, the bars from two units in.
+/// Checked against the assembly: the side lengths are 0 and two units and
+/// every term is a whole number.
+fn wide_panel_frame(u: i64, w: i64, h: i64) -> Vec<SliderQuad> {
+    let two = u << 1;
+    vec![
+        quad64(WIDE_CAP, [(two, u), (two, -u), (0, -u), (0, u)]),
+        quad64(WIDE_BAR, [(two, u), (two, -u), (w - two, -u), (w - two, u)]),
+        quad64(WIDE_CAP, [(w - two, u), (w - two, -u), (w, -u), (w, u)]),
+        quad64(WIDE_BAR, [(u, h - two), (-u, h - two), (-u, two), (u, two)]),
+        quad64(WIDE_CAP, [(u, two), (-u, two), (-u, 0), (u, 0)]),
+        quad64(WIDE_CAP, [(u, h - two), (-u, h - two), (-u, h), (u, h)]),
+        quad64(WIDE_CAP, [(two, h - u), (two, h + u), (0, h + u), (0, h - u)]),
+        quad64(
+            WIDE_BAR,
+            [(two, h - u), (two, h + u), (w - two, h + u), (w - two, h - u)],
+        ),
+        quad64(
+            WIDE_CAP,
+            [(w - two, h - u), (w - two, h + u), (w, h + u), (w, h - u)],
+        ),
+        quad64(
+            WIDE_BAR,
+            [(w - u, h - two), (w + u, h - two), (w + u, two), (w - u, two)],
+        ),
+        quad64(WIDE_CAP, [(w - u, two), (w + u, two), (w + u, 0), (w - u, 0)]),
+        quad64(
+            WIDE_CAP,
+            [(w - u, h - two), (w + u, h - two), (w + u, h), (w - u, h)],
+        ),
+    ]
 }
 
 /// The hover ink of the line skin's frame marks: 255, 204, 153 at the
@@ -748,6 +793,8 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
         title_x: (measured > 0)
             .then(|| ((i64::from(place.width) - i64::from(measured)) / 2) as i32),
         ink: LineFormInk::Idle,
+        corner_ink: LineFormInk::Idle,
+        panel_from: 0,
         frame: Vec::new(),
         edges: 0,
         complete: true,
@@ -758,7 +805,21 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
     let (w, h) = (i64::from(place.width), i64::from(place.height));
     if place.style & CORNER_STYLE == 0x10 {
         if place.attributes & WIDE != 0 {
-            form.complete = false;
+            // The wide window frame, then the idle ink again.
+            let window = draw_window_frame(
+                unit,
+                WindowFramePlace {
+                    state: place.state,
+                    y: place.y,
+                    owner_attributes: place.owner_attributes,
+                    width: place.width,
+                    height: place.height,
+                },
+            );
+            if window.ink == Some(WindowFrameInk::Hot) {
+                form.corner_ink = LineFormInk::Hot;
+            }
+            form.frame.extend(window.quads);
         } else {
             let six = u * 6;
             let four = u << 2;
@@ -864,7 +925,18 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
             }
         }
     }
+    form.panel_from = form.frame.len();
     if place.style & PANEL_STYLE != 0x80 {
+        return form;
+    }
+    if place.attributes & WIDE != 0 {
+        // The wide panel frame: bars two units thick straddling each edge
+        // a unit out, ending two units short of the corners, and a cap at
+        // each end of each bar.
+        if place.state & HOT != 0 {
+            form.ink = LineFormInk::Hot;
+        }
+        form.frame.extend(wide_panel_frame(u, w, h));
         return form;
     }
     let scroll = if place.attributes & SCROLL != 0 {
@@ -878,10 +950,6 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
     } else {
         None
     };
-    if place.attributes & WIDE != 0 {
-        form.complete = false;
-        return form;
-    }
     // The free panel lies two units in, the held one on its edges.
     let (near, far, inner, outer) = if held {
         let mut edges = 0;
@@ -1420,9 +1488,9 @@ mod tests {
     #[test]
     fn a_maximised_window_frames_its_edges() {
         let place = WindowFramePlace {
-            style: 0,
+            state: 0,
             y: 0,
-            owner_state: 0,
+            owner_attributes: 0,
             width: 100,
             height: 80,
         };
@@ -1433,7 +1501,7 @@ mod tests {
             plain.quads[0].corners,
             [(30, 0), (30, 10), (70, 10), (70, 0)]
         );
-        // Without bit 4 the third side is four units.
+        // A free window's third side is four units.
         assert_eq!(
             plain.quads[1].corners,
             [(0, 60), (10, 60), (10, 20), (0, 20)]
@@ -1448,12 +1516,12 @@ mod tests {
             [(110, 90), (110, 60), (70, 60), (70, 90)]
         );
 
-        // With bit 4 the outer top bar is drawn too, unless the window
-        // sits at its focused owner's top.
+        // A held window draws its top bar twice, unless it
+        // sits at a titled owner's top.
         let held = draw_window_frame(
             5,
             WindowFramePlace {
-                style: 0x44,
+                state: 0x44,
                 ..place
             },
         );
@@ -1466,8 +1534,8 @@ mod tests {
         let tucked = draw_window_frame(
             5,
             WindowFramePlace {
-                style: 4,
-                owner_state: 1,
+                state: 4,
+                owner_attributes: 1,
                 ..place
             },
         );
@@ -1476,8 +1544,8 @@ mod tests {
         let lower = draw_window_frame(
             5,
             WindowFramePlace {
-                style: 4,
-                owner_state: 0x80_0001,
+                state: 4,
+                owner_attributes: 0x80_0001,
                 y: 5,
                 ..place
             },
@@ -1814,5 +1882,91 @@ mod shown_tests {
         );
         assert!(!scrolling.complete);
         assert!(scrolling.frame.is_empty());
+    }
+
+    #[test]
+    fn a_wide_window_draws_the_window_frame_and_a_wide_panel_its_straddling_bars() {
+        use crate::skin::{WIDE_BAR, WIDE_CAP, sample_corners};
+        // The drop-down list a line-skinned combo opens: the corner style
+        // (its panel bit cleared by the opener) with the wide attribute.
+        let list = draw_line_form(
+            4,
+            LineFormPlace {
+                attributes: 0x4a_1470,
+                style: 0x18,
+                ..place(120, 60)
+            },
+        );
+        assert!(list.complete);
+        assert!(list.shadow);
+        assert!(list.backdrop.is_some());
+        assert_eq!(list.corner_ink, LineFormInk::Idle);
+        assert_eq!(list.panel_from, 8);
+        let window = draw_window_frame(
+            4,
+            WindowFramePlace {
+                state: 0x1000,
+                y: 0,
+                owner_attributes: 0,
+                width: 120,
+                height: 60,
+            },
+        );
+        assert_eq!(list.frame, window.quads);
+        // Not held: the top bar once, the sides four units from the corners.
+        assert_eq!(list.frame[0].corners, [(24, 0), (24, 8), (96, 8), (96, 0)]);
+        assert_eq!(list.frame[2].sample, WINDOW_CORNER);
+        assert_eq!(
+            list.frame[2].corners,
+            [(-8, -8), (-8, 16), (24, 16), (24, -8)]
+        );
+        // The wide panel (style 0x80): twelve quads a unit either side of
+        // each edge, the bars two units short of the corners.
+        let panel = draw_line_form(
+            4,
+            LineFormPlace {
+                attributes: 0x4a_1470,
+                style: 0x80,
+                ..place(120, 60)
+            },
+        );
+        assert_eq!(panel.panel_from, 0);
+        assert_eq!(panel.frame.len(), 12);
+        assert_eq!(panel.ink, LineFormInk::Idle);
+        assert_eq!(panel.frame[0].sample, WIDE_CAP);
+        assert_eq!(panel.frame[0].corners, [(8, 4), (8, -4), (0, -4), (0, 4)]);
+        assert_eq!(panel.frame[1].sample, WIDE_BAR);
+        assert_eq!(
+            panel.frame[1].corners,
+            [(8, 4), (8, -4), (112, -4), (112, 4)]
+        );
+        assert_eq!(
+            panel.frame[9].corners,
+            [(116, 52), (124, 52), (124, 8), (116, 8)]
+        );
+        assert_eq!(
+            panel.frame[11].corners,
+            [(116, 52), (124, 52), (124, 60), (116, 60)]
+        );
+        // A hot held panel binds the highlight ink; the scroll attribute
+        // asks for no place on the wide arm.
+        let hot = draw_line_form(
+            4,
+            LineFormPlace {
+                attributes: 0x4a_1670,
+                style: 0x98,
+                state: 0x1044,
+                ..place(120, 60)
+            },
+        );
+        assert!(hot.complete);
+        assert_eq!(hot.ink, LineFormInk::Hot);
+        assert_eq!(hot.corner_ink, LineFormInk::Hot);
+        assert_eq!(hot.panel_from, 9);
+        assert_eq!(hot.frame.len(), 21);
+        // Every quad samples one of the skin's records.
+        for quad in list.frame.iter().chain(&panel.frame) {
+            assert!(sample_corners(quad.sample).is_some(), "{:?}", quad.sample);
+        }
     }
 }

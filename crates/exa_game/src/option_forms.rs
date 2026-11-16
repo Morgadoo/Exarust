@@ -63,7 +63,7 @@ use exa_ui::record_form::RecordForm;
 use exa_ui::settings::Rect;
 use exa_ui::text_edit::{EditAction, EditView};
 
-use crate::gui_paint::Painted;
+use crate::gui_paint::{LineFormLayers, Painted};
 use crate::hub_forms::FormWindow;
 use crate::hub_windows::{ArenaCareer, HubWindows, Look};
 
@@ -353,12 +353,18 @@ impl HubWindows {
             return;
         }
         let c = &form.controls()[record];
-        let rect = on_screen(form, c);
+        let mut rect = on_screen(form, c);
         let mut list = DropDownList::new(
             items.iter().map(|item| item.as_bytes().to_vec()).collect(),
             c.w,
             unit,
         );
+        // The list takes its opener's form skin. The hub's forms keep the
+        // line skin, whose mark word has bit 1: the opener then clears the
+        // list's panel frame style (0x80), so the line skin draws only its
+        // wide window frame, and lifts the list by a unit less one.
+        list.style &= !0x80;
+        rect.top -= unit - 1;
         let layout = list.lay_out();
         let place = exa_ui::controls::drop_down_place(
             (rect.left, rect.top, c.w, c.h),
@@ -1474,14 +1480,32 @@ pub(crate) fn paint_extended(
     }
 }
 
-/// Paints the open popup over the forms: a drop-down list's panel, its
-/// selection band and rows, or the palette swatch popup's cells and its
-/// selection's frame.
+/// The line skin's form draw for a popup that took its owner's line skin
+/// (the drop-down list and the palette swatch popup both copy their
+/// opener's form skin): its words as its show commits them, the shadow
+/// and the backdrop under its content, the wide window frame over it.
+fn popup_frame(rect: GuiRect, look: &Look, style: u32, attributes: u32) -> LineFormLayers {
+    crate::gui_paint::paint_top_form(
+        rect,
+        look.unit,
+        &look.palette,
+        look.fade,
+        crate::gui_paint::FormWords { style, attributes },
+        None,
+    )
+    .0
+}
+
+/// Paints the open popup over the forms through the line skin's form
+/// draw: a drop-down list's shadow, backdrop, selection band and rows and
+/// wide window frame, or the palette swatch popup's, with its cells and
+/// its selection's frame.
 pub(crate) fn paint_popup(painted: &mut Painted, popup: &Popup, look: &Look) {
     match popup {
         Popup::List { list, rect, .. } => {
             let r = GuiRect::new(rect.x, rect.y, rect.w, rect.h);
-            crate::hub_windows::paint_panel(painted, r, look);
+            let mut frame = popup_frame(r, look, list.style, list.attributes);
+            painted.layers.extend(frame.under());
             let mut batch = exa_ui::skin::SkinBatch::new();
             list.paint(&mut batch, &look.palette, 0);
             crate::gui_paint::offset_batch(&mut batch, rect.x, rect.y);
@@ -1509,10 +1533,17 @@ pub(crate) fn paint_popup(painted: &mut Painted, popup: &Popup, look: &Look) {
                     ));
                 }
             }
+            painted.layers.extend(frame.over());
         }
         Popup::Palette { swatch, rect, .. } => {
             let r = GuiRect::new(rect.x, rect.y, rect.w, rect.h);
-            crate::hub_windows::paint_panel(painted, r, look);
+            let mut frame = popup_frame(
+                r,
+                look,
+                col_swatch::SWATCH_STYLE_BITS,
+                col_swatch::SWATCH_ATTRIBUTES,
+            );
+            painted.layers.extend(frame.under());
             let unit = look.unit;
             let (ox, oy) = (rect.x + col_swatch::BORDER, rect.y + col_swatch::BORDER);
             let mut batch = exa_ui::skin::SkinBatch::new();
@@ -1549,6 +1580,7 @@ pub(crate) fn paint_popup(painted: &mut Painted, popup: &Popup, look: &Look) {
                     painted.push(exa_ui::loadout::solid_layer(edge, ink));
                 }
             }
+            painted.layers.extend(frame.over());
         }
     }
 }
@@ -2034,5 +2066,83 @@ mod tests {
         let close = centre(form, picker_records::CLOSE);
         click(&mut windows, &mut career, close);
         assert!(windows.forms.get(FormWindow::Picker).is_none());
+    }
+
+    /// The hub draw's frames after a few updates of a headless App with
+    /// the real game-screen and hub draw systems over `windows`.
+    fn drawn_quads(windows: HubWindows) -> Vec<[exa_ui::skin::GuiVertex; 4]> {
+        use exa_ui::gui_draw::GuiFrames;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GuiFrames>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .init_resource::<crate::item_panel_draw::PanelIcons>()
+            .init_resource::<crate::gui_screens::DebugGuiForm>()
+            .insert_resource(windows);
+        app.add_systems(Update, crate::gui_screens::draw_screens);
+        crate::hub_windows::add_hub_draw(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world()
+            .resource::<GuiFrames>()
+            .frames
+            .iter()
+            .flat_map(|f| f.layers.iter())
+            .flat_map(|l| l.batch.vertices.as_chunks::<4>().0.to_vec())
+            .collect()
+    }
+
+    /// Whether a quad of the line skin's wide window frame corner record
+    /// (0.15, 0.2 first, 0.35, 0.5 third) starts at `at`.
+    fn window_corner_at(quads: &[[exa_ui::skin::GuiVertex; 4]], at: (i32, i32)) -> bool {
+        quads.iter().any(|q| {
+            (q[0].u, q[0].v, q[2].u, q[2].v) == (0.15, 0.2, 0.35, 0.5)
+                && (q[0].x, q[0].y) == (at.0 as f32, at.1 as f32)
+        })
+    }
+
+    #[test]
+    fn the_combo_list_and_the_palette_popup_draw_the_line_skins_wide_frame() {
+        let mut windows = windows();
+        let mut career = ArenaCareer::default();
+        windows.open_merchant_options(&career);
+        let form = windows.forms.get(FormWindow::Merchant).unwrap();
+        let combo = {
+            let c = &form.controls()[merchant::LOOK_FOR];
+            on_screen(form, c)
+        };
+        let at = centre(form, merchant::LOOK_FOR);
+        click(&mut windows, &mut career, at);
+        let Some(Popup::List { rect, list, .. }) = windows.forms.options.popup.clone() else {
+            panic!("no list");
+        };
+        // The line skin's opener cleared the panel style and lifted the
+        // list by a unit less one.
+        assert_eq!(list.style, 0x18);
+        assert_eq!(rect.y, combo.top - 3 + combo.height());
+        let quads = drawn_quads(windows);
+        // The window frame's top-left corner arm reaches two units out.
+        assert!(window_corner_at(&quads, (rect.x - 8, rect.y - 8)));
+        assert!(window_corner_at(&quads, (rect.x + rect.w + 8, rect.y - 8)));
+        // No wide panel arm: no bar straddles the top edge a unit up.
+        assert!(!quads.iter().any(|q| q[0].y == (rect.y + 4) as f32
+            && q[1].y == (rect.y - 4) as f32
+            && q[0].x == (rect.x + 8) as f32));
+
+        let mut windows = super::tests::windows();
+        windows.open_company();
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        let swatch = centre(form, emblem_records::SWATCHES[0]);
+        click(&mut windows, &mut career, swatch);
+        let Some(Popup::Palette { rect, .. }) = windows.forms.options.popup.clone() else {
+            panic!("no palette");
+        };
+        let quads = drawn_quads(windows);
+        assert!(window_corner_at(&quads, (rect.x - 8, rect.y - 8)));
+        assert!(window_corner_at(
+            &quads,
+            (rect.x + rect.w + 8, rect.y + rect.h + 8)
+        ));
     }
 }

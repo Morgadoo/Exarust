@@ -618,7 +618,19 @@ pub fn sample_corners(sample: [u32; 4]) -> Option<[f32; 8]> {
 /// words are a record's first two corners, and no two records share them,
 /// so the words find the record. The window draws, the panel frames, the
 /// title caps and the bars bind these.
-pub const LINE_SAMPLE_RECORDS: [[u32; 8]; 19] = [
+pub const LINE_SAMPLE_RECORDS: [[u32; 8]; 20] = [
+    // The wide window frame's corner arm:
+    // 0.15, 0.2, 0.15, 0.5, 0.35, 0.5, 0.35, 0.2
+    [
+        0x3e19_999a,
+        0x3e4c_cccd,
+        0x3e19_999a,
+        0x3f00_0000,
+        0x3eb3_3333,
+        0x3f00_0000,
+        0x3eb3_3333,
+        0x3e4c_cccd,
+    ],
     // 0.4, 0.8, 0.4, 1, 0.5, 1, 0.5, 0.8
     [
         0x3ecc_cccd,
@@ -1874,9 +1886,9 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         crate::line_skin::draw_window_frame(
             unit,
             crate::line_skin::WindowFramePlace {
-                style: place.flags_a,
+                state: place.flags_a,
                 y: place.edge_y,
-                owner_state: place.owner_flags,
+                owner_attributes: place.owner_flags,
                 width: place.width,
                 height: place.height,
             },

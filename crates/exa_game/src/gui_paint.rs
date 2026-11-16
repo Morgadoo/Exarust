@@ -520,14 +520,21 @@ pub fn paint_line_form(
             Some(GuiLayer::new(batch, LayerTexture::Named(font.texture)))
         });
     let frame = (!form.frame.is_empty()).then(|| {
-        let ink = match form.ink {
+        let shown = |ink| match ink {
             LineFormInk::Idle => line_control_inks(fade)[1],
             LineFormInk::Hot => palette.highlight[7],
         };
+        let (corner, panel) = (shown(form.corner_ink), shown(form.ink));
         let hot = exa_ui::line_skin::hover_ink(fade);
         let mut batch = line_skin_batch();
         for (i, quad) in form.frame.iter().enumerate() {
-            let ink = if form.hot.contains(&i) { hot } else { ink };
+            let ink = if form.hot.contains(&i) {
+                hot
+            } else if i < form.panel_from {
+                corner
+            } else {
+                panel
+            };
             push_line_quads(&mut batch, std::slice::from_ref(quad), ink);
         }
         batch.end_quads();
