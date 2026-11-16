@@ -1625,6 +1625,8 @@ three findings from the scene evidence fixed: F565, the saves' character screen 
 
 the first lane from the triage's port queue (combat and fight AI): the chase leave is reachable (it reads the brain's sight of its foe, as the original's fresh mark, and clears the level), a cast started while parrying ends the clinch, a released race shocked in combat resets its swing and a dying one takes no shock; six readings corrected (several items were already live or unreachable in the original). Most of the lane's other player-visible items wait on two missing structures: an NPC body that turns and looks through its locomotion, and the brain's perceived goal entity (F389). Duel scenes on the build worker's GPU run normally.
 
+F560's cause found with a new headless trace tool: the armour pass's head height was unordered in the fixed step, so the fires round's two systems moved it and changed armed characters from the first tick (now first in the step, as round 290 also ordered it); F566 fixed: the hand's pick names sliding leaves by their door record, so a portcullis takes the sliding hold; F563 closed as the original's: the placed portcullises read open in their arches and shut in their wall slots, from the assembly and the level data. F568 opened: the hand can drag a locked portcullis aside.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
