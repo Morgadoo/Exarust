@@ -31,7 +31,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 56% | 53% | 1% | 2% | 43% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 63% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
-| Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
+| Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 86% | 84% | 2% | 0% | 10% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 61% | 59% | 2% | 0% | 33% | 6% |  |
 | UI | 959 | 312 | 63 | 86% | 0% | 59% | 50% | 1% | 9% | 27% | 14% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
@@ -308,7 +308,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TGUIItemContainer | Items, materials & crafting | 26 | 90% | 86% | 85% | 0% | 0% | 9% | 6% |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
 | Item description phrases | Items, materials & crafting | 16 | 86% | 71% | 65% | 2% | 3% | 29% | 0% |
-| SG_ItemGUI | Items, materials & crafting | 15 | 84% | 67% | 61% | 2% | 4% | 21% | 13% |
+| SG_ItemGUI | Items, materials & crafting | 15 | 84% | 68% | 62% | 2% | 4% | 21% | 11% |
 | Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 16% | 16% | 0% | 0% | 78% | 6% |
 | FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 26% | 25% | 2% | 0% | 46% | 28% |
 | TProcMaterial | Items, materials & crafting | 6 | 79% | 0% | 0% | 0% | 0% | 91% | 9% |
@@ -452,7 +452,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | RFG_Dialogue | Script, dialogue & story | 18 | 91% | 95% | 93% | 2% | 0% | 0% | 5% |
 | FG_AIFunctions | Script, dialogue & story | 11 | 86% | 88% | 86% | 2% | 0% | 12% | 0% |
 | RFG_Scripts | Script, dialogue & story | 6 | 86% | 100% | 99% | 1% | 0% | 0% | 0% |
-| SG_GameFunctions | Script, dialogue & story | 3 | 82% | 44% | 41% | 3% | 0% | 37% | 19% |
+| SG_GameFunctions | Script, dialogue & story | 3 | 82% | 58% | 55% | 3% | 0% | 23% | 19% |
 | TRTDialogue | Script, dialogue & story | 3 | 85% | 48% | 43% | 5% | 0% | 52% | 0% |
 | TDialogueChoices | Script, dialogue & story | 2 | 80% | 100% | 98% | 2% | 0% | 0% | 0% |
 | TScriptRole | Script, dialogue & story | 1 | 82% | 52% | 52% | 0% | 0% | 48% | 0% |
@@ -493,7 +493,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TTextBox | UI | 12 | 88% | 96% | 95% | 1% | 0% | 2% | 2% |
 | TIconManager | UI | 10 | 85% | 44% | 42% | 1% | 1% | 0% | 56% |
 | RF_GUI_Controls | UI | 8 | 80% | 14% | 13% | 1% | 0% | 71% | 15% |
-| TCharacterView | UI | 8 | 76% | 8% | 8% | 0% | 0% | 78% | 14% |
+| TCharacterView | UI | 8 | 76% | 12% | 12% | 0% | 0% | 78% | 11% |
 | TGUITableView | UI | 7 | 90% | 66% | 39% | 4% | 23% | 34% | 0% |
 | RF_GUI_Icons | UI | 7 | 90% | 84% | 74% | 1% | 9% | 9% | 7% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 7 | 87% | 84% | 83% | 1% | 0% | 0% | 16% |

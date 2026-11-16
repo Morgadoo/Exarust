@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r271, 11-16) | target |
+| measure | start (r186, 11-10) | now (r272, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **57.98%** | **100%** |
+| **Ledger: bytes in a final state** | — | **58.02%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,014 | all |
+| Tests passing | 8,489 | 9,018 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -100,21 +100,21 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 154 | 162,146 |
 | Rendering & GPU | 10 | 10 | 291 | 148,394 |
-| UI | 12 | 12 | 356 | 129,755 |
+| UI | 12 | 12 | 353 | 129,480 |
 | Thaumaturgy & effects | 9 | 9 | 155 | 110,772 |
 | Characters, motion & animation | 8 | 8 | 234 | 107,087 |
 | AI & behaviour | 8 | 8 | 127 | 91,805 |
 | Game modes, arena & session | 7 | 7 | 182 | 76,611 |
 | World, levels & terrain | 5 | 5 | 153 | 76,455 |
-| Items, materials & crafting | 5 | 5 | 139 | 64,273 |
+| Items, materials & crafting | 5 | 5 | 137 | 64,090 |
 | Data, assets & I/O | 6 | 6 | 118 | 38,360 |
 | Runtime & platform | 5 | 5 | 69 | 20,690 |
 | Core, math & threading | 3 | 3 | 79 | 15,557 |
-| Script, dialogue & story | 2 | 2 | 29 | 7,041 |
+| Script, dialogue & story | 2 | 2 | 28 | 6,544 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,098** | **1,054,442** |
+| **Total** | **90** | **90** | **2,092** | **1,053,487** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 272 | The game's crystal drain drains the player's open inventory's pack panel and the record follows (a bug fixed: the open panel had saved stale charges over the drained record); the core crystal is shown over the figure, picked, dropped on for races that take it and taken off; the view image renders at the settings' supersampling (charview2). Inventory scenes owed (GPU on hold) |
 | 2026-11-16 | 271 | The AI's room bookkeeping and nearby gather are the original's (per-room lists newest first, the gather over the room and each exit's room), used by the AI tick and the player's tick, whose contacts now read its nearby list; a removed searcher lets its object reservation go; the death hook's golem glow branch decides; the chase leave clears its target; the room move is per level room, not a 600 cm cell, as an old reading had it (motileai4). Determinism runs on grid levels with NPCs owed (GPU on hold) |
 | 2026-11-16 | 270 | The grid sector step's first pass is live: the force blast and wave strike bodies in the next tick before the character ticks through the sector's cell walk and gates; the particles' body pass is ported exactly and hooked into the solver's object stage (still unfed: the fires step in the frame's world, simfires lane); every fighter carries a burn and its upkeep, which had never run, now runs; round 265's particle reading corrected (simprepass). Blast and wave scenes and determinism runs owed (GPU on hold) |
 | 2026-11-16 | 269 | An older save's world objects run the original's upgrade chain on a live load; three readers the game had duplicated go through the database routines; a loadout cost bug fixed (a one-handed weapon costs a point less); the container instantiate is ported, so a level's chest fill makes local copies with each row's condition (datastream). Chest, loadout and search scenes owed; level-load traces change (GPU on hold) |
