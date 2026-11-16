@@ -663,22 +663,23 @@ const STEP_REACH: f32 = 80.0;
 const FERAL_REACH: f64 = 0.3;
 const ENCUMBERED_REACH: f64 = 0.2;
 
-/// A character's step reach, cm: 80·√scale, shortened 30 % per unit of its
-/// feral level (when over 0) and 20 % per unit of its encumbrance, in
-/// double precision as the original's init computes it. Its long steps,
-/// footwork and knockback step are measured in it; a character's stats
-/// give it in metres (`CharacterStats::step_reach`).
+/// A character's step reach, cm: √scale times 80, shortened 30 % per unit
+/// of its feral level and 20 % per unit of its encumbrance, as the
+/// original's reach routine computes it: in double precision, the single
+/// precision √scale word times (the feral factor times ((1 − 0.2 ×
+/// encumbrance) times 80)), narrowed once. The feral factor is left out
+/// only for a negative level: a NaN level passes the original's unordered
+/// compare and takes the factor. Its long steps, footwork and knockback
+/// step are measured in it; a character's stats give it in metres
+/// (`CharacterStats::step_reach`).
 pub fn step_reach(scale: f32, feral: f32, encumbrance: f32) -> f32 {
-    let full = f64::from(STEP_REACH * scale.sqrt());
-    let encumbered = 1.0 - f64::from(encumbrance) * ENCUMBERED_REACH;
-    let feral = if feral > 0.0 {
-        1.0 - f64::from(feral) * FERAL_REACH
+    let size = f64::from(scale.sqrt());
+    let base = (1.0 - f64::from(encumbrance) * ENCUMBERED_REACH) * f64::from(STEP_REACH);
+    if feral < 0.0 {
+        (size * base) as f32
     } else {
-        1.0
-    };
-    // The encumbrance factor takes the full reach first, then the feral
-    // factor takes that product.
-    (feral * (encumbered * full)) as f32
+        (size * ((1.0 - f64::from(feral) * FERAL_REACH) * base)) as f32
+    }
 }
 
 /// The light and heavy ends of the weapon mass table by hands (one-handed,
@@ -1192,6 +1193,24 @@ mod tests {
         // In double precision: exanima01's zombies of feral level 0.84
         // reach 59.84 cm, not single precision's 59.840004.
         assert_eq!(step_reach(1.0, 0.84, 0.0), 59.84);
+    }
+
+    #[test]
+    fn the_step_reach_keeps_the_originals_order() {
+        // The original multiplies the single precision √scale word by the
+        // double precision product and narrows once; rounding 80·√scale in
+        // single precision first (the earlier port) lands one bit off for
+        // these characters. Values worked out from the assembly's order.
+        assert_eq!(step_reach(1.1, 0.84, 0.0).to_bits(), 1_115_359_994);
+        assert_eq!(step_reach(1.21, 0.84, 0.0).to_bits(), 1_115_923_940);
+        assert_eq!(step_reach(1.1, 0.0, 0.12).to_bits(), 1_118_029_872);
+        assert_eq!(step_reach(0.85, 0.5, 0.12).to_bits(), 1_114_947_787);
+        // A NaN feral level passes the unordered compare and takes the
+        // factor, so the reach is NaN; a level of 0 or -0 takes a factor
+        // of 1.
+        assert!(step_reach(1.0, f32::NAN, 0.0).is_nan());
+        assert_eq!(step_reach(1.0, 0.0, 0.0), 80.0);
+        assert_eq!(step_reach(1.0, -0.0, 0.0), 80.0);
     }
 
     #[test]

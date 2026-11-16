@@ -425,8 +425,10 @@ and thin-plate bit off, `Ragdoll::clear_death_strikes`). The status-effect pass
 bit 2 by swapping the last entry in. The reset facing
 (`exa_physics::body::balance::reset_heading`) is the chest over the pelvis,
 flattened and normalised. The attack reach
-(`CharacterStats::attack_reach`) is √scale × (1 − 0.3 age, omitted when
-negative) × (1 − 0.2 encumbrance) × 80 cm.
+(`CharacterStats::attack_reach`) is the step reach
+(`exa_formats::weapon_record::step_reach`): √scale × ((1 − 0.3 feral,
+omitted when negative) × ((1 − 0.2 encumbrance) × 80)) cm in double, in
+that order.
 
 Each living character's posture stage
 (`track_condition` in `exa_physics::body::CharacterStage::Posture`, after
