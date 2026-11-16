@@ -1648,8 +1648,27 @@ other table drops there (a drop on its own table does nothing), and
 `board_table_answer` keeps the change: on the tournament page in the event's
 row (a join rewrites the entrants, a leaving moves the later ones down), on
 the others in the staff's order list. `--board-table STEPS` scripts these
-presses (debug). A drag inside the lineup, which the original reorders, is
-not in.
+presses (debug). A lineup row dropped on the lineup moves within it
+(`Board::reorder_team`: a swap with the row under it, or to the end past
+the rows) and is kept the same way. The tournament tab's weapon pane carries
+its Choose button: it opens the loadout form on its event page at the
+selected event's first entrant with the event's weapon words in the view's
+hands (`HubWindows::open_lineup`), and the form's close writes the out hands
+back to the event (`hub_forms::apply_closed_lineup`).
+
+The arena's won items are item instances in the live object database
+(`arena_rewards`): a swept season's rewards are made by the reward maker
+(instanced, condition bytes 255/0/0/0, the description pass) and a won
+week's prize graded pristine, both stowed by `arena_hub_live::hub_stow_won`.
+An arena slot's load runs the arsenal's id pass
+(`save_live::remap_loaded_items`): base records with the instance bit become
+local instances and their holders (stash, loadouts, hands, packs, kits)
+follow. A merchant's leaving empties his stock, and a merchant's or a
+physician's leaving takes his figure from the hub
+(`arena_hub_live::remove_left_figures`). The manager's fall in a match fades
+the heartbeat, closes the screens, shows its tip and, with a teammate
+standing, starts the spectate session; the in-game EXIT in the arena
+(`Flow::arena_exit`) sends the unfit specialist away, saves and leaves.
 
 The hardware configuration (`hw_config`) runs the settings screen: it holds
 the live options, the saved set and the open page's draft; opens the page

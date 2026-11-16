@@ -2238,7 +2238,7 @@ pub fn restore_arena(
 pub fn remap_loaded_items(
     stores: &mut ArenaStores,
     career: &mut crate::hub_windows::ArenaCareer,
-    mut body: Option<&mut exa_items::possession::Possessions>,
+    body: Option<&mut exa_items::possession::Possessions>,
     mut map_item: impl FnMut(u32) -> u32,
 ) -> usize {
     use exa_items::possession::Hand;
@@ -2314,7 +2314,7 @@ pub fn remap_loaded_items(
     for (loadout, remapped) in career.player.loadouts.iter_mut().zip(manager.loadouts) {
         *loadout = remapped;
     }
-    if let Some(body) = body.as_deref_mut() {
+    if let Some(body) = body {
         for (hand, remapped) in body
             .out
             .iter_mut()
@@ -2327,13 +2327,7 @@ pub fn remap_loaded_items(
             item.id = remapped.item;
         }
     }
-    for (i, (employee, refs)) in stores
-        .staff
-        .employees
-        .iter_mut()
-        .zip(employees)
-        .enumerate()
-    {
+    for (i, (employee, refs)) in stores.staff.employees.iter_mut().zip(employees).enumerate() {
         employee.hands = [refs.record.hands[0].id, refs.record.hands[1].id];
         for (item, remapped) in employee.carried.iter_mut().zip(&refs.record.inventory) {
             *item = remapped.item;
@@ -2414,10 +2408,7 @@ fn load_arena_slot(
     mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
     mut report: ResMut<SaveReport>,
     mut live: ResMut<exa_assets::live_objects::LiveObjects>,
-    mut players: Query<
-        &mut exa_items::possession::Possessions,
-        With<crate::player::PlayerBody>,
-    >,
+    mut players: Query<&mut exa_items::possession::Possessions, With<crate::player::PlayerBody>>,
 ) {
     let (Some(request), Some(mut lists)) = (request, lists) else {
         return;

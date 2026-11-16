@@ -465,7 +465,8 @@ pub(crate) fn remove_left_figures(
         } else {
             crate::career::Profession::Physician
         };
-        hub.specialists_placed.retain(|&placed| placed != profession);
+        hub.specialists_placed
+            .retain(|&placed| placed != profession);
     }
 }
 
@@ -1158,11 +1159,7 @@ impl HubShop<'_, '_> {
         match item {
             crate::arena_rewards::WonItem::Prize(id) => {
                 let made = self.with_world(|world| {
-                    exa_items::randomise::grade_object(
-                        world,
-                        id,
-                        crate::arena_rewards::PRIZE_GRADE,
-                    )
+                    exa_items::randomise::grade_object(world, id, crate::arena_rewards::PRIZE_GRADE)
                 });
                 self.live.take_refresh_state();
                 // A prize the database cannot read stays the id it was
@@ -1558,7 +1555,7 @@ pub(crate) fn hub_stow_won(
     if career.won_items.is_empty() {
         return;
     }
-    let won: Vec<_> = career.won_items.drain(..).collect();
+    let won = std::mem::take(&mut career.won_items);
     if shop.stores.is_none() {
         return;
     }
@@ -2858,7 +2855,10 @@ mod tests {
         pointer(&mut app, to, false);
         let board = app.world().resource::<HubWindows>().board.clone().unwrap();
         assert_eq!(board.team, vec![second, first]);
-        let staff = &app.world().resource::<crate::save_live::ArenaStores>().staff;
+        let staff = &app
+            .world()
+            .resource::<crate::save_live::ArenaStores>()
+            .staff;
         assert_eq!(staff.order, board.lineup);
         assert_ne!(board.lineup, order_before);
     }
@@ -3162,7 +3162,12 @@ mod tests {
             app.update();
         }
         let windows = app.world().resource::<HubWindows>();
-        assert!(windows.forms.get(crate::hub_forms::FormWindow::Loadout).is_none());
+        assert!(
+            windows
+                .forms
+                .get(crate::hub_forms::FormWindow::Loadout)
+                .is_none()
+        );
         let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
         assert_eq!(
             career.entries[0].entries[0].weapon,
@@ -3187,14 +3192,16 @@ mod tests {
         });
         app.insert_resource(stores);
         app.init_resource::<crate::arsenal::ShelfKinds>();
-        let mut career = crate::hub_windows::ArenaCareer::default();
-        career.merchant_stock = vec![11, 12];
-        career.staff_left = vec![0];
-        app.insert_resource(career);
-        let mut hub = ArenaHub::default();
-        hub.npcs_spawned = true;
-        hub.specialists_placed = vec![crate::career::Profession::Merchant];
-        app.insert_resource(hub);
+        app.insert_resource(crate::hub_windows::ArenaCareer {
+            merchant_stock: vec![11, 12],
+            staff_left: vec![0],
+            ..Default::default()
+        });
+        app.insert_resource(ArenaHub {
+            npcs_spawned: true,
+            specialists_placed: vec![crate::career::Profession::Merchant],
+            ..Default::default()
+        });
         let mut data = exa_character::record::CharacterData::default();
         data.record.set_profession(0x4000_0000);
         data.record.worn = vec![exa_formats::characters::ItemRef::new(5, 0)];
@@ -3203,7 +3210,13 @@ mod tests {
         let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
         assert!(career.merchant_stock.is_empty());
         assert!(career.figures_left.is_empty());
-        assert!(app.world().resource::<crate::save_live::ArenaStores>().staff.employees.is_empty());
+        assert!(
+            app.world()
+                .resource::<crate::save_live::ArenaStores>()
+                .staff
+                .employees
+                .is_empty()
+        );
         let data = app
             .world()
             .get::<exa_character::record::CharacterData>(merchant)
@@ -3213,7 +3226,9 @@ mod tests {
             .world_mut()
             .resource_mut::<Messages<crate::scene_bodies::SceneCommand>>()
             .drain()
-            .filter(|c| matches!(c, crate::scene_bodies::SceneCommand::Despawn(e) if *e == merchant))
+            .filter(
+                |c| matches!(c, crate::scene_bodies::SceneCommand::Despawn(e) if *e == merchant),
+            )
             .collect();
         assert_eq!(despawns.len(), 1);
         assert!(

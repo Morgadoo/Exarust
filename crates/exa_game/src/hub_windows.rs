@@ -1287,9 +1287,8 @@ impl HubWindows {
                     if answer == BoardTableAction::Reordered {
                         // The rows stay in the lineup: only its selection
                         // is kept within it.
-                        board.team_selection = board
-                            .team_selection
-                            .filter(|&row| row < board.team.len());
+                        board.team_selection =
+                            board.team_selection.filter(|&row| row < board.team.len());
                     } else {
                         remove_moved_row(board, drag.slot, from, source);
                     }

@@ -567,7 +567,11 @@ pub mod weapon_panel {
 /// Evidence: the board's constructor and the template array it passes the
 /// pane (`docs/UI.md`, Arena match board).
 const fn weapon_panel_records(compact: bool) -> [FormRecord; 3] {
-    let rows = if compact { [2, 8, 0x10] } else { [3, 0xa, 0x13] };
+    let rows = if compact {
+        [2, 8, 0x10]
+    } else {
+        [3, 0xa, 0x13]
+    };
     [
         FormRecord {
             text: Some(WEAPON_RESTRICTION_CAPTION),
@@ -2221,13 +2225,11 @@ impl Board {
             return None;
         }
         let panel = self.layout().reward_panel;
-        Some(
-            weapon_panel_rects(self.compact, self.unit).map(|r| Rect {
-                x: panel.x + r.x,
-                y: panel.y + r.y,
-                ..r
-            }),
-        )
+        Some(weapon_panel_rects(self.compact, self.unit).map(|r| Rect {
+            x: panel.x + r.x,
+            y: panel.y + r.y,
+            ..r
+        }))
     }
 
     /// The season tab's four winner lines.
@@ -3412,11 +3414,17 @@ pub enum BoardInput {
     ClickWinner(usize),
     DoubleClickAvailable(usize),
     DoubleClickTeam(usize),
-    DropOnTeam { from: usize, to: Option<usize> },
+    DropOnTeam {
+        from: usize,
+        to: Option<usize>,
+    },
     DropOnAvailable(usize),
     /// A lineup row dropped on the lineup: `to` is the zero-based row it
     /// was dropped on, `None` past the rows.
-    ReorderTeam { from: usize, to: Option<usize> },
+    ReorderTeam {
+        from: usize,
+        to: Option<usize>,
+    },
     Confirm,
     Close,
 }

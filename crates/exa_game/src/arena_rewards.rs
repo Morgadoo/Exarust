@@ -25,9 +25,9 @@
 //! assembly of `Exanima.exe` 0.9.5.
 
 use exa_formats::objdb::ObjectDb;
-use exa_items::randomise::section_range;
 use exa_items::instance::Spreads;
 use exa_items::palette::Palette;
+use exa_items::randomise::section_range;
 
 /// The item body section.
 const BODY: u32 = 0x1000;
@@ -162,5 +162,4 @@ mod tests {
             0
         );
     }
-
 }

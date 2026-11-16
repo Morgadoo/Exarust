@@ -162,7 +162,10 @@ pub fn apply_closed_lineup(
     else {
         return false;
     };
-    let hands = [word_of_hand(loadout.hands[0]), word_of_hand(loadout.hands[1])];
+    let hands = [
+        word_of_hand(loadout.hands[0]),
+        word_of_hand(loadout.hands[1]),
+    ];
     loadout.hands[0] = edit.saved[0];
     loadout.hands[1] = edit.saved[1];
     crate::manage::close_lineup(&mut career.entries, edit.event, hands);
@@ -172,7 +175,10 @@ pub fn apply_closed_lineup(
     info!(
         "hub board: the lineup of event {} closes; its first entrant's weapons {:#x?}",
         edit.event,
-        career.entries.get(edit.event).map(|row| row.entries[0].weapon)
+        career
+            .entries
+            .get(edit.event)
+            .map(|row| row.entries[0].weapon)
     );
     true
 }
@@ -892,8 +898,7 @@ impl HubWindows {
         let Ok(tab) = usize::try_from(open.tab) else {
             return false;
         };
-        let Some(loadout) =
-            row_member(career, row).and_then(|member| member.loadouts.get_mut(tab))
+        let Some(loadout) = row_member(career, row).and_then(|member| member.loadouts.get_mut(tab))
         else {
             return false;
         };
@@ -1399,7 +1404,7 @@ pub fn apply_staff_changes(
     stores: &mut crate::save_live::ArenaStores,
     kinds: &crate::arsenal::ShelfKinds,
 ) {
-    let left: Vec<usize> = career.staff_left.drain(..).collect();
+    let left = std::mem::take(&mut career.staff_left);
     for employee in forms.joined.drain(..) {
         let crate::save_live::ArenaStores { staff, arsenal, .. } = &mut *stores;
         let stowed = staff.admit_stowing(employee, arsenal, |item| kinds.kind(item));
@@ -2507,7 +2512,9 @@ mod tests {
             records.push((id, payload));
         }
         db.base = exa_formats::objdb::Store::from_records(
-            records.iter().map(|(id, p)| (*id, 0x1000_1000, p.as_slice())),
+            records
+                .iter()
+                .map(|(id, p)| (*id, 0x1000_1000, p.as_slice())),
         );
         windows.refresh_manage(&career);
         let mut app = form_app(windows, career);
@@ -2546,7 +2553,9 @@ mod tests {
             .map(|entry| entry.item)
             .collect();
         assert_eq!(stowed.len(), 4);
-        let objects = app.world().resource::<exa_assets::live_objects::LiveObjects>();
+        let objects = app
+            .world()
+            .resource::<exa_assets::live_objects::LiveObjects>();
         for (made, source) in stowed.iter().zip(rewards) {
             assert_ne!(made & LOCAL, 0, "{made:#x} is a local instance");
             let body = objects.db().find(*made).unwrap().section(0x1000).unwrap();

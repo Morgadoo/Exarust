@@ -1323,9 +1323,10 @@ fn tick_arena_match(
                 );
             });
             if let Some(steps) = steps.as_deref_mut() {
-                steps
-                    .steps
-                    .extend([crate::flow::Step::FadeHeartbeat, crate::flow::Step::Tip(down.screen)]);
+                steps.steps.extend([
+                    crate::flow::Step::FadeHeartbeat,
+                    crate::flow::Step::Tip(down.screen),
+                ]);
             }
             if let Some(control) = control.as_deref_mut() {
                 crate::controls_live::block_controls(control, true, "the manager fell");
@@ -1340,7 +1341,10 @@ fn tick_arena_match(
                 spectate.start();
                 spectate.arena = true;
                 spectate.forced_room_at = Some(Vec3::from_array(arena.spawn_at) / 100.0);
-                info!("arena match: the manager fell with {} standing; the match is spectated", down.ours_standing);
+                info!(
+                    "arena match: the manager fell with {} standing; the match is spectated",
+                    down.ours_standing
+                );
             }
             info!(
                 "arena match: the manager fell (screen {}, fatal {})",
