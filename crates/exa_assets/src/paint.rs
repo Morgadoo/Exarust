@@ -57,14 +57,18 @@ impl Texels {
     fn bilinear(&self, s: f32, t: f32) -> [f32; 4] {
         let (i, j) = (s.floor(), t.floor());
         let (a, b) = (s - i, t - j);
-        let (i, j) = (i as i64, j as i64);
-        let p00 = self.at4(i, j);
-        let p10 = self.at4(i + 1, j);
-        let p01 = self.at4(i, j + 1);
-        let p11 = self.at4(i + 1, j + 1);
+        let (w, h) = (self.width as i64, self.height as i64);
+        let i0 = (i as i64).rem_euclid(w) as usize;
+        let j0 = (j as i64).rem_euclid(h) as usize;
+        let i1 = if i0 + 1 == self.width { 0 } else { i0 + 1 };
+        let j1 = if j0 + 1 == self.height { 0 } else { j0 + 1 };
+        let texel = |x: usize, y: usize| &self.rgba[(y * self.width + x) * 4..][..4];
+        let (p00, p10) = (texel(i0, j0), texel(i1, j0));
+        let (p01, p11) = (texel(i0, j1), texel(i1, j1));
         std::array::from_fn(|k| {
-            let top = p00[k] + (p10[k] - p00[k]) * a;
-            let bottom = p01[k] + (p11[k] - p01[k]) * a;
+            let c = |p: &[u8]| p[k] as f32 / 255.0;
+            let top = c(p00) + (c(p10) - c(p00)) * a;
+            let bottom = c(p01) + (c(p11) - c(p01)) * a;
             top + (bottom - top) * b
         })
     }
@@ -2783,7 +2787,7 @@ fn sample_stretched4(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: 
         let v = if scale == 1.0 {
             (y * t.height / h) as i64
         } else {
-            (y as f32 * rows / h as f32).floor() as i64
+            (y as f32 * scale * t.height as f32 / h as f32).floor() as i64
         };
         return t.at4((x * t.width / w) as i64, v);
     }
