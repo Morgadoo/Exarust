@@ -736,7 +736,10 @@ trigger is not run: Exarust's characters carry no GI points.
 original's three tiers in one resource: the base tier (`objdb.rdb` and the
 shared `objstrings.rdb`, read the first time something asks), the local
 tier (the loaded level's own database, which the level load puts in place
-and migrates whole from its templates, as every import's hook does)
+and migrates whole from its templates, as every import's hook does, with
+the item factory's pass the game installs, `set_factory`, so a factory
+weapon is rebuilt from its factory; `import_world` does the same for a
+save's world tier)
 and the world tier (objects promoted out of levels, which a save's load
 fills and its save exports). Kits, container popups, the kit passes, the
 crystal drain (`write_section_byte`, a socket's charge) and the saves write

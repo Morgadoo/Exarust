@@ -37,6 +37,9 @@ REA (Exanima.exe 0.9.5), read in the assembly:
 - The painter filters magnified region maps bilinearly.
 - Skin maps follow the texture detail.
 - The view's displaced value reads the body's class word.
+- The level, world-tier and archive migrations run the item factory's
+  pass on factory weapons (the migration routine takes the factory; its
+  callers passed none).
 
 Not changed: a material slot naming an image no pack holds still binds no
 map. The shipped models name 259 such images outside reflections, and some

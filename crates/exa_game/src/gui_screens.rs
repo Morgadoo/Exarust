@@ -2174,8 +2174,29 @@ pub fn sweep_screens(world: &mut World, sweep: ScreenSweep) {
 
 pub struct GameScreensPlugin;
 
+/// Gives the live object database the item factory's pass its migrations
+/// run (a level's local tier, a save's world tier), when the game's data is
+/// open as the plugin is built.
+fn install_factory_hook(app: &mut App) {
+    let Some(game) = app
+        .world()
+        .get_resource::<exa_assets::Game>()
+        .map(|g| g.0.clone())
+    else {
+        return;
+    };
+    app.init_resource::<exa_assets::live_objects::LiveObjects>();
+    let mut live = app
+        .world_mut()
+        .resource_mut::<exa_assets::live_objects::LiveObjects>();
+    if live.factory().is_none() {
+        live.set_factory(crate::shop_stock::factory_hook(game));
+    }
+}
+
 impl Plugin for GameScreensPlugin {
     fn build(&self, app: &mut App) {
+        install_factory_hook(app);
         crate::gui_keys::ensure(app);
         app.init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()

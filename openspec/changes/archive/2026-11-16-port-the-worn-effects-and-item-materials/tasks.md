@@ -12,6 +12,7 @@
 - [x] 2.2 Material providers last to first; manager record first for bodies, GI, split flags
 - [x] 2.3 Extension field: the three empty cases alike
 - [x] 2.4 Displaced value from the body's class word
+- [x] 2.5 Level, world and archive migrations hand factory weapons to the item factory
 
 ## 3. Texture paint and skin
 
