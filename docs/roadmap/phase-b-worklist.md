@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 600 | 149,021 | B1 wire (or prove unreachable) |
-| partial | 1,382 | 870,634 | B4 complete the port |
+| partial | 1,374 | 869,519 | B4 complete the port |
 | missing | 52 | 10,114 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,12 +14,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 142,710 | 17,693 | 276 |
+| physics | 142,007 | 17,693 | 276 |
 | render | 115,117 | 21,704 | 3,232 |
 | ui | 86,123 | 40,819 | 288 |
 | powers | 105,027 | 2,271 | 2,321 |
 | characters | 85,591 | 14,220 | 1,943 |
-| ai | 89,048 | 1,725 | 28 |
+| ai | 88,636 | 1,725 | 28 |
 | modes | 65,851 | 9,978 | 363 |
 | world | 56,743 | 15,874 | 563 |
 | items | 54,650 | 7,741 | 525 |
@@ -34,13 +34,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 43 / 97,613 | 3 / 558 | 1 / 38 | 98,209 |
+| TMotileDynamics | physics | 41 / 97,317 | 3 / 558 | 1 / 38 | 97,913 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 20 / 29,952 | 2 / 165 | 2 / 28 | 30,145 |
 | TSimSector | physics | 27 / 21,200 | 0 / 0 | 0 / 0 | 21,200 |
 | TMotilePart | characters | 37 / 17,208 | 4 / 1,296 | 2 / 1,370 | 19,874 |
 | XA_Arena (unit routines) | modes | 28 / 16,281 | 3 / 1,321 | 4 / 363 | 17,965 |
-| SG_PlayerControls (unit routines) | ai | 34 / 17,767 | 0 / 0 | 0 / 0 | 17,767 |
+| SG_PlayerControls (unit routines) | ai | 30 / 17,355 | 0 / 0 | 0 / 0 | 17,355 |
 | TVXGIManager | render | 11 / 16,981 | 0 / 0 | 0 / 0 | 16,981 |
 | TPathFinder | ai | 4 / 14,517 | 0 / 0 | 0 / 0 | 14,517 |
 | TGUIForm | ui | 31 / 10,077 | 20 / 3,989 | 0 / 0 | 14,066 |
@@ -54,8 +54,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
 | Character equipment & inventory routines (TCharacterView by address) | items | 20 / 9,135 | 0 / 0 | 0 / 0 | 9,135 |
-| TTetraRBD | physics | 18 / 8,305 | 2 / 661 | 0 / 0 | 8,966 |
 | RF_OS_Functions (unit routines) | runtime | 13 / 6,781 | 5 / 1,749 | 1 / 49 | 8,579 |
+| TTetraRBD | physics | 16 / 7,898 | 2 / 661 | 0 / 0 | 8,559 |
 | FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
 | RF_3DView (unit routines) | render | 14 / 7,385 | 0 / 0 | 7 / 1,146 | 8,531 |
 | RFE_Export_RFC2 (unit routines) | data | 13 / 8,152 | 2 / 240 | 0 / 0 | 8,392 |
