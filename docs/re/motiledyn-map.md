@@ -521,6 +521,65 @@ Damage routine (#8):
 Approximations (DEC-7, left as they are): the flesh channels' fast log/exp pair (three
 fast powers) and the ones listed for #49 and #8 above; none added.
 
+## Assembly comparison, fourth pass (motiledyn4 lane)
+
+The rows past the body tick and the damage routine, checked against the assembly (GPU on
+hold, tests are the evidence; determinism runs and scenes owed, see the lane's artifacts
+README).
+
+Swing tick (#34):
+
+| block | result |
+|---|---|
+| Opening | the attack-start stamp (only when the condition was not 2), the hunch's 0.02 (double, NaN kept), the leg layers on leaving a 0x100+ condition, the vestigial fatigue add (MINSS, NaN gives 1): as ported |
+| Weapon-in-hand gate ("off-target countdown") | after the lead-in (no capture key left), flag 8 clear: unarmed sets it; armed, the primary within (50·scale)² of its hand and its axis dot over 0.5, else the rate loses 0.1 (double, above 0.1) and the whole routine returns. `weapon_gate` matches it but has no caller: a bone-attached weapon is always in its hand, so the gate opens on its first tick; left |
+| Counter hold (the armed-parry and clinch-clear branch) | stance class 3: the target playing the countered motion keeps the armed grip aimed (the grip routine from the attack) unless the body lacks Ward and its progress is at 0.4 or past, double, a NaN too (JP to the clear), when the clinch clear runs; class 0x90 aims the grip on the same test. Missing before; ported (`parry::hold_counter_parries`) |
+| Two-weapon hand guard ("down-attack arm flags") | class 0x90, every attack tick: the right hand and its parent take bit 8 (the arm bit) for motions 8 to 10, else the left. Missing before; ported. The motion start that leaves an attack runs the clinch clear unconditionally, so the attack's end now releases a held arm bit even with no countered motion (`run_parries`) |
+| Region, trackers, voice and rustle | region (5–10 chained under 0.25, else over 0.3 in double), the late flag, the 50 cm cap and the best-speed rule, the 0.25 lerp, the 1000 cap: match `in_region`/`Tracker::track` |
+| Rate | shape (W48·0.833 at or before the first key, in double), the stab's 1.2 and early ramp, the feral ramp's sum order, × 1.125 × base: match. Two NaN sides fixed: a NaN progress takes the first-key shape and the smoothstep term (both compares unordered). The ×0.64 of a byte with no writer and a register that is always zero (rate 0) are dead |
+| Window close/open, Remise pickers, stall, energy | match `SwingState::tick` (the energy share replaces the rate, as `paced`) |
+| A character field set to 256 at a speed² over 50 | the body tick zeroes the field every tick; no reader on the character; vestigial |
+
+Muscles-off sampler (#82): the body tick calls it only when the muscles byte is
+clear and a local flag is set; for a muscles-off body that flag is the byte the tick reads at
+its advance block or a countdown above 0, and neither has a store in the image (the byte is
+read, tested and cleared; the countdown is tested and decremented). Unreachable in 0.9.5, as
+Exarust has it (`sample_limp` keeps no caller).
+
+Living sampler (#81): the bracket's compares (a NaN lead takes the between-keys path, finds no
+key), the lead-in share (clock over first key plus blend, 0 under ε), the capture source and
+its ease while the target is the capture's key, the rebase (clock less blend, blend and ease 0)
+and the look weight's 0.01 (double) to 1 match `Animator::bracket`. Left: Exarust clamps the
+share to 0..1 and guards the between-keys span and the looping wrap's first key against
+ε (the original divides as it is). The placement on the ground (#62) samples through this
+routine with its placement flag (targets written directly, rate 0), not the pose-only one
+(#76), which only the spawns, the character creator and the golem guardians call; Exarust's
+placement takes the pose-only arithmetic (`posed_parts`). Not changed here: it moves where
+placed bodies stand and needs a GPU check.
+
+Locomotion routine (#31): compared block by block (run blend and caps in double, the walk's
+max-then-square, the vertical bleed, the rows and the latch's clock, the crouch, the start
+keys and the 600 ms resume, the drive's push and boost, the speed, the clock step). One
+missing write: with support the routine sets the head tilt from this tick's exertion
+(copysign·e²·2) after the run blend, which the twist then reads; the body tick's lean had set
+it from last tick's and eased it. Ported (`locomote`).
+
+Placement on the ground (#62): opens with the parrying byte cleared and the clinch clear (the
+arm bits, the shield's and the held items' parry links, the countered motion). Missing before;
+ported (`parry::clear_for_placement` from `limp::place_on_ground`).
+
+Balance routine (#18), get-up branch (condition exactly 0x300): besides the balance's 0.05
+and the counter's 5, it clears the posture switch's wait (the 41/27 the Rebalance
+starts write), the stepping and balance-step bytes and the long kind each tick. Ported
+(`measure_balance`); a fourth field it zeroes has only zeroing stores and one address taken by
+the AI, not mapped. The jolt-after-counter order stands as listed.
+
+Feet routine (#50): the walking per-foot weights and probe (`gait_weights`, `gait_probe`)
+spot-checked (MAXPS against 0, the fall share in double); no change.
+
+Approximations (DEC-7, left as they are): none added. The counter hold's parry point uses
+the approximate normaliser twice, as the parry's (`parry_point`).
+
 ## Corrections made by the audit
 
 - The step routine an earlier rating credited as the step end is the step **start** (routine #17);

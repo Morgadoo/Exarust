@@ -2139,7 +2139,7 @@ pub(crate) fn hold_counter_parries(
         else {
             return;
         };
-        if !crate::swing::attack_branch_runs(anim, *condition, body.as_deref()) {
+        if !crate::swing::attack_branch_runs(anim, *condition, body) {
             return;
         }
         let Some(clip) = motions.clip(anim, &anim.action) else {
@@ -2158,7 +2158,7 @@ pub(crate) fn hold_counter_parries(
             target.and_then(|t| t.0).filter(|&t| t != entity),
             anim.clip_progress(clip),
             motions.0.action_index(&anim.action).unwrap_or(0) as i32,
-            stance::chest_point(gt, body.as_deref()),
+            stance::chest_point(gt, body),
         )
     };
     // The target, when it plays the countered motion: its chest, its
@@ -2201,7 +2201,13 @@ pub(crate) fn hold_counter_parries(
         let hold = if clears {
             None
         } else {
-            counter_hold(&foe, &held(entity, &blades), &fighter, motion, chest * 100.0)
+            counter_hold(
+                &foe,
+                &held(entity, &blades),
+                &fighter,
+                motion,
+                chest * 100.0,
+            )
         };
         match hold {
             Some(CounterHold::Aim(grip, point)) => {

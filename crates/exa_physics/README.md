@@ -826,7 +826,8 @@ adapter by 10·|error|; the arms' turn floor reads last tick's error
 locomotion routine while it moves (`body::locomotion::locomote`: the run
 blend and its bleeds, the gait columns from the race's per-tick table
 `GaitTable`, the walk's start key or resume, the boost ramp, the drive,
-the speed along the heading and the locomotion clock's step) or the fall
+the speed along the heading and the locomotion clock's step; with support
+the head tilt from the exertion it has just eased) or the fall
 of its run blend while it stands (`stand`; `src/body_gait.rs`); its
 capsule carries the decision out until the body walks by its carry
 (`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`). While the
@@ -1147,7 +1148,8 @@ its ankles and asks the level for the ground under each foot
 its support S (`src/body_balance.rs`, `body::Ragdoll::measure_balance`);
 without support it also asks for the ground under its pelvis
 (`body::Balance::ground`, read by the get-up's support and the fall
-check). Its feet are planted as the original's are (`src/body_feet.rs`):
+check). A get-up tick (condition 0x300) raises the balance 0.05, eases the
+counter, and ends any step and the posture switch's wait. Its feet are planted as the original's are (`src/body_feet.rs`):
 each leg's foot contact (`body::Leg`: `state`, a `body::FootState` of the
 original's bits, `anchor`, `grip`, `ramp`) is planted where its foot meets
 the floor, stood on its stance spot getting up or unsupported, cleared

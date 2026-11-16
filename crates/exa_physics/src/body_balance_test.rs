@@ -250,6 +250,39 @@ fn an_upright_body_never_falls() {
     }
 }
 
+/// A get-up tick on its feet raises the balance by 0.05 (double) and eases
+/// the counter by 5 over 2, and it ends any step: the stepping and
+/// balance-step bytes and the long kind clear, and so does the posture
+/// switch's wait.
+#[test]
+fn a_get_up_tick_ends_the_step_and_the_posture_wait() {
+    let mut body = biped();
+    let ground = floor();
+    body.measure_balance(ground.as_slice());
+    {
+        let d = body.drive.as_mut().unwrap();
+        d.balance.value = 0.5;
+        d.balance.counter = 80;
+        d.steps.stepping = true;
+        d.steps.balance_step = true;
+        d.steps.knockback = true;
+        d.posture_wait = 30;
+    }
+    bearing(
+        &mut body,
+        Bearing {
+            getting_up: true,
+            ..Bearing::default()
+        },
+    );
+    body.measure_balance(ground.as_slice());
+    let d = drive(&body);
+    assert_eq!(d.balance().value, (0.5f64 + 0.05) as f32);
+    assert_eq!(d.balance().counter(), 75);
+    assert!(!d.steps.stepping && !d.steps.balance_step && !d.steps.knockback);
+    assert_eq!(d.posture_wait, 0);
+}
+
 /// With no ground under its feet a standing body has no balance and no
 /// support, and counts the ticks it is airborne; a moving one keeps its
 /// balance but has no support either. No controller holds a standing body

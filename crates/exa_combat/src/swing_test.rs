@@ -113,7 +113,10 @@ fn feral_swings_ramp_up() {
 #[test]
 fn a_nan_progress_takes_the_unordered_branches() {
     let a = sword_a();
-    assert_eq!(a.rate(false, f32::NAN, 1.0, 0.0), a.rate(false, 0.0, 1.0, 0.0));
+    assert_eq!(
+        a.rate(false, f32::NAN, 1.0, 0.0),
+        a.rate(false, 0.0, 1.0, 0.0)
+    );
     assert!(a.rate(false, f32::NAN, 1.0, 0.5).is_nan());
 }
 
