@@ -929,11 +929,20 @@ register (`item_effects::WornEffects`, from the armour pass's
 `exa_formats::encumbrance::WornSpecials`): a healing item on a body that
 takes remedies heals its red health by 0.004 of the maximum each second of
 game time and spends a charge; the golem suit's and gauntlets' ticks step
-their bytes but have no drawn light or garment switch. The golem suit's
-registration and worn tick power and unpower the body's golem-suit flag
-(`exa_physics::body::Drive::golem_powered`, which the character init sets
-for a golem race), which halves the standing thigh factor and quarters
-the leg limit. A worn mind ward
+their bytes. Every byte a tick moves is written into the item's apparel
+body in the live database on the frame (`item_effects::write_back`), so
+the catalogue, the armour pass and a save see the spent charge. The golem
+suit's registration and worn tick power and unpower the body's golem-suit
+flag (`exa_physics::body::Drive::golem_powered`, which the character init
+sets for a golem race), which halves the standing thigh factor and
+quarters the leg limit; powered, the body's standing stance factor is the
+suit's 0.75 (`item_effects::WORN_STANCE`), switched off the race's. The
+suit's switches and the gauntlets' (whose tick compares the stored
+weightless share) run the body's equipment refresh: the next armour pass
+runs whatever the worn list says (a dead suit adds its two to the
+encumbrance, and the step reach and the view's dots follow). The
+gauntlets' holding pass and limb handling are not rerun (the held items
+keep their handling until the next equip). A worn mind ward
 also sets the caster's power-refusing bit and a focus charm its focus
 regeneration bonus (`thaum::cast::PowerCaster::apply_worn`).
 

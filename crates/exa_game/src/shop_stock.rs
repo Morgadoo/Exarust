@@ -228,6 +228,18 @@ pub struct ItemPalette(pub Palette);
 #[derive(Resource, Debug, Default, Clone)]
 pub struct ShopFactories(pub HashMap<String, Option<Arc<Factory>>>);
 
+/// The item factory's pass the live database's migrations run
+/// ([`exa_assets::live_objects::FactoryHook`]), over the game's own data:
+/// a migrated factory weapon is rebuilt from its factory (each factory read
+/// once), as the original's migration calls its item factory.
+pub fn factory_hook(game: Arc<exa_assets::GameData>) -> exa_assets::live_objects::FactoryHook {
+    let factories = std::sync::Mutex::new(ShopFactories::default());
+    exa_assets::live_objects::FactoryHook(Arc::new(move |name: &str, body: &mut [u8]| {
+        let mut factories = factories.lock().unwrap_or_else(|e| e.into_inner());
+        factories.pass_in(Some(&game), name, body);
+    }))
+}
+
 impl ShopFactories {
     /// The factory pass over a weapon body for the factory `name` (the
     /// model name after its `@`), reading `Factories.rpk` once per name.
@@ -534,6 +546,51 @@ impl ShopWorld for LiveShopWorld<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A level's local tier is migrated with the item factory's pass once
+    /// the game installed it: some shipped level holds a factory weapon
+    /// whose migrated record differs from the migration without the pass
+    /// (shipped data).
+    #[test]
+    fn a_level_load_rebuilds_its_factory_weapons() {
+        use exa_assets::live_objects::LiveObjects;
+        use exa_formats::objdb::Tier;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let data = Arc::new(data);
+        let Some(pack) = data.pack(exa_assets::PackKind::Resource) else {
+            return;
+        };
+        let mut plain = LiveObjects::default();
+        let mut hooked = LiveObjects::default();
+        assert!(plain.ensure_base(&data) && hooked.ensure_base(&data));
+        hooked.set_factory(factory_hook(data.clone()));
+        let mut rebuilt = 0;
+        for entry in pack.entries() {
+            let Ok(scene) = exa_formats::rfc::Scene::parse(pack.bytes(entry)) else {
+                continue;
+            };
+            let Some(records) = scene.local_database else {
+                continue;
+            };
+            plain.load_level(&entry.name, Some(records.clone()), None);
+            hooked.load_level(&entry.name, Some(records), None);
+            let (a, b) = (
+                plain.db().store(Tier::Local),
+                hooked.db().store(Tier::Local),
+            );
+            rebuilt += a
+                .records()
+                .zip(b.records())
+                .filter(|(a, b)| a.payload() != b.payload())
+                .count();
+        }
+        assert!(rebuilt > 0, "no level record was rebuilt by its factory");
+    }
     use exa_formats::trade_record::TradeModel;
 
     fn record(rarity: u8, listing: u32) -> TradeRecord {

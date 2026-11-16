@@ -276,3 +276,10 @@ An apparel layer's wear weight SHALL be the job's table entry for the layer's st
 #### Scenario: Velvet from a set
 - **WHEN** a layer stores material 0 and random set 4, whose first material is Velvet
 - **THEN** it paints Velvet with wear weight 1.0, not Velvet's 0.8
+
+### Requirement: Painter magnifies linearly
+The CPU painter SHALL sample a region's own maps (shade, masks, item normal) bilinearly around each painted texel's centre, wrapping, when the map is no larger than the region along both axes; a map exactly the region's size SHALL read its texels as they are, and a larger one the nearest texel.
+
+#### Scenario: A half-size mask
+- **WHEN** a two-texel mask of 0 and 255 is painted over four texels
+- **THEN** the texels read 0.25, 0.25, 0.75 and 0.75

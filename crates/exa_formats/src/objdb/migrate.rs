@@ -126,13 +126,26 @@ impl ObjectDb {
     /// tier) from this database's templates, as the original's whole-tier
     /// pass does. Returns how many records were visited.
     pub fn migrate_store(&self, store: &mut super::Store) -> usize {
+        self.migrate_store_with(store, None)
+    }
+
+    /// [`Self::migrate_store`] with the item factory's stat pass to hand.
+    pub fn migrate_store_with(
+        &self,
+        store: &mut super::Store,
+        mut factory: Option<FactoryPass<'_>>,
+    ) -> usize {
         let mut visited = 0;
         for at in 0..store.len() {
             let Some(src) = store.view(at) else {
                 continue;
             };
             let mut payload = src.payload().to_vec();
-            if self.migrate_payload(&mut payload, None) {
+            let migrated = match factory.as_mut() {
+                Some(pass) => self.migrate_payload(&mut payload, Some(&mut **pass)),
+                None => self.migrate_payload(&mut payload, None),
+            };
+            if migrated {
                 store.store(at, &payload);
             }
             visited += 1;
@@ -700,6 +713,24 @@ mod tests {
         let w = weapon(&db);
         assert_eq!((w[0x30], w[0x37]), (9, 9));
         assert_eq!(amount_expand(value(&db)), 1250);
+    }
+
+    /// A store's migration hands its factory weapons to the pass too.
+    #[test]
+    fn a_store_migration_runs_the_factory_pass() {
+        let db = template_and_instance(0, 0);
+        let mut factory = db.clone();
+        let t = factory.find(10).unwrap();
+        let mut p = t.payload().to_vec();
+        let m = section_range(&p, MODEL).unwrap();
+        p[m.start..m.start + 16].fill(0);
+        p[m.start..m.start + 11].copy_from_slice(b"@sword_lnga");
+        factory.base.store(0, &p);
+        let mut store = factory.local.clone();
+        let mut calls = Vec::new();
+        let mut pass = |name: &str, _: &mut [u8]| calls.push(name.to_string());
+        assert_eq!(factory.migrate_store_with(&mut store, Some(&mut pass)), 1);
+        assert_eq!(calls, ["sword_lnga"]);
     }
 
     #[test]
