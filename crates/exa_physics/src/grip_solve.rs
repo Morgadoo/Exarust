@@ -379,8 +379,8 @@ pub fn build_grips(
 }
 
 /// Marks every item with built links as held: it never meets its holder's
-/// body, its class says what it is for the contact classifier, and it stays
-/// awake so the grip stage can pull it. A weapon's attach gives its whole
+/// body and its class says what it is for the contact classifier (it
+/// sleeps and wakes with its holder, [`share_holder_sleep`]). A weapon's attach gives its whole
 /// chain the permanent weapon bit and the mark bit (`0x20001`,
 /// [`crate::grip::weapon_words`]): a held weapon is a clash for a striker
 /// whether or not its own window is open. A shield or a torch is a held
@@ -423,7 +423,6 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
         {
             crate::grip::shield_words(part);
         }
-        body.wake_to(crate::body::WAKE_COUNT);
     }
 }
 
@@ -477,6 +476,82 @@ pub fn share_holder_park(
         }
     }
 }
+
+/// Gives every held item its holder's sleep, as the original's body tree
+/// shares one countdown from its root (the holder's character body; an
+/// item attached to a hand hangs in its tree). The holder's limb step wakes
+/// the tree to 256 every tick while it lives; a dormant holder's take
+/// counts the item down with it; a limp or dead holder and its item sleep
+/// together; and a moving item, which raises its parent's countdown to its
+/// own, wakes its holder. Each tick, before the solver, the holder and the
+/// item take the larger of their two countdowns, and an item whose holder
+/// sleeps falls asleep. An item whose holder is not found keeps its own.
+/// [Exarust: the item's motion reaches its holder a tick late.]
+pub fn share_holder_sleep(
+    mut held: Query<(&HeldGrip, &mut Ragdoll)>,
+    mut holders: Query<&mut Ragdoll, Without<HeldGrip>>,
+) {
+    let linked = |grip: &HeldGrip| !grip.released && grip.links.is_some();
+    let keys: Vec<Entity> = held
+        .iter()
+        .filter(|(grip, _)| linked(grip))
+        .map(|(grip, _)| grip.holder_key)
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    let found = crate::body::first_by_key(
+        keys.iter().copied(),
+        holders.iter().map(|body| ((body.countdown(), body.asleep()), body)),
+    );
+    // The largest countdown each holder's items carry.
+    let mut raised = bevy::ecs::entity::EntityHashMap::<i32>::default();
+    for (grip, body) in &held {
+        if linked(grip) && found.contains_key(&grip.holder_key) {
+            let top = raised.entry(grip.holder_key).or_insert(i32::MIN);
+            *top = (*top).max(body.countdown());
+        }
+    }
+    let mut woken = bevy::ecs::entity::EntityHashMap::<(i32, bool)>::default();
+    for (key, top) in &raised {
+        let (count, asleep) = found[key];
+        let woken_by_item = !asleep && top > &count || asleep && *top > SLEEPING_ITEM;
+        let count = if woken_by_item { (*top).max(count) } else { count };
+        woken.insert(*key, (count, asleep && !woken_by_item));
+    }
+    let wake: Vec<(Entity, i32)> = woken
+        .iter()
+        .filter(|(key, (count, _))| found[*key].0 < *count)
+        .map(|(key, (count, _))| (*key, *count))
+        .collect();
+    if !wake.is_empty() {
+        let mut left: bevy::ecs::entity::EntityHashMap<i32> = wake.into_iter().collect();
+        for mut body in &mut holders {
+            let Some(first) = body.parts.first().map(|p| p.entity) else {
+                continue;
+            };
+            if let Some(count) = left.remove(&first) {
+                body.wake_to(count);
+                if left.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    for (grip, mut body) in &mut held {
+        if !linked(grip) {
+            continue;
+        }
+        let Some(&(count, asleep)) = woken.get(&grip.holder_key) else {
+            continue;
+        };
+        body.follow_holder(count, asleep);
+    }
+}
+
+/// An item's countdown at or under this does not wake a sleeping holder:
+/// an item that fell asleep with it (its countdown 0) leaves it asleep.
+const SLEEPING_ITEM: i32 = 0;
 
 /// A held item the release walks: its grip, its body, whether a collapse
 /// let go of it, and its weapon mass.
@@ -813,7 +888,8 @@ pub fn plugin(app: &mut App) {
         // (the park) and before the solver.
         .add_systems(
             FixedUpdate,
-            share_holder_park
+            (share_holder_park, share_holder_sleep)
+                .chain()
                 .after(GripSolveSet::Build)
                 .after(crate::body::CharacterTicks)
                 .before(GripSolveSet::Sync)

@@ -4479,6 +4479,35 @@ impl Ragdoll {
         }
     }
 
+    /// Puts the body to sleep as its post-step does once its countdown is
+    /// down: countdown 0, its first sleeping tick next (which takes its
+    /// velocity away), and the three displacement records emptied (the
+    /// motion, the placed body's contact offsets and the smoothed motion).
+    fn fall_asleep(&mut self) {
+        self.countdown = 0;
+        self.sleep = Sleep::Asleep;
+        self.clear_placed_offsets();
+        for p in &mut self.parts {
+            p.moved = [Vec3::ZERO; 4];
+            p.smoothed = [Vec3::ZERO; 4];
+        }
+    }
+
+    /// A held item's share of its holder's sleep, as the original's body
+    /// tree shares one countdown from its root: the item takes `countdown`
+    /// (the larger of the two, so a moving item has already woken its
+    /// holder), sleeps once its holder sleeps and wakes with it.
+    pub fn follow_holder(&mut self, countdown: i32, holder_asleep: bool) {
+        if holder_asleep {
+            if !self.asleep() {
+                self.fall_asleep();
+            }
+            return;
+        }
+        self.wake_to(countdown);
+        self.countdown = countdown;
+    }
+
     /// Takes `ticks` off the body's sleep countdown, never under one, as the
     /// original's tree-wide take does: the root takes them and hands the
     /// same count to each child body, and a count under two is held at one
@@ -5423,16 +5452,7 @@ impl Ragdoll {
             p.two_ticks_ago = p.start;
         }
         if self.countdown <= SLEEP_COUNT {
-            self.countdown = 0;
-            self.sleep = Sleep::Asleep;
-            // The original's post-step empties its three displacement
-            // records: the motion, the placed body's contact offsets and
-            // the smoothed motion.
-            self.clear_placed_offsets();
-            for p in &mut self.parts {
-                p.moved = [Vec3::ZERO; 4];
-                p.smoothed = [Vec3::ZERO; 4];
-            }
+            self.fall_asleep();
         }
         if let Some(&root) = self.outward.first()
             && self.parts[root].positions[0].y < FALL_OUT_HEIGHT

@@ -966,11 +966,78 @@ fn a_held_item_is_parked_and_unparked_with_its_holder() {
     assert!(!parked(&app, item));
 }
 
+/// A held item shares its holder's sleep, as the original's body tree
+/// shares its root's countdown: it takes the larger of the two countdowns
+/// and wakes with an awake holder, falls asleep with a sleeping one, a
+/// dormant holder's countdown carries it down in step, and an item woken
+/// by a touch wakes its sleeping holder.
+#[test]
+fn a_held_item_sleeps_and_wakes_with_its_holder() {
+    let holder_part = Entity::from_raw_u32(50).unwrap();
+    let item_part = Entity::from_raw_u32(51).unwrap();
+    let mut app = App::new();
+    app.add_systems(Update, crate::grip_solve::share_holder_sleep);
+    let mut awake_item = rigid(item_part, Vec3::X, 1.0);
+    awake_item.wake();
+    let holder = app
+        .world_mut()
+        .spawn(rigid(holder_part, Vec3::ZERO, 1.0))
+        .id();
+    let item = app
+        .world_mut()
+        .spawn((awake_item, held_weapon(holder_part)))
+        .id();
+    let get = |app: &App, e| {
+        let b = app.world().get::<Ragdoll>(e).unwrap();
+        (b.countdown(), b.asleep())
+    };
+    // The item, awake at 256, wakes its sleeping holder.
+    app.update();
+    assert_eq!(get(&app, holder), (crate::body::WAKE_COUNT, false));
+    assert_eq!(get(&app, item), (crate::body::WAKE_COUNT, false));
+    // Both count down; the item takes the larger countdown.
+    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().take_ticks(40);
+    app.world_mut().get_mut::<Ragdoll>(item).unwrap().take_ticks(50);
+    app.update();
+    assert_eq!(get(&app, item), (crate::body::WAKE_COUNT - 40, false));
+    assert_eq!(get(&app, holder).0, crate::body::WAKE_COUNT - 40);
+    // Both asleep (as their post-steps leave them): they stay asleep.
+    let swap_in = |app: &mut App, e, mut body: Ragdoll| {
+        std::mem::swap(
+            &mut *app.world_mut().get_mut::<Ragdoll>(e).unwrap(),
+            &mut body,
+        );
+    };
+    swap_in(&mut app, holder, rigid(holder_part, Vec3::ZERO, 1.0));
+    swap_in(&mut app, item, rigid(item_part, Vec3::X, 1.0));
+    app.update();
+    assert_eq!(get(&app, item), (0, true));
+    assert_eq!(get(&app, holder), (0, true));
+    // A sleeping item of an awake holder wakes with it.
+    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().wake_to(100);
+    app.update();
+    assert_eq!(get(&app, item), (100, false));
+    // Asleep together again, a touch on the item wakes its holder.
+    swap_in(&mut app, holder, rigid(holder_part, Vec3::ZERO, 1.0));
+    swap_in(&mut app, item, rigid(item_part, Vec3::X, 1.0));
+    app.world_mut().get_mut::<Ragdoll>(item).unwrap().wake();
+    app.update();
+    assert_eq!(get(&app, holder), (crate::body::WAKE_COUNT, false));
+    // A released grip keeps its own sleep.
+    swap_in(&mut app, item, rigid(item_part, Vec3::X, 1.0));
+    app.world_mut()
+        .get_mut::<crate::grip::HeldGrip>(item)
+        .unwrap()
+        .released = true;
+    app.update();
+    assert_eq!(get(&app, item), (0, true));
+}
+
 /// The live step (the physics plugin's fixed step): a held item is parked
 /// with its parked holder and unparked with it, and a sleeping held item
-/// is awake after the step (the grip's mark wakes it to the full count
-/// before the solver), as the original's tree wake and unpark reach the
-/// bodies under the character's node.
+/// of an awake holder is awake after the step (it takes its holder's
+/// countdown before the solver), as the original's tree wake and unpark
+/// reach the bodies under the character's node.
 #[test]
 fn the_step_parks_wakes_and_unparks_a_held_item_with_its_holder() {
     let holder_part = Entity::from_raw_u32(40).unwrap();
@@ -983,10 +1050,9 @@ fn the_step_parks_wakes_and_unparks_a_held_item_with_its_holder() {
     ))
     .init_resource::<Assets<Mesh>>();
     app.update();
-    let holder = app
-        .world_mut()
-        .spawn(rigid(holder_part, Vec3::new(0.0, 5.0, 0.0), 1.0))
-        .id();
+    let mut awake = rigid(holder_part, Vec3::new(0.0, 5.0, 0.0), 1.0);
+    awake.wake();
+    let holder = app.world_mut().spawn(awake).id();
     // A rigid body is registered asleep (countdown 0).
     let item_body = rigid(item_part, Vec3::new(0.3, 5.0, 0.0), 1.0);
     assert!(item_body.asleep());
