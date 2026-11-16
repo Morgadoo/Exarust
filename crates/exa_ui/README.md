@@ -28,14 +28,17 @@ pointer table and show rule, and the menu cursor from `menucursor.rfi`
 resampled to the screen-height size, sharpened and set as the window's
 custom pointer), the health and focus bars with their fade and the stamina gauge
 (`hud`, framed with `guitex.rfi`; `HudShowUntil` holds the bars shown, as
-a click on the player's own body does for 5000 ms), the compass's turned
+a click on the player's own body does for 5000 ms and a quick-bar cast or a
+healing step for 1000 ms; `HudBars.power_bar` holds them while the power
+bar is up; the reset without a player clears the hold), the compass's turned
 square from `compass.rfi` (`hud_extra`; the game crate shows it while the
 player carries a compass and passes the camera's backward axis), the
 power marker and skill-ready alert (`hud_status`: the skill-icon atlas's
 first cell on a rounded black halo, tinted or outlined at the shared
 pulse, rasterised through `gui_draw` into canvases the size of the halo;
 the game crate says which shows), the low-health heartbeat's border
-(`heartbeat`; the game crate starts it), the fade to black of the
+(`heartbeat`; the game crate starts it, and `Heartbeat::start_fade` begins
+its 1 s fade-out), the fade to black of the
 player's fall to death (`fade`, `DeathFade`: 3 s of game time on the
 game clock the game writes, under the bars; the game crate starts,
 completes and resets it), the GUI canvas's layer (under the interface, or

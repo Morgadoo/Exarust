@@ -269,9 +269,11 @@ pool) in blue. With the window W × H physical pixels and the GUI scale g:
 
 **Fade.** The bars show while combat mode is on, and in any frame in which
 the drawn yellow health differs from the last frame's or the focus has
-dropped (the original also shows them while a power is cast, for 1 s after
-red health is restored or a quick-bar power is used, and for 5 s when the
-player interacts with its own body; Exarust has none of these). They fade
+dropped; also while the power bar is up (from its opening until its
+900 ms closing has run), for 1 s after a step of the player's healing
+charge or a quick-bar cast from a set slot, and for 5 s when the player
+clicks its own body. The HUD's reset (a session's start, while no player
+is shown) clears that hold. They fade
 in over 500 ms; once no longer shown they stay 200 ms and fade out over
 2 s (game time; from a partial fade they rise or fall from where they
 are). The fills blend at the fade squared, the frames and shadows at the
@@ -296,8 +298,9 @@ Exarust (`exa_ui::hud` draws, `exa_game::hud` reads the player):
   only when the values, the fade or the window change;
 - the focus bar shows the player's caster's focus and the capacity it
   regenerates to ([THAUMATURGY.md](THAUMATURGY.md), Settle), 1 and 1 for a
-  body that casts nothing. Exarust has no shields: the stamina gauge
-  never shows;
+  body that casts nothing. The stamina gauge reads the shield in the
+  player's off hand (`exa_combat::block::ShieldHold`) and its arm's
+  stamina;
 - the original offsets the stone by the last form it drew; on a lossless
   capture of the user's running game the offset is zero (the window's
   bottom-left corner, as Exarust samples it): its frame lines follow the
@@ -317,7 +320,11 @@ edges and fading to nothing a fifth of the window's height in (on the
 sides too, measured by the height), pulsing every 800 ms from 0 to an
 opacity of 96 at the pulse's middle (opacity (1 − |400 − t mod 800| /
 400)² × 96, t in ms of real time). Meanwhile the `heartbeat` sound loops at
-gain 0.3. Both stop after 7 s (menus and level changes fade them over 1 s).
+gain 0.3. Both stop after 7 s. A death, a knock-out and the death fade's
+reset (a respawn, a session's leave, every scene load) start a running
+heartbeat's fade-out: the sound's gain falls as 0.3 · (1 − t/1000) and
+the heartbeat stops once that share is gone; the border keeps its pulse
+until then.
 An item's second wind, when the game clock is past its ready clock, fires instead: it waits 180000 ms, and the heal sound uses volume bits 0x3dcccccd and pitch bits 0x3f800000. At that ready clock the heartbeat starts. While the wind is active, each living health tick adds the double 0.0003 to yellow. The wind stays through the ready clock minus 180000 ms plus 3000 ms, and the next tick still adds and then ends it.
 
 The trigger is the damage call's low-health check
@@ -1425,7 +1432,8 @@ the task's state. A control value of `i32::MIN` means none.
   control; the base form's focus to no form returns there while it is
   visible and not the focus, else to the root with control -1, and the
   application's deactivation (the window losing the system's focus) parks
-  the focus on the root the same way. Closing a form closes its child forms
+  the focus on the root the same way, in every task Exarust keeps (the
+  in-game screens, the hub's windows, the main menu and the power tree). Closing a form closes its child forms
   first, depth first; each closed form is hidden, which clears the
   manager's references to it and its tree (the remembered focus, the
   pointer's target and capture, the tooltip request, a drop it sources, the
@@ -1678,7 +1686,18 @@ drawing:
   0xce1c0000 selects that family and 0xce100000 every in-game screen.
 - **Open containers.** Eight slots hold the ids (`record id | 0x20000000`)
   of the open containers; a ninth is left out, closing clears the first
-  slot with the id.
+  slot with the id. The AI's search asks it whether the player has its own
+  pack, the corpse's or the container open (Exarust copies the registry
+  to the simulation before each frame's steps).
+- **Dead powers.** Raise Dead and Command Dead close the first loot window
+  open on the body they raise. A Loyalty or Command Dead mark's end posts
+  a GUI callback: the root takes the focus and the first visible inventory
+  owned by the body closes.
+- **Mind window.** The inventory's fill sets its view's mind window when
+  the shown body carries a Loyalty or possession marker. A drag out of
+  that pack, when the body has Volition (its technique word's 0x10000),
+  breaks the player's hold (its Loyalty or Trust marker ends), refuses the
+  drag and closes the window.
 - **Show rules.** The inventory and journal refuse unless the player's
   controller is ready and its condition is not 0xa00 (dead). An open
   inventory still filling is left alone, an active one closes when the
@@ -1697,7 +1716,10 @@ drawing:
   at unit 8 it is 488 × 1288 with border 16, the view 452 × 764 and the
   pack 452 × 356 (their 2-pixel borders are not scaled; the loot window
   and the journal rescale the same way, 484 × 876 and 484 × 1028 at unit
-  8); the player's own goes to its remembered
+  8; an open container popup follows a unit change too: its panel is laid
+  out from the record's cells at the new unit, its icon area and place
+  scale by `v / old · unit` [guess: the popup's class has no rescale of
+  its own]); the player's own goes to its remembered
   place, another character's to the screen's right less its width and four
   units. The record flag 0x1000000 lights the fourth tab record instead of
   the third; the scene is told the first of the character's items 431,
@@ -1731,8 +1753,9 @@ drawing:
   for a player in action and alive, whether it then opens, focuses or
   closes the journal. Every game save first saves the open screens
   without closing them: an open container popup saves its panel into its
-  record and the journal stores its text (the inventory and loot panels'
-  items already live in the bodies' possessions in Exarust). The
+  record, the journal stores its text, and the inventory's and loot
+  windows' loaded packs write their order and places into their bodies'
+  carried lists. The
   journal text box's Tab callback turns combat mode on.
 - **Controls.** The power slot (0xac3, 40 × 40) answers its hint with 3
   (0x103 for a hovered slot with a count) and hides a visible tooltip;
