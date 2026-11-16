@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 619 | 153,576 | B1 wire (or prove unreachable) |
-| partial | 1,413 | 888,558 | B4 complete the port |
+| uncalled | 617 | 153,000 | B1 wire (or prove unreachable) |
+| partial | 1,411 | 888,715 | B4 complete the port |
 | missing | 53 | 10,190 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -20,7 +20,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | powers | 105,361 | 3,090 | 2,321 |
 | characters | 89,720 | 14,265 | 1,943 |
 | ai | 89,630 | 2,147 | 28 |
-| modes | 65,694 | 10,554 | 363 |
+| modes | 65,851 | 9,978 | 363 |
 | world | 58,664 | 16,887 | 563 |
 | items | 55,748 | 7,741 | 601 |
 | data | 28,925 | 9,435 | 0 |
@@ -48,7 +48,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGUIDrawSkin | ui | 2 / 3,550 | 22 / 9,559 | 0 / 0 | 13,109 |
 | RF_Skinning (unit routines) | characters | 7 / 12,272 | 2 / 375 | 0 / 0 | 12,647 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
-| XA_SaveGames (unit routines) | modes | 21 / 11,487 | 3 / 704 | 0 / 0 | 12,191 |
+| XA_SaveGames (unit routines) | modes | 20 / 11,771 | 1 / 128 | 0 / 0 | 11,899 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | TStaticTerrain | world | 12 / 10,617 | 3 / 522 | 0 / 0 | 11,139 |
 | TForceTorrentEffect | powers | 5 / 10,453 | 0 / 0 | 0 / 0 | 10,453 |
@@ -83,7 +83,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Textures (unit routines) | render | 17 / 5,574 | 9 / 1,051 | 0 / 0 | 6,625 |
 | TLoadoutForm | modes | 7 / 6,452 | 1 / 80 | 0 / 0 | 6,532 |
 | TMatchBoard | modes | 4 / 6,481 | 0 / 0 | 0 / 0 | 6,481 |
-| SG_GameMain (unit routines) | modes | 16 / 5,819 | 1 / 442 | 0 / 0 | 6,261 |
+| SG_GameMain (unit routines) | modes | 15 / 5,692 | 1 / 442 | 0 / 0 | 6,134 |
 | T3DViewport | ui | 19 / 4,915 | 2 / 1,101 | 0 / 0 | 6,016 |
 | TForceBlastEffect | powers | 3 / 5,947 | 0 / 0 | 0 / 0 | 5,947 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
