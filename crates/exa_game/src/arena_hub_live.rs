@@ -378,7 +378,10 @@ fn enter_loaded_hub(
         // placement samples that clip.
         if let Some(motions) = motions.as_deref() {
             for mut anim in &mut animators {
-                if motions.start_requested(&mut anim, HUB_ENTRY_MOTION).is_some() {
+                if motions
+                    .start_requested(&mut anim, HUB_ENTRY_MOTION)
+                    .is_some()
+                {
                     anim.pending = None;
                     anim.leading = false;
                     anim.capture = None;
@@ -3562,7 +3565,9 @@ mod tests {
         flow.mode = crate::flow::Mode::Arena;
         flow.phase = Phase::Playing;
         app.insert_resource(flow);
-        let mut names: Vec<String> = (0..=HUB_ENTRY_MOTION).map(|i| format!("Motion {i}")).collect();
+        let mut names: Vec<String> = (0..=HUB_ENTRY_MOTION)
+            .map(|i| format!("Motion {i}"))
+            .collect();
         names[0] = "Idle".into();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         app.insert_resource(crate::limp::tests::motions_named(&names));
@@ -3582,7 +3587,11 @@ mod tests {
         let anim = app.world().get::<exa_anim::Animator>(body).unwrap();
         assert_eq!(anim.action, format!("Motion {HUB_ENTRY_MOTION}"));
         assert!(anim.capture.is_none() && anim.pending.is_none());
-        assert!(app.world().get::<crate::limp::LivingPlacement>(body).is_some());
+        assert!(
+            app.world()
+                .get::<crate::limp::LivingPlacement>(body)
+                .is_some()
+        );
     }
 
     #[test]

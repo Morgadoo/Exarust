@@ -359,7 +359,11 @@ pub fn load_shelf(
     }
     info!(
         "arsenal: shelf {shelf} loaded, {} items over its five boxes",
-        window.columns.iter().map(|c| c.entries.len()).sum::<usize>()
+        window
+            .columns
+            .iter()
+            .map(|c| c.entries.len())
+            .sum::<usize>()
     );
 }
 
@@ -1019,13 +1023,22 @@ mod tests {
         app.update();
         let window = app.world().resource::<ArsenalWindow>();
         assert_eq!(window.set, 1);
-        assert_eq!(window.states[arsenal::FIRST_SHELF_CONTROL] & arsenal::DOWN, 0);
+        assert_eq!(
+            window.states[arsenal::FIRST_SHELF_CONTROL] & arsenal::DOWN,
+            0
+        );
         assert!(column_items(&app, 0).is_empty());
         assert_eq!(column_items(&app, 2), vec![22]);
-        let stored = &app.world().resource::<crate::save_live::ArenaStores>().arsenal;
+        let stored = &app
+            .world()
+            .resource::<crate::save_live::ArenaStores>()
+            .arsenal;
         assert_eq!(stored.shelves[0][0][0].item, 11);
         assert_eq!(
-            (stored.shelves[0][0][0].first, stored.shelves[0][0][0].second),
+            (
+                stored.shelves[0][0][0].first,
+                stored.shelves[0][0][0].second
+            ),
             (0x28, 4)
         );
         app.world_mut()
@@ -1034,7 +1047,9 @@ mod tests {
         app.update();
         assert!(!app.world().resource::<ArsenalWindow>().open);
         assert_eq!(
-            app.world().resource::<crate::save_live::ArenaStores>().clone(),
+            app.world()
+                .resource::<crate::save_live::ArenaStores>()
+                .clone(),
             stores()
         );
     }

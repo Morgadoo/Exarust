@@ -1785,9 +1785,7 @@ mod tests {
                 .add_systems(Update, stand_first_round);
             app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
             app.insert_resource(scene());
-            let mut env = exa_world::scene_env::SceneEnvironment::new(
-                5,
-            );
+            let mut env = exa_world::scene_env::SceneEnvironment::new(5);
             env.wind = wind;
             app.insert_resource(exa_world::environment::SceneEnvRuntime::new(env, 1));
             app.world_mut().spawn(exa_world::LevelRoot {
@@ -2944,10 +2942,14 @@ mod tests {
         );
         // The side's places are its three members' arc; the two kept bodies
         // take the first two.
-        let bracket = app.world().resource::<ArenaScene>().bracket.clone().unwrap();
+        let bracket = app
+            .world()
+            .resource::<ArenaScene>()
+            .bracket
+            .clone()
+            .unwrap();
         let survivors: Vec<i32> = bracket.slots.iter().map(|slot| slot.id).collect();
-        let places =
-            crate::match_layout::kept_side_places(&survivors, 3, 2, spawn, 1, 3).unwrap();
+        let places = crate::match_layout::kept_side_places(&survivors, 3, 2, spawn, 1, 3).unwrap();
         assert_eq!(reset[0].1, places[0]);
         assert_eq!(reset[1].1, places[1]);
         // No company body is generated again; one opposing side of three.
