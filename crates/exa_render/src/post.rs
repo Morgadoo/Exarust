@@ -37,6 +37,20 @@ use std::collections::HashMap;
 /// 1.5 × (0.075·3 + 0.4).
 pub const SHARPEN: f32 = 0.9375;
 
+/// The sharpen the views' final pass takes, from the supersample level the
+/// settings hold ([`crate::view::SupersampleLevel::sharpen`]): the level
+/// setter stores it on each view, and the post copies it. Every camera with
+/// [`ExaPost`] follows it.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct PostSharpen(pub f32);
+
+impl Default for PostSharpen {
+    /// The 4× setting's.
+    fn default() -> Self {
+        Self(SHARPEN)
+    }
+}
+
 /// The screen fade lasts this many clock ticks (5 s at the engine's 1 ms
 /// clock); its alpha rises from 0 to 1 by 1/5000 a tick.
 pub const FADE_TICKS: u32 = 5000;
@@ -293,7 +307,8 @@ impl Plugin for PostPlugin {
             ExtractComponentPlugin::<ExaPost>::default(),
             UniformComponentPlugin::<ExaPost>::default(),
         ))
-        .add_systems(PostUpdate, adopt_cameras);
+        .init_resource::<PostSharpen>()
+        .add_systems(PostUpdate, (adopt_cameras, follow_sharpen).chain());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -325,11 +340,31 @@ type NewCamera = (
 
 /// Gives every new 3D camera the original's post-processing instead of
 /// Bevy's tonemapping.
-fn adopt_cameras(mut commands: Commands, cameras: Query<Entity, NewCamera>) {
+fn adopt_cameras(
+    mut commands: Commands,
+    cameras: Query<Entity, NewCamera>,
+    sharpen: Option<Res<PostSharpen>>,
+) {
+    let sharpen = sharpen.map_or(SHARPEN, |s| s.0);
     for camera in &cameras {
-        commands
-            .entity(camera)
-            .insert((Hdr, Tonemapping::None, ExaPost::default()));
+        commands.entity(camera).insert((
+            Hdr,
+            Tonemapping::None,
+            ExaPost {
+                sharpen,
+                ..ExaPost::default()
+            },
+        ));
+    }
+}
+
+/// Gives every post camera the settings' sharpen (a camera given its post
+/// elsewhere, as the supersampled display camera is, takes it too).
+fn follow_sharpen(sharpen: Res<PostSharpen>, mut posts: Query<&mut ExaPost>) {
+    for mut post in &mut posts {
+        if post.sharpen != sharpen.0 {
+            post.sharpen = sharpen.0;
+        }
     }
 }
 
@@ -798,5 +833,25 @@ mod fade_tests {
         let kernel = bloom_kernel(f32::NAN, 0.0, false);
         assert!(kernel.weights.is_empty());
         assert_eq!(kernel.last, -1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every post camera takes the settings' sharpen, the ones adopted
+    /// before a change too.
+    #[test]
+    fn the_post_cameras_follow_the_sharpen() {
+        let mut app = App::new();
+        app.init_resource::<PostSharpen>()
+            .add_systems(Update, follow_sharpen);
+        let camera = app.world_mut().spawn(ExaPost::default()).id();
+        app.update();
+        assert_eq!(app.world().get::<ExaPost>(camera).unwrap().sharpen, SHARPEN);
+        app.world_mut().resource_mut::<PostSharpen>().0 = 0.0;
+        app.update();
+        assert_eq!(app.world().get::<ExaPost>(camera).unwrap().sharpen, 0.0);
     }
 }
