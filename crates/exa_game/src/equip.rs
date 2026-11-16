@@ -306,6 +306,35 @@ pub fn core_taken_off(world: &mut World, body: Entity) {
     }
 }
 
+/// An item dragged off a body's equipment panel (the loot window's): when
+/// the body, without it, passes the core test for it
+/// ([`exa_items::possession::takes_core`]: its race takes the item as its
+/// core and it wears no crystal), the core crystal has left it and it reacts
+/// as to the figure's take-off ([`core_taken_off`]). Run on the frame's
+/// world after the item left the worn list.
+pub fn core_left_equipment(world: &mut World, body: Entity, id: u32) {
+    let Some(race) = world
+        .get::<exa_character::record::CharacterData>(body)
+        .map(|data| data.record.race)
+    else {
+        return;
+    };
+    if !world.contains_resource::<crate::doll_view::DollItems>() {
+        return;
+    }
+    let worn: Vec<u32> = world
+        .get::<Possessions>(body)
+        .map(|p| p.worn.iter().map(|w| w.id).collect())
+        .unwrap_or_default();
+    let flags = world.resource_scope(|world, mut items: Mut<crate::doll_view::DollItems>| {
+        items.ensure(world.get_resource::<exa_assets::Game>());
+        items.race(race).map(|r| r.flags)
+    });
+    if flags.is_some_and(|flags| exa_items::possession::takes_core(flags, id & ID_MASK, &worn)) {
+        core_taken_off(world, body);
+    }
+}
+
 /// A body to re-dress from its record, as the loadout form's close and
 /// the trade system ask the character view's re-dress for.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
@@ -1077,6 +1106,59 @@ mod tests {
         for page in [crate::manage::PAGE_HIRE, crate::manage::PAGE_EVENT] {
             assert_eq!(run(page), [false, false, false], "page {page}");
         }
+    }
+
+    /// The AL crystal dragged off a golem's equipment panel (the loot
+    /// window's): the golem, which now takes it as its core, is marked
+    /// coreless; any other item, or a body still wearing a crystal, is not.
+    #[test]
+    fn a_core_off_the_loot_equipment_marks_the_golem() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let game = exa_assets::Game(std::sync::Arc::new(data));
+        let races = exa_formats::races::RaceDb::new(crate::scene_bodies::game_races(&game));
+        let golem = (0..=u8::MAX)
+            .find(|&b| races.of_character(b).flags & exa_items::possession::TAKES_CORE_AL != 0)
+            .expect("the shipped race table has a race that takes the AL crystal");
+        let al = exa_items::possession::crystal::AL;
+        let mut world = World::new();
+        world.insert_resource(game);
+        world.init_resource::<crate::doll_view::DollItems>();
+        let body = |world: &mut World, worn: &[u32]| {
+            let mut fighter = exa_combat::Fighter::default();
+            fighter.stats.rules.0 = 0x40;
+            world
+                .spawn((
+                    Possessions {
+                        worn: worn
+                            .iter()
+                            .map(|&id| exa_formats::characters::ItemRef::new(id, 0))
+                            .collect(),
+                        ..Default::default()
+                    },
+                    exa_character::record::CharacterData::of_record(
+                        exa_formats::characters::CharacterRecord {
+                            race: golem,
+                            ..Default::default()
+                        },
+                    ),
+                    fighter,
+                ))
+                .id()
+        };
+        let rules = |world: &World, e| world.get::<exa_combat::Fighter>(e).unwrap().stats.rules.0;
+        let bare = body(&mut world, &[]);
+        core_left_equipment(&mut world, bare, 7);
+        assert_eq!(rules(&world, bare), 0x40);
+        core_left_equipment(&mut world, bare, al);
+        assert_eq!(rules(&world, bare), CORELESS | 0x40);
+        let still = body(&mut world, &[exa_items::possession::crystal::A]);
+        core_left_equipment(&mut world, still, al);
+        assert_eq!(rules(&world, still), 0x40);
     }
 
     #[test]

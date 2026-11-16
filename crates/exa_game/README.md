@@ -2277,7 +2277,19 @@ or AR) over the figure's lower-left corner (`doll_view::show_on_view`,
 pointer is on its icon, a release of its drag takes it off the worn list,
 and a core crystal the body's race takes (`figure_accepts_shown`, only
 while nothing is shown) dropped on the figure leaves its source and is
-shown. The view's image renders at the settings' supersampling
+shown. The drop clears the bound body's coreless mark (the golem rule bit the
+armour pass sets on a golem race without its worn core); the shown crystal's
+take-off sets it, logs the skin glow's fade and lays the body down unless it
+rests as a statue (`equip::core_shown`, `equip::core_taken_off`, the
+collapse posted to the next step); a core dragged off a body's loot
+equipment does the same when the body then takes it as its core
+(`equip::core_left_equipment`). The armour pass reruns only when the worn
+list or the out set changed (`equip::ArmourPassSeen`), so a pack change
+keeps the drop's clear. The loadout form's close on the roster or a
+specialist's page re-dresses the player and every body with a company role,
+and a confirmed hub trade the player (`equip::Redress`,
+`equip::redress_bodies`: the underwear rule, then the hands and the main
+hand's model from the record's out set). The view's image renders at the settings' supersampling
 (`doll_view::doll_scale`: 2 x 2 with super sampling on, 1 off). The open
 inventory lights the page button of the shown body's set and, after a swap, loads its pack again
 (`gui_screens::inventory_follows_the_set`). `figure_pick` takes items off the figure: the pick
