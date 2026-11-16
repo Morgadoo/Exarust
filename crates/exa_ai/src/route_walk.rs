@@ -1099,4 +1099,222 @@ mod tests {
         soft_stop(&mut r, &mut body, None);
         assert_eq!(body.goal_cm, Vec3::new(0.0, 0.0, 10.0));
     }
+
+    /// A flat grid with its floors at voxel 100 (10 m over base 0) and,
+    /// when `wall`, a wall 3 m higher along cell column 24.
+    fn ground(wall: bool) -> NavGrid {
+        use exa_world::nav::{Layer, NavCell};
+        let mut grid = NavGrid::empty(40, 40, 0.0);
+        for z in 0..40 {
+            for x in 0..40 {
+                let floor = if wall && x == 24 { 130 } else { 100 };
+                grid.set_cell(
+                    x,
+                    z,
+                    Layer::Lower,
+                    NavCell {
+                        floor,
+                        ..NavCell::default()
+                    },
+                );
+            }
+        }
+        grid
+    }
+
+    fn cell_cm(grid: &NavGrid, x: usize, z: usize) -> Vec3 {
+        let c = grid.cell_centre(x, z);
+        Vec3::new(c.x * CM, 1000.0, c.y * CM)
+    }
+
+    /// In the scene a line to the carrot the grid blocks clears the run bit
+    /// and asks for a plan; the carrot itself is the goal still. Out of the
+    /// scene the line is not walked.
+    #[test]
+    fn a_blocked_line_to_the_carrot_asks_for_a_plan() {
+        let grid = ground(true);
+        // The route runs along the row into the wall, 3 cells from it.
+        let from = cell_cm(&grid, 21, 20);
+        let to = cell_cm(&grid, 30, 20);
+        let mut r = route(vec![from, to], 0);
+        let mut body = at(from);
+        follow(&mut r, &mut body, true, Some(&grid));
+        assert!(r.wants_plan && r.following);
+        assert_eq!(body.flags & flags::RUN, 0);
+        assert!((body.goal_cm - (from + Vec3::new(100.0, 0.0, 0.0))).length() < 1e-3);
+        // On open ground the line is clear: the run holds, no plan.
+        let open = ground(false);
+        let mut r = route(vec![from, to], 0);
+        let mut body = at(from);
+        follow(&mut r, &mut body, true, Some(&open));
+        assert!(!r.wants_plan);
+        assert_eq!(body.flags & flags::RUN, flags::RUN);
+        // Out of the scene: no line walk.
+        let mut r = route(vec![from, to], 0);
+        let mut body = at(from);
+        follow(&mut r, &mut body, false, Some(&grid));
+        assert!(!r.wants_plan);
+    }
+
+    /// The real AI plugin's brains' tick: a roaming character on its
+    /// locomotion plans its leg into the character's route, and the AI's
+    /// walk (after every state) writes the request as the original's walk
+    /// does from the follower's carrot: the goal 150 cm out along the carrot
+    /// (aligned past 0.7), the move flag alone at urgency 0, the heading a
+    /// tenth of the way toward the carrot and the AI's look yaw on it. At
+    /// the leg's end the follower soft-stops, the walk's flags (written
+    /// after) keep only the move bit, the after-route count is 80 and the
+    /// roam settles on the next tick.
+    #[test]
+    fn the_ai_tick_walks_the_roam_leg_through_the_one_walk() {
+        use exa_formats::level::LevelGrid;
+        use exa_physics::body::locomotion::Locomotion;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut level = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut level.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut level.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut level.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut level.edges, 4, 1, [7, 0, 7, 7]);
+        let mut nav = NavGrid::empty(80, 80, 0.0);
+        for z in 0..80 {
+            for x in 0..80 {
+                nav.set_cell(
+                    x,
+                    z,
+                    exa_world::nav::Layer::Lower,
+                    exa_world::nav::NavCell {
+                        floor: 100,
+                        ..exa_world::nav::NavCell::default()
+                    },
+                );
+            }
+        }
+        let mut app = App::new();
+        app.add_plugins((bevy::MinimalPlugins, crate::AiPlugin));
+        app.insert_resource(LevelRooms::new(Arc::new(Rooms::flood(&level))));
+        app.insert_resource(nav);
+        app.insert_resource(BodyTicks(1));
+        let at = Vec3::new(-9.0, 10.0, 3.0);
+        let target = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(Vec3::new(
+                50.0, 10.0, 50.0,
+            )))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::from_translation(at),
+                Transform::from_translation(at),
+            ))
+            .id();
+        let mut brain = crate::brain::Npc::new([0.0; 4]);
+        brain.routine = crate::idle::Routine::roam(0);
+        brain.level_room = 0;
+        // It faces its door (+x), as its body would once turned.
+        let (req, motor) = Locomotion::facing(std::f32::consts::FRAC_PI_2);
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                crate::Duellist::new(target),
+                Condition::NORMAL,
+                exa_combat::Fighter::default(),
+                GlobalTransform::from_translation(at),
+                Transform::default(),
+                ChildOf(root),
+                Animator::new("Default", "Idle"),
+                (req, motor, crate::drive::Driven::default()),
+            ))
+            .id();
+        let tick = |app: &mut App| {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.world_mut().run_schedule(crate::BrainChain);
+        };
+        // Tick until the leg is planned; the walk runs in the same tick.
+        let mut before = None;
+        for _ in 0..6 {
+            let req = *app.world().get::<Locomotion>(npc).unwrap();
+            tick(&mut app);
+            if app.world().get::<AiRoute>(npc).unwrap().following {
+                before = Some(req);
+                break;
+            }
+        }
+        let before = before.expect("the roam planned its leg");
+        let route = app.world().get::<AiRoute>(npc).unwrap().clone();
+        assert!(route.follows(Walker::Roam));
+        assert_eq!(route.urgency, 0);
+        // The follower's carrot from where the character stands.
+        let feet_cm = at * CM;
+        let mut probe = route.clone();
+        probe.key = 1;
+        probe.fraction = 0.0;
+        let mut body = WalkBody::standing(feet_cm, Vec3::X);
+        follow(&mut probe, &mut body, true, None);
+        let carrot = body.goal_cm;
+        // The walk's numbers, by the original's sums.
+        let mut d = carrot - feet_cm;
+        d.y = 0.0;
+        let len = (d.z * d.z + (d.y * d.y + d.x * d.x)).sqrt();
+        let pelvis = forward(std::f32::consts::FRAC_PI_2);
+        let align = (d.z * pelvis.z + (d.y * pelvis.y + d.x * pelvis.x)) / len;
+        assert!(align > 0.7, "{align}");
+        let req = app.world().get::<Locomotion>(npc).unwrap();
+        let goal_cm = feet_cm + d * (150.0 / len);
+        assert!((req.goal * CM - goal_cm).length() < 1e-3, "{:?}", req.goal);
+        assert_eq!(req.flags, flags::MOVE);
+        assert!(req.moving);
+        let heading = motion::unit(ease(forward(before.heading), d * (1.0 / len), 0.1));
+        assert_eq!(req.heading, motion::yaw_of(heading));
+        let gaze = app.world().get::<crate::brain::Npc>(npc).unwrap().gaze;
+        assert_eq!(gaze.look, req.heading);
+        assert!(
+            app.world()
+                .get::<crate::drive::Driven>(npc)
+                .unwrap()
+                .0
+                .driving
+        );
+        // At the leg's last point the follower soft-stops.
+        let last = *route.points.last().unwrap();
+        let end = last / CM;
+        *app.world_mut().get_mut::<GlobalTransform>(root).unwrap() =
+            GlobalTransform::from_translation(end);
+        tick(&mut app);
+        let walked = app.world().get::<AiRoute>(npc).unwrap();
+        assert!(!walked.following);
+        assert_eq!(walked.after_ticks, AFTER_TICKS);
+        let req = app.world().get::<Locomotion>(npc).unwrap();
+        assert_eq!(req.flags, flags::MOVE);
+        assert!(!req.moving);
+        assert!((req.goal - end).length() < 1e-5);
+        assert!(
+            !app.world()
+                .get::<crate::drive::Driven>(npc)
+                .unwrap()
+                .0
+                .driving
+        );
+        // The roam settles and pauses before its home-side leg.
+        tick(&mut app);
+        let brain = app.world().get::<crate::brain::Npc>(npc).unwrap();
+        assert_eq!(brain.routine.phase, crate::idle::Phase::WaitHome);
+    }
 }
