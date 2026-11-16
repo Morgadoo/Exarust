@@ -13,7 +13,8 @@
 //!   capture ends. Latched, Cursor Look's kind turns the cursor follower's
 //!   target by `−0.04·x` a tick (double precision) and aligns the camera
 //!   behind the raw cursor direction; the orbit's kind turns the camera by
-//!   the pair as the camera stick's look does ([`crate::gamepad::look_input`]).
+//!   the pair's look input, a relative orbit drag each tick
+//!   ([`crate::gamepad::look_input`]).
 //! - Otherwise: the latch clears. A stick past 0.01 (its `x`, `z` in the
 //!   world, squared in double) places its point `250·|aim| + 50` cm out from
 //!   the player (the cursor's distance takes that value), and the screen
@@ -73,8 +74,6 @@ pub(crate) struct PadCursor {
     /// Latched under Cursor Look: the cursor follower's target the pad
     /// turned it to this tick.
     pub(crate) turned: Option<f32>,
-    /// Latched under the orbit: the camera's look the pair asks this tick.
-    pub(crate) look: Option<Vec2>,
 }
 
 impl PadCursor {
@@ -138,7 +137,6 @@ pub(crate) fn aim_cursor(
     mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
 ) {
     cursor.turned = None;
-    cursor.look = None;
     // The binding table's first byte: the primary button's code.
     if bindings.key(crate::bindings::Action::Primary) & 0xff == 0 {
         return;
@@ -186,8 +184,12 @@ pub(crate) fn aim_cursor(
                     let yaw = raw_yaw + std::f32::consts::PI;
                     frame.write(entity, &mut camera, move |c| c.align(yaw));
                 }
-            } else {
-                cursor.look = crate::gamepad::look_input(pair);
+            } else if let Some(look) = crate::gamepad::look_input(pair)
+                && let Some(width) = view.as_ref().and_then(|v| v.view.as_ref()).map(|v| v.2.x)
+                && let Ok((entity, mut camera)) = cameras.single_mut()
+            {
+                // The look input's orbit drag, this tick.
+                frame.write(entity, &mut camera, move |c| c.look_turn(look, width));
             }
         }
         return;
@@ -327,8 +329,10 @@ mod tests {
     }
 
     fn aim(app: &mut App, aim: Vec3) {
-        let mut frame = crate::gamepad::PlayFrame::default();
-        frame.aim_world = aim;
+        let frame = crate::gamepad::PlayFrame {
+            aim_world: aim,
+            ..Default::default()
+        };
         app.world_mut().resource_mut::<PlayPad>().set_frame(frame);
     }
 
@@ -391,7 +395,9 @@ mod tests {
         assert!(!cursor.active && cursor.latched);
         let turned = cursor.turned.unwrap();
         assert_eq!(turned, (0.5f64 - 0.5f64 * 0.04) as f32);
-        // The orbit's kind turns the camera instead.
+        // The orbit's kind turns the camera instead, by the look input's
+        // orbit drag.
+        let camera = app.world_mut().spawn(ChaseCamera::behind(0.0)).id();
         app.insert_resource(LookCapture(crate::steering::Capture {
             held: true,
             turns: false,
@@ -399,9 +405,14 @@ mod tests {
         }));
         aim(&mut app, Vec3::new(1.0, 0.0, 0.0));
         tick(&mut app);
-        let cursor = app.world().resource::<PadCursor>().clone();
-        assert_eq!(cursor.turned, None);
-        assert_eq!(cursor.look, crate::gamepad::look_input(Vec2::new(1.0, 0.0)));
+        assert_eq!(app.world().resource::<PadCursor>().turned, None);
+        let mut expected = ChaseCamera::behind(0.0);
+        expected.look_turn(
+            crate::gamepad::look_input(Vec2::new(1.0, 0.0)).unwrap(),
+            1200.0,
+        );
+        let turned = app.world().get::<ChaseCamera>(camera).unwrap().yaw;
+        assert!(turned != 0.0 && turned == expected.yaw, "{turned}");
         app.insert_resource(LookCapture::default());
         aim(&mut app, Vec3::ZERO);
         tick(&mut app);

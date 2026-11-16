@@ -1585,7 +1585,7 @@ Each simulation step's post-step SHALL move the eased point into the screen curs
 - **THEN** the drawn point is (12.5, 15) and the world cursor is drawn at (12, 15)
 
 ### Requirement: Pad latch in the capture
-While the controls hold the mouse, the aim stick's raw pair with a squared length over 0.01 (double precision) SHALL latch until the capture ends; latched, Cursor Look SHALL turn the cursor follower's target by −0.04·x each behaviour tick (double precision) and the orbit SHALL turn the camera by the pair as the camera stick does.
+While the controls hold the mouse, the aim stick's raw pair with a squared length over 0.01 (double precision) SHALL latch until the capture ends; latched, Cursor Look SHALL turn the cursor follower's target by −0.04·x each behaviour tick (double precision) and the orbit SHALL turn the camera by the pair's look once each behaviour tick, by the camera stick's rule.
 
 #### Scenario: Cursor Look latched
 - **WHEN** the follower's target is 0.5 and the latched pair's x is 0.5

@@ -1111,10 +1111,10 @@ pub(crate) fn cursor_look(
         }
         capture.0 = false;
         sim_capture.set_if_neq(LookCapture(look.capture()));
-        if let Some(answer) = answer.as_deref_mut() {
-            if answer.0 {
-                answer.0 = false;
-            }
+        if let Some(answer) = answer.as_deref_mut()
+            && answer.0
+        {
+            answer.0 = false;
         }
         return;
     }
@@ -1295,10 +1295,10 @@ pub(crate) fn cursor_look(
     look.last = view.zip(reference);
     capture.0 = look.active;
     sim_capture.set_if_neq(LookCapture(look.capture()));
-    if let Some(answer) = answer.as_deref_mut() {
-        if answer.0 != took {
-            answer.0 = took;
-        }
+    if let Some(answer) = answer.as_deref_mut()
+        && answer.0 != took
+    {
+        answer.0 = took;
     }
 }
 
@@ -1314,13 +1314,13 @@ pub(crate) fn release_on_death(
     screens: Option<ResMut<crate::gui_screens::GameScreens>>,
 ) {
     let dead = bodies.iter().next().is_some_and(|c| c.is_dead());
-    if dead && !*was_dead {
-        if let Some(mut screens) = screens
-            && screens.task.pointer.capture.is_some()
-        {
-            info!("player death: the desk's capture is let go");
-            screens.task.set_capture(None);
-        }
+    if dead
+        && !*was_dead
+        && let Some(mut screens) = screens
+        && screens.task.pointer.capture.is_some()
+    {
+        info!("player death: the desk's capture is let go");
+        screens.task.set_capture(None);
     }
     *was_dead = dead;
 }
@@ -3047,6 +3047,20 @@ impl ChaseCamera {
     /// The original's camera alignment: the target yaw becomes `yaw`,
     /// kept within half a turn of the shown yaw, and the camera is marked
     /// aligning.
+    /// A look of `input` ([`crate::gamepad::look_input`]) on a window
+    /// `width` pixels wide: the navigation unit's relative orbit drag by
+    /// the orbit's rate ([`crate::gamepad::look_turn`]).
+    pub(crate) fn look_turn(&mut self, input: Vec2, width: f32) {
+        (self.yaw, self.user_pitch) = crate::gamepad::look_turn(
+            self.yaw,
+            self.user_pitch,
+            pitch_floor(self.shown_zoom),
+            MAX_PITCH,
+            input,
+            orbit_per_pixel(width),
+        );
+    }
+
     pub(crate) fn align(&mut self, yaw: f32) {
         self.yaw = align_behind(yaw, self.shown_yaw);
         self.aligning = true;
@@ -3260,10 +3274,9 @@ pub(crate) fn chase_camera(
     fixed: Res<Time<Fixed>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    (pad, pad_status, pad_cursor): (
+    (pad, pad_status): (
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
-        Option<Res<crate::pad_cursor::PadCursor>>,
     ),
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
@@ -3396,18 +3409,8 @@ pub(crate) fn chase_camera(
             && let Some(pad) = pad.as_deref()
         {
             let frame = pad.frame();
-            // Latched under the orbit's capture, the aim stick's pair is
-            // the look (the behaviour's aim read asks it).
-            let look = pad_cursor.as_deref().and_then(|c| c.look).or(frame.look);
-            if let Some(look) = look {
-                (cam.yaw, cam.user_pitch) = crate::gamepad::look_turn(
-                    cam.yaw,
-                    cam.user_pitch,
-                    pitch_floor(cam.shown_zoom),
-                    MAX_PITCH,
-                    look,
-                    orbit_per_pixel(width),
-                );
+            if let Some(look) = frame.look {
+                cam.look_turn(look, width);
             }
             for (held, steps) in [
                 (frame.zoom_in, crate::gamepad::ZOOM_IN_STEPS),
@@ -5889,8 +5892,10 @@ mod tests {
             .spawn((Player, GlobalTransform::default()))
             .add_child(body);
         let look_button = |app: &mut App, held: bool| {
-            let mut frame = crate::gamepad::PlayFrame::default();
-            frame.look_held = held;
+            let frame = crate::gamepad::PlayFrame {
+                look_held: held,
+                ..Default::default()
+            };
             app.world_mut()
                 .resource_mut::<crate::gamepad::PlayPad>()
                 .set_frame(frame);
