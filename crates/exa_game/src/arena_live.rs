@@ -724,6 +724,10 @@ pub(crate) fn stand_first_round(
     players: Query<(), With<crate::player::Player>>,
     clock: Option<Res<crate::effects::EffectClock>>,
     mut commands: MessageWriter<SceneCommand>,
+    (mut fixed, mut freeze): (
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+        Option<ResMut<exa_ai::freeze::StagingFreeze>>,
+    ),
 ) {
     let Some(mut scene) = scene else {
         return;
@@ -769,6 +773,9 @@ pub(crate) fn stand_first_round(
         commands.write(SceneCommand::Spawn(Box::new(plan)));
     }
     scene.placed = true;
+    // The match start sets the staging freeze as it stages the first round:
+    // the AI states wait out the transition screen's hold and fade-in.
+    exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
 }
 
 /// The end screen's Continue, the next round and the return.
@@ -786,6 +793,10 @@ fn continue_round(
     mut level: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
+    (mut fixed, mut freeze): (
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+        Option<ResMut<exa_ai::freeze::StagingFreeze>>,
+    ),
 ) {
     let (Some(arena), Some(scene)) = (arena.as_mut(), scene.as_mut()) else {
         return;
@@ -864,6 +875,9 @@ fn continue_round(
                     &mut commands,
                 );
             }
+            // Both the next round's staging and the bracket's set the
+            // staging freeze.
+            exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
             arena.rounds.round = round;
             arena.state = MatchState::Fighting;
             arena.screen = None;
@@ -1455,6 +1469,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .add_message::<SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .init_resource::<exa_ai::freeze::StagingFreeze>()
             .add_systems(Update, stand_first_round);
         app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
         app.insert_resource(scene());
@@ -1471,6 +1487,14 @@ mod tests {
             .collect();
         assert_eq!(spawned.len(), 1);
         assert!(app.world().resource::<ArenaScene>().placed);
+        // The match start's staging freeze is posted for the next fixed
+        // step, which sets it.
+        exa_physics::sim_app::run_fixed_commands(app.world_mut());
+        assert!(
+            app.world()
+                .resource::<exa_ai::freeze::StagingFreeze>()
+                .frozen()
+        );
         // The round is stood once.
         app.update();
         assert!(
@@ -1758,6 +1782,38 @@ mod tests {
         // It is re-placed at the opponent's place.
         let spawn = app.world().resource::<ArenaScene>().spawn_at;
         assert_eq!(reset[0].2, opponent_place(spawn));
+    }
+
+    /// The next round's staging sets the staging freeze (here at once: the
+    /// bare app has no fixed queue), as the original's next-round routine
+    /// sets it once it has stood the bodies.
+    #[test]
+    fn the_next_round_sets_the_staging_freeze() {
+        let mut app = arena_app();
+        app.init_resource::<exa_ai::freeze::StagingFreeze>();
+        let mut arena = ArenaMatch::begin(7);
+        arena.state = MatchState::NextFight;
+        arena.screen = Some(Screen::NextRound);
+        app.insert_resource(arena);
+        let mut scene = scene();
+        scene.player_entry = None;
+        app.insert_resource(scene);
+        app.world_mut().spawn(body(1, true, Condition::NORMAL));
+        app.world_mut().spawn(body(2, false, Condition::DEAD));
+        app.update();
+        let freeze = *app.world().resource::<exa_ai::freeze::StagingFreeze>();
+        assert!(!freeze.frozen());
+        press_continue(&mut app);
+        app.update();
+        assert_eq!(
+            app.world().resource::<ArenaMatch>().state,
+            MatchState::Fighting
+        );
+        assert!(
+            app.world()
+                .resource::<exa_ai::freeze::StagingFreeze>()
+                .frozen()
+        );
     }
 
     #[test]

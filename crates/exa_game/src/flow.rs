@@ -1503,6 +1503,11 @@ pub enum Step {
     /// stored combat target and the contact list are dropped. Combat mode
     /// stays on, so the stance tick does not do this itself.
     ForgetTarget,
+    /// The staging freeze: every AI tick runs the idle stand in place of its
+    /// state until the transition screen has held and faded back in
+    /// (`exa_ai::freeze`). The practice start and the next fight set it as
+    /// they finish their staging, before the session hook.
+    FreezeAi,
     /// Add the practice mode's player role.
     PracticePlayer {
         role: u32,
@@ -2335,6 +2340,7 @@ impl Flow {
                 volume: start.music.volume,
                 restart: true,
             },
+            Step::FreezeAi,
             Step::Hook(Hook::Practice),
         ]
     }
@@ -2818,6 +2824,7 @@ impl Flow {
                 false,
                 self.viewport,
             )),
+            Step::FreezeAi,
             Step::Hook(Hook::Practice),
             Step::SessionTask(true),
         ]);
@@ -4591,6 +4598,10 @@ fn apply_steps(
                 // capture so the clip does not blend in from the old pose.
                 request_action(&motions, &mut players, motion, true);
             }
+            Step::FreezeAi => {
+                // The staging freeze, posted for the next step.
+                exa_ai::freeze::stage(Some(&mut out.fixed), None);
+            }
             Step::ForgetTarget => {
                 // The behaviour reset, before the new opponent exists: the
                 // stored target and the contact list. Combat mode is left on.
@@ -5794,6 +5805,60 @@ mod tests {
                 .unwrap()
                 .contacts
                 .is_empty()
+        );
+    }
+
+    /// The practice start and the next fight set the staging freeze as they
+    /// finish their staging, before the session hook; the step posts it for
+    /// the next fixed step, where it sets the simulation's freeze.
+    #[test]
+    fn the_practice_staging_sets_the_staging_freeze() {
+        let mut flow = Flow::default();
+        let viewport = Viewport {
+            width: 1920,
+            height: 1080,
+        };
+        let start = flow.start_practice(Ladder::Novice, 90.0, viewport, 0);
+        let freeze = start.iter().position(|s| *s == Step::FreezeAi).unwrap();
+        assert_eq!(start[freeze + 1], Step::Hook(Hook::Practice));
+        let next = flow.practice_next(9000);
+        let freeze = next.iter().position(|s| *s == Step::FreezeAi).unwrap();
+        assert_eq!(next[freeze + 1], Step::Hook(Hook::Practice));
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .init_resource::<exa_ai::freeze::StagingFreeze>()
+            .add_systems(Update, apply_steps);
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::FreezeAi);
+        app.update();
+        // Posted, not yet written: the next fixed step takes it.
+        assert!(
+            !app.world()
+                .resource::<exa_ai::freeze::StagingFreeze>()
+                .frozen()
+        );
+        exa_physics::sim_app::run_fixed_commands(app.world_mut());
+        assert!(
+            app.world()
+                .resource::<exa_ai::freeze::StagingFreeze>()
+                .frozen()
         );
     }
 

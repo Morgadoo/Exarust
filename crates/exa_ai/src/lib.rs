@@ -44,6 +44,7 @@ pub mod entity;
 pub mod estimate;
 pub mod fight;
 pub mod flee;
+pub mod freeze;
 pub mod golem;
 pub mod ground;
 pub mod hear;
@@ -91,6 +92,7 @@ impl Plugin for AiPlugin {
         app.init_resource::<presence::ActivationArea>()
             .init_resource::<rooms::RoomCells>()
             .init_resource::<brain::BrainClock>()
+            .init_resource::<freeze::StagingFreeze>()
             .init_resource::<pass_turn::PassTurn>()
             .init_resource::<FollowLeader>()
             .add_message::<presence::Entered>()
@@ -153,6 +155,9 @@ impl Plugin for AiPlugin {
             .add_systems(
                 BrainChain,
                 (
+                    // The staging freeze counts its tick before the brains
+                    // read it.
+                    freeze::advance_staging_freeze,
                     (
                         drive::add_locomotion,
                         brain::death_hook,
@@ -166,11 +171,16 @@ impl Plugin for AiPlugin {
                     brain_clock_mark(1),
                     brain::ai_tick,
                     brain_clock_mark(2),
-                    (duellist, apply_feet_steps).chain().in_set(DuelSystems),
+                    // While the staging freeze holds the states, the idle
+                    // stand's soft stop of a following body runs where the
+                    // combat state would.
+                    (freeze::soft_stop_frozen_routes, duellist, apply_feet_steps)
+                        .chain()
+                        .in_set(DuelSystems),
                     brain_clock_mark(3),
-                    brain::flee_walk,
+                    brain::flee_walk.run_if(freeze::states_run),
                     brain::face_entering,
-                    brain::idle_walk,
+                    brain::idle_walk.run_if(freeze::states_run),
                     // The AI tick's walk, after every state: the game's
                     // follow and search join the chain before it.
                     route_walk::walk_routes,
@@ -194,6 +204,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_message::<crate::presence::Entered>()
         .bridge_message::<exa_combat::AttackAskedHook>()
         .bridge_snapshot_resource::<crate::BrainTickClock>()
+        .bridge_snapshot_resource::<crate::freeze::StagingFreeze>()
         .bridge_copy::<crate::Duellist>()
         .bridge_move_resource::<crate::FollowLeader>()
         .bridge_copy::<crate::drive::Driven>()
@@ -1258,7 +1269,11 @@ fn duellist(
         >,
     ),
     mut brains: Query<&mut brain::Npc>,
-    (role_db, follow_leader): (Option<Res<brain::RoleDatabase>>, Option<Res<FollowLeader>>),
+    (role_db, follow_leader, freeze): (
+        Option<Res<brain::RoleDatabase>>,
+        Option<Res<FollowLeader>>,
+        Option<Res<freeze::StagingFreeze>>,
+    ),
     role_lists: Query<&crate::roles::Roles>,
     ids: Query<&brain::CharacterId>,
     mut npcs: Query<(
@@ -1298,6 +1313,10 @@ fn duellist(
     turn.next_turn();
     let tick_now = ticks.as_ref().map(|t| t.0);
     let now = ticks.map_or(0, |t| t.millis());
+    // The staging freeze ([`freeze`]): the AI tick runs the idle stand in
+    // place of the combat state; only the combat entry and its target, which
+    // the target pass calls before the state, still run.
+    let frozen = freeze.is_some_and(|freeze| freeze.frozen());
     // Each duellist's combat step, read before any of them moves, so a later
     // one is scored against the step the earlier one had at the start.
     let combat_steps: Vec<(Entity, Vec3)> = npcs
@@ -1372,7 +1391,7 @@ fn duellist(
         ai.down_arc = None;
         ai.clears_pose = false;
         if condition.fallen_or_dying() || fallen {
-            if ai.in_combat && condition.0 & combat::DOWN != 0 {
+            if !frozen && ai.in_combat && condition.0 & combat::DOWN != 0 {
                 let clock = motions
                     .as_deref()
                     .and_then(|m| m.clip(&anim, &anim.action))
@@ -1525,6 +1544,10 @@ fn duellist(
                 *stance,
                 tick_now.unwrap_or(0)
             );
+            continue;
+        }
+        // The combat state's call waits out the staging freeze.
+        if frozen {
             continue;
         }
         let primary = attacker.primary_record(entity, blades.iter()).copied();
@@ -3009,6 +3032,45 @@ mod tests {
             }
         }
         assert!(walked);
+    }
+
+    /// The staging freeze: the duellist still enters combat in its guard
+    /// (the target pass's entry and set-target), but its combat state does
+    /// not run for the freeze's ticks: its mind stays as the entry left it
+    /// and it does not step in. Released, it steps in, later than a duellist
+    /// that was never held.
+    #[test]
+    fn the_staging_freeze_holds_the_combat_state() {
+        let first_walk = |frozen: bool| {
+            let (mut app, foe, root) = duel(5.0, false);
+            app.init_resource::<freeze::StagingFreeze>()
+                .add_systems(Update, freeze::advance_staging_freeze.before(duellist));
+            if frozen {
+                app.world_mut()
+                    .resource_mut::<freeze::StagingFreeze>()
+                    .set();
+            }
+            engage(&mut app, foe);
+            step(&mut app);
+            assert_eq!(state(&app, foe), (Stance::Defence, "Defence stance".into()));
+            let entered = format!("{:?}", app.world().get::<Duellist>(foe).unwrap().mind);
+            for tick in 1..1500 {
+                step(&mut app);
+                if frozen && tick < freeze::STAGING_TICKS {
+                    let mind = format!("{:?}", app.world().get::<Duellist>(foe).unwrap().mind);
+                    assert_eq!(mind, entered, "tick {tick}");
+                    assert_eq!(velocity(&app, root), Vec3::ZERO);
+                }
+                if velocity(&app, root).length() > 0.0 {
+                    return tick;
+                }
+            }
+            panic!("it never stepped in");
+        };
+        let held = first_walk(true);
+        let free = first_walk(false);
+        assert!(held >= freeze::STAGING_TICKS, "{held}");
+        assert!(held > free, "{held} vs {free}");
     }
 
     /// A tone under 0.7, or support that does not pass 0.7, leaves it
