@@ -80,7 +80,7 @@ fn bridge_mechanism_types(app: &mut App) {
         .bridge_message::<crate::mechanisms::OpenDoorsUnder>()
         .bridge_message::<crate::mechanisms::RelayForward>()
         .bridge_snapshot::<exa_physics::body::plate_body::PlateBody>()
-        .bridge_copy::<exa_physics::body::slide_body::SlideBody>()
+        .bridge_snapshot::<exa_physics::body::slide_body::SlideBody>()
         .bridge_copy::<crate::arc::ElectricDevice>()
         .bridge_copy::<crate::mechanisms::MechanismRecords>();
 }

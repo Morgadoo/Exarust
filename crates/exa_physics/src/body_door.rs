@@ -16,7 +16,8 @@
 //! a double door) is the partner, and both take pair layer bits `0x3000`.
 //!
 //! **Each awake tick**, after the solver: the handle's motion since the
-//! last tick (cm) is smoothed by half and its squared length is the creak
+//! last tick (cm) is smoothed halfway (`s + (v − s)·½`) and its squared
+//! length (summed (x² + y²) + z²) is the creak
 //! energy; the stop's measured length (cm, 0 inside its slack) is the
 //! knock travel; the angle is the heading, in the door frame, of the stop
 //! point less the body's origin, turned into the parent node's frame. The
@@ -57,9 +58,8 @@
 //! pathfinder answers that call by returning itself and the fallback's is
 //! empty, and nothing else reads a door node's word, so the grid's cells
 //! never change with a door (`docs/NAVIGATION.md`): Exarust keeps no word
-//! and makes no call. The last-pusher stamp,
-//! sliding doors (they stay static level geometry unless the loader is
-//! asked for them, `crate::body::slide_body`).
+//! and makes no call. Not reproduced: the last-pusher stamp. Sliding
+//! leaves have their own glue (`crate::body::slide_body`).
 //!
 //! Evidence: the door's init and hinged step, the hand's door press and
 //! drag handler and the engine's link-adding routine, read in the
@@ -243,9 +243,10 @@ impl DoorBody {
         let moved = (handle - self.handle_at) * CM;
         self.handle_before = self.handle_at;
         self.handle_at = handle;
-        self.smoothed = self.smoothed * 0.5 + moved * 0.5;
-        let s = self.smoothed;
-        let energy = s.z * s.z + s.y * s.y + s.x * s.x;
+        // Halfway to this tick's motion, in the original's form
+        // (`s + (v − s)·½`); the energy sums (x² + y²) + z².
+        self.smoothed += (moved - self.smoothed) * 0.5;
+        let energy = self.smoothed.length_squared();
         let travel = body.world[self.stop].length * CM;
         let speed = (handle - leaf.point_at_start(&self.handle)) * CM;
         let heading = self.heading(body);

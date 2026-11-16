@@ -399,3 +399,10 @@ A physical body's footsteps (its walking plants and its footwork's step ends) SH
 #### Scenario: Three steps
 - **WHEN** a body takes three steps
 - **THEN** the third restarts the voice the first played on
+
+### Requirement: A removed door's creak voice
+A door leaf that leaves the world (its level unloaded, its entity despawned) SHALL have the creak voice it held freed, as the door's destructor releases it.
+
+#### Scenario: Despawned mid-creak
+- **WHEN** a leaf's creak voice plays and the leaf is despawned
+- **THEN** after the next mechanism sounds pass no voice is held
