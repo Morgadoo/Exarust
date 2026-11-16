@@ -33,7 +33,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 61% | 59% | 2% | 0% | 33% | 6% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 59% | 49% | 1% | 9% | 27% | 14% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 59% | 50% | 1% | 9% | 27% | 14% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -498,10 +498,10 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | RF_GUI_Icons | UI | 7 | 90% | 84% | 74% | 1% | 9% | 9% | 7% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 7 | 87% | 84% | 83% | 1% | 0% | 0% | 16% |
 | T3DViewport | UI | 6 | 66% | 6% | 0% | 4% | 2% | 77% | 17% |
-| TMainMenu | UI | 6 | 80% | 73% | 73% | 0% | 0% | 22% | 5% |
+| TMainMenu | UI | 6 | 80% | 77% | 76% | 0% | 0% | 23% | 0% |
 | TCompactSkillUI | UI | 6 | 80% | 0% | 0% | 0% | 0% | 0% | 100% |
 | RF_GUI_Text_Edit | UI | 5 | 85% | 75% | 73% | 2% | 0% | 13% | 12% |
-| TSelectionUI | UI | 5 | 88% | 42% | 41% | 1% | 0% | 58% | 0% |
+| TSelectionUI | UI | 5 | 88% | 44% | 43% | 1% | 0% | 56% | 0% |
 | TEmblemForm | UI | 4 | 90% | 100% | 99% | 1% | 0% | 0% | 0% |
 | TSkillSelector | UI | 3 | 80% | 100% | 0% | 0% | 100% | 0% | 0% |
 | TSplashScreen | UI | 3 | 74% | 100% | 93% | 7% | 0% | 0% | 0% |
@@ -513,7 +513,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | XA_HelpSystem | UI | 2 | 82% | 68% | 63% | 5% | 0% | 3% | 29% |
 | TTextRenderer | UI | 2 | 92% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TDropDownList | UI | 2 | 88% | 76% | 76% | 0% | 0% | 11% | 13% |
-| TGUITask | UI | 2 | 85% | 0% | 0% | 0% | 0% | 74% | 26% |
+| TGUITask | UI | 2 | 85% | 27% | 27% | 0% | 0% | 51% | 21% |
 | TTransitionScreen | UI | 2 | 82% | 13% | 11% | 1% | 0% | 86% | 2% |
 | TGUIDrawSkinTex | UI | 1 | 60% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TReadKeyScreen | UI | 1 | 80% | 69% | 65% | 4% | 0% | 31% | 0% |
