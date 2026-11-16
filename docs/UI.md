@@ -992,7 +992,15 @@ an odd height grow by one, and a record's place is corrected by half its
 height less four units before and after the scaling (one unit when it
 is taller than eight). The common glyph sheet `GlphCommon` gives the
 large atlas nineteen 64-pixel icons in a fixed order (the seventeenth,
-at 0, 256, is the item views' marker). A message box is its text's width
+at 0, 256, is the item views' marker): at each level switch, once the
+atlas is emptied, each icon is copied out of the sheet into a blank
+64-pixel image and added with the id 1, resized to the level's cell and
+sharpened, so they take the handles 1 to 19
+(`exa_ui::gui_level::GuiLevelState::fill_sheet`, live once the game's data
+is loaded). The image buttons' icon words, the combo boxes' arrows and the
+tables' and item views' marks name these handles; Exarust's draws do not
+read the large atlas yet. A new inventory or journal window is clamped to
+the screen (x within the root's width, y at least a unit). A message box is its text's width
 plus 64 (at least 320) plus the skin's frame twice, 104 tall, centred
 down the screen (or a quarter down), its top turned into design pixels
 (over the unit, truncated, times 4); its
@@ -1261,8 +1269,9 @@ Mersenne twister. The screen follows `TMainMenu`'s rules
   go to the title; story: the story's quit; otherwise the title); the end
   pages resume, open the settings, or finish the match, as a forfeit
   unless the session was won. Escape goes back from the arena and practice
-  pages, as the original's does at the main menu, and closes the screen
-  elsewhere; Backspace goes back. The keys reach the menu's key slot with
+  pages, as the original's does at the main menu, leaves the title page up,
+  and closes the open in-game menu (with the manual over it) in a session;
+  Backspace goes back. The keys reach the menu's key slot with
   the window procedure's words: a typed character shifts into a ten-byte
   buffer (A-Z lowered), and when it reads `barechoons` the menu music
   toggles (the drum-and-bass theme at 0.2, else the plain one at 0.1, the
@@ -1336,7 +1345,10 @@ kind 1; the combo box's report selects its item with kind 1 when it is not
 the shown one; the image button swaps the kind when the other file is
 there; Delete opens the box, whose Delete deletes the slot by index, clamps
 the index to the list and selects it again, or returns to the menu when
-the list is empty; BACK returns to the menu; CONTINUE copies the record's
+the list is empty; BACK returns to the menu, and so does Escape (the form
+keeps the base form's key slot, the key climbs to the root task's menu
+toggle, whose arm in this phase is the creation form's cancel: it leaves
+at once, an open box or list included); CONTINUE copies the record's
 words and the kind and starts the mode's game (the story's full load with
 that kind, the arena hub's). In the story a save holding `exanima06`, or
 `exanima04` with an old object database, also asks `Do you wish to reset
@@ -1379,7 +1391,9 @@ the task's state. A control value of `i32::MIN` means none.
   moved (a forced update re-reads it). With a button held, a move past the
   threshold — `(200 − elapsed) / 20` times the drag distance during the
   first 191 units, then the distance itself; the distance is one pixel per
-  540 of screen height, at least 2 — sets the drag bit and sends the target
+  540 of screen height, at least 2, set from the window's height whenever
+  the game screens', the hub's or the main menu's task takes a new window
+  size (`GuiTask::resize`) — sets the drag bit and sends the target
   a 0x4000 press. An idle pointer hit tests and focuses its target; a
   captured pointer sends its moves to the capture, which ends on 0x80.
 - **Press.** A second button while a capture holds cancels through the
@@ -1409,8 +1423,15 @@ the task's state. A control value of `i32::MIN` means none.
   border (2) twice plus the width, the base form's border and attribute
   word with the upper-layer bit (the close bit cleared with 0x20), the title
   as its caption, centred across and placed down at its design-pixel top
-  rescaled to the unit, again after a resize. Enter and Space close it,
-  Escape with −1; Ok stores 1. Its live callers are a refused hire ("Hire":
+  rescaled to the unit, again after a resize. Its key slot hears the
+  frame's keys with their words: a key-down or its repeat on Enter or Space
+  closes it, on Escape with −1, a typed character is passed over, and
+  nothing climbs past it; Ok stores 1. No caller passes the Cancel flag (2):
+  the 0.9.5 callers pass 0x41 (the hub's refusals), 0xc1 (the emblem's and
+  the creator's name boxes) and 0x60 (the benchmark's box, no buttons), so
+  the Cancel button and its handler are never built, and the close-mark
+  handler is never referenced. The modal flag (0x80) of the name boxes is
+  the hub's stack keeping the top form the only one the pointer reaches. Its live callers are a refused hire ("Hire":
   "Insufficient funds", "You do not have room for any more fighters.", or a
   merchant, physician or trainer already employed; flags 0x41) and the
   company dialog's NEXT with an empty name ("Company Name", "Please name
@@ -1652,20 +1673,33 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   pointer (the focus follows it) the hotkeys hear nothing
   (`GameScreens::keys_to_window`); the game screens and the manual hand
   the frame's keys (`exa_game::gui_keys::GuiKeyFrame`) to their focused
-  form. So do the main menu, the settings form, the power tree, the skill
-  and destination screens and the hub's text fields. A key that climbs to
-  the task (`exa_game::gui_keys::TaskKeys`: from the game screens, the main
-  menu, the settings form, and the game view after the player's hotkeys
-  while no screen or form holds the keys) reaches the root task's key slot
+  form. So do the main menu, the end menu (the same key slot: the name
+  buffer and `barechoons`), the settings form, the power tree, the skill and
+  destination screens, the arsenal (its slot hears repeats, passes over
+  typed characters and sends nothing on), the save screen, the hub's forms
+  and its message box. A key that climbs to the task
+  (`exa_game::gui_keys::TaskKeys`: from the game screens, the main and end
+  menus, the settings form, the manual's forms and its topic list (Escape),
+  the save screen, the hub's forms while a hub window is open, and the game
+  view after the player's hotkeys while no screen or form holds the keys)
+  reaches the root task's key slot
   (`exa_game::commands::root_task_keys`, after every other key handler of
   the frame): a repeat, a typed character and Shift alone do nothing;
   otherwise the one shortcut for the key whose required modifiers are all
   held and most numerous runs (the earlier entry wins a tie), and the root
   passes nothing on. Its table holds the settings file's first six bound
   `KeyDef` lines (each names a modifier and one character), then the game
-  boot's Escape, the main menu's toggle: on the open menu it goes back
-  from the start and arena pages and closes the screen elsewhere
-  (`menu_screen::menu_toggle_key`); the toggle's opening arms stay with F1
+  boot's Escape, the main menu's toggle, which branches on the session
+  phase: in the menu's phase (1) the menu goes back from the start and
+  arena pages and stays up elsewhere (`menu_screen::menu_toggle_key`); in a
+  session's phases (3, 4, 5, 8) the open menu closes and the settings form
+  and the manual close with it; in the loadout's phase the arena unit
+  closes the loadout form and nothing else, the company window under it
+  staying (`hub_forms::HubWindows::close_loadout`); in the character
+  screen's phase (2) the creation form's cancel leaves to the menu at once
+  (`save_screen`); the class select's and the creator's arms are their
+  screens' own. The toggle's opening arms (the closed menu in a session,
+  which would hide the end menu under the pause page) stay with F1
   (Exarust's key for the menu) and the screens' own Escape (the arena's
   pause). Escape over an open game screen or on the settings form stays
   Exarust's close of it and does not climb. The openers' activation raises a window without moving the key
@@ -3224,7 +3258,9 @@ popup and the character view still wait for their hosts.
   inventory toggle) draw through the GUI draw path with the pack's style
   and attribute words, the controls' pictures stood in by captions;
   Escape, the inventory key (the player's bound one) and a right release
-  over the form reach the open window (`arsenal_view::arsenal_input`), the
+  over the form reach the open window (`arsenal_view::arsenal_input`, the
+  frame's keys with their words: a held key's repeat toggles again, a
+  typed character does nothing), the
   scroll arrows run the window's rules. The hub's Arsenal row opens it; no
   arena store fills its columns yet, so its close writes none back.
 - **Popups** (`exa_ui::popups`): the item card fades in and out on a 256-unit
@@ -4296,7 +4332,12 @@ it is wired into the running game yet.
   with "Continue" and "Don't show again"; the nine tips are Getting
   Started, Inventory, Matches, Trading, Manage Company, Manage, WARNING,
   Purchased Items and Tournaments, the first two and the eighth preset to
-  tick the second control. The call itself does not mark the mask.
+  tick the second control. The call itself does not mark the mask. The
+  manual's forms keep the base form's key slot: Escape climbs from them
+  (and from the topic list, whose slot passes it on) to the root task's
+  menu toggle, which closes the manual with the open menu in a session
+  and leaves it up in the menu's phase; F1 and a right click are Exarust's
+  closes.
 - **Trade window** (`exa_game::shop_window`). The page is 0x36c × 0x244 and
   titled "Trade": the character preview (0xe4 × 0x17c) with the player's
   pack under it, the quartered sell basket next to them, the full-price buy

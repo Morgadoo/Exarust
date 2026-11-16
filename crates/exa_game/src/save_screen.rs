@@ -35,7 +35,10 @@
 //!   Character` box; its Delete deletes the slot ([`SlotList::delete_index`]),
 //!   keeps the index inside the list and selects it again, or leaves to the
 //!   menu when the list is empty;
-//! * BACK (and Escape [guess: the creator's cancel key]) leaves to the menu;
+//! * BACK leaves to the menu, and so does Escape: the form keeps the base
+//!   form's key slot, the key climbs to the root task's menu toggle, whose
+//!   arm in this phase (2) is the creation form's cancel (it schedules the
+//!   menu at once, an open box or list included);
 //! * CONTINUE loads the current slot: the story's full load
 //!   ([`crate::save_live::StorySlotLoad`], the checkpoint first only for
 //!   kind 2) or, in the arena, the hub with that slot
@@ -857,17 +860,6 @@ impl SaveScreen {
         }
         SaveAction::None
     }
-
-    /// The cancel key: the box or the list closes, else the form leaves.
-    pub fn cancel(&mut self) -> SaveAction {
-        if self.reset.take().is_some()
-            || self.confirm.take().is_some()
-            || self.list.take().is_some()
-        {
-            return SaveAction::None;
-        }
-        SaveAction::Leave
-    }
 }
 
 fn rect_of(c: &Control, ox: i32, oy: i32) -> GuiRect {
@@ -937,7 +929,9 @@ pub struct SaveScreenPlugin;
 
 impl Plugin for SaveScreenPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<ScriptedSaveScreen>()
+            .add_message::<crate::commands::MenuToggleKey>()
             .init_resource::<CreatorScreen>()
             .init_resource::<GuiFrames>()
             .add_message::<MenuChoice>()
@@ -1050,9 +1044,19 @@ fn open_saves(
     }
 }
 
+/// The open screen's keys, pointer and scripted presses. The form keeps the
+/// base form's key slot: no record takes a key, so each key-down without a
+/// low word bit climbs to the root task ([`crate::gui_keys::TaskKeys`]),
+/// whose Escape is the menu toggle; in the character screen's phase (2)
+/// the toggle is the creation form's cancel, which leaves to the menu at
+/// once (an open box or list goes with the screen).
 #[allow(clippy::too_many_arguments)]
 fn saves_input(
-    keys: Res<ButtonInput<KeyCode>>,
+    (gui_keys, mut climbed, mut toggles): (
+        Option<Res<crate::gui_keys::GuiKeyFrame>>,
+        Option<ResMut<crate::gui_keys::TaskKeys>>,
+        MessageReader<crate::commands::MenuToggleKey>,
+    ),
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     pointer_script: Option<Res<exa_ui::ScriptedPointer>>,
@@ -1066,12 +1070,18 @@ fn saves_input(
     mut roll: Local<u32>,
     levels: Query<(), With<exa_world::level_lifecycle::LevelEntity>>,
 ) {
+    let toggled = toggles.read().count() > 0;
     let Some(saves) = screen.saves.as_mut() else {
         return;
     };
     let Some(mut lists) = lists else {
         return;
     };
+    if let (Some(frame), Some(climbed)) = (gui_keys.as_deref(), climbed.as_deref_mut()) {
+        for key in frame.keys.iter().filter(|k| k.flags & 3 == 0) {
+            climbed.forward(*key);
+        }
+    }
     let Ok(window) = windows.single() else {
         return;
     };
@@ -1134,8 +1144,9 @@ fn saves_input(
             actions.push(saves.answer(list, target));
         }
     }
-    if keys.just_pressed(KeyCode::Escape) {
-        actions.push(saves.cancel());
+    if toggled {
+        info!("saves: the menu toggle is the creation form's cancel");
+        actions.push(SaveAction::Leave);
     }
     let pointer = match pointer_script.as_deref() {
         Some(scripted) => scripted.position(window),
@@ -1567,6 +1578,62 @@ mod tests {
         s.release(list, at.0, at.1)
     }
 
+    /// The form keeps the base form's key slot: Escape climbs to the root
+    /// task, whose menu toggle in the character screen's phase is the
+    /// creation form's cancel; the screen leaves to the menu with its
+    /// delete box still up. A typed character climbs nowhere.
+    #[test]
+    fn escape_climbs_to_the_root_and_leaves_to_the_menu() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+        let dir = folder("escape");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .insert_resource(crate::save_live::SlotLists::new(&dir))
+            .init_resource::<FlowSteps>()
+            .add_plugins((SaveScreenPlugin, crate::commands::CommandPlugin));
+        let mut flow = Flow::default();
+        flow.phase = Phase::Creating;
+        app.insert_resource(flow);
+        app.world_mut().spawn((
+            Window {
+                resolution: bevy::window::WindowResolution::new(1024, 768),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        let mut saves = SaveScreen::new(STORY, (1024, 768), 4);
+        saves.confirm = Some(confirm_controls(4));
+        app.world_mut().resource_mut::<CreatorScreen>().saves = Some(saves);
+        app.update();
+        let send = |app: &mut App, code: KeyCode, key: Key| {
+            for pressed in [true, false] {
+                app.world_mut().write_message(KeyboardInput {
+                    key_code: code,
+                    logical_key: key.clone(),
+                    state: if pressed {
+                        ButtonState::Pressed
+                    } else {
+                        ButtonState::Released
+                    },
+                    text: None,
+                    repeat: false,
+                    window: Entity::PLACEHOLDER,
+                });
+            }
+            app.update();
+            app.update();
+        };
+        send(&mut app, KeyCode::KeyQ, Key::Character("q".into()));
+        assert!(app.world().resource::<CreatorScreen>().saves.is_some());
+        send(&mut app, KeyCode::Escape, Key::Escape);
+        assert!(app.world().resource::<CreatorScreen>().saves.is_none());
+        assert_eq!(app.world().resource::<Flow>().mode, crate::flow::Mode::Menu);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_empty_folder_opens_nothing() {
         let dir = folder("empty");
@@ -1754,10 +1821,6 @@ mod tests {
         );
         assert!(s.reset.is_none());
         assert!(save.is_file());
-        // The cancel key closes a box that is up before it leaves.
-        s.ask_portal_reset();
-        assert_eq!(s.cancel(), SaveAction::None);
-        assert!(s.reset.is_none());
         // Yes, by a click on its button.
         s.ask_portal_reset();
         let client = s.reset_client();

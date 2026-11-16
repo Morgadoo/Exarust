@@ -659,6 +659,22 @@ impl FormHost for BaseForm {
         self.record_index(control).map_or(-1, |i| i as i32)
     }
 
+    /// The pad's leave check on a selected record: its state bit 0x400
+    /// (the record's low 16-bit code, 1-based, within the records).
+    fn drops_focus(&self, control: i32) -> bool {
+        self.record_index(control)
+            .and_then(|i| self.records.get(i))
+            .is_some_and(|r| r.state & 0x400 != 0)
+    }
+
+    /// The pad's enter check on a selected record: its style bit
+    /// 0x80_0000.
+    fn takes_focus(&self, control: i32) -> bool {
+        self.record_index(control)
+            .and_then(|i| self.records.get(i))
+            .is_some_and(|r| r.style & 0x80_0000 != 0)
+    }
+
     fn tooltip_text(&self, record: i32) -> Vec<u8> {
         usize::try_from(record)
             .ok()

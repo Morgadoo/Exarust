@@ -23,8 +23,10 @@ use crate::gui_text::{TextQuad, draw_line, measure};
 pub const KEY_ESCAPE: u32 = 0x1b;
 pub const KEY_ENTER: u32 = 0x0d;
 pub const KEY_SPACE: u32 = 0x20;
-/// An event's release bit.
-pub const RELEASE: u16 = 2;
+/// The window procedure's word bit for a typed character (a key-up never
+/// reaches a form): both key slots pass over a typed character, so only
+/// the key-down (and its repeats, word bit 1) acts.
+pub const TYPED: u16 = 2;
 
 /// A message box's state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -35,9 +37,12 @@ pub struct MessageBox {
 }
 
 impl MessageBox {
-    /// What the key handler did: closed or not.
+    /// What the key slot did with a key and its word: closed or not. A
+    /// typed character is passed over; a key-down or its repeat under
+    /// Enter (0x0d) is skipped, Enter and Space close with the result, and
+    /// Escape closes with −1. Nothing climbs to the parent.
     pub fn key(&mut self, code: u32, flags: u16) -> bool {
-        if flags & RELEASE != 0 {
+        if flags & TYPED != 0 {
             return false;
         }
         if code < KEY_ENTER {
@@ -595,7 +600,7 @@ impl ReadKeyScreen {
         scan: u32,
         now: u32,
     ) -> KeyAnswer {
-        if flags & RELEASE != 0 {
+        if flags & TYPED != 0 {
             return KeyAnswer::Ignored;
         }
         if code == KEY_ESCAPE {
@@ -686,7 +691,7 @@ mod tests {
     #[test]
     fn the_message_box_keys_and_clicks() {
         let mut m = MessageBox::default();
-        assert!(!m.key(KEY_ENTER, RELEASE));
+        assert!(!m.key(KEY_ENTER, TYPED));
         assert!(!m.key(u32::from(b'a'), 0));
         assert!(m.key(KEY_ENTER, 0));
         assert!(m.closed && m.result == 0);
@@ -823,7 +828,7 @@ mod tests {
             KeyAnswer::InUse
         );
         assert_eq!(
-            screen.key(&mut binds, 0x41, RELEASE, 7 << 16, 700),
+            screen.key(&mut binds, 0x41, TYPED, 7 << 16, 700),
             KeyAnswer::Ignored
         );
         assert_eq!(screen.key(&mut binds, 0x41, 0, 0, 700), KeyAnswer::Ignored);
