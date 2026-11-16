@@ -224,9 +224,14 @@ pub struct TextBox {
     pub font: &'static GuiFont,
     pub main_font: &'static GuiFont,
     pub small: &'static GuiFont,
+    /// The sizes of the `[rimg=NAME]` pictures its text names (set by the
+    /// owner from [`crate::text_edit::TextPictures`] before the text), so
+    /// the layout makes room for them.
+    pub picture_sizes: Vec<(Vec<u8>, (u16, u16))>,
 }
 
 /// A text box's picture lookup: none.
+#[cfg(test)]
 fn no_pictures(_: &[u8]) -> Option<(u16, u16)> {
     None
 }
@@ -270,7 +275,18 @@ impl TextBox {
             font: &crate::gui_font::RAYFORM_08,
             main_font,
             small,
+            picture_sizes: Vec::new(),
         }
+    }
+
+    /// A picture's size from [`Self::picture_sizes`], keyed as the texture
+    /// cache keys names.
+    pub fn picture_size(&self, name: &[u8]) -> Option<(u16, u16)> {
+        let key = crate::text_edit::picture_key(name);
+        self.picture_sizes
+            .iter()
+            .find(|(n, _)| *n == key)
+            .map(|(_, size)| *size)
     }
 
     /// The client height the text shows in.
@@ -325,7 +341,7 @@ impl TextBox {
             self.font,
             self.markup,
             self.unit,
-            &no_pictures,
+            &|name| self.picture_size(name),
         );
         let lines = round_i32(f64::from(measured) / f64::from(self.pitch)).max(1);
         if lines != self.lines {

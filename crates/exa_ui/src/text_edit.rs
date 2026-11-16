@@ -713,11 +713,176 @@ impl TextureCache {
     }
 }
 
+/// The names a text's `[rimg=NAME]` tags give, in order, each once (as
+/// the texture cache keys them: the first 16 bytes).
+pub fn picture_names(text: &[u8]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.windows(6).position(|w| w == b"[rimg=") {
+        let tail = &rest[at + 6..];
+        let end = tail.iter().position(|&b| b == b']').unwrap_or(tail.len());
+        let name = picture_key(&tail[..end]);
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+        rest = &tail[end..];
+    }
+    out
+}
+
+/// A picture name as the texture cache keys it: its first 16 bytes.
+pub fn picture_key(name: &[u8]) -> Vec<u8> {
+    name[..name.len().min(TextureCache::KEY)].to_vec()
+}
+
+/// The inline pictures the text boxes' `[rimg=NAME]` tags draw: each
+/// `NAME.rfi` loaded once (the cache keeps it for the session, as the
+/// original's texture cache does), its size for the layout and its texels
+/// for the draw. A picture the installation does not have is remembered as
+/// missing: it lays out at size 0 and draws nothing.
+#[derive(bevy::prelude::Resource, Default)]
+pub struct TextPictures {
+    entries: Vec<(Vec<u8>, Option<crate::gui_draw::GuiTexture>)>,
+}
+
+impl TextPictures {
+    /// Loads the pictures a text names that are not loaded yet, through
+    /// `load` (the name without its extension).
+    pub fn ensure(
+        &mut self,
+        text: &[u8],
+        mut load: impl FnMut(&str) -> Option<crate::gui_draw::GuiTexture>,
+    ) {
+        for name in picture_names(text) {
+            if self.entries.iter().any(|(n, _)| *n == name) {
+                continue;
+            }
+            let texture = load(&String::from_utf8_lossy(&name));
+            self.entries.push((name, texture));
+        }
+    }
+
+    /// Puts a picture in the store (or remembers it missing).
+    pub fn insert(&mut self, name: &[u8], texture: Option<crate::gui_draw::GuiTexture>) {
+        let key = picture_key(name);
+        self.entries.retain(|(n, _)| *n != key);
+        self.entries.push((key, texture));
+    }
+
+    fn texture(&self, name: &[u8]) -> Option<&crate::gui_draw::GuiTexture> {
+        let key = picture_key(name);
+        self.entries
+            .iter()
+            .find(|(n, _)| *n == key)
+            .and_then(|(_, t)| t.as_ref())
+    }
+
+    /// A loaded picture's size in texels (the layout's lookup).
+    pub fn size(&self, name: &[u8]) -> Option<(u16, u16)> {
+        self.texture(name)
+            .map(|t| (t.width.min(0xffff) as u16, t.height.min(0xffff) as u16))
+    }
+
+    /// The sizes of the pictures a text names, for a text box's layout.
+    pub fn sizes_for(&self, text: &[u8]) -> Vec<(Vec<u8>, (u16, u16))> {
+        picture_names(text)
+            .into_iter()
+            .filter_map(|name| self.size(&name).map(|size| (name, size)))
+            .collect()
+    }
+
+    /// The draw's pictures as GUI layers: each its texture on its
+    /// rectangle moved by `offset`, in white under the premultiplied blend
+    /// ([`crate::text_layout::PICTURE_BLEND`]), clipped to `clip`
+    /// (`[x, y, w, h]`).
+    pub fn layers(
+        &self,
+        pictures: &[crate::text_layout::TextPicture],
+        offset: (i32, i32),
+        clip: [i32; 4],
+    ) -> Vec<crate::gui_draw::GuiLayer> {
+        let mut out = Vec::new();
+        for picture in pictures {
+            let Some(texture) = self.texture(&picture.name) else {
+                continue;
+            };
+            let [x, y, w, h] = picture.rect;
+            if w <= 0 || h <= 0 {
+                continue;
+            }
+            let moved = crate::text_layout::TextPicture {
+                name: Vec::new(),
+                rect: [x + offset.0, y + offset.1, w, h],
+            };
+            let mut batch = crate::skin::SkinBatch::new();
+            batch.select(2, 0, true);
+            batch.tex_col = Some(1.0);
+            batch.blend = crate::text_layout::PICTURE_BLEND;
+            batch.set_ink([255, 255, 255, 255]);
+            batch.begin();
+            for [vx, vy, u, v] in moved.corners() {
+                batch.set_uv(u, v);
+                batch.vertex(vx, vy);
+            }
+            batch.end_quads();
+            let mut layer = crate::gui_draw::GuiLayer::new(
+                batch,
+                crate::gui_draw::LayerTexture::Owned(texture.clone()),
+            );
+            layer.clip = Some(clip);
+            out.push(layer);
+        }
+        out
+    }
+}
+
 /// The text colour a `{%` span pushes (shared with the paragraph layout).
 pub const SPAN: [u8; 3] = SPAN_INK;
 
 /// The caret's glyph.
 pub const CARET: u8 = CARET_GLYPH;
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+    use crate::gui_draw::GuiTexture;
+
+    #[test]
+    fn the_pictures_load_once_by_their_sixteen_byte_key() {
+        let text = b"a[rimg=TutCmbt01]b[rimg=TutCmbt01][rimg=Missing][rimg=]";
+        assert_eq!(
+            picture_names(text),
+            vec![b"TutCmbt01".to_vec(), b"Missing".to_vec()]
+        );
+        assert_eq!(picture_key(b"ABCDEFGHIJKLMNOPQR"), b"ABCDEFGHIJKLMNOP");
+        let mut store = TextPictures::default();
+        let mut asked = Vec::new();
+        for _ in 0..2 {
+            store.ensure(text, |name| {
+                asked.push(name.to_string());
+                (name == "TutCmbt01").then(|| GuiTexture::solid([1, 2, 3, 255]))
+            });
+        }
+        assert_eq!(asked, ["TutCmbt01", "Missing"]);
+        assert_eq!(store.size(b"TutCmbt01"), Some((1, 1)));
+        assert_eq!(store.size(b"Missing"), None);
+        assert_eq!(store.sizes_for(text), vec![(b"TutCmbt01".to_vec(), (1, 1))]);
+        let picture = crate::text_layout::TextPicture {
+            name: b"TutCmbt01".to_vec(),
+            rect: [10, 20, 30, 40],
+        };
+        let layers = store.layers(std::slice::from_ref(&picture), (5, -5), [0, 0, 100, 100]);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].clip, Some([0, 0, 100, 100]));
+        assert_eq!(layers[0].batch.blend, crate::text_layout::PICTURE_BLEND);
+        // A missing picture draws nothing.
+        let missing = crate::text_layout::TextPicture {
+            name: b"Missing".to_vec(),
+            rect: [0, 0, 10, 10],
+        };
+        assert!(store.layers(&[missing], (0, 0), [0, 0, 1, 1]).is_empty());
+    }
+}
 
 #[cfg(test)]
 mod tests {
