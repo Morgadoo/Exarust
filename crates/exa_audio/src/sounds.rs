@@ -275,7 +275,8 @@ pub(crate) struct HeldVoice {
 }
 
 /// Plays the swing voice's cues ([`SwingVoiceCue`]): a start restarts the
-/// fighter's held voice on a variant of `SwingHA`, silent, and rustles its
+/// fighter's held voice on a variant of its swing set (`SwingHA`, or
+/// `ThmFrc_Swing` under Force Strikes), silent, and rustles its
 /// clothing foley once the foley clock allows (a fighter without a foley
 /// set never rustles); an attack tick sets the voice's volume and pitch;
 /// a tick that is not an attack fades a playing voice and asks it to stop
@@ -291,7 +292,7 @@ pub(crate) fn swing_voices(
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
-    mut swing_set: Local<Option<u32>>,
+    mut swing_set: Local<HashMap<&'static str, u32>>,
     mut foley_sets: Local<HashMap<&'static str, u32>>,
     mut held: Local<HashMap<Entity, HeldVoice>>,
 ) {
@@ -303,6 +304,7 @@ pub(crate) fn swing_voices(
                 at,
                 pitch,
                 now_ms,
+                set: swing_name,
             } => {
                 let Ok((f, condition)) = fighters.get(fighter) else {
                     continue;
@@ -322,8 +324,11 @@ pub(crate) fn swing_voices(
                 if entry.voice.is_none() {
                     entry.voice = env.allocate();
                 }
+                // The body's swing set: `SwingHA`, or Force Strikes'
+                // `ThmFrc_Swing`.
                 let set = *swing_set
-                    .get_or_insert_with(|| bank.load_set(&game, &mut sources, SWING.prefix));
+                    .entry(swing_name)
+                    .or_insert_with(|| bank.load_set(&game, &mut sources, swing_name));
                 if let Some(id) = entry.voice {
                     env.retrigger_set(&mut bank, id, set, at, 0.0, pitch);
                 }

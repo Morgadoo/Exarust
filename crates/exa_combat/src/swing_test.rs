@@ -702,6 +702,56 @@ fn the_swing_voice_starts_in_the_region_and_follows_the_tracker() {
     assert!(app.world().get::<SwingVoice>(fighter).unwrap().started);
 }
 
+/// Under Force Strikes the body's swing set is `ThmFrc_Swing` and its swing
+/// factor 3 the loudness of every attack tick's volume.
+#[test]
+fn a_force_swing_starts_on_its_set_three_times_as_loud() {
+    use crate::swing_voice::SwingSound;
+    let (mut app, fighter) = attacking(20.0, SwingState::default());
+    let record = sword();
+    app.world_mut().spawn(Blade::new(fighter, 0.9, record));
+    app.world_mut()
+        .entity_mut(fighter)
+        .insert(SwingSound::FORCE);
+    app.world_mut()
+        .get_mut::<Attacker>(fighter)
+        .unwrap()
+        .primary = Some(Slot::First);
+    app.world_mut()
+        .get_mut::<Attacking>(fighter)
+        .unwrap()
+        .weapon_class = 0x10;
+    app.world_mut().get_mut::<Animator>(fighter).unwrap().time = 50.0;
+    app.update();
+    let got: Vec<SwingVoiceCue> = app
+        .world_mut()
+        .resource_mut::<Messages<SwingVoiceCue>>()
+        .drain()
+        .collect();
+    assert_eq!(got.len(), 2, "{got:?}");
+    let SwingVoiceCue::Start { set, .. } = got[0] else {
+        panic!("{got:?}");
+    };
+    assert_eq!(set, "thmfrc_swing");
+    let state = *app.world().get::<SwingState>(fighter).unwrap();
+    let (volume, _) = swing_sound(
+        state.tracker[0].speed2,
+        0.5,
+        false,
+        record.swing_pitch,
+        record.swing_volume,
+        3.0,
+        1.0,
+    );
+    let SwingVoiceCue::Sound {
+        volume: got_volume, ..
+    } = got[1]
+    else {
+        panic!("{got:?}");
+    };
+    assert_eq!(got_volume, volume);
+}
+
 /// Off its balance (under 0.6, in double precision, so the float 0.6 is
 /// on it) an attacking fighter takes the falls branch: its attack's clip
 /// runs 1.25 × base (1.875 for a ghoul's 1.5). So does an attack started

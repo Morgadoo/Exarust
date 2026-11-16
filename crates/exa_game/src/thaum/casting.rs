@@ -481,16 +481,18 @@ pub fn take_stance_return(body: &mut CastBody) -> bool {
 /// The blend the original's cast end gives its stance motion, in frames.
 pub const STANCE_BLEND: u32 = 30;
 
-/// Return to the stance after a cast motion: the combat idle or the defence
-/// stance when one was playing, else Idle, blended over [`STANCE_BLEND`]
-/// frames as the original's cast end starts it. The original's motion
-/// table's own follow-up is not in the packs; this is Exarust's, as its
-/// attacks return to the combat idle.
-pub fn play_follow(animator: &mut Animator) {
-    let follow = if matches!(animator.action.as_str(), "Cmbt - Idle" | "Defence stance") {
-        animator.action.clone()
-    } else {
-        "Idle".to_string()
+/// Return to the stance after a cast motion, blended over [`STANCE_BLEND`]
+/// frames, linear, as the original's cast end starts it: the body's stored
+/// stance (`stance`, the one its behaviour or the AI chose) when it has
+/// one. A body without one (Exarust's: every fighter carries one) takes
+/// the combat idle or the defence stance when one was playing, else Idle.
+pub fn play_follow(animator: &mut Animator, stance: Option<exa_combat::stance::Stance>) {
+    let follow = match stance {
+        Some(stance) => stance.action().to_string(),
+        None if matches!(animator.action.as_str(), "Cmbt - Idle" | "Defence stance") => {
+            animator.action.clone()
+        }
+        None => "Idle".to_string(),
     };
     if animator.action != follow || !animator.looping {
         animator.start(&follow, true, None, STANCE_BLEND, Ease::Linear);
@@ -1067,10 +1069,15 @@ mod tests {
     #[test]
     fn the_stance_return_blends_over_thirty_frames() {
         let mut animator = Animator::new("Default", "Force Raise");
-        play_follow(&mut animator);
+        play_follow(&mut animator, None);
         assert_eq!(animator.action, "Idle");
         assert_eq!(animator.blend, STANCE_BLEND as f32);
         assert!(animator.looping);
+        // The stored stance: a body in the combat idle goes back to it.
+        let mut animator = Animator::new("Default", "Force Raise");
+        play_follow(&mut animator, Some(exa_combat::stance::Stance::CombatIdle));
+        assert_eq!(animator.action, "Cmbt - Idle");
+        assert_eq!(animator.blend, STANCE_BLEND as f32);
     }
 
     #[test]

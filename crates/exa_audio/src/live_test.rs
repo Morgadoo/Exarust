@@ -78,6 +78,7 @@ fn the_looping_sources_follow_life_and_death() {
             at: Vec3::ZERO,
             pitch: 1.0,
             now_ms: 1000,
+            set: exa_combat::swing_voice::SwingSound::PLAIN.set,
         });
         app.update();
     };

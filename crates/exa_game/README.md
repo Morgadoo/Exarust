@@ -580,7 +580,9 @@ static meshes walked from the static grid (`strike_level_mesh`: the mesh
 walk's two-sided query and the rebound; the bolt's sampled walk through
 the front sphere or the swept query, its record's end left at the mesh
 node's origin as the original leaves it), the charge loop `thmfrc_cu01`
-and the release set on their handles (`thaum::blast_sound`), the release's alert
+and the release set on their handles (`thaum::blast_sound`, which sounds the
+force wave too: its charge loop from the start's draw and `thmfrc_wav` at
+its throw's pitch), the release's alert
 to the caster's known characters, the instability counter and the concern
 a struck character takes, and its ribbon drawn with the glow material. A barrier cast runs its dome as an entity
 (`thaum::barrier_live`): cast motion 0x23 and the hook that ends it, the
@@ -647,7 +649,15 @@ loop `thmfrc_cu01` and stream loop `thmfrc_trntdr` playing at the tick's
 volumes and pitch (`thaum::torrent_sound`), and leaving once its frame
 would draw nothing. The barricade's hum `thmfrc_bc01` follows its frame's
 words and its impacts play `thmfrc_bi` at the struck sphere
-(`thaum::barricade_sound`, which also plays Force Strikes' end set); the
+(`thaum::barricade_sound`, which also plays the one-shots the powers send
+from the step as `ForceSounded`: Force Strikes' end set, Shock's charge and
+release at the hand, the displacements' `thmdsp_vns` start and their
+`thmdsp_apr` come-back on a voice that follows the body); a barricade's
+power that ends by an event fells its wall; a throw that finds nothing and
+a kinesis pick the hand refuses play `ThaumFail01`; the Mind powers mark
+their bar slots from `mind::runtime::tick_minds`; the tree reopens on its
+last domain only for the same player body; the cast end returns to the
+body's stored `Stance`; the
 blast's, wave's and barricade's sight entities form the simulation's
 watch list (`effects::danger::HazardWatch`): one that leaves it is
 forgotten by every brain. Cast hooks answer by event

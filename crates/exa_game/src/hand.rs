@@ -1753,6 +1753,15 @@ fn press_hand(
         ctrl,
         moving: locomotor.is_some_and(Locomotor::moving),
     };
+    // A press kept for combat or out of reach goes no further; a waiting
+    // kinesis pick is told it was refused (its failure sound, and its
+    // end).
+    if (state.kept_for_combat || state.out_of_reach)
+        && let Some(caster) = kinesis
+        && let Some(messages) = kinesis_picks.as_deref_mut()
+    {
+        messages.write(KinesisPicked { caster, body: None });
+    }
     // Every press starts from nothing held.
     hand.holding = Holding::Nothing;
     let Ok((mut pb, ..)) = player_bodies.get_mut(child) else {
@@ -1907,7 +1916,10 @@ fn press_hand(
             ) = (kinesis, picked)
             {
                 if let Some(messages) = kinesis_picks.as_deref_mut() {
-                    messages.write(KinesisPicked { caster, body });
+                    messages.write(KinesisPicked {
+                        caster,
+                        body: Some(body),
+                    });
                 }
                 // The pick hook took it: the hand's state is the GUI
                 // callback's drag until the release.
