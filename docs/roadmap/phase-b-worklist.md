@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 700 | 170,524 | B1 wire (or prove unreachable) |
-| partial | 1,442 | 914,133 | B4 complete the port |
+| uncalled | 695 | 169,053 | B1 wire (or prove unreachable) |
+| partial | 1,441 | 913,134 | B4 complete the port |
 | missing | 58 | 11,783 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -19,9 +19,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | ui | 86,242 | 45,948 | 1,311 |
 | powers | 109,096 | 3,157 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
-| ai | 99,815 | 4,612 | 28 |
+| ai | 98,816 | 3,406 | 28 |
 | world | 65,469 | 21,016 | 563 |
-| modes | 66,538 | 10,934 | 779 |
+| modes | 66,538 | 10,669 | 779 |
 | items | 55,764 | 8,673 | 601 |
 | data | 31,939 | 12,138 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
@@ -36,7 +36,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|---|---|
 | TMotileDynamics | physics | 47 / 98,866 | 3 / 558 | 1 / 38 | 99,462 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
-| TMotileAI | ai | 23 / 31,742 | 4 / 1,348 | 2 / 28 | 33,118 |
+| TMotileAI | ai | 22 / 30,743 | 3 / 233 | 2 / 28 | 31,004 |
 | SG_PlayerControls (unit routines) | ai | 39 / 23,073 | 0 / 0 | 0 / 0 | 23,073 |
 | TSimSector | physics | 28 / 21,578 | 0 / 0 | 0 / 0 | 21,578 |
 | TMotilePart | characters | 37 / 17,208 | 5 / 1,341 | 2 / 1,370 | 19,919 |
@@ -90,8 +90,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | T3DViewport | ui | 19 / 4,915 | 2 / 1,101 | 0 / 0 | 6,016 |
 | TForceBlastEffect | powers | 3 / 5,947 | 0 / 0 | 0 / 0 | 5,947 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
-| TAISearchActivity | ai | 5 / 5,505 | 3 / 212 | 0 / 0 | 5,717 |
 | TProcMaterial | items | 9 / 5,114 | 0 / 0 | 1 / 525 | 5,639 |
+| TAISearchActivity | ai | 5 / 5,505 | 1 / 121 | 0 / 0 | 5,626 |
 | FLX_System (unit routines) | core | 31 / 2,561 | 22 / 2,983 | 1 / 59 | 5,603 |
 | TIconManager | ui | 0 / 0 | 6 / 5,573 | 0 / 0 | 5,573 |
 | SG_Character_Data (unit routines) | characters | 9 / 2,332 | 21 / 3,211 | 0 / 0 | 5,543 |
@@ -135,13 +135,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TShadowMapDirect | render | 4 / 3,259 | 0 / 0 | 0 / 0 | 3,259 |
 | TGeometry | render | 6 / 2,254 | 0 / 0 | 1 / 804 | 3,058 |
 | TItemGUIManager | items | 8 / 1,889 | 7 / 1,052 | 0 / 0 | 2,941 |
-| XA_ExperienceSys (unit routines) | modes | 2 / 1,851 | 6 / 1,084 | 0 / 0 | 2,935 |
 | TCharCreation | modes | 6 / 2,108 | 5 / 818 | 0 / 0 | 2,926 |
 | RF_Polyhedra (unit routines) | render | 2 / 2,831 | 0 / 0 | 0 / 0 | 2,831 |
 | .rfi image codec | render | 0 / 0 | 10 / 2,793 | 0 / 0 | 2,793 |
 | TScanEffect | powers | 4 / 1,722 | 0 / 0 | 1 / 1,070 | 2,792 |
 | TSelectionUI | ui | 9 / 2,745 | 0 / 0 | 0 / 0 | 2,745 |
 | T3DNode | world | 7 / 1,202 | 3 / 1,190 | 1 / 324 | 2,716 |
+| XA_ExperienceSys (unit routines) | modes | 2 / 1,851 | 4 / 819 | 0 / 0 | 2,670 |
 | Pixel-format converters (8-bit and float) | render | 0 / 0 | 11 / 2,594 | 0 / 0 | 2,594 |
 | TGUITableView | ui | 1 / 2,523 | 0 / 0 | 0 / 0 | 2,523 |
 | FLX_IconRender (unit routines) | render | 0 / 0 | 7 / 2,195 | 2 / 286 | 2,481 |
