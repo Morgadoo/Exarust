@@ -775,7 +775,7 @@ impl Company {
                 leader
                     .checked_sub(2)
                     .and_then(|slot| field.get(slot as usize))
-                    .map_or(0, |&company| (company + 1).max(0) as u32)
+                    .map_or(0, |&company| (company + 2).max(0) as u32)
             };
             if ours {
                 self.tournaments_won = self.tournaments_won.saturating_add(1);
@@ -1673,10 +1673,10 @@ mod tests {
         ours.end_day_in_field([1, 1, 1, 0, 2, 3], &field);
         assert_eq!(ours.week_winners, [1, 0, 0, 0]);
         // A rival at team id 3 is the field's second company (9), stored
-        // as its id plus one.
+        // as the field's word plus two.
         let mut rival = Company::new("Ash");
         rival.end_day_in_field([3, 3, 3, 1, 1, 0], &field);
-        assert_eq!(rival.week_winners, [10, 0, 0, 0]);
+        assert_eq!(rival.week_winners, [11, 0, 0, 0]);
         assert!(!rival.weeks[0]);
         // A tie or fewer than three wins leaves the slot; a team id past
         // the field is nobody.

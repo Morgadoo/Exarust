@@ -1601,8 +1601,8 @@ pub fn staff_order(stores: Option<&crate::save_live::ArenaStores>) -> Option<&[i
 }
 
 /// Writes what the board's fighter tables changed back into the arena: on
-/// the tournament tab the selected event's entrants (a join rewrites the
-/// row from the lineup, a leaving drops its entrant and moves the later
+/// the tournament tab the selected event's entrants (a join or a move
+/// within the lineup rewrites the row from the lineup, a leaving drops its entrant and moves the later
 /// ones down), on the other tabs the lineup order into the staff's order
 /// list when the staff matches the board's pool.
 pub fn board_table_answer(
@@ -1615,7 +1615,10 @@ pub fn board_table_answer(
     let Some(board) = windows.board.as_ref() else {
         return;
     };
-    if !matches!(action, BoardTableAction::Joined | BoardTableAction::Left(_)) {
+    if !matches!(
+        action,
+        BoardTableAction::Joined | BoardTableAction::Reordered | BoardTableAction::Left(_)
+    ) {
         return;
     }
     if board.tab == exa_ui::match_board::BoardTab::Tournament {
@@ -2039,6 +2042,10 @@ fn hub_clicks(
                             } else if action == exa_ui::match_board::BoardAction::Close {
                                 windows.close_window();
                                 hub.busy = false;
+                            } else if action == exa_ui::match_board::BoardAction::ChooseLineup {
+                                // The weapon pane's Choose opens the event's
+                                // lineup on the loadout form.
+                                windows.open_lineup(&mut career);
                             } else if action == exa_ui::match_board::BoardAction::Forfeit {
                                 // The tournament's Forfeit asks first; its
                                 // Yes forfeits every undecided event.
@@ -2790,6 +2797,37 @@ mod tests {
         assert!(board.team.is_empty());
     }
 
+    /// A lineup row dragged onto the lineup, through the board's table
+    /// input: a drop on the other row swaps the two, and the lineup order
+    /// follows into the staff's order list.
+    #[test]
+    fn a_lineup_row_dropped_on_the_lineup_moves_within_it() {
+        use exa_ui::match_board::{BoardInput, BoardTab, TableSlot};
+        let mut app = board_app(BoardTab::Matches);
+        {
+            let mut windows = app.world_mut().resource_mut::<HubWindows>();
+            let board = windows.board.as_mut().unwrap();
+            board.handle(BoardInput::SelectMatch(1));
+            while board.team.len() < 2 {
+                assert!(board.move_to_team(0, None));
+            }
+        }
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team.len(), 2, "{:?}", board.team);
+        let (first, second) = (board.team[0], board.team[1]);
+        let order_before = board.lineup.clone();
+        // Row 1 onto row 2: the two swap.
+        let from = row_centre(&app, TableSlot::Lineup, 1);
+        let to = row_centre(&app, TableSlot::Lineup, 2);
+        pointer(&mut app, from, true);
+        pointer(&mut app, to, false);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team, vec![second, first]);
+        let staff = &app.world().resource::<crate::save_live::ArenaStores>().staff;
+        assert_eq!(staff.order, board.lineup);
+        assert_ne!(board.lineup, order_before);
+    }
+
     /// A drop on the table the row came from changes nothing.
     #[test]
     fn a_drop_on_its_own_table_does_nothing() {
@@ -2991,6 +3029,113 @@ mod tests {
         fighter.health.red = health;
         app.world_mut()
             .spawn((PlayerBody::new(0.0), Condition(condition), fighter));
+    }
+
+    /// The weapon pane's Choose, through the hub's click and the form
+    /// input: on a weapon event with an entrant the loadout form opens on
+    /// its event page at the entrant's row and the event's rank, the view's
+    /// hands holding the event's weapon words; the form's Close hands the
+    /// out hands back to the event's first entrant (the second word's item
+    /// id cleared) and gives the loadout its own hands back.
+    #[test]
+    fn the_boards_choose_opens_the_events_lineup_and_its_close_writes_the_weapons() {
+        use exa_formats::characters::ItemRef;
+        use exa_ui::match_board::{BoardTab, FLAG_WEAPON, weapon_panel};
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        spawn_hub_level(&mut app);
+        app.update();
+        let (mut career, stores) = board_career();
+        app.insert_resource(stores);
+        // Event 0 is entered by Brom (row 2) with two weapon words.
+        career.entries[0].count = 1;
+        career.entries[0].entries[0].actor_id = 2;
+        career.entries[0].entries[0].weapon = [0x0000_0003_0000_0042, 0x0000_0005_0000_0077];
+        let own = career.company.roster[1].loadouts[0].hands;
+        let mut windows = HubWindows::default();
+        windows.open_board(&career);
+        {
+            let board = windows.board.as_mut().unwrap();
+            board.switch_tab(BoardTab::Tournament);
+            board.tournament_events[0].flags |= FLAG_WEAPON;
+            board.refresh_tournament();
+        }
+        app.insert_resource(career);
+        app.insert_resource(windows);
+        let windows = app.world().resource::<HubWindows>();
+        let bounds = windows.bounds().unwrap();
+        let border = windows.board_form.as_ref().map_or(0, |f| f.geometry.border);
+        let choose = windows.board.as_ref().unwrap().weapon_panel().unwrap()[weapon_panel::CHOOSE];
+        let pointer = IVec2::new(
+            bounds.left + border + choose.x + choose.w / 2,
+            bounds.top + border + choose.y + choose.h / 2,
+        );
+        app.world_mut().write_message(WorldClick {
+            hit: Hit::Level,
+            pointer,
+            double: false,
+        });
+        app.update();
+        let windows = app.world().resource::<HubWindows>();
+        assert_eq!(
+            windows.forms.top().map(|f| f.window),
+            Some(crate::hub_forms::FormWindow::Loadout)
+        );
+        let arsenal = windows.forms.arsenal.unwrap();
+        assert_eq!(arsenal.page, crate::manage::PAGE_EVENT);
+        assert_eq!((arsenal.selection, arsenal.tab), (2, 0));
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(
+            career.company.roster[1].loadouts[0].hands[..2],
+            [ItemRef::new(0x42, 3), ItemRef::new(0x77, 5)]
+        );
+        // The kit puts another weapon in the main hand.
+        app.world_mut()
+            .resource_mut::<crate::hub_windows::ArenaCareer>()
+            .company
+            .roster[1]
+            .loadouts[0]
+            .hands[0] = ItemRef::new(0x99, 1);
+        // The form's Close, pressed and released through the form input.
+        app.world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow));
+        let at = {
+            let windows = app.world().resource::<HubWindows>();
+            let form = windows
+                .forms
+                .get(crate::hub_forms::FormWindow::Loadout)
+                .unwrap();
+            let (ox, oy) = form.origin();
+            let c = &form.controls()[exa_ui::arena_forms::loadout::CLOSE];
+            (ox + c.x + c.w / 2, oy + c.y + c.h / 2)
+        };
+        for press in [true, false] {
+            app.insert_resource(exa_ui::ScriptedPointer(Some(Vec2::new(
+                at.0 as f32,
+                at.1 as f32,
+            ))));
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            if press {
+                mouse.press(MouseButton::Left);
+            } else {
+                mouse.release(MouseButton::Left);
+            }
+            app.update();
+        }
+        let windows = app.world().resource::<HubWindows>();
+        assert!(windows.forms.get(crate::hub_forms::FormWindow::Loadout).is_none());
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(
+            career.entries[0].entries[0].weapon,
+            [0x0000_0001_0000_0099, 0x0000_0005_0000_0000]
+        );
+        assert_eq!(career.company.roster[1].loadouts[0].hands, own);
+        let board = windows.board.as_ref().unwrap();
+        assert_eq!(board.entries[0].participants[0].value, 0x99);
     }
 
     /// The board's Begin, through the hub's click: the first unfit

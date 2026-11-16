@@ -1040,6 +1040,8 @@ pub enum BoardTableAction {
     Took,
     /// A company fighter joined the lineup (a double press or a drop).
     Joined,
+    /// A lineup fighter was moved within the lineup (a drop on it).
+    Reordered,
     /// The lineup fighter at this row went back to the company table.
     Left(usize),
 }
@@ -1248,7 +1250,7 @@ impl HubWindows {
             let from = drag.row;
             if let Some((view, _)) = &lineup {
                 // The lineup's accept check: the rank check on a company
-                // row (the board has no reorder within the lineup).
+                // row; a row of its own is moved within it.
                 let refuses = drag.slot == TableSlot::Roster
                     && !board
                         .available
@@ -1267,10 +1269,25 @@ impl HubWindows {
                         answer = BoardTableAction::Joined;
                         return 1;
                     }
+                    if drag.slot == TableSlot::Lineup
+                        && board.handle(BoardInput::ReorderTeam { from, to })
+                            == BoardAction::Changed
+                    {
+                        answer = BoardTableAction::Reordered;
+                        return 1;
+                    }
                     0
                 };
                 if view.owner_query(Some(&mut drop)) != 0 {
-                    remove_moved_row(board, drag.slot, from, source);
+                    if answer == BoardTableAction::Reordered {
+                        // The rows stay in the lineup: only its selection
+                        // is kept within it.
+                        board.team_selection = board
+                            .team_selection
+                            .filter(|&row| row < board.team.len());
+                    } else {
+                        remove_moved_row(board, drag.slot, from, source);
+                    }
                 }
                 return Some(answer);
             }
@@ -2101,6 +2118,27 @@ fn paint_board(
             BoardPaint::Label { rect, text, .. } => {
                 if let Some(rect) = rect {
                     paint_text(&mut painted, at(origin, rect), &text, look);
+                }
+            }
+            // The weapon pane's Choose: a button record of the pane, drawn
+            // as the line skin draws a button (its pressed and hover states
+            // are not tracked for a pane's record).
+            BoardPaint::Button { rect, text, .. } => {
+                let (font, size) = screen_font(look.textures, look.unit);
+                for layer in gui_paint::paint_button(
+                    at(origin, rect),
+                    0,
+                    look.unit,
+                    &look.palette,
+                    &font,
+                    size,
+                    text,
+                    false,
+                    false,
+                )
+                .layers
+                {
+                    painted.push(layer);
                 }
             }
         }

@@ -99,6 +99,82 @@ pub struct HubForms {
     pub message_result: Option<i32>,
     /// Manage Company's two tables' pointer state.
     pub manage_tables: ManageTables,
+    /// The tournament event whose lineup the loadout form shows on its
+    /// event page (the board's Choose), while that form is open.
+    pub lineup: Option<LineupEdit>,
+    /// The lineup the loadout form's close handed back, for the career's
+    /// event row ([`apply_closed_lineup`]).
+    pub closed_lineup: Option<LineupEdit>,
+}
+
+/// An event's lineup on the loadout form's event page: the event, its
+/// first entrant's roster row and the rank tab shown, and the two out
+/// hands the loadout had before the event's weapons were put in them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineupEdit {
+    pub event: usize,
+    pub row: i32,
+    pub tab: usize,
+    pub saved: [exa_formats::characters::ItemRef; 2],
+}
+
+/// A weapon word (the item id low, its flags high) as a hand.
+fn hand_of_word(word: u64) -> exa_formats::characters::ItemRef {
+    exa_formats::characters::ItemRef {
+        id: word as u32,
+        flags: (word >> 32) as u32,
+    }
+}
+
+/// A hand as a weapon word.
+fn word_of_hand(hand: exa_formats::characters::ItemRef) -> u64 {
+    u64::from(hand.id) | u64::from(hand.flags) << 32
+}
+
+/// The career member a loadout row names: the manager on row 0, else the
+/// employee one place up.
+fn row_member(career: &mut ArenaCareer, row: i32) -> Option<&mut crate::career::Member> {
+    if row < 1 {
+        Some(&mut career.player)
+    } else {
+        career.company.roster.get_mut(row as usize - 1)
+    }
+}
+
+/// The loadout form's close on an event's page, as the close hook the
+/// board's Choose installed runs: the view's two out hands go back to the
+/// event's first entrant (the second word's item id cleared,
+/// [`crate::manage::close_lineup`]) and the board's weapon mark is
+/// refreshed from the career's rows. The loadout's own hands, which the
+/// view borrowed for the event's weapons, are given back. [The original's
+/// view is a copy of the record; Exarust's kit edits the record's loadout,
+/// so the borrowed hands are restored.]
+pub fn apply_closed_lineup(
+    windows: &mut HubWindows,
+    career: &mut ArenaCareer,
+    kind_of: &dyn Fn(u32) -> u32,
+) -> bool {
+    let Some(edit) = windows.forms.closed_lineup.take() else {
+        return false;
+    };
+    let Some(loadout) =
+        row_member(career, edit.row).and_then(|member| member.loadouts.get_mut(edit.tab))
+    else {
+        return false;
+    };
+    let hands = [word_of_hand(loadout.hands[0]), word_of_hand(loadout.hands[1])];
+    loadout.hands[0] = edit.saved[0];
+    loadout.hands[1] = edit.saved[1];
+    crate::manage::close_lineup(&mut career.entries, edit.event, hands);
+    if let Some(board) = windows.board.as_mut() {
+        board.entries = crate::arena_board::roster_entries(&career.entries, kind_of);
+    }
+    info!(
+        "hub board: the lineup of event {} closes; its first entrant's weapons {:#x?}",
+        edit.event,
+        career.entries.get(edit.event).map(|row| row.entries[0].weapon)
+    );
+    true
 }
 
 /// Manage Company's two table views: the roster (table 0) and the report
@@ -272,6 +348,10 @@ impl HubForms {
         }
         if window == FormWindow::Loadout {
             self.arsenal = None;
+            // An event page's close runs the lineup's close hook.
+            if let Some(edit) = self.lineup.take() {
+                self.closed_lineup = Some(edit);
+            }
         }
         let options = &mut self.options;
         if options.focus.is_some_and(|(w, _)| w == window) {
@@ -793,6 +873,53 @@ impl HubWindows {
             }
             self.forms.arsenal = Some(arsenal);
         }
+    }
+
+    /// The weapon pane's Choose, as its callback does: the board's selected
+    /// tournament event, when it has an entrant
+    /// ([`crate::manage::open_lineup`]), opens the loadout form on the
+    /// event page at that entrant's row and the event's rank tab, the view's
+    /// two out hands holding the event's weapon words; its close hands them
+    /// back ([`apply_closed_lineup`]). Returns whether the form opened.
+    pub fn open_lineup(&mut self, career: &mut ArenaCareer) -> bool {
+        let Some(event) = self.board.as_ref().map(|board| board.winner_selection) else {
+            return false;
+        };
+        let Some(open) = crate::manage::open_lineup(&career.entries, event) else {
+            return false;
+        };
+        let row = open.row as i32;
+        let Ok(tab) = usize::try_from(open.tab) else {
+            return false;
+        };
+        let Some(loadout) =
+            row_member(career, row).and_then(|member| member.loadouts.get_mut(tab))
+        else {
+            return false;
+        };
+        let saved = [loadout.hands[0], loadout.hands[1]];
+        loadout.hands[0] = hand_of_word(open.weapons[0]);
+        loadout.hands[1] = hand_of_word(open.weapons[1]);
+        self.open_loadout_at(crate::manage::PAGE_EVENT, row, career);
+        if let Some(mut arsenal) = self.forms.arsenal {
+            arsenal.switch_tab(open.tab);
+            if let Some(form) = self.forms.get_mut(FormWindow::Loadout) {
+                refresh_loadout(form, &mut arsenal, career);
+            }
+            self.forms.arsenal = Some(arsenal);
+        }
+        self.forms.closed_lineup = None;
+        self.forms.lineup = Some(LineupEdit {
+            event,
+            row,
+            tab,
+            saved,
+        });
+        info!(
+            "hub board: Choose opens event {event}'s lineup on row {row} at rank {tab}, weapons {:#x?}",
+            open.weapons
+        );
+        true
     }
 
     /// Opens the loadout form on a page (the roster or the hire list) at
@@ -1913,6 +2040,7 @@ pub fn hub_form_input(
         Option<Res<crate::arsenal::ShelfKinds>>,
     ),
     mut open_arsenal: MessageWriter<crate::arsenal_view::OpenArsenal>,
+    live: Option<Res<exa_assets::live_objects::LiveObjects>>,
 ) {
     if !windows.forms.is_empty() {
         let pointer = windows_q.single().ok().and_then(|window| {
@@ -1963,6 +2091,8 @@ pub fn hub_form_input(
             }
         }
     }
+    let kind_of = crate::arena_hub_live::board_item_kind(live.as_deref());
+    apply_closed_lineup(&mut windows, &mut career, &kind_of);
     match (stores, kinds) {
         (Some(mut stores), Some(kinds)) => {
             apply_staff_changes(&mut windows.forms, &mut career, &mut stores, &kinds);
