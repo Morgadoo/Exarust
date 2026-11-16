@@ -694,6 +694,9 @@ fn place_on_ground(
         let (Some(motions), Some(physics)) = (motions.as_deref(), physics.as_deref()) else {
             continue;
         };
+        // The placement opens with the clinch clear: no parry, no
+        // countered motion, the hands' arm bit and the parry links off.
+        exa_combat::parry::clear_for_placement(&mut commands, root);
         // The player's snap holds the body before its placement (its world
         // contacts go) and, after it, drops the solver's kept pairs with
         // it and releases it. The placement neither finds contacts nor
@@ -2788,6 +2791,58 @@ pub(crate) mod tests {
                 held
             );
         }
+    }
+
+    /// The placement on the ground opens with the clinch clear: a parry
+    /// that was up is off and counters no motion, and the hand loses the
+    /// parry's arm bit, before (and whether or not) the body is posed.
+    #[test]
+    fn the_ground_placement_clears_the_parry_hold_first() {
+        use exa_physics::body::PartSetup;
+        use exa_physics::part::PartState;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(motions())
+            .insert_resource(exa_physics::Physics::default())
+            .add_systems(Update, place_on_ground);
+        let part = app.world_mut().spawn_empty().id();
+        let mut body = Ragdoll::new(&[PartSetup {
+            bone: 17,
+            entity: part,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::Y),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.05),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }]);
+        body.hold_parry_arms(Ragdoll::PARRY_HANDS);
+        assert!(body.parts[0].state.has(PartState::ARM));
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.parry.active = true;
+        fighter.parry.counter_motion = Some(5);
+        let root = app
+            .world_mut()
+            .spawn((
+                body,
+                fighter,
+                GlobalTransform::from_translation(Vec3::Y),
+                GroundPlacement {
+                    floor: 0.0,
+                    yaw: None,
+                    held: false,
+                },
+            ))
+            .id();
+        app.update();
+        let f = app.world().get::<exa_combat::Fighter>(root).unwrap();
+        assert!(!f.parry.active);
+        assert_eq!(f.parry.counter_motion, None);
+        let body = app.world().get::<Ragdoll>(root).unwrap();
+        assert!(!body.parts[0].state.has(PartState::ARM));
     }
 
     /// A body root registered where a level placed it is built limp at

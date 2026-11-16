@@ -1149,6 +1149,34 @@ fn release_parry_hold(world: &mut World, entity: Entity) {
     }
 }
 
+/// The clinch clear a placement on the ground makes before it places the
+/// body (the original's placement clears the parrying flag, then runs the
+/// clear): the parry is off and counters no motion, both hands and their
+/// parents lose the arm bit, and every item the body holds (its shield
+/// too) has its parry link disabled, whether a hold was on or not. The
+/// stance is not started again: the flag is cleared before the clear
+/// reads it.
+pub fn clear_for_placement(commands: &mut Commands, entity: Entity) {
+    commands.queue(move |world: &mut World| {
+        if let Some(mut f) = world.get_mut::<Fighter>(entity) {
+            clear_counter(&mut f);
+        }
+        let key = world.get_mut::<Ragdoll>(entity).and_then(|mut body| {
+            body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+            body.parts.first().map(|part| part.entity)
+        });
+        let Some(key) = key else { return };
+        let mut grips = world.query::<&mut exa_physics::grip::HeldGrip>();
+        for mut grip in grips.iter_mut(world) {
+            if grip.holder_key == key
+                && let Some(links) = grip.links.as_mut()
+            {
+                links.release_parry();
+            }
+        }
+    });
+}
+
 /// Whether either hand carries the parry's arm bit.
 fn holds_parry_arms(body: &Ragdoll) -> bool {
     body.parts.iter().any(|part| {
