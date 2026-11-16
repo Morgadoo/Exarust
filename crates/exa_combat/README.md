@@ -633,7 +633,10 @@ each fighter's `SwingVoice` (required by `SwingState`) and sends a
 `SwingVoiceCue` (start, each attack tick's volume and pitch from
 `swing_sound`), `fade_swing_voices` the fade of every living body tick that
 is not an attack, and `exa_audio` plays them on the first held item's
-voice (an unarmed fighter has none). The voice starts silent at 0.4 × W26 on
+voice (an unarmed fighter has none). A body's `SwingSound` (its swing-sound
+slot and swing factor; Force Strikes puts `ThmFrc_Swing` and 3 on its
+caster) names the set the start plays and the loudness the attack ticks'
+volume takes. The voice starts silent at 0.4 × W26 on
 the first attack tick in the swing's region (`SwingState::in_region`) and
 again after leaving it, the second hand's tracker sets it for a one-hand
 striker's other-side attacks (`voice_speed2`), the start rustles the

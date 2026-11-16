@@ -726,6 +726,9 @@ enum MindAction {
     },
     /// The body's AI re-arms its behaviour (the original's behaviour byte).
     Rearm(Entity),
+    /// A Loyalty or Command Dead mark ended on the body: it leaves the
+    /// experience system's party (`exa_ai::brain::PartyChange`).
+    LeaveParty(Entity),
     /// A Loyalty or Command Dead mark ended on the body: the GUI focuses
     /// its root and closes an inventory open on the body
     /// ([`crate::gui_screens::release_marked_body`]).
@@ -798,7 +801,12 @@ fn class_name(class: &MindClass) -> &'static str {
 pub fn tick_minds(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
-    mut minds: Query<(Entity, &mut MindBody, Option<&mut PowerCaster>)>,
+    mut minds: Query<(
+        Entity,
+        &mut MindBody,
+        Option<&mut PowerCaster>,
+        Has<crate::player::PlayerBody>,
+    )>,
     conditions: Query<&Condition>,
     records: Query<(Entity, &exa_character::record::CharacterData), With<MindBody>>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
@@ -806,7 +814,7 @@ pub fn tick_minds(
     mut relations: crate::thaum::live::MindRelations,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, _)| (m.id, e)).collect();
+    let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, ..)| (m.id, e)).collect();
     let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
     // A loaded Loyalty or Command Dead looks its target up by the
     // character id it saved: the body whose record has it, with that body's
@@ -819,7 +827,7 @@ pub fn tick_minds(
         Some((body_id(entity), condition))
     };
     let mut actions = Vec::new();
-    for (entity, mut mind, mut caster) in &mut minds {
+    for (entity, mut mind, mut caster, player) in &mut minds {
         if mind.powers.is_empty() {
             continue;
         }
@@ -831,6 +839,7 @@ pub fn tick_minds(
             caster.body.status_bits |= mind.cast.status_bits & MIND_STATUS_BITS;
         }
         let mut powers = std::mem::take(&mut mind.powers);
+        let mut marks = Vec::new();
         let body = body_of(mind, caster.as_deref_mut());
         powers.retain_mut(|power| {
             let caster_id = power.caster;
@@ -961,6 +970,7 @@ pub fn tick_minds(
                             });
                         }
                         actions.push(MindAction::ReleaseScreens(entity));
+                        actions.push(MindAction::LeaveParty(entity));
                         actions.push(MindAction::Rearm(entity));
                         play_mind_sound(&mut sounds, casts::END_SOUND);
                     }
@@ -1004,6 +1014,7 @@ pub fn tick_minds(
                             });
                         }
                         actions.push(MindAction::ReleaseScreens(entity));
+                        actions.push(MindAction::LeaveParty(entity));
                         actions.push(MindAction::Rearm(entity));
                     }
                     result
@@ -1017,8 +1028,23 @@ pub fn tick_minds(
                     power.id
                 );
             }
+            // The player's bar hook, as for the other domains' powers: one
+            // that ends, or answers bit 4, marks the slot holding its id.
+            if player && result & 6 != 0 {
+                marks.push(power.running(now));
+            }
             result & 2 == 0
         });
+        if let Some(caster) = caster.as_deref_mut() {
+            for mark in &marks {
+                if caster.bar.mark_running(mark, now) {
+                    info!(
+                        "mind: the bar slot of {:#x} is marked (state {})",
+                        mark.id, mark.state
+                    );
+                }
+            }
+        }
         // A cast during the walk may have added entries; keep them after.
         powers.append(&mut mind.powers);
         mind.powers = powers;
@@ -1094,6 +1120,16 @@ pub fn tick_minds(
                     Some(frame) => frame.send(run),
                     None => commands.queue(run),
                 }
+            }
+            MindAction::LeaveParty(body) => {
+                commands.queue(move |world: &mut World| {
+                    if let Some(mut changes) =
+                        world.get_resource_mut::<Messages<exa_ai::brain::PartyChange>>()
+                    {
+                        changes.write(exa_ai::brain::PartyChange { body, joins: false });
+                        info!("mind: {body:?}'s mark ends, it leaves the party");
+                    }
+                });
             }
             MindAction::Rearm(body) => {
                 commands.queue(move |world: &mut World| {
@@ -2031,7 +2067,7 @@ fn feed_mind_powers(
     mut commands: Commands,
     minds: Query<(Entity, &MindBody, Option<&MindPowers>)>,
 ) {
-    let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, _)| (m.id, e)).collect();
+    let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, ..)| (m.id, e)).collect();
     let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
     for (entity, mind, current) in &minds {
         let effects = mind.sight_effects(entity_of);
@@ -2143,6 +2179,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<MindControl>();
         app.add_message::<exa_audio::PointSounded>();
+        app.add_message::<exa_ai::brain::PartyChange>();
         app.add_systems(Update, tick_minds);
         app
     }
@@ -2393,6 +2430,19 @@ mod tests {
             mind.powers[0].end();
         }
         walk_at(&mut app, 100);
+        // The marked body leaves the experience system's party.
+        let left: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<exa_ai::brain::PartyChange>>()
+            .drain()
+            .collect();
+        assert_eq!(
+            left,
+            vec![exa_ai::brain::PartyChange {
+                body: target,
+                joins: false
+            }]
+        );
         walk_at(&mut app, 101);
         assert_eq!(marks(&app), 0);
         assert!(
@@ -3118,5 +3168,64 @@ mod tests {
     fn the_spirit_appears_sixty_centimetres_ahead() {
         let at = spirit_point(Vec3::new(1.0, 0.0, 2.0), 0.0);
         assert!((at - Vec3::new(1.0, 0.0, 2.6)).length() < 1e-6);
+    }
+
+    /// The player's Mind powers mark their bar slots as the other domains'
+    /// do: the instant Sense Minds, answering 4 as its end passes, fades
+    /// its slot from that end over 2 s (without the mark); the constant
+    /// Loyalty, ending, fades its slot over 200 ms with the mark.
+    #[test]
+    fn the_players_mind_powers_mark_their_bar_slots() {
+        use crate::thaum::tree::bar_state;
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let other = character(app.world_mut(), false);
+        app.world_mut()
+            .entity_mut(caster)
+            .insert(PowerCaster::new(&[casts::SENSE, casts::LOYALTY]));
+        {
+            let mut mind = app.world_mut().get_mut::<MindBody>(caster).unwrap();
+            mind.cast.focus = 1.0;
+            mind.cast.slots = 3;
+        }
+        {
+            let mut power = app.world_mut().get_mut::<PowerCaster>(caster).unwrap();
+            power.bar.slots[0].word = casts::SENSE;
+            power.bar.slots[1].word = casts::LOYALTY;
+        }
+        assert_eq!(
+            cast_at(app.world_mut(), casts::SENSE, caster, other, 0),
+            casts::STARTED
+        );
+        let slot =
+            |app: &App, i: usize| app.world().get::<PowerCaster>(caster).unwrap().bar.slots[i];
+        walk_at(&mut app, 1);
+        assert_eq!(slot(&app, 0).state, 0, "running, the walk leaves the slot");
+        walk_at(&mut app, 4_008 / 12 + 1);
+        let sense = slot(&app, 0);
+        assert_eq!(
+            (sense.state, sense.stamp, sense.duration),
+            (bar_state::FADE, 4_000, 2_000)
+        );
+        assert_eq!(
+            cast_at(app.world_mut(), casts::LOYALTY, caster, other, 6_000),
+            casts::STARTED
+        );
+        walk_at(&mut app, 6_012 / 12);
+        {
+            let mut mind = app.world_mut().get_mut::<MindBody>(caster).unwrap();
+            let loyalty = mind
+                .powers
+                .iter_mut()
+                .find(|p| p.id == casts::LOYALTY)
+                .unwrap();
+            loyalty.end();
+        }
+        walk_at(&mut app, 6_024 / 12);
+        let loyalty = slot(&app, 1);
+        assert_eq!(
+            (loyalty.state, loyalty.duration),
+            (bar_state::FADE | bar_state::MARK, 200)
+        );
     }
 }

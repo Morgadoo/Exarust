@@ -503,7 +503,9 @@ impl Plugin for CastPlugin {
         super::veil_live::bridge_veil_types(app);
         {
             use exa_physics::sim_bridge::SimBridgeAppExt;
-            app.bridge_message::<super::barricade_sound::ForceSounded>();
+            app.bridge_message::<super::barricade_sound::ForceSounded>()
+                .bridge_copy::<exa_combat::stance::Stance>()
+                .bridge_copy::<exa_combat::swing_voice::SwingSound>();
         }
         crate::effects::danger::add_hazard_watch(app);
         super::summon_live::bridge_summon_types(app);
@@ -1001,10 +1003,17 @@ pub(crate) fn run_bar_commands(
         {
             continue;
         }
+        let now_ms = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+        // The Mind powers run in the body's mind; the bar's load marks
+        // their slots after the others'.
+        let mind_running: Vec<RunningPower> = mind.minds.get(entity).map_or_else(
+            |_| Vec::new(),
+            |m| m.powers.iter().map(|p| p.running(now_ms)).collect(),
+        );
         let mut fixed = mind.fixed.as_deref_mut();
         match command.action {
             BarAction::Toggle => {
-                let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+                let now = now_ms;
                 bar_write(
                     fixed,
                     entity,
@@ -1014,8 +1023,12 @@ pub(crate) fn run_bar_commands(
                             caster.bar.store(&mut caster.record, false);
                             caster.bar_open = false;
                         } else if !caster.known.is_empty() {
-                            let running: Vec<RunningPower> =
-                                caster.active.iter().map(ActiveEntry::running).collect();
+                            let running: Vec<RunningPower> = caster
+                                .active
+                                .iter()
+                                .map(ActiveEntry::running)
+                                .chain(mind_running.iter().copied())
+                                .collect();
                             caster.bar.load_running(&caster.record, &running, now);
                             caster.bar_open = true;
                         }
@@ -1342,6 +1355,12 @@ fn cast_bar_slot(
         debug!("cast failed: {}", sound.name);
     }
     answer.screen_sound = entry.sound;
+    // A throw whose pick found nothing still starts (it answers 1), and
+    // plays the cast failure.
+    if matches!(start, Some(CastStart::Force(ForceStart::ThrowMissed))) {
+        info!("force throw: the pick finds nothing, the failure sound plays");
+        answer.screen_sound = Some(super::tree::FAIL_SOUND);
+    }
     answer.end_control = entry.end_control;
     answer.hold_bars = entry.hold_bars;
     // "Not now" holds the slot in the controls for 500 ms (renewed by
@@ -1683,6 +1702,7 @@ pub(crate) fn cast_for_duellists(
         Option<&HeldMoveset>,
         Option<&Ragdoll>,
         Option<&exa_ai::presence::Presence>,
+        Option<&exa_combat::stance::Stance>,
     )>,
     (physics, statics): (
         Option<Res<Physics>>,
@@ -1715,6 +1735,7 @@ pub(crate) fn cast_for_duellists(
         held,
         ragdoll,
         presence,
+        stance,
     ) in &mut duellists
     {
         // Exarust's own: a hidden duellist starts no cast and lets none go
@@ -1734,7 +1755,7 @@ pub(crate) fn cast_for_duellists(
             if casting::take_stance_return(&mut caster.body)
                 && let Some(animator) = animator.as_deref_mut()
             {
-                casting::play_follow(animator);
+                casting::play_follow(animator, stance.copied());
             }
         }
         let Some(asked) = powers.chosen.take() else {
@@ -2401,6 +2422,15 @@ fn create_displacement(
                     }
                 }
             }
+            // Then the start sound at the body's place, pitched by the
+            // engine generator's draw (after the shell's and the image's).
+            displacement_sound(
+                commands,
+                super::displacement::VANISH_SOUND,
+                ragdoll.map_or(Vec3::ZERO, standing_point),
+                roll,
+                None,
+            );
             debug!("displacement vanish: effect node {entity:?}");
             entity
         }
@@ -2463,6 +2493,17 @@ fn create_displacement(
                         power.node.image = Some(image.to_bits());
                     }
                 }
+            }
+            // A player's door plays the start sound at once; the AI's when
+            // the grid answers with a place.
+            if !ai {
+                displacement_sound(
+                    commands,
+                    super::displacement::VANISH_SOUND,
+                    ragdoll.map_or(Vec3::ZERO, standing_point),
+                    roll,
+                    None,
+                );
             }
             debug!("displacement long door: effect node {entity:?}");
             entity
@@ -2695,6 +2736,25 @@ fn root_and_lowest(doll: &Ragdoll) -> (Vec3, f32) {
 
 /// Where a body stands (cm): under its root, at its lowest part's height,
 /// the point a teleport there keeps the root at ([`otherwhere_root`]).
+/// A displacement's sound at the body's place, volume 0.4, pitched
+/// `0.9 + 0.2·r` (in double) with the engine generator's draw: the start
+/// (`thmdsp_vns`) free, the come-back (`thmdsp_apr`) on the body's
+/// following voice (`follow`, the caster).
+fn displacement_sound(
+    commands: &mut Commands,
+    set: &'static str,
+    at: Vec3,
+    roll: &mut EffectRoll,
+    follow: Option<Entity>,
+) {
+    let (pitch, volume) = Vanish::sound(f64::from(roll.0.unit()));
+    info!("displacement: {set} at {at:?} cm, volume {volume} pitch {pitch:.4}");
+    commands.write_message(super::barricade_sound::ForceSounded {
+        follow,
+        ..super::barricade_sound::ForceSounded::at(set, at, volume, pitch)
+    });
+}
+
 fn standing_point(doll: &Ragdoll) -> Vec3 {
     let (root, lowest) = root_and_lowest(doll);
     let ground = if lowest.is_finite() { lowest } else { root.y };
@@ -3150,10 +3210,12 @@ pub(crate) fn tick_casters(
             Option<&mut Animator>,
             Option<&PlayerBody>,
             Option<&exa_combat::condition::StateFlags>,
+            Option<&exa_combat::swing_voice::SwingSound>,
+            Option<&exa_combat::stance::Stance>,
         ),
         Without<OutOfScene>,
     >,
-    walls: Query<&LiveBarricade>,
+    mut walls: Query<&mut LiveBarricade>,
     mut bubbles: Query<&mut LiveBubble>,
     mut auras: Query<&mut LiveShellAura>,
     ticks: Option<Res<BodyTicks>>,
@@ -3193,6 +3255,8 @@ pub(crate) fn tick_casters(
         mut animator,
         player,
         state_flags,
+        swing_sound,
+        stance,
     ) in &mut casters
     {
         let caster = &mut *caster;
@@ -3390,6 +3454,7 @@ pub(crate) fn tick_casters(
                                 at,
                                 volume: super::power::force::STRIKES_END_VOLUME,
                                 pitch: super::power::force::strikes_end_pitch(roll.0.unit()),
+                                follow: None,
                             });
                         }
                     }
@@ -3400,6 +3465,39 @@ pub(crate) fn tick_casters(
                     ActiveClass::Shock(power) => {
                         let step = power.control(event, body);
                         result = step.result;
+                        // The charge on the first tick (volume 0.2) and the
+                        // release with the burst (volume 1), at the right
+                        // hand's place, each pitched `0.9 + 0.2·r` with the
+                        // runtime stream's draw. The release's draw comes
+                        // before the burst's own: the original posts the
+                        // burst to run after its tick.
+                        if step.charge_sound || step.release_sound {
+                            let (set, volume) = if step.charge_sound {
+                                (
+                                    super::power::energy::CHARGE_SOUND,
+                                    super::power::energy::CHARGE_VOLUME,
+                                )
+                            } else {
+                                (
+                                    super::power::energy::RELEASE_SOUND,
+                                    super::power::energy::RELEASE_VOLUME,
+                                )
+                            };
+                            let pitch = super::power::energy::shock_pitch(draws.0.unit());
+                            let hand = ragdoll.and_then(|doll| {
+                                bone_part(doll, RIGHT_HAND)
+                                    .map(|k| Vec3::from(doll.parts[k].transform().translation) * CM)
+                            });
+                            sounded.write(super::barricade_sound::ForceSounded::at(
+                                set,
+                                hand.unwrap_or(Vec3::from_array(at)),
+                                volume,
+                                pitch,
+                            ));
+                            info!(
+                                "energy shock: {set} at the hand, volume {volume} pitch {pitch:.4}"
+                            );
+                        }
                         // The release makes the burst at the hand: a fresh
                         // emitter of the shock's own shape (strength 0.05, so
                         // its tendrils shock what they reach), aimed as the
@@ -3467,6 +3565,17 @@ pub(crate) fn tick_casters(
                     ActiveClass::Vanish(power) => {
                         power.answer_hook(body);
                         let step = power.control(event, now);
+                        // The come-back plays `thmdsp_apr` on the body's
+                        // following voice.
+                        if step.moved {
+                            displacement_sound(
+                                &mut commands,
+                                super::displacement::APPEAR_SOUND,
+                                ragdoll.map_or(Vec3::from_array(at), standing_point),
+                                &mut roll,
+                                Some(caster_entity),
+                            );
+                        }
                         vanish_status(body, &step);
                         turns.write_batch(super::vanish_body::VanishTurn::of(
                             caster_entity,
@@ -3501,7 +3610,19 @@ pub(crate) fn tick_casters(
                         } else {
                             power.nav
                         };
+                        let picking = power.base.phase == super::power::displacement::AI_PICK;
                         let step = power.control(now, nav);
+                        // The AI's door plays its start sound when the grid
+                        // finds its place.
+                        if picking && power.base.phase != super::power::displacement::AI_PICK {
+                            displacement_sound(
+                                &mut commands,
+                                super::displacement::VANISH_SOUND,
+                                ragdoll.map_or(Vec3::from_array(at), standing_point),
+                                &mut roll,
+                                None,
+                            );
+                        }
                         vanish_status(body, &step);
                         turns.write_batch(super::vanish_body::VanishTurn::of(
                             caster_entity,
@@ -3524,6 +3645,15 @@ pub(crate) fn tick_casters(
                                     to,
                                 });
                             }
+                            // The come-back's sound on the body's following
+                            // voice, where the body now stands.
+                            displacement_sound(
+                                &mut commands,
+                                super::displacement::APPEAR_SOUND,
+                                to.unwrap_or(Vec3::from_array(at)),
+                                &mut roll,
+                                Some(caster_entity),
+                            );
                         }
                         if 0.0 < step.spend {
                             drain(body, step.spend);
@@ -3586,6 +3716,15 @@ pub(crate) fn tick_casters(
                     {
                         end_bubble(&mut bubble);
                     }
+                    // A barricade's power that ends, by an event (the bar's
+                    // toggle, a status broadcast) or out of range, tells its
+                    // wall to fall.
+                    if let Some(entity) = entry.entity
+                        && let Ok(mut live) = walls.get_mut(entity)
+                    {
+                        live.wall.end();
+                        info!("force barricade: its power ends, the wall falls");
+                    }
                     // Constant displacement's end ends its tendril image:
                     // the wisps trail away and leave once faded.
                     if let Some(entity) = entry.entity
@@ -3620,10 +3759,32 @@ pub(crate) fn tick_casters(
         if (stance_return || was_casting && body.condition != casting::CASTING)
             && let Some(animator) = animator.as_deref_mut()
         {
-            casting::play_follow(animator);
+            casting::play_follow(animator, stance.copied());
         }
         casting::settle_focus(body);
+        // The body's swing-sound slot and swing factor, as Force Strikes'
+        // start and end write them, for the swing's voice.
+        let wanted = swing_sound_of(body.swing_factor);
+        if swing_sound.copied().unwrap_or_default() != wanted {
+            info!("{caster_entity:?}: swing sound {wanted:?}");
+            commands.entity(caster_entity).insert(wanted);
+        }
         caster.sync_body();
+    }
+}
+
+/// The swing sound a body's swing factor goes with: Force Strikes writes
+/// its `ThmFrc_Swing` set with the factor 3, and its end the body's own
+/// `SwingHA` with 1.
+fn swing_sound_of(factor: f32) -> exa_combat::swing_voice::SwingSound {
+    use exa_combat::swing_voice::SwingSound;
+    if factor == super::power::force::STRIKES_SWING_FACTOR {
+        SwingSound::FORCE
+    } else {
+        SwingSound {
+            loudness: factor,
+            ..SwingSound::PLAIN
+        }
     }
 }
 
@@ -3631,14 +3792,22 @@ pub(crate) fn tick_casters(
 /// motions the body recorded, by the motion id's action name.
 fn play_cast_motions(
     mut commands: Commands,
-    mut casters: Query<(Entity, &mut PowerCaster, &mut Animator), Changed<PowerCaster>>,
+    mut casters: Query<
+        (
+            Entity,
+            &mut PowerCaster,
+            &mut Animator,
+            Option<&exa_combat::stance::Stance>,
+        ),
+        Changed<PowerCaster>,
+    >,
     motions: Option<Res<Motions>>,
 ) {
-    for (entity, mut caster, mut animator) in &mut casters {
+    for (entity, mut caster, mut animator, stance) in &mut casters {
         // A live effect's cast end this tick returns to the stance now,
         // before any new cast motion, as the original's cast end does.
         if casting::take_stance_return(&mut caster.body) {
-            casting::play_follow(&mut animator);
+            casting::play_follow(&mut animator, stance.copied());
         }
         let Some(motion) = caster.body.cast_motion.take() else {
             continue;

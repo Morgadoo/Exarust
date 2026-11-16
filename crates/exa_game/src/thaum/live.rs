@@ -1359,6 +1359,7 @@ pub(crate) fn tick_barricades(
                         at: live.wall.frame.world(sound.at),
                         volume: sound.volume,
                         pitch: sound.pitch,
+                        follow: None,
                     });
                 }
                 if shove.alarm {

@@ -82,6 +82,37 @@ impl SwingVoice {
     }
 }
 
+/// The body's swing-sound slot and swing factor: the set the swing voice
+/// starts on and the loudness its attack ticks scale the volume by. A body
+/// without one swings with [`SwingSound::PLAIN`]; Force Strikes, while it
+/// runs, puts [`SwingSound::FORCE`] on its caster, and its end the plain
+/// one back.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct SwingSound {
+    /// The set's prefix in the sound packs.
+    pub set: &'static str,
+    pub loudness: f32,
+}
+
+impl SwingSound {
+    /// The body's own: `SwingHA` at loudness 1.
+    pub const PLAIN: Self = Self {
+        set: "swingha",
+        loudness: 1.0,
+    };
+    /// Force Strikes': `ThmFrc_Swing` at loudness 3.
+    pub const FORCE: Self = Self {
+        set: "thmfrc_swing",
+        loudness: 3.0,
+    };
+}
+
+impl Default for SwingSound {
+    fn default() -> Self {
+        Self::PLAIN
+    }
+}
+
 /// What the body ticks ask of a fighter's swing voice; `exa_audio` plays
 /// them on the voice of the fighter's first held item.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
@@ -94,6 +125,8 @@ pub enum SwingVoiceCue {
         at: Vec3,
         pitch: f32,
         now_ms: u32,
+        /// The body's swing set ([`SwingSound::set`]).
+        set: &'static str,
     },
     /// An attack tick's volume and pitch ([`crate::swing::swing_sound`]),
     /// while the voice has started in the region.

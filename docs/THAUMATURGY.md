@@ -114,9 +114,14 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   HUD's ending flag for a call no update handles.
 - **Force**: Shell halves a blow's energy (the body's hit damping is 0.5)
   and clears it at the end; a bubble or barricade ends once its centre is
-  more than 20 m from the caster; Strikes sets the strike factor 1.0 and
-  the swing factor 3.0, keeps at most four weapon auras, ripples an aura
-  at half a swing's strength and plays `thmfrc_brf` as it ends. Each item
+  more than 20 m from the caster, and a barricade's power ending, by an
+  event or out of range, tells its wall to fall; Strikes sets the strike
+  factor 1.0 and puts `ThmFrc_Swing` in the body's swing-sound slot with
+  the swing factor 3.0 (the swing voice starts on that set and its attack
+  ticks are three times as loud: `exa_combat::swing_voice::SwingSound`),
+  keeps at most four weapon auras, ripples an aura at half a swing's
+  strength, and as it ends plays `thmfrc_brf` and gives the body back
+  `SwingHA` and the factor 1. Each item
   its caster holds gets an aura (`exa_game::thaum::hold_live`): a force
   shell over the item's rigid meshes with colour 2.8, fade-plane scale 1,
   impact gain 1.5 and pitch 0.8 and ripple scale 3, drawn with the strikes
@@ -184,16 +189,23 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   first part, each particle by its origin weight, and wakes it; a body
   gone ends the throw (`exa_game::thaum::throw_live`).
 - **Energy**: Shock's first tick installs its cast hook and plays the
-  charge; it charges by its rate, spends its focus while charging, fires
-  one arc burst when it passes 1 (clearing the cast hook and id) and
-  answers 2 on the next cycle; Shock Weapons starts motion 0x25 and clears
+  charge (`thmnrg_chrga`, volume 0.2); it charges by its rate, spends its
+  focus while charging, fires one arc burst when it passes 1 (clearing the
+  cast hook and id, and playing the release `thmnrg_shock` at volume 1)
+  and answers 2 on the next cycle; both sounds play at the right hand at
+  pitch `0.9 + 0.2·r` (`r` the runtime stream's draw, the release's taken
+  before the burst's own); Shock Weapons starts motion 0x25 and clears
   its weapon arcs when it ends.
 - **Displacement**: the vanish effect waits 400 ms spending its tick cost,
   hides the body (status bit 0x800), fades it out over 300 ms, holds
   (Vanish until released, spending half its cost a tick; the Long Door for
   400 ms, spending nothing), moves the body, fades it in over 400 ms (the
   share narrowed before it is taken from 1) and finishes after 300 ms; a
-  shell shared with Constant Displacement goes back to it. Constant
+  shell shared with Constant Displacement goes back to it. Vanish's start,
+  a player's Long Door at its cast and an AI's when its grid finds the
+  place play `thmdsp_vns` at the body; both come-backs play `thmdsp_apr`
+  on a voice that follows the body (volume 0.4, pitch `0.9 + 0.2·r` with
+  the engine generator's draw, after the shell's and the image's). Constant
   Displacement's hum rises by the double 0.002 each tick while under 0.12.
   The summon brings in `demon a01` (role 33, familiarity 75 and relation
   role 28 both ways), holds it 2 s, opens its shell over 3 s, lets it go
@@ -219,8 +231,9 @@ later cast's start, or the release flag, which also ends the cast). It
 pays its drain each charging tick whether or not it holds the hook; a
 focus shortfall with a hook set goes through the shared cast end (the
 hook, the hook owner and the power id go, and a condition word of exactly
-casting, 0x20, becomes 0 and the caster returns to its stance over 30
-frames in the same tick), and fizzles the blast only while the hook
+casting, 0x20, becomes 0 and the caster returns to its stored stance (the
+`Stance` its behaviour or AI chose) over 30 frames, linear, in the same
+tick), and fizzles the blast only while the hook
 is its own. The throw clears the hook and the power id itself and the
 cast motion plays on. Each tick the
 blast reads the caster's right hand, facing and aim point (the AI's
@@ -267,8 +280,12 @@ motion playing on, and a thrown wave pushes other bodies' limbs through
 the blast's contact arithmetic (its chunks keep no wear, an Exarust
 reading). Its throw runs the blast's release alert (within 18 m, under
 150 cm of height flattened; the 1200 the tick passes is not read, and the
-aim is cleared first, so only the distance weighs it). Its sounds and draw
-are not wired. A torrent cast makes its torrent entity
+aim is cleared first, so only the distance weighs it). It sounds as the
+blast does (the two share the frame): the charge loop `thmfrc_cu01` from
+its start, `length·0.8·r` into the buffer in double precision (`r` the
+runtime stream's draw after the ring's; earlier notes read it as the
+voice's gain), and `thmfrc_wav` at the pitch its throw draws. Its light,
+stun and draw are not wired. A torrent cast makes its torrent entity
 (`thaum::torrent_live`) at the caster's right hand: its creator gives the
 cost a second and id 0x10203, and its start plays cast motion 0x26 and
 takes a hook answering −1 that fizzles a charging torrent and ends a
@@ -1025,7 +1042,16 @@ displacement front end. A front end that answers "not now" queues the
 slot; a start stores the bar back with the chosen bit moved to the slot,
 closes the bar, flashes the slot (from where its state stood, back-dated by
 the elapsed share) and stores the last instant power; a refusal plays the
-failure sound. The running screen plays the tree's `ThaumShow02`,
+failure sound, as does a throw whose pick finds nothing (it still answers
+1) and a press the hand refuses while a kinesis waits for its pick (kept
+for combat or out of reach; the kinesis ends). The Mind powers mark
+their bar slots as the others do (a power that ends or answers 4): Spirit
+Form, Control Mind and the constant Sense Minds and Mask Mind light it,
+the constant Loyalty lights it and fades it as it ends, the instant
+Sense Minds and Mask Mind fade it on their clocks, and the rest take the
+base rule; opening the bar marks them too. The tree opens on the domain
+it last showed for the same player body, on the Mind domain for another.
+The running screen plays the tree's `ThaumShow02`,
 `ThaumSel01`, `ThaumSlot02`, `ThaumChnl01`, `ThaumChnl02` and `ThaumFail01`
 sounds through the audio environment; a queued "not now" slot is still not
 retried. Opening the bar loads it and runs a 900 ms rise (the

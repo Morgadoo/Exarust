@@ -810,8 +810,10 @@ fn a_throw_takes_the_kinesis_crate_and_lifts_it() {
     let prop = spawn_crate(&mut app, Vec3::new(1.0, 0.5, 0.0));
     cast(&mut app, caster);
     app.world_mut().run_schedule(FixedUpdate);
-    app.world_mut()
-        .write_message(KinesisPicked { caster, body: prop });
+    app.world_mut().write_message(KinesisPicked {
+        caster,
+        body: Some(prop),
+    });
     app.world_mut().run_schedule(FixedUpdate);
     let before = app
         .world()
@@ -890,8 +892,10 @@ fn a_running_kinesis_takes_the_hands_pick() {
         Some(caster),
         "the pick waits"
     );
-    app.world_mut()
-        .write_message(KinesisPicked { caster, body: prop });
+    app.world_mut().write_message(KinesisPicked {
+        caster,
+        body: Some(prop),
+    });
     app.world_mut().run_schedule(FixedUpdate);
     let state = app.world().get::<PowerCaster>(caster).unwrap();
     let Some(ActiveClass::Kinesis(k)) = state.active.first().map(|e| &e.class) else {
@@ -2695,6 +2699,13 @@ fn ending_strikes_plays_the_end_set() {
             .collect()
     };
     assert!(drained(&mut app).is_empty(), "running, it plays nothing");
+    // Running, the body swings on Force Strikes' set at loudness 3.
+    assert_eq!(
+        app.world()
+            .get::<exa_combat::swing_voice::SwingSound>(armed)
+            .copied(),
+        Some(exa_combat::swing_voice::SwingSound::FORCE)
+    );
     {
         let mut caster = app.world_mut().get_mut::<PowerCaster>(armed).unwrap();
         let ActiveClass::Strikes(power) = &mut caster.active[0].class else {
@@ -2710,6 +2721,13 @@ fn ending_strikes_plays_the_end_set() {
     assert_eq!(sounds[0].volume, STRIKES_END_VOLUME);
     assert_eq!(sounds[0].pitch, strikes_end_pitch(roll.unit()));
     assert_eq!(sounds[0].at, Vec3::ZERO);
+    // Its end gives the body its own swing back.
+    assert_eq!(
+        app.world()
+            .get::<exa_combat::swing_voice::SwingSound>(armed)
+            .copied(),
+        Some(exa_combat::swing_voice::SwingSound::PLAIN)
+    );
 }
 
 /// The vanish takes the body out of the world and brings it back, as the
@@ -2872,4 +2890,250 @@ fn a_collapsing_long_door_comes_back_where_it_stands() {
         body.parts[0].transform().translation.length() < 1e-5,
         "the collapsing body stays where it stands"
     );
+}
+
+fn power_sounds(app: &mut App) -> Vec<crate::thaum::barricade_sound::ForceSounded> {
+    app.world_mut()
+        .resource_mut::<Messages<crate::thaum::barricade_sound::ForceSounded>>()
+        .drain()
+        .collect()
+}
+
+/// Energy: the shock plays its charge on its first tick (`thmnrg_chrga`,
+/// volume 0.2) and its release with the burst (`thmnrg_shock`, volume 1),
+/// both at the right hand, each pitched `0.9 + 0.2·r` with the runtime
+/// stream's next draw; the release's draw is taken before the burst's.
+#[test]
+fn the_shock_plays_its_charge_and_its_release() {
+    use crate::thaum::power::energy::{
+        CHARGE_SOUND, CHARGE_VOLUME, RELEASE_SOUND, RELEASE_VOLUME, shock_pitch,
+    };
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHOCK]);
+    cast(&mut app, caster);
+    power_sounds(&mut app);
+    let mut stream = app.world().resource::<EffectDraws>().0.clone();
+    app.world_mut().run_schedule(FixedUpdate);
+    let sounds = power_sounds(&mut app);
+    assert_eq!(sounds.len(), 1, "{sounds:?}");
+    assert_eq!(
+        (sounds[0].set, sounds[0].volume, sounds[0].follow),
+        (CHARGE_SOUND, CHARGE_VOLUME, None)
+    );
+    assert_eq!(sounds[0].pitch, shock_pitch(stream.unit()));
+    assert_eq!(sounds[0].at, Vec3::ZERO, "the hand's place");
+    for _ in 0..100 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    assert!(power_sounds(&mut app).is_empty(), "charging is silent");
+    let mut stream = app.world().resource::<EffectDraws>().0.clone();
+    app.world_mut().run_schedule(FixedUpdate);
+    let sounds = power_sounds(&mut app);
+    assert_eq!(sounds.len(), 1, "{sounds:?}");
+    assert_eq!(
+        (sounds[0].set, sounds[0].volume),
+        (RELEASE_SOUND, RELEASE_VOLUME)
+    );
+    assert_eq!(sounds[0].pitch, shock_pitch(stream.unit()));
+}
+
+/// Displacement: Vanish's start plays `thmdsp_vns` at the body's place
+/// (volume 0.4, pitch `0.9 + 0.2·r` from the engine generator, after the
+/// shell's and the image's draws); its come-back plays `thmdsp_apr` on the
+/// body's following voice.
+#[test]
+fn a_vanish_sounds_its_start_and_its_come_back() {
+    use crate::thaum::displacement::{APPEAR_SOUND, VANISH_SOUND};
+    use crate::thaum::power::displacement::{FADING_IN, HOLDING, LONG_DOOR_SOUND_VOLUME};
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let caster = caster(&mut app, &[VANISH]);
+    cast(&mut app, caster);
+    let sounds = power_sounds(&mut app);
+    assert_eq!(sounds.len(), 1, "{sounds:?}");
+    assert_eq!(
+        (sounds[0].set, sounds[0].volume, sounds[0].follow),
+        (VANISH_SOUND, LONG_DOOR_SOUND_VOLUME, None)
+    );
+    assert!(
+        (0.9..=1.1).contains(&sounds[0].pitch),
+        "{}",
+        sounds[0].pitch
+    );
+    let phase = |app: &App| match &app.world().get::<PowerCaster>(caster).unwrap().active[..] {
+        [entry] => match &entry.class {
+            ActiveClass::Vanish(p) => p.base.phase,
+            _ => panic!("not a vanish"),
+        },
+        _ => 0,
+    };
+    let mut tick = 1;
+    while phase(&app) != HOLDING {
+        app.insert_resource(BodyTicks(tick));
+        app.world_mut().run_schedule(FixedUpdate);
+        app.update();
+        tick += 1;
+    }
+    assert!(power_sounds(&mut app).is_empty(), "the hide is silent");
+    cast(&mut app, caster);
+    power_sounds(&mut app);
+    let mut heard = Vec::new();
+    while phase(&app) != FADING_IN {
+        app.insert_resource(BodyTicks(tick));
+        let mut roll = app.world().resource::<EffectRoll>().0;
+        app.world_mut().run_schedule(FixedUpdate);
+        let sounds = power_sounds(&mut app);
+        if !sounds.is_empty() {
+            heard.push((sounds, roll.unit()));
+        }
+        app.update();
+        tick += 1;
+    }
+    let [(sounds, r)] = &heard[..] else {
+        panic!("one come-back sound: {heard:?}");
+    };
+    assert_eq!(sounds.len(), 1);
+    assert_eq!(
+        (sounds[0].set, sounds[0].follow),
+        (APPEAR_SOUND, Some(caster))
+    );
+    assert_eq!(sounds[0].pitch, (f64::from(*r) * 0.2 + 0.9) as f32);
+}
+
+/// Displacement: the AI's Long Door plays its start sound when the grid
+/// finds its place, and its come-back plays `thmdsp_apr` on the body's
+/// following voice at the destination.
+#[test]
+fn the_ai_long_door_sounds_when_its_place_is_found_and_at_its_come_back() {
+    use crate::thaum::displacement::{APPEAR_SOUND, VANISH_SOUND};
+    use crate::thaum::power::displacement::{AI_PICK, HIDDEN, HOLDING, LongDoor};
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let caster = caster(&mut app, &[]);
+    let door = LongDoor::new(0, Some([500.0, 0.0, 0.0]), true, 0.0);
+    assert_eq!(door.base.phase, AI_PICK);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .active
+        .push(ActiveEntry {
+            id: LONG_DOOR,
+            cast_id: LONG_DOOR,
+            state: READY,
+            class: ActiveClass::LongDoor(door),
+            tick_cost: 0.0,
+            entity: None,
+            companions: Vec::new(),
+            throw_view: None,
+        });
+    let mut roll = app.world().resource::<EffectRoll>().0;
+    app.insert_resource(BodyTicks(1));
+    app.world_mut().run_schedule(FixedUpdate);
+    let sounds = power_sounds(&mut app);
+    assert_eq!(sounds.len(), 1, "{sounds:?}");
+    assert_eq!((sounds[0].set, sounds[0].follow), (VANISH_SOUND, None));
+    assert_eq!(sounds[0].pitch, (f64::from(roll.unit()) * 0.2 + 0.9) as f32);
+    {
+        let mut state = app.world_mut().get_mut::<PowerCaster>(caster).unwrap();
+        let ActiveClass::LongDoor(door) = &mut state.active[0].class else {
+            panic!("long door");
+        };
+        assert_eq!(door.base.phase, HIDDEN);
+        door.base.phase = HOLDING;
+        door.base.deadline = 0;
+    }
+    app.insert_resource(BodyTicks(2));
+    app.world_mut().run_schedule(FixedUpdate);
+    let sounds = power_sounds(&mut app);
+    assert_eq!(sounds.len(), 1, "{sounds:?}");
+    assert_eq!(
+        (sounds[0].set, sounds[0].follow, sounds[0].at),
+        (APPEAR_SOUND, Some(caster), Vec3::new(500.0, 0.0, 0.0))
+    );
+}
+
+/// Force: a throw whose pick finds nothing still starts (it answers 1) and
+/// plays the cast failure, `ThaumFail01` at 0.05 and pitch 0.8.
+#[test]
+fn a_throw_that_finds_nothing_plays_the_failure() {
+    use crate::power_screen::PowerScreen;
+    use crate::thaum::power::force::THROW;
+    let mut app = new_app();
+    app.init_resource::<PowerScreen>();
+    let caster = caster(&mut app, &[THROW]);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    cast(&mut app, caster);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::STARTED);
+    assert!(state.active.is_empty(), "nothing to throw");
+    assert_eq!(
+        app.world().resource::<PowerScreen>().sound,
+        Some(crate::thaum::tree::FAIL_SOUND)
+    );
+}
+
+/// Force: a press the hand refuses while the kinesis waits for its pick
+/// (kept for combat, or out of the kinesis's reach) plays the cast failure
+/// and ends the kinesis.
+#[test]
+fn a_refused_kinesis_pick_fails_and_ends_the_kinesis() {
+    use crate::power_screen::PowerScreen;
+    use crate::thaum::kinesis_live::KinesisPicked;
+    let mut app = new_app();
+    app.init_resource::<PowerScreen>();
+    let caster = caster(&mut app, &[crate::thaum::force::KINESIS]);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(app.world().resource::<PowerScreen>().sound, None);
+    app.world_mut()
+        .write_message(KinesisPicked { caster, body: None });
+    app.world_mut().run_schedule(FixedUpdate);
+    // The sound goes to the frame after the step.
+    app.world_mut()
+        .run_schedule(exa_physics::sim_app::FrameCommandsStep);
+    assert_eq!(
+        app.world().resource::<PowerScreen>().sound,
+        Some(crate::thaum::tree::FAIL_SOUND)
+    );
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert!(state.active.is_empty(), "the kinesis ended");
+}
+
+/// Force: a barricade's power ended by an event (here the status
+/// broadcast's 2, as a collapse sends it) tells its wall to fall at once,
+/// not when its caster walks 20 m off.
+#[test]
+fn a_barricade_ended_by_an_event_fells_its_wall() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[BARRICADE]);
+    cast(&mut app, caster);
+    let wall_state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveBarricade>();
+        q.iter(app.world()).next().unwrap().wall.state
+    };
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(wall_state(&mut app) < wall_state::TOLD_TO_END);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .broadcast = Some(status_event::DOWN);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(
+        app.world()
+            .get::<PowerCaster>(caster)
+            .unwrap()
+            .active
+            .is_empty()
+    );
+    assert!(wall_state(&mut app) >= wall_state::TOLD_TO_END);
 }

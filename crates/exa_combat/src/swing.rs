@@ -896,6 +896,7 @@ pub fn run_swings(
         &mut SwingVoice,
         Option<&StabAim>,
         Option<&crate::strike_body::StrikeChest>,
+        Option<&crate::swing_voice::SwingSound>,
     )>,
     mut cues: MessageWriter<SwingVoiceCue>,
 ) {
@@ -915,6 +916,7 @@ pub fn run_swings(
         mut voice,
         stab_aim,
         strike_chest,
+        swing_sound_slot,
     )) = fighters.get_mut(entity)
     else {
         return;
@@ -988,6 +990,7 @@ pub fn run_swings(
             at: voice_at,
             pitch: start.pitch,
             now_ms: now as u32,
+            set: swing_sound_slot.copied().unwrap_or_default().set,
         });
     }
     let t = SwingTick {
@@ -1046,8 +1049,9 @@ pub fn run_swings(
     // The voice's volume and pitch, the routine's last write, from the
     // tracked speed (the second hand's for a one-hand striker's other-side
     // attack) and the primary striker's swing volume and pitch. The
-    // character's loudness and sound gain are 1 outside the force swing's
-    // and the fades' writes, which Exarust does not have.
+    // loudness is the body's swing factor (3 under Force Strikes,
+    // [`crate::swing_voice::SwingSound`]); the sound gain is 1 outside the
+    // fades' writes, which Exarust does not have.
     if voice.started
         && holds
         && let Some(record) = attacker.primary_record(entity, blades.iter())
@@ -1063,7 +1067,7 @@ pub fn run_swings(
             attacking.motion == AttackMotion::Stab,
             record.swing_pitch,
             record.swing_volume,
-            1.0,
+            swing_sound_slot.copied().unwrap_or_default().loudness,
             1.0,
         );
         cues.write(SwingVoiceCue::Sound {

@@ -424,6 +424,30 @@ impl MindClass {
         }
     }
 
+    /// How the class marks the bar slot holding its id (its HUD word):
+    /// Spirit Form, Control Mind and the constant Sense Minds and Mask
+    /// Mind light it; the constant Loyalty lights it and fades it as it
+    /// ends; the instant Sense Minds and Mask Mind fade it on their own
+    /// clocks (the mask's on the body's clock, `now` here); every other
+    /// class (Command Dead, Confusion, Enrage and the markers on a target)
+    /// takes the base rule, which lights only a persistent id.
+    pub fn slot_mark(&self, now: u32) -> crate::thaum::tree::SlotMark {
+        use crate::thaum::tree::SlotMark;
+        match self {
+            MindClass::Spirit(_)
+            | MindClass::ControlMind(_)
+            | MindClass::Sense(_)
+            | MindClass::Mask(_) => SlotMark::Lit,
+            MindClass::Loyalty(_) => SlotMark::FadeOnEnd,
+            MindClass::SenseInstant(p) => SlotMark::Sense { end: p.end },
+            MindClass::MaskInstant(p) => SlotMark::Mask {
+                world: now,
+                start: p.stamp,
+            },
+            _ => SlotMark::Base,
+        }
+    }
+
     /// The entry's state word, to write.
     pub fn state_mut(&mut self) -> &mut i32 {
         match self {
@@ -463,6 +487,15 @@ pub struct MindPower {
 }
 
 impl MindPower {
+    /// The power as the bar's marks read it.
+    pub fn running(&self, now: u32) -> crate::thaum::tree::RunningPower {
+        crate::thaum::tree::RunningPower {
+            id: self.id,
+            state: self.class.state(),
+            mark: self.class.slot_mark(now),
+        }
+    }
+
     /// A power the casts record: its id, and the body that cast it or that it
     /// works on.
     pub fn recorded(id: u32, caster: Option<BodyId>, target: Option<BodyId>) -> Self {
