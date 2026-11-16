@@ -971,4 +971,8 @@ fn the_capture_freezes_the_cursor_and_cursor_look_steers_it() {
     // Down, the original writes the look's direction last.
     s.aim(&mut req, None, true);
     assert_eq!(s.raw, Some((1.0, 2.0)));
+    // Down with a point, its distance is taken however near.
+    s.capture = Capture::default();
+    s.aim(&mut req, Some(Vec3::new(0.3, 1.0, 0.0)), true);
+    assert_eq!(s.raw, Some((req.heading, 0.3)));
 }

@@ -1,5 +1,6 @@
 //! The player behaviour's screen cursor for the gamepad's aim stick, as the
-//! original keeps it. Rules: `docs/PLAYER.md` (Gamepad aim).
+//! original keeps it. Rules: `docs/PLAYER.md` (Gamepad, the gameplay
+//! sets: Aim).
 //!
 //! **The behaviour tick's aim read** ([`aim_cursor`], each behaviour tick,
 //! before the steering) has two branches, picked by the controls' mouse

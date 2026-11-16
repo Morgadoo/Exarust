@@ -613,7 +613,7 @@ impl Steering {
     /// distance once 50 cm or more away, which the follower takes as its
     /// target; the follower ticks, and its yaw is the request's smoothed
     /// cursor direction. Down (`down`), the raw direction and the look are
-    /// the heading.
+    /// the heading, and the distance is the point's however near.
     ///
     /// While the controls hold the mouse (the orbit or Cursor Look,
     /// [`Capture`]) the cursor's point is not read and its distance is
@@ -626,7 +626,13 @@ impl Steering {
             .follower
             .get_or_insert_with(|| CursorFollower::at(req.heading));
         if down {
-            self.raw = Some((req.heading, self.raw.map_or(0.0, |(_, d)| d)));
+            // Down, the raw direction is the heading and the distance the
+            // point's, however near (kept without a point).
+            let distance = to
+                .map(|t| t.with_y(0.0).length())
+                .or(self.raw.map(|(_, d)| d))
+                .unwrap_or(0.0);
+            self.raw = Some((req.heading, distance));
             req.look = req.heading;
             follower.follow(req.heading);
         } else if !self.capture.held

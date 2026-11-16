@@ -1083,12 +1083,23 @@ strictly beyond 30° (the gap wrapped in double precision), the camera's
 follow step (kept within 0.1π of the body's yaw, on the camera's side).
 The character nearest the cursor on screen is the Talk key's target query
 (`dialogue_live::talk_target`). The
-gamepad's aim runs through the eased world cursor each behaviour tick
-(`player::AimCursor`, read by `player_combat`), and the combat auto-target
-stores its opponent on the player body each tick for the aim point's bone
-lock, which `player::cursor_ground` reads together with the raised surface
-(the bone lock reads the opponent's head, belly and pelvis part origins, a
-stand-in for the original's own three points). Each character tick's
+gamepad's aim runs through the behaviour's screen cursor each behaviour
+tick (`pad_cursor`: eased in screen space from the pointer, advanced in
+the step's post-step and drawn at the render fraction; the GUI's pointer
+and the world cursor follow it, and during the controls' capture a moving
+stick latches and turns the look or the camera), and the combat
+auto-target stores its opponent on the player body each tick for the aim
+point's bone lock, which `player::cursor_ground` reads together with the
+raised surface (the bone lock reads the opponent's pelvis, head and two
+lower legs; the raise is capped at the player's pelvis plus 200 cm). The
+powers aim with that point; the behaviour's own cursor read takes it only
+during an Overhead Swing, else the plain plane point
+(`player::CursorPlane`). The behaviour stops after its contact list while
+a shock staggers the body or the block pair suspends it, drops the
+movement request while Head Pain plays or the kinesis pick holds the
+press (`hand::Holding::Callback`), rests its cursor follower when a
+placement puts the body down, and lets the desk's GUI capture go when the
+player dies. Each character tick's
 attack stage keeps the body's engagement target as its combat target
 (`exa_combat::CombatTarget`, `stages::note_strike_chests`): the player's
 auto-target, else the brain's target pass pick, else a brainless
