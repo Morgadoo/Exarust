@@ -133,6 +133,7 @@ impl Plugin for ThaumEffectsPlugin {
                         (
                             super::blast_live::draw_blasts,
                             super::blast_sound::sound_blasts,
+                            super::torrent_sound::sound_torrents,
                             super::torrent_live::draw_torrents,
                             super::effect_draw::draw_shell_auras,
                             super::effect_draw::draw_rigid_auras,

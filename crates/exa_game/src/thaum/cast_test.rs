@@ -2420,3 +2420,84 @@ fn a_spent_blast_leaves_the_watch_list_and_every_brain_forgets_it() {
         .collect();
     assert_eq!(ids, [target.to_bits()]);
 }
+
+/// A duellist's torrent keeps its two loops' words as its tick writes them
+/// on the voices: the start's two draws (the charge loop's first), the
+/// charge loop at `0.4·(2 − c)·c` while it charges, then falling 0.01 a
+/// tick until it stops, and the stream loop easing from volume 0 and pitch
+/// 6 toward 0.5 and 0.6 while it runs.
+#[test]
+fn a_duellists_torrent_keeps_its_loops_words() {
+    use crate::effects::torrent::{CHARGING, RUNNING};
+    use crate::thaum::torrent_live::{LiveTorrent, TORRENT};
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 3.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[TORRENT]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(TORRENT);
+    duel_tick(&mut app);
+    let torrent = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveTorrent>();
+        q.iter(app.world()).next().cloned()
+    };
+    let start = torrent(&mut app).expect("a torrent");
+    let rolls = start.rolls;
+    assert!((0.0..1.0).contains(&rolls.charge) && (0.0..1.0).contains(&rolls.stream));
+    assert_ne!(rolls.charge, rolls.stream);
+    let sounds = start.torrent.sounds;
+    assert_eq!((sounds.loop_volume, sounds.loop_pitch), (0.0, 6.0));
+    assert!(sounds.charge_playing);
+    while torrent(&mut app).map(|t| t.torrent.state) == Some(CHARGING) {
+        let c = torrent(&mut app).unwrap().torrent.charge;
+        app.world_mut().run_schedule(FixedUpdate);
+        let after = torrent(&mut app).unwrap().torrent.sounds;
+        assert_eq!(after.charge_volume, (f64::from((2.0 - c) * c) * 0.4) as f32);
+        assert_eq!((after.loop_volume, after.loop_pitch), (0.0, 6.0));
+    }
+    let running = torrent(&mut app).unwrap();
+    assert_eq!(running.torrent.state, RUNNING);
+    let mut last = running.torrent.sounds;
+    for _ in 0..200 {
+        app.world_mut().run_schedule(FixedUpdate);
+        let Some(now) = torrent(&mut app) else {
+            break;
+        };
+        let now = now.torrent.sounds;
+        if last.charge_playing {
+            let falling = (f64::from(last.charge_volume) - 0.01) as f32;
+            assert_eq!(now.charge_volume, falling);
+            assert_eq!(now.charge_playing, !(f64::from(falling) < 0.02));
+        }
+        last = now;
+    }
+    // The charge loop stopped; the stream loop came down from pitch 6
+    // toward 0.6 and up toward volume 0.5.
+    assert!(!last.charge_playing);
+    assert!(last.loop_pitch < 2.0, "{}", last.loop_pitch);
+    assert!(last.loop_volume > 0.3, "{}", last.loop_volume);
+}

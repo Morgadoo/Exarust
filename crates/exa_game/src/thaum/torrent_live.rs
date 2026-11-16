@@ -40,7 +40,8 @@
 //! answers with its spheres.] The stream ribbon draws with
 //! `effecttorrent_f` ([`draw_torrents`]). The hit ends as the blast's does
 //! ([`super::blast_live::loosen_pins`]). The torrent's GI multi-point shape
-//! lives with it (`super::effect_light`). Not wired: the sounds' voices.
+//! lives with it (`super::effect_light`), its two loops with their voices
+//! (`super::torrent_sound`).
 //!
 //! Evidence: the torrent's creator, start, hook, tick and frame, read from
 //! `Exanima.exe`.
@@ -91,6 +92,8 @@ pub struct LiveTorrent {
     /// a part's own ([`limb_terms`]); 0 before any. The simulated-object
     /// walk reads it.
     pub contact_scale: f32,
+    /// The draws the start's two loop voices take.
+    pub rolls: super::torrent_sound::TorrentRolls,
 }
 
 /// The torrent's start on its caster: cast motion 0x26 with the power id,
@@ -132,6 +135,12 @@ pub fn new_torrent(
     let generation = body.cast_generation;
     let torrent = Torrent::new(cost, tick_ms, view, &mut draws.0, roll.0);
     roll.0 = torrent.roll;
+    // The start's two loops take their starts from the process stream's
+    // next draws, the charge loop's first.
+    let rolls = super::torrent_sound::TorrentRolls {
+        charge: draws.0.unit(),
+        stream: draws.0.unit(),
+    };
     LiveTorrent {
         torrent,
         caster,
@@ -139,6 +148,7 @@ pub fn new_torrent(
         hooked,
         generation,
         contact_scale: 0.0,
+        rolls,
     }
 }
 

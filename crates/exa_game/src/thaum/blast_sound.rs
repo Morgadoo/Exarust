@@ -61,6 +61,26 @@ pub(crate) struct BlastAudio<'w> {
     env: Option<ResMut<'w, AudioEnvironment>>,
 }
 
+impl BlastAudio<'_> {
+    /// The game, the bank, the sources and the environment, when all are
+    /// there.
+    pub(crate) fn parts(
+        &mut self,
+    ) -> Option<(
+        &Game,
+        &mut SoundBank,
+        &mut Assets<AudioSource>,
+        &mut AudioEnvironment,
+    )> {
+        Some((
+            self.game.as_deref()?,
+            self.bank.as_deref_mut()?,
+            self.sources.as_deref_mut()?,
+            self.env.as_deref_mut()?,
+        ))
+    }
+}
+
 /// One blast's voices: the charge loop (freed once it fades out) and the
 /// release, and whether the release has played.
 #[derive(Debug, Clone, Copy)]
