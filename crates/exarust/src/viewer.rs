@@ -678,7 +678,7 @@ fn mechanism_bodies(options: &crate::Options) -> exa_world::bodies::MechanismBod
         doors: !options.static_doors,
         levers: !options.static_mechanisms,
         plates: !options.static_mechanisms,
-        sliding: options.sliding_doors,
+        sliding: !options.static_sliding_doors,
     }
 }
 

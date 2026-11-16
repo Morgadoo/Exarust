@@ -30,6 +30,7 @@ fn quiet_tick() -> DoorTick {
         travel: 0.0,
         opened: None,
         shove: Vec3::ZERO,
+        wake: false,
     }
 }
 

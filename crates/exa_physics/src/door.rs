@@ -108,22 +108,24 @@ pub fn motor_step(motor: &mut Motor) -> Option<f32> {
     // The plain step's share is taken in single precision and then scaled
     // and offset in double precision before it is rounded back; the open
     // command's 0.1 rad slop is a double too. Their single-precision
-    // spellings differ by one unit in the last place at the boundary.
+    // spellings differ by one unit in the last place at the boundary. A
+    // zero range divides as the original's does (an infinite step, which
+    // arrives).
     let step = if !motor.motorised {
-        let share = if motor.range.is_finite() && motor.range != 0.0 {
-            (error / motor.range).abs()
-        } else {
-            0.0
-        };
+        let share = (error / motor.range).abs();
         (f64::from(share) * MOTOR_CATCH_WIDE + MOTOR_STEP_WIDE) as f32
     } else if motor.fast {
         FAST_STEP
     } else {
         MOTOR_STEP
     };
+    // Both compares take the arrived branch when unordered (a NaN error or
+    // step), as the original's do: a toggle arrives unless the step is
+    // short of the error, an open unless the error is past its slop.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     let arrived = match active {
-        MotorMode::Toggle => error.abs() <= step,
-        MotorMode::Open => f64::from(error.abs()) <= OPEN_SLOP_WIDE,
+        MotorMode::Toggle => !(step < error.abs()),
+        MotorMode::Open => !(f64::from(error.abs()) > OPEN_SLOP_WIDE),
         MotorMode::Idle => return None,
     };
     if arrived {
@@ -300,6 +302,9 @@ pub struct SlideTick {
     pub slam_pitch: f32,
     /// The signalled wait ended with an open this tick.
     pub opened: bool,
+    /// An open command ran this tick: the original wakes the leaf's body
+    /// (to 256) each tick its open runs, and the open itself wakes it.
+    pub woken: bool,
 }
 
 /// Smoothing while the door is free to travel.
@@ -374,6 +379,7 @@ pub fn slide_creak(energy: f32) -> SlideTick {
             slam_volume: 0.0,
             slam_pitch: 0.0,
             opened: false,
+            woken: false,
         };
     }
     SlideTick {
@@ -389,6 +395,7 @@ pub fn slide_creak(energy: f32) -> SlideTick {
         slam_volume: 0.0,
         slam_pitch: 0.0,
         opened: false,
+        woken: false,
     }
 }
 
@@ -414,11 +421,14 @@ fn slide_mode_code(mode: SlideMode) -> i32 {
     }
 }
 
-/// Pull a held hand point back to 60 cm. A point on that sphere stays.
-/// A non-finite offset stays as it is.
+/// Pull a held hand point back to 60 cm (an offset in cm): a point on
+/// that sphere stays. An offset whose squared length is unordered (NaN)
+/// stays as it is, as the original's compare takes the short branch; an
+/// infinite one is scaled as the original scales it.
 pub fn slide_hand(offset: Vec3) -> Vec3 {
     let reach = offset.length_squared();
-    if !reach.is_finite() || reach <= SLIDE_HAND_CM * SLIDE_HAND_CM {
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    if !(reach > SLIDE_HAND_CM * SLIDE_HAND_CM) {
         offset
     } else {
         offset * (SLIDE_HAND_CM / reach.sqrt())
@@ -495,6 +505,7 @@ fn slide_tick_written(slide: &mut Slide, now_ms: i32, written: &mut Written) -> 
             slam_volume: 0.0,
             slam_pitch: 0.0,
             opened,
+            woken: opened,
         };
     }
 
@@ -528,6 +539,7 @@ fn slide_tick_written(slide: &mut Slide, now_ms: i32, written: &mut Written) -> 
     let mut slammed = false;
     let mut slam_volume = 0.0;
     let mut unlatched = false;
+    let mut woken = opened;
     let passable = if !slide.closed {
         let passable = !slide.locked && f64::from(slide.fraction) >= SLIDE_PASS_WIDE;
         slide.smoothing = SLIDE_OPEN_SMOOTH;
@@ -545,6 +557,8 @@ fn slide_tick_written(slide: &mut Slide, now_ms: i32, written: &mut Written) -> 
                     end_slide(slide, SlideMode::Idle, written);
                 }
             }
+            // The open wakes the body each tick it runs, its last too.
+            woken = true;
         }
         if slide.mode == SlideMode::Close {
             if slide.countdown < 2 {
@@ -602,6 +616,7 @@ fn slide_tick_written(slide: &mut Slide, now_ms: i32, written: &mut Written) -> 
         slam_volume,
         slam_pitch: struck_pitch,
         opened,
+        woken,
     }
 }
 
@@ -1340,6 +1355,9 @@ pub struct DoorTick {
     pub opened: Option<Sound>,
     /// The 3 cm shove of that open, in the leaf's frame (a hinge only).
     pub shove: Vec3,
+    /// The leaf's body is woken to 256 this tick: a sliding leaf's open
+    /// command wakes it when it starts and each tick it runs.
+    pub wake: bool,
 }
 
 impl Door {
@@ -1769,6 +1787,7 @@ impl Door {
                 travel: tick.travel,
                 opened: None,
                 shove: Vec3::ZERO,
+                wake: false,
             };
         }
         if let Some(partner) = partner.as_mut() {
@@ -1790,6 +1809,7 @@ impl Door {
             travel: tick.travel,
             opened: None,
             shove: Vec3::ZERO,
+            wake: false,
         }
     }
 
@@ -1921,6 +1941,7 @@ impl Door {
                 None
             },
             shove: Vec3::ZERO,
+            wake: tick.woken,
         }
     }
 }
