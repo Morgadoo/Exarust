@@ -3276,10 +3276,25 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
   retail comparisons average frames or hold the light (`EXA_FIRE_LIGHT`). Sound: with the motion flag
   the volume follows the smoothed emitter motion; otherwise it walks
   ±20 % of the template's volume; the pitch walks ±0.005 (or ±0.05) in
-  [0.85, 1.15] (or [0.6, 1.4]). Exarust keeps the walks but plays no loop.
+  [0.85, 1.15] (or [0.6, 1.4]). The light's flicker, jitter and density walk each step; the intensity, the peak, the emissive scale and the sound walk are the frame's.
+
+**When** (0x1000f5040 and 0x1000f5c20, read from the assembly): the step
+runs on the simulation's thread, once a 12 ms step, in the sector's object
+stage (after the bodies' bounds pass, before body–body detection and the
+objects' body contacts, where the particles meet and dose the bodies); the
+frame routine runs on the main thread once a rendered frame, for every
+awake object, with α = (published tick − the object's stepped tick) + the
+render fraction (1 + (clock − published time)/step, at most 2). It reads the
+step's emitter with no lock against the step and keeps the light's peak,
+full-update bit and sound walk as its own. Exarust steps the flames in the
+fixed step's solver (`exa_world::particle_stage`), the emitter a snapshot
+of the step behind the simulation's bridge; the frame's half is its own
+(`exa_world::flame::FlameView`).
 
 **Drawing** (per frame, oldest first, no depth sort):
-- Position p = q + (p − q)·α; age = 1 − (life − α)·(1/L).
+- Position p = q + (p − q)·α; age = 1 − (life − α)·(1/L). An object stepped
+  in the published step has α = the render fraction, 1 to 2: the particles
+  are drawn from their last tick on (one plus the frame's overstep).
 - Mode 4 (flames): w = (p − q) − (0, buoyancy, 0); d = −w/|w|; A is the
   unit vector from the camera to the emitter's centre (both in cm);
   c = d × A, ℓ = |c|; k = S/ℓ + age²·growth; X = c·k (half-width

@@ -902,10 +902,13 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
                 ChildOf(node),
             ))
         } else {
+            // The bed's system meets no body: the presets clear its
+            // body-contact class bit.
             commands.spawn((
                 Name::new(spec.name),
                 Transform::from_xyz(0.0, spec.lift / 100.0, 0.0),
-                crate::flame::Flame::new(emitter, 0.0, spec.texture, seed(node, index)),
+                crate::flame::Flame::new(emitter, 0.0, spec.texture, seed(node, index))
+                    .without_contacts(),
                 ChildOf(node),
             ))
         };

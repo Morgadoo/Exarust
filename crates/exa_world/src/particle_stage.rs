@@ -44,15 +44,20 @@
 //! bound and the shared two-sided sphere query
 //! ([`exa_physics::mesh_tree::two_sided_contacts`]).
 //!
-//! Open: the fires' emitters still step once a frame in the frame's world
-//! ([`crate::flame`]), so none is staged in the running game; the
-//! particles' own step in the simulation (the sector's object step) is the
-//! missing caller.
+//! The emitters' own step runs here too, as the original's object stage
+//! steps every sector object (the system's step slot) after the bounds pass
+//! and before body–body detection: [`crate::flame`] stages each flame in
+//! the fixed step before the solver, with its tick stream and its node's
+//! frame ([`StagedStep`]); [`ParticleSolve::sim_objects`] ticks it
+//! ([`step_flame`]), a carried flame at its body part's pose at that point
+//! of the solver (the original's read of the body's matrix), and the body
+//! pass follows in the object–body contacts; after the solver the flames
+//! take their emitters back.
 //!
 //! Evidence: the sector step's object stages, the particle system's
-//! constructor, body slot, contact walk and push-out callback, and the
-//! dose slots of the rigid body, the door and the motile part, read from
-//! `Exanima.exe`.
+//! constructor, step slot, body slot, contact walk and push-out callback,
+//! and the dose slots of the rigid body, the door and the motile part, read
+//! from `Exanima.exe`.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -61,7 +66,7 @@ use exa_physics::engine_math::{point_into_frame, point_out_of_frame};
 use exa_physics::sector::{self, ObjectBodyPart, ObjectBounds};
 
 use crate::cloth_parts::ClothGrid;
-use crate::particles::{BodyContact, Emitter};
+use crate::particles::{BodyContact, BodyMotion, Emitter, NodeFrame, Rng};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -125,6 +130,58 @@ pub struct StagedEmitter {
     pub parent: Option<Entity>,
     /// The class's body-contact bit (cleared on a fire's second system).
     pub contacts: bool,
+    /// The emitter's own step in the object stage, when it is stepped here
+    /// (a flame); `None` meets the bodies only.
+    pub step: Option<StagedStep>,
+}
+
+/// What an emitter's step in the solver's object stage needs: its tick
+/// stream, its node's frame (cm) and how a body carries it.
+#[derive(Debug)]
+pub struct StagedStep {
+    pub rng: Rng,
+    /// The node's frame, as staged (the flame's transform, or its carrying
+    /// part's pose before the solver).
+    pub node: NodeFrame,
+    /// The flame rides a carried item ([`crate::flame::CarriedFire`]).
+    pub carried: bool,
+    /// A carried flame's part and the flame's frame in it (metres): the
+    /// solver's pose of that part takes the node's place.
+    pub rides: Option<(Entity, Affine3A)>,
+    /// The light's height above the node (cm), off the frame's position.
+    pub lift: f32,
+}
+
+/// The node frame (cm) of a flame whose world frame is `world` (metres):
+/// its position less the light's lift on the world's up axis, its rotation
+/// without scale.
+pub fn node_frame(world: &Affine3A, lift: f32) -> NodeFrame {
+    let (_, rotation, translation) = world.to_scale_rotation_translation();
+    NodeFrame {
+        position: (translation - Vec3::Y * (lift / CM)) * CM,
+        rotation: Mat3::from_quat(rotation),
+    }
+}
+
+/// One tick of a flame's emitter at `node`, as the frame's fixed loop ran
+/// it: a carried flame first rides its body's frame (its sources and
+/// particles take it, its fire ageing turns on) and takes the body's
+/// velocity at the emitter, the node's displacement over the tick (none
+/// before its first).
+pub fn step_flame(emitter: &mut Emitter, rng: &mut Rng, node: NodeFrame, carried: bool) {
+    if carried {
+        let velocity = if emitter.ticks > 0 {
+            node.position - emitter.node.position
+        } else {
+            Vec3::ZERO
+        };
+        emitter.attach_body(node);
+        emitter.body = Some(BodyMotion {
+            velocity,
+            full_displacement: false,
+        });
+    }
+    emitter.tick(node, rng);
 }
 
 /// One body part's dose, in the order the body pass made them: the part's
@@ -148,6 +205,10 @@ pub struct ParticleSolve {
     /// Each cell's parts: the list (sleeping or awake), the body's place in
     /// it and the part's index, kept from tick to tick.
     cells: bevy::platform::collections::HashMap<(i32, i32), Vec<LinkedSlot>>,
+    /// Emitters and streams that stood in for the staged ones in their
+    /// flames during the last solve, kept to stand in again (no clone a
+    /// tick).
+    pub spare: Vec<(Emitter, Rng)>,
 }
 
 /// A part linked in a cell: whether its body is in the sleeping list, the
@@ -167,6 +228,34 @@ impl ParticleSolve {
     /// Takes the doses the passes made since the last call, in call order.
     pub fn take_doses(&mut self) -> Vec<Dose> {
         std::mem::take(&mut self.doses)
+    }
+
+    /// Drops the doses no dose slot took (a world without the bodies' dose
+    /// system).
+    pub fn clear_doses(&mut self) {
+        self.doses.clear();
+    }
+
+    /// The object stage's step of every staged emitter that has one, in
+    /// staging order: a carried flame's node from its part's pose among
+    /// `bodies` (the awake bodies, where the solver has them now), else
+    /// as staged.
+    pub fn step(&mut self, bodies: &[&mut Ragdoll]) {
+        for one in &mut self.staged {
+            let Some(step) = one.step.as_mut() else {
+                continue;
+            };
+            let mut node = step.node;
+            if let Some((part, offset)) = step.rides
+                && let Some(p) = bodies
+                    .iter()
+                    .flat_map(|b| b.parts.iter())
+                    .find(|p| p.entity == part)
+            {
+                node = node_frame(&(p.transform() * offset), step.lift);
+            }
+            step_flame(&mut one.emitter, &mut step.rng, node, step.carried);
+        }
     }
 
     /// The body passes of every staged emitter (see the module).
@@ -249,6 +338,10 @@ fn meets(object: ObjectBounds, body: &Ragdoll, part: &Part) -> bool {
 impl SolverStage for ParticleSolve {
     /// The particles take no part in the iterations or the friction passes.
     fn coupled(&self, _bodies: &[&mut Ragdoll], _coupled: &mut [bool]) {}
+
+    fn sim_objects(&mut self, bodies: &mut [&mut Ragdoll]) {
+        self.step(bodies);
+    }
 
     fn sim_object_contacts(&mut self, bodies: &mut [&mut Ragdoll], sleeping: &mut [&mut Ragdoll]) {
         self.contact(bodies, sleeping);
