@@ -370,8 +370,10 @@ fn tick_story_experience(
         With<PlayerBody>,
     >,
     mut companions: Query<&mut exa_character::record::CharacterData, Without<PlayerBody>>,
-    level: Option<Res<exa_world::room_view::LevelRooms>>,
-    source: Option<Res<exa_world::LevelSource>>,
+    (level, source): (
+        Option<Res<exa_world::room_view::LevelRooms>>,
+        Option<Res<exa_world::LevelSource>>,
+    ),
     mut commands: Commands,
     mut live: ResMut<StoryExperience>,
     mut last_cell: Local<Option<(i64, i64)>>,
