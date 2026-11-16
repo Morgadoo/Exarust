@@ -896,7 +896,7 @@ When the item cursor lets go of an item (every release but the lock), the item's
 - **THEN** none of its parts keeps a world contact from before the release
 
 ### Requirement: Lifted item out of the simulation
-While the item cursor carries an item, its body SHALL be asleep, disabled and at sleep countdown 0, and each placement SHALL move it whole so its grab point lands on the placed point; the release SHALL clear the disabled state.
+While the item cursor carries an item, its body SHALL be asleep, disabled and at sleep countdown 0, and each placement SHALL copy the placed frame into the held part whole, every other part carried with it; the release SHALL clear the disabled state.
 
 #### Scenario: The release count
 - **WHEN** a lifted item is let go in reach

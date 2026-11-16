@@ -493,7 +493,11 @@ A `PickOnly` mesh (a model's `_null` group, never drawn) becomes a
 pick-only collider (`PICK_ONLY`, no collision or solver groups): only
 `Physics::fixed_pick`, the hand's cursor pick, meets it; the bodies'
 level contacts, `fixed_hit`, `fixed_pick_except`
-and `level_sweep` pass through it (`solid`); `fixed_pick_where` meets it too,
+and `level_sweep` pass through it (`solid`), as does `solid_sweep_except`
+(the item cursor's placement sweep: the level and the props' stand-ins
+but the colliders its filter names; `body::pairs::ball_cast` casts the same
+ball at a loose prop's part, its mesh through its kd-tree or its
+spheres); `fixed_pick_where` meets it too,
 over the colliders its filter keeps (the casts' picks: the level but the
 props' stand-ins, or the stand-ins alone).
 

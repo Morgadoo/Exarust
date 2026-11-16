@@ -319,6 +319,50 @@ impl Physics {
             )
             .map(|(_, hit)| hit.time_of_impact)
     }
+
+    /// A collision world of fixed level meshes, each at its world
+    /// transform, built as the static build makes a level's: a stand-in
+    /// level for checks of the frame's picks and sweeps.
+    pub fn of_level_meshes<'a>(
+        meshes: impl IntoIterator<Item = (&'a Mesh, GlobalTransform)>,
+    ) -> Self {
+        let mut world = PhysicsWorld::new();
+        for (mesh, at) in meshes {
+            if let Some(collider) = MeshCopy::of(mesh, &at).and_then(|copy| copy.collider()) {
+                world.insert_collider(collider, None);
+            }
+        }
+        world.step();
+        Self(world)
+    }
+
+    /// How far along `direction` (unit) from `origin` a ball of `radius`
+    /// first meets a fixed collider within `max` metres: the level and the
+    /// props' stand-ins, passing over the colliders `skip` names and
+    /// pick-only geometry. The item cursor's placement sweep, which meets
+    /// every other body's meshes as well as the level's.
+    pub fn solid_sweep_except(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        radius: f32,
+        skip: &dyn Fn(ColliderHandle) -> bool,
+    ) -> Option<f32> {
+        let ball = Ball::new(radius);
+        let at = Pose::from_translation(origin);
+        let keep = |h: ColliderHandle, c: &Collider| solid(h, c) && !skip(h);
+        let filter = QueryFilter::only_fixed().predicate(&keep);
+        self.0
+            .cast_shape(
+                &at,
+                direction,
+                &ball,
+                rapier3d::parry::query::ShapeCastOptions::with_max_time_of_impact(max),
+                filter,
+            )
+            .map(|(_, hit)| hit.time_of_impact)
+    }
 }
 
 /// Marks a subtree whose meshes become static triangle-mesh colliders once
@@ -1294,6 +1338,23 @@ mod tests {
         assert!((t - 1.9).abs() < 1e-3, "{t}");
         assert_eq!(physics.level_sweep(Vec3::ZERO, Vec3::Y, 1.5, 0.1), None);
         assert!(physics.fixed_hit(Vec3::ZERO, Vec3::Y, 3.0).unwrap() < 1.0);
+        // The placement sweep meets the stand-in too, unless it is the held
+        // body's own.
+        let t = physics
+            .solid_sweep_except(Vec3::ZERO, Vec3::Y, 3.0, 0.1, &|_| false)
+            .unwrap();
+        assert!((t - 0.7).abs() < 1e-3, "{t}");
+        let stand_in = |h: ColliderHandle| {
+            physics
+                .0
+                .colliders
+                .get(h)
+                .is_some_and(|c| c.user_data == prop::STAND_IN)
+        };
+        let t = physics
+            .solid_sweep_except(Vec3::ZERO, Vec3::Y, 3.0, 0.1, &stand_in)
+            .unwrap();
+        assert!((t - 1.9).abs() < 1e-3, "{t}");
     }
 
     /// A mirrored placement of a level mesh keeps its faces' front where
