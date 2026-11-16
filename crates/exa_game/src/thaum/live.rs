@@ -3,9 +3,11 @@
 //! [`super::barricade`], [`super::wisps`]) run at the body tick against the
 //! physical bodies and the level, and whose meshes are rebuilt each frame.
 //!
-//! - **Each tick** (after the bodies): an arc follows its hand, ticks,
-//!   ends at the level (the static colliders) and tests every other body's
-//!   parts, sending [`ArcShocked`] for a struck character. A shock reaches
+//! - **Each tick** (after the bodies): an arc follows its hand (or its
+//!   weapon), enters the world on its first step, ticks, and, when its
+//!   record asks for them, ends at the level (the static colliders) and
+//!   tests every other body's parts, sending [`ArcShocked`] for a struck
+//!   character. A shock reaches
 //!   a fighter once the game clock is within 150 ms of its next shock time
 //!   ([`ShockReady`]), which then moves to 500 ms plus a draw below 200 ms
 //!   of the engine's generator ahead; a fighter that is not collapsing or

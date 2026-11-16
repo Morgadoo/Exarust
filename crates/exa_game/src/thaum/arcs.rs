@@ -33,7 +33,9 @@
 //!   one behind the last). The main tendril's end sits on the target.
 //! - **The level** ([`ArcEmitter::clip_to_level`]): a segment that meets
 //!   the level ends the tendril at the hit, losing its branches past the
-//!   cut.
+//!   cut. The simulation runs this test, and the characters', only for an
+//!   emitter whose record asks for it ([`TESTS_LEVEL`], [`TESTS_BODIES`]);
+//!   both take the points as offsets from the hand ([`ArcEmitter::hand`]).
 //! - **Characters** ([`ArcEmitter::strike_limb`]): each segment but the
 //!   last, taken into the limb's frame, is the limb mesh's swept query: a
 //!   sphere of 20 cm swept from the segment's start to its end, whose hit
@@ -59,7 +61,10 @@
 //!   local-frame bit when its parent has it, and starts a named hum looping
 //!   at the node; leaving frees the light and stops the hum.
 //!   [`follow_parent`] is the node's update under a local-frame parent: the
-//!   parent's matrix with the node's own offset carried through it.
+//!   parent's matrix with the node's own offset carried through it. The
+//!   points are the node's own; the frame draws them through it.
+//! - **The records** ([`Tendril`], [`ArcEmitter::record`]) share one buffer
+//!   of `(segments + 1)·count` points, a segment count apart.
 //!
 //! Evidence: the emitter's constructor, setup, tick, level and character
 //! tests, branch and respawn helpers, bounds and frame, read from
