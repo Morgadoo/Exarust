@@ -850,7 +850,9 @@ its footprint is stamped again where it ends, and it leaves combat and
 returns to idle. `golem_body::rest_sleepers` keeps a
 sleeper's statue byte and gait word as the same statue rest: the sleep
 activity's entry sets it and the sleeper's knock-out clears it
-(`exa_ai::brain::StatueByte`). A spawned body (the scene bodies, the arena's
+(`exa_ai::brain::StatueByte`); a statue the combat state takes up loses its
+rest, as the combat tick clears the body's pose word
+(`golem_body::clear_fighting_poses`). A spawned body (the scene bodies, the arena's
 fighters and a level's placed characters) gets the list its worn items
 register (`item_effects::WornEffects`, from the armour pass's
 `exa_formats::encumbrance::WornSpecials`): a healing item on a body that
@@ -2245,7 +2247,11 @@ its pack; an object at its first node's box centre, searchable when it lies stra
 level, a container's contents from its object sections; reachable is the
 level's sight test, a path the grid's route; the follow's and the search's
 routes are the character's one route, `exa_ai::route_walk::AiRoute`, at the
-follow's urgency, walked by the AI's walk after them), carrying out each take, wear
+follow's urgency, walked by the AI's walk after them; the follow's mode word
+and the leader's planned point live on that route, which every stop clears
+of its mode; while the combat state fights, the follow route is the combat
+state's follow check's to keep or stop, and `publish_follow_leader` gives
+that check the player as its leader each body tick), carrying out each take, wear
 or wield on both sides' `Possessions` and logging comments (no dialogue
 engine). The items' values come from the game's object database and the
 level's own records (tagged local). `carry_out_search` then does what the
