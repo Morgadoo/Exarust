@@ -300,7 +300,8 @@ destination's collision is in, the viewer places them on the six offsets
 around the player's landing (the flow placement's heading as the spawn
 matrix, else the identity), each on its own floor probe, respawns them with
 the roles that keep them following, and `restore_arrivals` loads the carried
-health. The flush registers each follower in the live world character
+health and restarts each arrival's idle activity (its search stands again at
+the world origin with nothing picked). The flush registers each follower in the live world character
 database (`world_characters::WorldCharacters`: a level's own character
 joins it under its first free id, keeping its origin, and takes the level
 it leaves as its level), the re-attach stores the destination's id on the
@@ -494,7 +495,12 @@ settings store fills `AccountExperience`, the first frame of play seeds the
 pool and both clocks from the player's record (`StoryExperience::begin`),
 each of the flow's per-frame `Step::Discovery` passes (`DiscoveryTick`,
 game clock) converts the account, the player and the companions
-(`advance`) and writes the player's experience, skills and powers back to
+(`advance`) and writes the player's and each companion's experience, skills
+and powers back to their records; the companions are the party the brains
+keep (`keep_party`, from `exa_ai::brain::PartyChange`: a follower whose
+roles were applied joins once, its learner read from its record and its
+clock started; one that stops following or dies leaves, the last taking its
+place; one whose body is gone leaves too), and the player's goes to
 its record (the record on the player's body; a story player always has
 one), the body takes the `TechniqueWord` component at the level start and on
 a rise, `apply_technique_word` puts it on the body's caster and adds the

@@ -156,7 +156,16 @@ reach halves, the observed lies). A body whose flags are exactly the
 dormant flag and whose target pass finds anyone above a notice drops role
 44 (applied again on the next tick) and is knocked out at once (the shared
 knock-out and its wake timer); the body tick's wake raises it. Rating the
-player no longer wakes anyone. A knocked-out or dead brain stops after its alert decay,
+player no longer wakes anyone. The duellist drops a target whose condition carries the collapsing bit
+(collapsing or dead), as the original's combat state clears the body's
+target before it perceives: the tick finds no foe (a focus was cleared when
+the foe was taken), leaves combat after the follow and down exits, and the
+dropped target is not perceived. Applying the roles reads the body's fierce
+rule bit (the phase word starts at −1, so its routes plan one size smaller)
+and sends `brain::PartyChange` when a follower joins the party or one that
+stopped following leaves it (the death hook sends a leave too); the
+follower arrival restarts the idle activity (`Npc::restart_idle_activity`,
+the search's restart). A knocked-out or dead brain stops after its alert decay,
 before its morale and state (the original's condition bit `0x800`), and
 senses nothing in the perception pass (the original's tick leaves before
 the target pass that senses). A placed
