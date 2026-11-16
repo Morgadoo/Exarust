@@ -324,7 +324,7 @@ pub struct ScriptedRelease(pub Option<IVec2>);
 
 /// Starts a drag on the entry under the pointer, or on the crystal in the
 /// shown card's socket under it.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn press(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,

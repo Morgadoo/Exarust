@@ -1322,7 +1322,7 @@ fn equip_dropped(
         let (apparel_cost, weapon_value, displaced) = match target.and_then(|t| bodies.get(t).ok())
         {
             Some(entry) if mind_cost => {
-                let p = &*entry.1;
+                let p = entry.1;
                 let values = crate::view_trust::ItemValues::of(live.as_deref(), drop.id);
                 let apparel_cost = values
                     .apparel
