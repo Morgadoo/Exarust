@@ -1650,7 +1650,9 @@ fn arc_node_place(
         live.arcs.frame,
         live.arcs.anchor.unwrap_or(Vec3::ZERO),
     );
-    if live.node.render & super::arcs::LOCAL_FRAME == 0 {
+    // The draw places a node through its child (the attached emitter) only
+    // when the node took the local-frame bit from its parent.
+    if !live.node.child || live.node.render & super::arcs::LOCAL_FRAME == 0 {
         return held;
     }
     let parent = if let Some((body, bone)) = live.part {
