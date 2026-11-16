@@ -1551,6 +1551,8 @@ the arena stagings run behind the transition screen as the original runs them: t
 
 fourth TMotileDynamics pass: the swing's opening block (a counter keeps its armed hold while the target plays the countered motion; a shield without Ward clears it at 0.4 of the clip; two weapons guard the off hand and leaving the attack releases the guard), the swing rate's NaN branches, the supported locomotion tilt, the ground placement's opening clinch clear, and the get-up tick's step and posture-wait clears; the muscles-off sampler proven unreachable. Finding F545: the ground placement samples through the living sampler in its placement mode, not the pose-only one; held for a GPU check of placed heights. Traces change in every scene with walking bodies; determinism runs owed while the GPU is on hold.
 
+the line skin's wide frames are live: the combo drop-down lists and the palette swatch popup draw through the line form draw and the wide window frame, read on the form's state word; the colour picker's frame marks (hover, press, close, icons) run through the draw skin's hit test; the title band is six units deep as in the running original (F24 closed); the colour swatches' backs go through the skins' control fills; the tables draw the line skin's header line with the corrected cap inset (F29 closed); the skill tooltips use the skin's rounded fill, pixel-equal. Left: the creator's marker trackbar, the default background's scroll arms and the draw skin's panel and scroll slots (no live form uses them; the original's record census is owed), the setup models. Hub window scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
