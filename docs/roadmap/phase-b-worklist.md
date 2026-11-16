@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 695 | 169,053 | B1 wire (or prove unreachable) |
-| partial | 1,439 | 911,425 | B4 complete the port |
+| uncalled | 691 | 166,123 | B1 wire (or prove unreachable) |
+| partial | 1,440 | 911,982 | B4 complete the port |
 | missing | 58 | 11,783 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -16,7 +16,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 144,341 | 18,075 | 276 |
 | render | 123,703 | 22,990 | 3,232 |
-| ui | 86,242 | 45,948 | 1,311 |
+| ui | 86,799 | 43,018 | 1,311 |
 | powers | 109,096 | 3,157 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
 | ai | 97,107 | 3,406 | 28 |
@@ -43,8 +43,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | XA_Arena (unit routines) | modes | 29 / 17,125 | 6 / 1,436 | 7 / 779 | 19,340 |
 | RF_SceneNodes (unit routines) | world | 10 / 15,347 | 12 / 2,377 | 0 / 0 | 17,724 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
-| TGUIForm | ui | 31 / 10,077 | 24 / 6,919 | 0 / 0 | 16,996 |
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
+| TGUIForm | ui | 32 / 10,634 | 20 / 3,989 | 0 / 0 | 14,623 |
 | TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
 | TGUIDrawSkin | ui | 2 / 3,550 | 22 / 9,559 | 0 / 0 | 13,109 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
