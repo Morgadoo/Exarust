@@ -2475,6 +2475,7 @@ mod tests {
             .init_resource::<crate::shop_stock::ItemPalette>()
             .init_resource::<crate::shop_stock::ShopFactories>()
             .init_resource::<crate::hub_windows::HubItemNames>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_systems(
                 Update,
                 crate::arena_hub_live::hub_stow_won.after(hub_form_input),

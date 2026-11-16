@@ -4186,6 +4186,8 @@ mod tests {
             .init_resource::<PanelIcons>()
             .init_resource::<exa_items::catalogue::ItemCatalogue>()
             .add_message::<ScreenRequest>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .init_resource::<crate::thaum::live::FrameEffectDraws>()
             .add_systems(
                 Update,
                 (

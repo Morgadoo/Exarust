@@ -2431,6 +2431,7 @@ mod tests {
                 .insert_resource(catalogue)
                 .insert_resource(LiveObjects::of(db))
                 .add_message::<DollDrop>()
+                .init_resource::<crate::thaum::live::FrameEffectRoll>()
                 .add_systems(Update, equip_dropped);
             let (_, body) = crate::view_trust::bound_pair(app.world_mut(), relation);
             {
