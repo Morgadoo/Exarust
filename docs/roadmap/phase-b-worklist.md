@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 600 | 149,021 | B1 wire (or prove unreachable) |
-| partial | 1,387 | 872,990 | B4 complete the port |
+| partial | 1,382 | 870,634 | B4 complete the port |
 | missing | 52 | 10,114 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,12 +14,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 143,795 | 17,693 | 276 |
+| physics | 142,710 | 17,693 | 276 |
 | render | 115,117 | 21,704 | 3,232 |
 | ui | 86,123 | 40,819 | 288 |
 | powers | 105,027 | 2,271 | 2,321 |
-| characters | 86,280 | 14,220 | 1,943 |
-| ai | 89,630 | 1,725 | 28 |
+| characters | 85,591 | 14,220 | 1,943 |
+| ai | 89,048 | 1,725 | 28 |
 | modes | 65,851 | 9,978 | 363 |
 | world | 56,743 | 15,874 | 563 |
 | items | 54,650 | 7,741 | 525 |
@@ -34,7 +34,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 46 / 98,698 | 3 / 558 | 1 / 38 | 99,294 |
+| TMotileDynamics | physics | 43 / 97,613 | 3 / 558 | 1 / 38 | 98,209 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 20 / 29,952 | 2 / 165 | 2 / 28 | 30,145 |
 | TSimSector | physics | 27 / 21,200 | 0 / 0 | 0 / 0 | 21,200 |
@@ -110,7 +110,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Mesh (unit routines) | render | 2 / 2,219 | 1 / 2,210 | 0 / 0 | 4,429 |
 | TSkillUI | ui | 4 / 3,673 | 2 / 716 | 0 / 0 | 4,389 |
 | TTerrainManager | world | 6 / 3,351 | 6 / 1,033 | 0 / 0 | 4,384 |
-| SG_CharacterAI (unit routines) | ai | 12 / 4,255 | 0 / 0 | 0 / 0 | 4,255 |
 | TForceWaveEffect | powers | 4 / 4,246 | 0 / 0 | 0 / 0 | 4,246 |
 | TTerrainGrass | world | 4 / 4,208 | 0 / 0 | 0 / 0 | 4,208 |
 | RF_GUI_Controls_Ex (unit routines) | ui | 11 / 4,129 | 0 / 0 | 0 / 0 | 4,129 |
@@ -124,6 +123,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RFT_BoundSphere (unit routines) | core | 2 / 3,851 | 0 / 0 | 0 / 0 | 3,851 |
 | TShellEffect | powers | 5 / 2,730 | 0 / 0 | 1 / 1,070 | 3,800 |
 | TGUIItemContainer | items | 3 / 2,250 | 1 / 1,476 | 0 / 0 | 3,726 |
+| SG_CharacterAI (unit routines) | ai | 11 / 3,673 | 0 / 0 | 0 / 0 | 3,673 |
 | FLX_Character_Motions (unit routines) | characters | 1 / 1,612 | 8 / 2,034 | 0 / 0 | 3,646 |
 | RF_Intersection (unit routines) | physics | 2 / 288 | 9 / 3,188 | 0 / 0 | 3,476 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
@@ -150,7 +150,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_kdTrees (unit routines) | world | 10 / 2,369 | 0 / 0 | 0 / 0 | 2,369 |
 | TAudioEnvironment | audio | 3 / 2,097 | 2 / 270 | 0 / 0 | 2,367 |
 | TInventory | items | 8 / 2,297 | 1 / 41 | 0 / 0 | 2,338 |
-| RF_Dynamics_Animation (unit routines) | characters | 5 / 2,100 | 0 / 0 | 2 / 173 | 2,273 |
 | TGridEnvManager | world | 3 / 2,199 | 0 / 0 | 0 / 0 | 2,199 |
 | SG_ObjectDB2 (unit routines) | data | 7 / 1,923 | 2 / 228 | 0 / 0 | 2,151 |
 | TScene | world | 1 / 740 | 8 / 1,355 | 0 / 0 | 2,095 |
@@ -176,6 +175,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 1 / 1,662 | 0 / 0 | 0 / 0 | 1,662 |
 | FLX_PostProcess (unit routines) | render | 3 / 1,480 | 2 / 52 | 1 / 127 | 1,659 |
 | TTransitionScreen | ui | 2 / 1,577 | 1 / 28 | 0 / 0 | 1,605 |
+| RF_Dynamics_Animation (unit routines) | characters | 4 / 1,411 | 0 / 0 | 2 / 173 | 1,584 |
 | TBarricadeEntity | powers | 2 / 1,556 | 0 / 0 | 0 / 0 | 1,556 |
 | TTErrainkdTree | world | 0 / 0 | 5 / 1,513 | 0 / 0 | 1,513 |
 | RF_ObjectLibs (unit routines) | data | 4 / 1,227 | 1 / 284 | 0 / 0 | 1,511 |
