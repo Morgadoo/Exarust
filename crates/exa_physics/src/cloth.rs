@@ -2,8 +2,9 @@
 //!
 //! Each free particle keeps `0.98977 × 0.5^(1/83)` of its velocity, dragged
 //! 5% toward last tick's mean, then gains gravity. Gravity is the body's
-//! acceleration, in centimetres per tick. Wind above 0.001 moves a particle
-//! by `direction · (noise + 0.25) · wind`. A pin moves toward its rest point
+//! acceleration, in centimetres per tick. The world's wind ([`Wind`]) above
+//! 0.001 moves a particle by `direction · ((0.25 + noise) · strength)`. A
+//! pin moves toward its rest point
 //! by its weight. A link `(a, b)` with `d = b − a` moves `a` by `f·d` and
 //! `b` by `−f·d`, `f = 0.5 − rsqrt(|d|²)·h`, where `h` is half the rest
 //! distance and `rsqrt` the processor's approximate reciprocal square root:
@@ -22,8 +23,8 @@
 //! hands it its own countdown when that is higher, and the tick's end puts
 //! an awake cloth whose count is under 2 to sleep. That sum over the vertex
 //! count is the mean the drag pulls toward. Rustle plays when the same
-//! sum's squared length exceeds 400. The mesh vertices are the particle
-//! positions. These are the built-in record's numbers; a cloth's own record
+//! sum's squared length exceeds 400, for a record that names a rustle
+//! sound. The mesh vertices are the particle positions. These are the built-in record's numbers; a cloth's own record
 //! ([`crate::cloth_record`]) sets its drag, retention, gravity scale,
 //! padding, slide and passes, and its particle mode (the hair's) makes all
 //! its passes in the step and takes bodies particle by particle
@@ -376,7 +377,7 @@ pub struct Cloth {
     /// Unreachable vertices stay infinite. With no pins, vertex 0 is the source.
     pub distances: Vec<f32>,
     /// Whether the rustle loop plays this tick, and at what volume and
-    /// pitch ([`settle_rustle`]).
+    /// pitch (the integrate slot's rustle).
     pub rustle: bool,
     pub rustle_volume: f32,
     pub rustle_pitch: f32,
@@ -836,7 +837,9 @@ pub fn step_before_level_in(
     {
         let direction = at.to_world.inverse().transform_vector3(at.wind.direction);
         for particle in &mut cloth.particles {
-            let place = at.wind.in_frame(at.to_world.transform_point3(particle.previous));
+            let place = at
+                .wind
+                .in_frame(at.to_world.transform_point3(particle.previous));
             let push = (0.25 + at.wind.sample(place.x, place.y)) * at.wind.strength;
             particle.position += direction * push;
         }
@@ -1204,7 +1207,8 @@ pub fn walk_links(
                 Neighbour::set(&mut neighbours, second, Some(first), None);
             }
         }
-        let listed = |neighbours: &[Neighbour], v: i64| neighbours.iter().any(|n| n.vertex as i64 == v);
+        let listed =
+            |neighbours: &[Neighbour], v: i64| neighbours.iter().any(|n| n.vertex as i64 == v);
         let settled = |state: &[i32], v: i64| usize::try_from(v).is_ok_and(|v| state[v] < -1);
         // Whether a face about `from` joins `to` to a settled vertex.
         let joined = |state: &[i32], from: usize, to: usize| {
@@ -1218,8 +1222,7 @@ pub fn walk_links(
             let here = neighbours[i];
             if state[here.vertex] > SETTLED {
                 tree.push((vertex, here.vertex));
-                let along =
-                    crate::engine_math::length3(at - positions[here.vertex]) + distance;
+                let along = crate::engine_math::length3(at - positions[here.vertex]) + distance;
                 let slot = state[here.vertex];
                 if slot < 0 {
                     if live < open.len() {
@@ -1249,8 +1252,7 @@ pub fn walk_links(
                 {
                     continue;
                 }
-                if there.before == here.vertex as i64 && joined(&state, here.vertex, there.vertex)
-                {
+                if there.before == here.vertex as i64 && joined(&state, here.vertex, there.vertex) {
                     continue;
                 }
                 if there.after == here.vertex as i64 && joined(&state, here.vertex, there.vertex) {
@@ -1327,8 +1329,8 @@ fn settle_rustle(cloth: &mut Cloth, sum: Vec3) {
     if cloth.record.rustle.is_some() {
         let speed_sq = (sum.x * sum.x + sum.y * sum.y) + sum.z * sum.z;
         if speed_sq > RUSTLE_SPEED_SQ {
-            let volume = (f64::from(cloth.rustle_tail * 0.5) + f64::from(speed_sq.sqrt()) * 0.0001)
-                as f32;
+            let volume =
+                (f64::from(cloth.rustle_tail * 0.5) + f64::from(speed_sq.sqrt()) * 0.0001) as f32;
             let pitch = volume * 0.5 + 0.5;
             cloth.rustle = true;
             cloth.rustle_volume = volume;
@@ -1804,7 +1806,6 @@ mod tests {
                 .position
                 .abs_diff_eq(Vec3::new(5.0, 0.0, 0.0), 1e-4)
         );
-
     }
 
     #[test]
@@ -1919,7 +1920,6 @@ mod tests {
         assert_eq!(cloth.pins[0].weight, 1.0);
         assert_eq!(cloth.faces().len(), 4);
         assert!(cloth.faces().contains(&(0, 2, 1)));
-
     }
 
     /// The step's wind hook, worked from its assembly: the strength is the
@@ -1981,12 +1981,14 @@ mod tests {
         // Inside a cell.
         let (fx, fy) = (0.25f32, 0.5f32);
         let at = wind.sample(fx * 12.5, 50.0 + fy * 12.5);
-        let want = (1.0 - fy) * ((1.0 - fx) * 64.0 + fx * 65.0) + fy * ((1.0 - fx) * 80.0 + fx * 81.0);
+        let want =
+            (1.0 - fy) * ((1.0 - fx) * 64.0 + fx * 65.0) + fy * ((1.0 - fx) * 80.0 + fx * 81.0);
         assert!((at - want).abs() < 1e-3, "{at} {want}");
         // Past the last column and row it wraps to the first.
         let at = wind.sample(-10.0, 790.0);
         let (fx, fy) = (0.2f32, 0.2f32);
-        let want = (1.0 - fy) * ((1.0 - fx) * 255.0 + fx * 240.0) + fy * ((1.0 - fx) * 15.0 + fx * 0.0);
+        let want =
+            (1.0 - fy) * ((1.0 - fx) * 255.0 + fx * 240.0) + fy * ((1.0 - fx) * 15.0 + fx * 0.0);
         assert!((at - want).abs() < 1e-2, "{at} {want}");
     }
 
@@ -2676,7 +2678,12 @@ mod tests {
         // No pins: the walk starts at vertex 0 all the same.
         assert_eq!(walk_links(&vertices, &faces, &starts, &fans, &[]), links);
         // A vertex no pin reaches gets no link.
-        let apart = [vertices[0], vertices[1], vertices[2], Vec3::new(9.0, 9.0, 0.0)];
+        let apart = [
+            vertices[0],
+            vertices[1],
+            vertices[2],
+            Vec3::new(9.0, 9.0, 0.0),
+        ];
         let lone = [[0, 1, 2]];
         let (starts, fans) = incidence(&lone, 4);
         let links = walk_links(&apart, &lone, &starts, &fans, &[3]);

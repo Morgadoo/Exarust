@@ -439,7 +439,8 @@ fn the_meshes_take_the_particles_once_a_frame() {
         .to_vec();
     let indices: Vec<u32> = mesh.indices().unwrap().iter().map(|i| i as u32).collect();
     let shading = app.world().get::<ClothShading>(hairs[0]).unwrap();
-    let want = exa_formats::rfc::cloth_normals(&expected, &indices, &shading.keys, &shading.elements);
+    let want =
+        exa_formats::rfc::cloth_normals(&expected, &indices, &shading.keys, &shading.elements);
     assert_eq!(normals, want);
 }
 

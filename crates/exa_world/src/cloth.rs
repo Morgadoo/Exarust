@@ -4,8 +4,8 @@
 //! The original gives a mesh node a cloth controller when its material is
 //! flagged as cloth and the node carries the cloth marker; each position
 //! element of the mesh is a particle (the vertices a UV seam splits share
-//! one), the edges of its triangles are structural links and the two
-//! vertices opposite a shared edge are a bending link. The cloth hangs from
+//! one), and its links are the set-up's walk out from the pins over the
+//! mesh (`exa_physics::cloth::walk_links`). The cloth hangs from
 //! the pins its controller lists when it starts
 //! ([`exa_physics::cloth::face_flag_pins`]): an element is pinned when
 //! every face about it carries a pin bit in the mesh's face flags, firmly
@@ -21,12 +21,13 @@
 //! only the tick's shared body parts and the level and writes only itself,
 //! so each ends bit for bit where it would stepped alone), and the object
 //! list's re-buckets stay in its order. Once a frame, after its ticks, the
-//! mesh's positions take the particles' ([`write_cloth_meshes`]; the mesh
-//! is in metres, the cloth in centimetres). The simulation is local to the
+//! mesh's positions take the particles' between their last two ticks and
+//! its normals are rebuilt ([`write_cloth_meshes`]; the mesh is in metres,
+//! the cloth in centimetres). The simulation is local to the
 //! mesh's node, so the node's own transform carries the cloth with the
 //! body. Evidence: the original's cloth construction (a particle per
-//! position element, triangle edges and bend links), its pin list and its
-//! step (REA assembly). The draw's two passes are [`crate::cloth_draw`]'s.
+//! position element, the link walk), its pin list, its step, its wind hook
+//! and its draw update (REA assembly). The draw's two passes are [`crate::cloth_draw`]'s.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -1919,7 +1920,10 @@ mod tests {
         let drawn = (0..cloth.particles.len()).collect();
         let entity = app
             .world_mut()
-            .spawn((ClothInstance::new(cloth, mesh, drawn), GlobalTransform::default()))
+            .spawn((
+                ClothInstance::new(cloth, mesh, drawn),
+                GlobalTransform::default(),
+            ))
             .id();
         app.world_mut().run_schedule(Update);
         for _ in 0..steps {
@@ -1948,14 +1952,29 @@ mod tests {
         assert_eq!(calm.world().resource::<ClothWind>().0.strength, 0.0);
         let x = |app: &App, entity: Entity| {
             let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
-            instance.cloth.particles.iter().map(|p| p.position.x).sum::<f32>()
+            instance
+                .cloth
+                .particles
+                .iter()
+                .map(|p| p.position.x)
+                .sum::<f32>()
         };
         let z = |app: &App, entity: Entity| {
             let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
-            instance.cloth.particles.iter().map(|p| p.position.z).sum::<f32>()
+            instance
+                .cloth
+                .particles
+                .iter()
+                .map(|p| p.position.z)
+                .sum::<f32>()
         };
         // The direction is (0.6, 0, 0.3) normalised: along +x and +z.
-        assert!(x(&windy, blown) > x(&calm, still) + 1.0, "{} {}", x(&windy, blown), x(&calm, still));
+        assert!(
+            x(&windy, blown) > x(&calm, still) + 1.0,
+            "{} {}",
+            x(&windy, blown),
+            x(&calm, still)
+        );
         assert!(z(&windy, blown) > z(&calm, still) + 0.5);
         assert!(z(&calm, still).abs() < 1e-3);
     }
@@ -1986,7 +2005,11 @@ mod tests {
         assert_eq!(sent[0].cloth, entity);
         assert_eq!(sent[0].sound, "CltMov");
         assert!((sent[0].volume - 0.004).abs() < 1e-5, "{}", sent[0].volume);
-        assert!((sent[0].position.x - 0.6).abs() < 0.2, "{}", sent[0].position);
+        assert!(
+            (sent[0].position.x - 0.6).abs() < 0.2,
+            "{}",
+            sent[0].position
+        );
         {
             let mut instance = app.world_mut().get_mut::<ClothInstance>(entity).unwrap();
             for p in &mut instance.cloth.particles {

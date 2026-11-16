@@ -288,7 +288,12 @@ impl ClothMesh {
             .triangle_flags
             .clone()
             .unwrap_or_else(|| vec![0; faces.len()]);
-        let key = |i: u32| mesh.smoothing.get(i as usize).copied().unwrap_or_else(|| element(i));
+        let key = |i: u32| {
+            mesh.smoothing
+                .get(i as usize)
+                .copied()
+                .unwrap_or_else(|| element(i))
+        };
         let part_vertices: Vec<Vec<u32>> = groups
             .iter()
             .map(|&g| {
@@ -301,7 +306,11 @@ impl ClothMesh {
                 // The part's vertices in the order the part's mesh lists
                 // them (`group_mesh`'s first-use order).
                 let mut seen = std::collections::HashSet::with_capacity(indices.len());
-                indices.iter().copied().filter(|&i| seen.insert(i)).collect()
+                indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| seen.insert(i))
+                    .collect()
             })
             .collect();
         let part_elements = part_vertices
@@ -341,10 +350,11 @@ impl ClothMesh {
         }
         let faces: Vec<[usize; 3]> = faces.iter().map(|f| f.map(|e| e as usize)).collect();
         let element_faces: Vec<[u32; 3]> = faces.iter().map(|f| f.map(|e| e as u32)).collect();
-        let pins: Vec<usize> = exa_physics::cloth::face_flag_pins(count, &element_faces, face_flags)
-            .into_iter()
-            .map(|(element, _)| element)
-            .collect();
+        let pins: Vec<usize> =
+            exa_physics::cloth::face_flag_pins(count, &element_faces, face_flags)
+                .into_iter()
+                .map(|(element, _)| element)
+                .collect();
         let (starts, fans) = mesh.element_incidence();
         exa_physics::cloth::walk_links(&positions, &faces, &starts, &fans, &pins)
             .into_iter()
