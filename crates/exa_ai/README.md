@@ -22,7 +22,10 @@ practice or arena fight's staging holds it (the transition screen's 500 ms
 hold and 600 ms fade-in, 92 body ticks), the AI tick runs the idle stand
 (the out-of-combat turn, a followed route soft-stopped) in place of every
 state: the duellist runs only its combat entry and the flight and idle
-walks wait. The game stages it through the fixed queue.
+walks wait. The game stages it through the fixed queue; a staging under the
+transition screen holds it until the screen's close posts its release
+(`freeze::stage_held`, `freeze::release`), one with no screen counts the
+92 ticks.
 Only the removal forget is a frame system. The profiler's clock over the
 chain (`BrainTickClock`, present with `--profiler` or `--perf-log`) only
 adds up, and crosses the simulation bridge as a snapshot the frame reads. The brains run over every brain
