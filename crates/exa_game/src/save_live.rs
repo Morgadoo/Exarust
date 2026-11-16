@@ -4348,6 +4348,214 @@ mod tests {
         }
     }
 
+    /// A section: tag, size (body + 8) and body.
+    fn db_section(tag: u32, body: &[u8]) -> Vec<u8> {
+        let mut v = tag.to_le_bytes().to_vec();
+        v.extend((body.len() as u32 + 8).to_le_bytes());
+        v.extend_from_slice(body);
+        v
+    }
+
+    /// A header body: the name (16 bytes), the flag word and the parent.
+    fn db_header(name: &str, flags: u32, parent: u32) -> Vec<u8> {
+        let mut b = name.as_bytes().to_vec();
+        b.resize(16, 0);
+        b.extend(flags.to_le_bytes());
+        b.extend(parent.to_le_bytes());
+        b
+    }
+
+    /// An object database file of `magic` holding `(id, flags, payload)`.
+    fn db_file(magic: u32, records: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
+        let mut b = magic.to_le_bytes().to_vec();
+        b.extend((((records.len() + 1) * 16) as u32).to_le_bytes());
+        let mut offset = 0u32;
+        for (id, flags, payload) in records {
+            for w in [*id, *flags, offset, payload.len() as u32] {
+                b.extend(w.to_le_bytes());
+            }
+            offset += payload.len() as u32;
+        }
+        b.extend([0; 16]);
+        for (_, _, payload) in records {
+            b.extend_from_slice(payload);
+        }
+        b
+    }
+
+    /// Writes a story slot whose `#worldobjdb` holds `objects`, loads it
+    /// through the plugin's load system over a live database that holds
+    /// `base`, and returns the live database after the load.
+    fn load_world_objects(
+        name: &str,
+        objects: Vec<u8>,
+        base: Option<exa_formats::objdb::Store>,
+    ) -> exa_formats::objdb::ObjectDb {
+        let dir = folder(name);
+        let mut lists = SlotLists::new(&dir);
+        let player = StoryPlayer {
+            record: CharacterRecord::reset(),
+            position_cm: [0.0; 3],
+            heading: 0.0,
+            powers: Vec::new(),
+        };
+        let career = crate::hub_windows::ArenaCareer::default();
+        let mut session = live_session(Some("exanima05.rfc"), 60, &career, &ArenaStores::default());
+        let mut export = story_player_world(
+            &player,
+            &mut session,
+            &exa_formats::objdb::ObjectDb::default(),
+        )
+        .unwrap();
+        export.objects = Some((objects, exa_formats::objstrings::Library::default().write()));
+        let number = save_new_slot(
+            &mut lists.story,
+            &session,
+            Some("Ash"),
+            &export.save_world(None, false),
+        )
+        .unwrap()
+        .unwrap();
+        let mut live = exa_assets::live_objects::LiveObjects::default();
+        if let Some(base) = base {
+            live.db_mut().base = base;
+        }
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<StorySlotLoad>()
+            .add_message::<crate::world_clock::RestoreWorldClock>()
+            .init_resource::<SaveReport>()
+            .insert_resource(live)
+            .insert_resource(lists)
+            .add_systems(Update, load_story_slot)
+            .init_resource::<crate::flow::Flow>()
+            .init_resource::<crate::flow::FlowSteps>();
+        app.update();
+        app.world_mut().write_message(StorySlotLoad {
+            number,
+            prefer_checkpoint: false,
+        });
+        app.update();
+        let db = app
+            .world()
+            .resource::<exa_assets::live_objects::LiveObjects>()
+            .db()
+            .clone();
+        let _ = std::fs::remove_dir_all(&dir);
+        db
+    }
+
+    /// An older save's `#worldobjdb` goes through the loader's upgrade
+    /// chain on the live load: `0xDBAC0D08` converts the operative section,
+    /// `0xDBAC0D07` the weapon and then the operative section, and
+    /// `0xDBAC0D06` the old body (its count byte through the count setter,
+    /// its paint seed from the run-time library's generator) and the
+    /// random tables' condition words first. The live world tier then
+    /// holds the current layout.
+    #[test]
+    fn an_older_saves_world_objects_are_upgraded_on_the_load() {
+        use exa_formats::objdb::RANDOM_TABLE;
+        const NAME: u32 = 0x1000_0000;
+        const BODY: u32 = 0x1000;
+        const WEAPON: u32 = 0x4000;
+        const OPERATIVE: u32 = 0x1_0000;
+        let mut old_body = vec![0u8; 0x224];
+        old_body[0x1A8] = 3;
+        old_body[0x1A9] = 0x82;
+        // Part 0: kind 0, finish 0: set 3, finish 1, material 1.
+        old_body[0x1B8 + 2] = 0x12;
+        let mut weapon = vec![0u8; 0x2C];
+        weapon[0x1F] = 4; // kind 0, class 4: flags 0x14
+        let mut operative = vec![0u8; 0x20];
+        operative[0] = 2; // old class 2: 4
+        operative[1] = 3; // old kind 3: 7
+        let mut table = vec![0u8; 0x20];
+        table[0xC..0x10].copy_from_slice(&1u32.to_le_bytes());
+        let payload = [
+            db_section(NAME, &db_header("Old", 0, 0)),
+            db_section(BODY, &old_body),
+            db_section(WEAPON, &weapon),
+            db_section(OPERATIVE, &operative),
+            db_section(RANDOM_TABLE, &table),
+        ]
+        .concat();
+        let flags = NAME | BODY | WEAPON | OPERATIVE | RANDOM_TABLE;
+        for magic in [0xDBAC_0D08u32, 0xDBAC_0D07, 0xDBAC_0D06] {
+            let file = db_file(magic, &[(1, flags, payload.clone())]);
+            let db = load_world_objects(&format!("upgrade-{magic:x}"), file, None);
+            let record = db.world.find(1).expect("the world tier holds the record");
+            let operative = record.section(OPERATIVE).unwrap();
+            assert_eq!((operative.len(), operative[0], operative[1]), (0x3C, 4, 7));
+            let weapon = record.section(WEAPON).unwrap();
+            let body = record.section(BODY).unwrap();
+            let condition = u16::from_le_bytes(
+                record.section(RANDOM_TABLE).unwrap()[0x1A..0x1C]
+                    .try_into()
+                    .unwrap(),
+            );
+            match magic {
+                0xDBAC_0D08 => assert_eq!(weapon.len(), 0x2C),
+                0xDBAC_0D07 => {
+                    assert_eq!((weapon.len(), weapon[0]), (0x60, 0x14));
+                    assert_eq!(body, &old_body[..]);
+                    assert_eq!(condition, 0);
+                }
+                _ => {
+                    assert_eq!((weapon.len(), weapon[0]), (0x60, 0x14));
+                    assert_eq!(body.len(), 0x224);
+                    // The count byte, the armour type and the first layer.
+                    assert_eq!(body[0x1A9] & 3, 1);
+                    assert_eq!(body[0x1A8], 3);
+                    assert_eq!(&body[0x1B4..0x1B9], &[1, 1, 3, 1, 1]);
+                    assert_eq!(body[0x1B4 + 8], 0x12);
+                    // A zero condition word takes the defaults.
+                    assert_eq!(condition, 0x5284);
+                }
+            }
+        }
+    }
+
+    /// A saved world instance whose header's material class (bits 16–23)
+    /// differs from its template's takes the template's appearance layers on
+    /// the load's template migration; one of the same class keeps its own.
+    #[test]
+    fn a_class_change_refreshes_a_saved_instances_appearance() {
+        const NAME: u32 = 0x1000_0000;
+        const BODY: u32 = 0x1000;
+        let mut template_body = vec![0u8; 0x224];
+        // Mask 9, set 2 (materials 5, 6, 10), byte 3, colour 0x40, byte 0xB.
+        template_body[0x1B4..0x1C0].copy_from_slice(&[9, 2, 2, 3, 0, 0, 0, 0, 0x40, 0, 0, 1]);
+        let mut instance_body = vec![0u8; 0x224];
+        // Material 7, not in the template's set: it becomes the set's first.
+        instance_body[0x1B4..0x1C0].copy_from_slice(&[0, 0, 0, 0, 7, 0, 0, 0, 0x11, 0, 0, 0]);
+        let template = [
+            db_section(NAME, &db_header("Tunic", 0x12_0000, 0)),
+            db_section(BODY, &template_body),
+        ]
+        .concat();
+        let base_file = db_file(exa_formats::objdb::MAGIC, &[(10, NAME | BODY, template)]);
+        let base = exa_formats::objdb::Store::parse(&base_file).unwrap();
+        let instance = |class: u32| {
+            [
+                db_section(NAME, &db_header("Worn", class, 10)),
+                db_section(BODY, &instance_body),
+            ]
+            .concat()
+        };
+        let world = db_file(
+            exa_formats::objdb::MAGIC,
+            &[
+                (1, NAME | BODY, instance(0x11_0000)),
+                (2, NAME | BODY, instance(0x12_0000)),
+            ],
+        );
+        let db = load_world_objects("class-change", world, Some(base));
+        let layer =
+            |id: u32| db.world.find(id).unwrap().section(BODY).unwrap()[0x1B4..0x1C0].to_vec();
+        assert_eq!(layer(1), [9, 2, 2, 3, 5, 0, 0, 0, 0x11, 0, 0, 1]);
+        assert_eq!(layer(2), [0, 0, 0, 0, 7, 0, 0, 0, 0x11, 0, 0, 0]);
+    }
+
     #[test]
     fn the_plugin_saves_on_request_only_with_a_folder() {
         let dir = folder("plugin");

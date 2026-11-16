@@ -150,8 +150,19 @@ fn held_weapon(id: u32, lookup: &ItemLookup) -> Option<HeldWeapon> {
     let weapon = item.weapon?;
     Some(HeldWeapon {
         family: weapon.flags & 0xf0,
-        points: item.loadout_rank,
+        points: weapon_points(item)?,
     })
+}
+
+/// A weapon's points as the cost rule reads them: the object database's
+/// weapon points of its section ([`exa_items::card::weapon_points`]: the
+/// word's low five bits, one less for a one-handed weapon).
+fn weapon_points(item: &Item) -> Option<i32> {
+    let weapon = item.weapon?;
+    Some(exa_items::card::weapon_points(
+        weapon.flags,
+        item.weapon_word as u8,
+    ))
 }
 
 /// A hand's shield points, when it holds a shield.
@@ -180,8 +191,8 @@ pub fn equip_kind(id: u32, loadout: &Loadout, lookup: &ItemLookup) -> EquipKind 
         } else {
             shield_points(loadout.hands[1].id, lookup)
         };
-        let cost =
-            exa_ui::loadout::item_cost(family, item.loadout_rank, item.torch, first, second_shield);
+        let points = exa_items::card::weapon_points(weapon.flags, item.weapon_word as u8);
+        let cost = exa_ui::loadout::item_cost(family, points, item.torch, first, second_shield);
         return EquipKind::Weapon {
             rank: item_rank(item),
             cost,
@@ -1510,6 +1521,7 @@ mod tests {
         Item {
             rank_word: word,
             loadout_rank: i32::from(word & 0x1f),
+            weapon_word: word,
             weapon: Some(Weapon {
                 flags: family,
                 ..Weapon::default()
@@ -1753,6 +1765,41 @@ mod tests {
             let done =
                 equip_from_stock(&mut entries, 1, &mut list, &mut loadout, 1, lookup).unwrap();
             assert_eq!(done.cost, 2);
+        });
+    }
+
+    /// The equip cost reads the object database's weapon points: a
+    /// one-handed weapon (flag bits `0x30` = `0x10`) counts one point less
+    /// than its word's five bits, for itself and for the weapon it
+    /// displaces from the first hand; a two-handed one its whole word. The
+    /// loadout's own total still sums the whole words.
+    #[test]
+    fn a_one_handed_weapon_costs_a_point_less_than_its_word() {
+        let world = World {
+            items: vec![
+                weapon(10, 4, 0x10),
+                weapon(11, 6, 0x10),
+                weapon(12, 9, 0x20),
+                weapon(13, 0, 0x10),
+            ],
+        };
+        with_lookup(&world, |lookup| {
+            let empty = Loadout::default();
+            let cost = |id, loadout: &Loadout| match equip_kind(id, loadout, lookup) {
+                EquipKind::Weapon { cost, .. } => cost,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(cost(10, &empty), 3);
+            assert_eq!(cost(12, &empty), 9);
+            // A word of 0 does not go below 0.
+            assert_eq!(cost(13, &empty), 0);
+            let mut held = Loadout::default();
+            held.hands[0] = ItemRef::new(10, 0);
+            // 5 taken, 3 freed.
+            assert_eq!(cost(11, &held), 2);
+            // The two-handed weapon frees the held one's 3.
+            assert_eq!(cost(12, &held), 6);
+            assert_eq!(loadout_cost(&held, lookup), 4);
         });
     }
 
