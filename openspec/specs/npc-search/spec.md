@@ -294,3 +294,10 @@ The search's look, path, settle and loot SHALL read the brain's attention: on it
 #### Scenario: The live search
 - **WHEN** a follower's search picks a chest under the real AI tick
 - **THEN** it walks to the chest only once its target pass attends the goal entity linked to the chest
+
+### Requirement: The attended contact's notice bonus
+The target pass's classify SHALL add 3 to the notice score of the contact the brain attends as the pass starts, and keep the fled alarm of that contact in a flight, whatever the body's target.
+
+#### Scenario: A goal attended
+- **WHEN** a brain attends its goal entity (score 5) and sees a calm character scoring 5.4
+- **THEN** it keeps attending the goal entity

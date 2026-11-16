@@ -863,7 +863,10 @@ pub fn target_pass(
         let mut record = sighting.contact;
         let at = Standing {
             level,
-            is_focus: Some(record.id) == foe,
+            // The contact the brain attends as the pass starts (the
+            // original compares with its attention word): it keeps the fled
+            // foe's alarm and adds 3 to a notice score.
+            is_focus: attended_id.is_some() && Some(record.id) == attended_id,
             threat: bevy::math::Vec2::new(sighting.position_cm.x, sighting.position_cm.z),
             threat_room: sighting.room,
         };

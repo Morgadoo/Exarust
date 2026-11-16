@@ -3352,7 +3352,9 @@ mod tests {
     /// attends it; its contact enters the brain's list as an object with the
     /// weight as its noticed level, and the integration never raises its
     /// attention. Once the search lets it go, a calm pass keeps attending
-    /// it; a pass that notices someone attends them.
+    /// it (attended, it scores 3 more: a character noticed a little more
+    /// does not take it away); a character it watches (concern over 1)
+    /// takes the attention.
     #[test]
     fn the_target_pass_attends_the_search_goal() {
         let brain = Entity::from_raw_u32(3).unwrap();
@@ -3404,12 +3406,12 @@ mod tests {
         pass(&mut npc, &[]);
         assert_eq!(npc.pass.attention, Some(id));
         assert_eq!(npc.goal_point(id), Some(Vec3::ZERO));
-        // Someone hostile seen: the pass attends them.
+        // A character it watches outranks the goal's notice.
         let hostile = contacts::Sighting {
             contact: ContactRecord {
                 id: 1,
                 sighting: 1.0,
-                concern: 0.9,
+                concern: 1.5,
                 ..ContactRecord::default()
             },
             character: true,
