@@ -119,6 +119,13 @@ impl Plugin for CharacterPlugin {
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct Outfit(pub Vec<Garment>);
 
+/// The protection of the items the body's last outfit pass dressed, in
+/// wearing order: what a later armour pass over the same outfit reads (the
+/// armour refresh after a rise in the armour skill,
+/// [`exa_combat::Fighter::wear`]).
+#[derive(Component, Clone, Debug, Default, PartialEq)]
+pub struct WornArmour(pub Vec<Armour>);
+
 /// A worn item: its model (an entry of `Characters.rpk`) and how it is
 /// painted. Without an appearance, the first object-database item worn as
 /// the model supplies one.
@@ -1792,19 +1799,17 @@ pub fn equip_outfits(
         // whole fighter, which a free-running simulation's newer steps
         // would lose.
         if do_outfit && let Some(mut f) = fighter {
-            let mut layers = exa_combat::damage::armour_layers(
-                f.natural.as_ref(),
-                &protection,
-                f.stats.deflection,
-            );
             // The pass ends in the part-sound routine, which gives a golem
-            // race's covering layers the golem class.
-            exa_combat::sounds::mark_golem_layers(&mut layers, f.stats.golem_race());
-            let wear = move |f: &mut exa_combat::Fighter| f.armour = layers;
+            // race's covering layers the golem class ([`exa_combat::Fighter::wear`]).
+            // The worn protection stays on the body for a later pass over
+            // the same outfit (a rise in the armour skill).
+            let worn = protection.clone();
+            let wear = move |f: &mut exa_combat::Fighter| f.wear(&worn);
             match fixed.as_deref_mut() {
                 Some(fixed) => fixed.write(body, &mut f, wear),
                 None => wear(&mut f),
             }
+            commands.entity(body).insert(WornArmour(protection));
         }
         if do_hands && refit.is_some() {
             // Only the main hand's item and fists are replaced; the off

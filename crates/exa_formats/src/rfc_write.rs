@@ -643,6 +643,21 @@ pub struct ExportOptions {
     pub save_mode: bool,
 }
 
+impl ExportOptions {
+    /// The save exporter's switches: the save unit creates its exporter
+    /// once with save mode on and option word 4, the triangle-data bit, so
+    /// a save's level section never stores the per-triangle sub-chunks
+    /// (`0x3DC2`, `0x3DC3`). Option bit 8 stays clear, so the meshes' part
+    /// preparation runs (an exporter without hooks makes it a no-op).
+    pub fn save() -> Self {
+        Self {
+            skip_triangle_data: true,
+            save_mode: true,
+            ..Self::default()
+        }
+    }
+}
+
 /// The scene's own objects get a chance to bring themselves up to date
 /// before the exporter writes them, as the original's virtual calls do.
 /// Every method does nothing by default; an exporter without hooks writes

@@ -78,6 +78,16 @@ impl Default for Fighter {
 }
 
 impl Fighter {
+    /// The armour pass over this fighter: every body part's layers from
+    /// its race's natural layer and the `worn` items' protection in order,
+    /// with Deflection as its stats know it, the covering layers of a golem
+    /// race taking the golem class (the pass's closing part-sound routine).
+    pub fn wear(&mut self, worn: &[exa_formats::objdb::Armour]) {
+        let mut layers = damage::armour_layers(self.natural.as_ref(), worn, self.stats.deflection);
+        crate::sounds::mark_golem_layers(&mut layers, self.stats.golem_race());
+        self.armour = layers;
+    }
+
     /// A fighter of `race` (none: the original's built-in race) with the
     /// stats its record spawned with: its health from them, its race's
     /// natural armour and whether it bleeds.

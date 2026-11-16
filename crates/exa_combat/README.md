@@ -622,7 +622,8 @@ byte's golem bit (0x10) rings `HitGlm`, the skeleton's race (1) `SkelHit`,
 a golem race or a worn golem suit makes a golem body, race 0x12 the quiet
 `Golem_Foley`; the armour pass ends by giving a golem race's first
 covering layer of each part the golem class (`mark_golem_layers`), so its
-wounds ring `HitGlm` too. `exa_audio` plays them. The classes are the item
+wounds ring `HitGlm` too. `Fighter::wear` runs the whole pass over a worn
+list (the dress, and the armour refresh after a rise in the armour skill). `exa_audio` plays them. The classes are the item
 byte's as the armour builder copies it (0 flesh, 1 cloth, 2 leather, 3
 mail, 4 plate, 5 `HitHbr`, 6 golem), the order of every per-class table:
 the foley factors (0, 0, 0.3, 0.6, 1, 1) and volumes, the part impact's

@@ -120,3 +120,17 @@ The story experience SHALL keep the party's companions as bodies with their lear
 #### Scenario: A follower joins and dies
 - **WHEN** a follower's roles are applied twice and it then dies, and another follower joins and is despawned
 - **THEN** the party holds the first once with its record's experience and its clock at the game clock, is empty after its death, holds the second, and is empty once the second is gone
+
+### Requirement: Armour refresh after an armour rise
+A conversion that raises the armour skill of the player or of a companion SHALL run the armour pass on that body again: Deflection read from its record and the layers rebuilt over the protection of the outfit it wears.
+
+#### Scenario: Deflection learnt by a rise
+- **WHEN** the player's armour skill rises to the level whose chosen technique is Deflection
+- **THEN** the fighter's layers become those Deflection gives over its worn items
+
+### Requirement: Companion rise on the body
+A companion's rise SHALL put its new technique word on its body.
+
+#### Scenario: A companion rises
+- **WHEN** a companion's trained skill reaches a new level
+- **THEN** its body's technique word is the word its skills now name
