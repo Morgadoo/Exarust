@@ -2248,6 +2248,10 @@ pub struct Drive {
     /// sets 41, one started unsteady 27, and every posture stage takes one
     /// off.
     pub posture_wait: i32,
+    /// The game clock (ms) a shock's force release keeps the body busy
+    /// until: the posture's shocked arm returns it to normal once the
+    /// clock is past it (unsigned compare).
+    pub busy_until_ms: u32,
     /// Its recovery step, if the chest has left the feet.
     steps: steps::Steps,
     /// The support pins' goals, set once a tick by the body tick's carry
@@ -2441,6 +2445,7 @@ impl Default for Drive {
             pin_mean: None,
             lead_exertion: None,
             posture_rate: RaceMuscles::HUMAN.clip_rate,
+            busy_until_ms: 0,
             timers: BodyTimers::default(),
             dormant: false,
             attack_arms: None,
@@ -3302,6 +3307,7 @@ impl Ragdoll {
                 drive.steps.knockback = false;
             }
             drive.posture_rate = release.clip_rate;
+            drive.busy_until_ms = release.busy_until_ms;
             drive.bearing.shocked = true;
         }
         release
@@ -3453,6 +3459,11 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.attack_arms = tune;
         }
+    }
+
+    /// This tick's attack arms, as the swing set them.
+    pub fn attack_arm_tune(&self) -> Option<AttackArmTune> {
+        self.drive.as_ref().and_then(|d| d.attack_arms)
     }
 
     /// Marks the part `root`'s chain as striking, or clears it: the

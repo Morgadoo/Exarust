@@ -1429,6 +1429,26 @@ fn the_relaxed_blend_reads_the_stepping_flag() {
     assert_eq!(run(false), 0.46);
 }
 
+/// The relaxed blend with the break-tangle counter above 0 sets both arms
+/// to 0.5 at once, whatever they were, as the original's relaxed setter
+/// tests the counter first.
+#[test]
+fn a_tangle_sets_the_relaxed_arms_to_a_half() {
+    let pose = vec![Affine3A::IDENTITY; 3];
+    let run = |tangled: bool| {
+        let mut body = both_arms();
+        body.set_arm_stiffness(0.9);
+        body.set_bearing(Bearing {
+            tangled,
+            ..Bearing::default()
+        });
+        body.aim(Affine3A::IDENTITY, pose.clone());
+        body.arm_stiffness().unwrap()
+    };
+    assert_eq!(run(true), 0.5);
+    assert_ne!(run(false), 0.5);
+}
+
 /// A golem's body links all take the smoothing 0.995 (the character
 /// init's golem set-up); any other race keeps the smoothing its links'
 /// points gave them.

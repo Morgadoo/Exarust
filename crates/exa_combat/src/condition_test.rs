@@ -776,3 +776,46 @@ fn death_silences_the_voice() {
         .gain;
     assert_eq!(gain, 1.0);
 }
+
+/// A shock's force release leaves the body shocked until the game clock is
+/// past its busy deadline (unsigned, strict): the posture stage keeps the
+/// word at the deadline and makes it normal the tick after (the arm writes
+/// 0 and leaves the posture block for that tick).
+#[test]
+fn the_shock_ends_once_the_clock_passes_the_release() {
+    let mut app = App::new();
+    app.insert_resource(motions())
+        .add_message::<WeaponSwapDue>()
+        .add_systems(Update, track_condition);
+    let mut body = Ragdoll::new(&[]).with_drive();
+    body.force_release(1000);
+    let deadline = body.drive.as_ref().unwrap().busy_until_ms;
+    assert!(deadline > 1000);
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Animator::new("Default", "Cmbt - Idle"),
+            body,
+            Condition::SHOCKED,
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    let at = |app: &mut App, ms: u64| {
+        let tick = ms / exa_physics::body::GAME_MS_PER_TICK;
+        app.insert_resource(exa_physics::body::BodyTicks(tick));
+        app.update();
+        *app.world().get::<Condition>(id).unwrap()
+    };
+    assert_eq!(at(&mut app, 1000), Condition::SHOCKED);
+    // A clock at most the deadline keeps it.
+    let last =
+        deadline as u64 / exa_physics::body::GAME_MS_PER_TICK * exa_physics::body::GAME_MS_PER_TICK;
+    assert_eq!(at(&mut app, last), Condition::SHOCKED);
+    let after = last + exa_physics::body::GAME_MS_PER_TICK;
+    assert!(after > deadline as u64);
+    assert_eq!(at(&mut app, after), Condition::NORMAL);
+}

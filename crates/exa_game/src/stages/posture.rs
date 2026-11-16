@@ -45,6 +45,7 @@ pub(crate) fn take_bearing(
         Option<&Fighter>,
         Option<&crate::golem_body::StatueRest>,
         Option<&exa_physics::body::InView>,
+        Option<&exa_combat::strike_body::TangleCount>,
     )>,
 ) {
     let Some(motions) = motions else { return };
@@ -61,6 +62,7 @@ pub(crate) fn take_bearing(
         fighter,
         statue,
         in_view,
+        tangle,
     )) = bodies.get_mut(ticked.body)
     else {
         return;
@@ -77,6 +79,9 @@ pub(crate) fn take_bearing(
     // the previous tick's attack stage left: the auto-parry runs after
     // them in the original's posture block.
     bearing.parrying = fighter.is_some_and(|f| f.parry.active);
+    // The tangle counter as this tick's tangle break left it, which the
+    // relaxed arm blend reads.
+    bearing.tangled = tangle.is_some_and(|t| t.0 > 0);
     bearing.rising = rising(&motions, anim, state);
     // Dormant, or in exactly the shock's stagger, its stance factor is 1.
     // The flag's bit, with whatever else is set, makes the pins' power 1.

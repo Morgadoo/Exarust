@@ -1209,3 +1209,43 @@ fn the_attack_routine_eases_the_hunch_on_its_balance() {
     assert_eq!(hunch_after(Condition::NORMAL, 1.0), 0.3);
     assert_eq!(hunch_after(Condition::COLLAPSING, 1.0), 0.3);
 }
+
+/// The posture block's attack arms read the swing strength before this
+/// tick's stall drain: a stalling swing of strength 1 draining 0.5 sets the
+/// arms a strength-1 swing sets, not a strength-0.5 one's, and is left at
+/// 0.5. The drain floors at 0 by an ordered compare, so a NaN stays.
+#[test]
+fn the_attack_arms_read_the_strength_before_the_stall() {
+    let run = |strength: f32, stall: f32| {
+        let mut state = SwingState {
+            strength,
+            stall,
+            end_ms: 1_000_000,
+            ..SwingState::default()
+        };
+        if stall > 0.0 {
+            state.flags |= flags::STALLING;
+        }
+        let (mut app, fighter) = attacking(50.0, state);
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert(Ragdoll::new(&[]).with_drive());
+        app.update();
+        let w = app.world();
+        (
+            w.get::<Ragdoll>(fighter).unwrap().attack_arm_tune(),
+            w.get::<SwingState>(fighter).unwrap().strength,
+        )
+    };
+    let (stalled, left) = run(1.0, 0.5);
+    let (full, _) = run(1.0, 0.0);
+    let (half, _) = run(0.5, 0.0);
+    assert!(stalled.is_some());
+    assert_eq!(stalled, full);
+    assert_ne!(stalled, half);
+    assert_eq!(left, 0.5);
+    let (_, nan) = run(f32::NAN, 0.5);
+    assert!(nan.is_nan());
+    let (_, floored) = run(0.25, 0.5);
+    assert_eq!(floored, 0.0);
+}

@@ -544,6 +544,7 @@ pub fn track_condition(
         Option<&mut PostureBranch>,
     )>,
     mut swaps: MessageWriter<WeaponSwapDue>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
 ) {
     let Some(motions) = motions else { return };
     let set = &*motions.0;
@@ -572,7 +573,13 @@ pub fn track_condition(
         exertion: body.exertion(),
         tone,
         parrying: fighter.is_some_and(|f| f.parry.active),
-        shock_over: false,
+        // The shocked arm's deadline: the force release's busy clock,
+        // passed (unsigned) by the game clock.
+        shock_over: exa_physics::motile::shock_expired(
+            entering.0,
+            body.drive.as_ref().map_or(0, |d| d.busy_until_ms),
+            ticks.map_or(0, |t| t.millis() as u32),
+        ),
     };
     let (next, branch) = posture(entering, &p);
     if swap_due(entering, next) {

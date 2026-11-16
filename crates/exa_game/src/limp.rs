@@ -1719,6 +1719,7 @@ pub(crate) fn bearing(
         walking: condition == Condition::WALKING,
         attacking: condition == Condition::ATTACKING,
         in_combat: false,
+        tangled: false,
         off_feet: condition.off_feet(),
         progress: 0.0,
         idle: anim.action == "Idle",
