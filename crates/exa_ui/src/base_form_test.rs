@@ -239,3 +239,31 @@ fn a_focus_to_no_form_returns_to_the_remembered_one_or_the_root() {
     assert_eq!((task.active, task.active_control), (Some(root), -1));
     assert_eq!(task.remembered, Some((a, 0)));
 }
+
+/// The release reaches a held slider with the landing bit even when the
+/// pointer is let go off it (the record tests the point itself), so the
+/// slider reports its change; a button released off itself does not fire.
+#[test]
+fn a_slider_let_go_off_its_track_still_reports_the_change() {
+    let mut w = window();
+    let mut slider = Control::new(4, 120, 120, 80, 12);
+    slider.reports = true;
+    w.records.push(slider);
+    let mut button = Control::new(1, 120, 200, 80, 24);
+    button.reports = true;
+    w.records.push(button);
+    let (mut task, id) = task_with(w);
+    task.update(false, (130, 125));
+    task.press(1);
+    task.update(false, (130, 180));
+    task.release(1);
+    let events = &base(&task, id).events;
+    assert!(events.contains(&BaseEvent::Changed(0)), "{events:?}");
+    task.form_mut(id).unwrap().base_mut().unwrap().events.clear();
+    task.update(false, (130, 210));
+    task.press(1);
+    task.update(false, (130, 250));
+    task.release(1);
+    let events = &base(&task, id).events;
+    assert!(!events.contains(&BaseEvent::Changed(1)), "{events:?}");
+}
