@@ -784,7 +784,14 @@ impl Plugin for PlayerPlugin {
                     .chain()
                     .after(exa_combat::parry::aim_foe_parries),
             )
-            .add_systems(FixedPreUpdate, (follow_activation_centre, follow_body_camera))
+            // The activation centre and the camera follow the body before
+            // the player's behaviour reads the camera (the cursor's aim).
+            .add_systems(
+                FixedPreUpdate,
+                (follow_activation_centre, follow_body_camera)
+                    .chain()
+                    .before(crate::pad_cursor::aim_cursor),
+            )
             .add_systems(
                 Update,
                 (begin_play_session, end_play_session, release_on_death),

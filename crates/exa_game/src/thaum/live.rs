@@ -61,7 +61,7 @@ use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
-use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
+use exa_physics::body::{BodyTicks, Ragdoll, step_length};
 use exa_render::electricity::ArcMaterial;
 use exa_render::gi::VoxelLight;
 use exa_render::glow::GlowMaterial;
@@ -110,9 +110,18 @@ impl Plugin for ThaumEffectsPlugin {
             .init_resource::<super::effect_draw::ForceNoise>()
             .add_systems(
                 FixedUpdate,
-                (tick_arcs, tick_barricades, tick_wisps, shock_fighters)
+                (
+                    tick_arcs,
+                    tick_barricades,
+                    tick_wisps
+                        .after(exa_combat::react_to_hits)
+                        .before(exa_combat::bite::open_bites)
+                        .before(super::veil_live::displace_bodies)
+                        .before(super::vanish_body::turn_vanishing_bodies),
+                    shock_fighters,
+                )
                     .chain()
-                    .after(BodySystems),
+                    .after(exa_physics::body::AfterSolver::Physics),
             )
             .add_systems(
                 exa_ai::BrainChain,
@@ -1364,7 +1373,7 @@ pub(crate) fn tick_barricades(
     }
 }
 
-fn tick_wisps(
+pub(crate) fn tick_wisps(
     mut commands: Commands,
     mut sets: Query<(Entity, &mut LiveWisps)>,
     bodies: Query<&Ragdoll>,

@@ -218,7 +218,7 @@ pub fn pick_depth(extents: Vec3) -> f32 {
 
 /// The kinesis takes what the hand lifted.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn take_kinesis_picks(
+pub(crate) fn take_kinesis_picks(
     mut commands: Commands,
     mut picked: MessageReader<KinesisPicked>,
     ticks: Option<Res<BodyTicks>>,

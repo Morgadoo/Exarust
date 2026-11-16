@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use exa_character::spray::BloodSprays;
 
 use crate::bindings::{Bindings, DEFAULT_KEYS, virtual_key};
-use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, inspect};
+use exa_physics::body::{BodyTicks, Ragdoll, inspect};
 use exa_physics::prop::PropBody;
 
 /// Pauses and resumes the simulation. It is a function key no game action
@@ -180,8 +180,11 @@ impl Plugin for SimControlPlugin {
                         .run_if(|c: Res<SimControl>| c.pause_after_collapse.is_some()),
                     refill_undying,
                 )
+                    .chain()
                     .in_set(exa_physics::body::BodyPostStep)
-                    .after(exa_combat::CombatSystems),
+                    .after(exa_combat::CombatSystems)
+                    .after(exa_ai::struck::HitReactions)
+                    .before(crate::thaum::live::shock_fighters),
             )
             .add_systems(Update, sim_keys)
             // The fixed loop neither takes the frame's time nor runs while
@@ -203,7 +206,8 @@ impl Plugin for SimControlPlugin {
             .add_systems(
                 FixedUpdate,
                 scripted_pause
-                    .after(BodySystems)
+                    .after(exa_physics::body::AfterSolver::Physics)
+                    .before(exa_combat::impact::level_impacts)
                     .run_if(|c: Res<SimControl>| c.waits_for_pause()),
             );
     }
@@ -468,7 +472,7 @@ fn arm_pause_after_collapse(
 /// after the first blood jet, at the end of that tick: no further tick runs
 /// in the frame.
 #[allow(clippy::too_many_arguments)]
-fn scripted_pause(
+pub(crate) fn scripted_pause(
     mut control: ResMut<SimControl>,
     clock: Res<BodyTicks>,
     loading: Option<Res<exa_ui::LoadingStatus>>,

@@ -32,7 +32,10 @@ impl Plugin for FootprintPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NavFootprints>().add_systems(
             FixedPreUpdate,
-            keep_footprints.after(crate::player::steer_player),
+            keep_footprints
+                .after(crate::player::steer_player)
+                .after(crate::limp::place_on_ground)
+                .before(crate::player::release_held_wake),
         );
     }
 }

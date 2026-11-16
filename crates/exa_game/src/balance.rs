@@ -60,7 +60,11 @@ impl Plugin for BalancePlugin {
         app.init_resource::<ShockHeld>().add_systems(
             CharacterTick,
             (
-                recover_rising.in_set(CharacterStage::Readiness),
+                // After the readiness block's Break Tangle, as the
+                // original's body tick runs them.
+                recover_rising
+                    .in_set(CharacterStage::Readiness)
+                    .after(exa_combat::strike_body::break_tangles),
                 pin_shock_stagger
                     .in_set(CharacterStage::Readiness)
                     .after(recover_rising),
@@ -71,6 +75,7 @@ impl Plugin for BalancePlugin {
                 (pick_again, turn_toward_fall)
                     .chain()
                     .in_set(CharacterStage::Movement)
+                    .after(crate::stages::movement::decide_movement)
                     .before(crate::stages::movement::measure_ground),
             ),
         );

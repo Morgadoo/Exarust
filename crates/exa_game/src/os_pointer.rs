@@ -81,7 +81,13 @@ impl Plugin for OsPointerPlugin {
         app.init_resource::<PointerWarp>()
             .init_resource::<PointerConfinement>()
             .add_message::<WarpPointer>()
-            .add_systems(PreUpdate, settle_warp.after(bevy::input::InputSystems))
+            .add_systems(
+                PreUpdate,
+                settle_warp
+                    .after(bevy::input::InputSystems)
+                    .after(exa_ui::scale::follow_window)
+                    .before(bevy::ui::UiSystems::Focus),
+            )
             .add_systems(PostUpdate, (apply_warps, confine_full_screen).chain());
     }
 }
@@ -107,7 +113,7 @@ fn apply_warps(
 /// is measured against the target and either ends the hold or puts the
 /// pointer back (which also makes the position the game reads this frame
 /// the target's, as the original's pointer read returns it while held).
-fn settle_warp(
+pub fn settle_warp(
     mut moves: MessageReader<CursorMoved>,
     mut warp: ResMut<PointerWarp>,
     mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
