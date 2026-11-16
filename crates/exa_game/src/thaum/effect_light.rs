@@ -1205,11 +1205,13 @@ mod tests {
         );
         assert_eq!(shape.tex_pos, Vec2::from(wall.texture));
         // The wall faces +x, so its length runs along z: a point 100 cm
-        // along the wall maps to the box's x.
+        // along the wall maps to the box's x. The original transposes the
+        // wall's turn (its axes from the fast normaliser, unit to about 12
+        // bits), so the point lands within a tenth of a centimetre.
         let along = shape
             .matrix
             .transform_point3(Vec3::new(0.0, 100.0, 0.0) + frame.x * 100.0);
-        assert!((along - Vec3::new(100.0, 0.0, 0.0)).length() < 1e-3);
+        assert!((along - Vec3::new(100.0, 0.0, 0.0)).length() < 0.1);
         assert_eq!(volume.position, Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(volume.half, Vec3::new(0.75, 1.7, 3.7));
     }
