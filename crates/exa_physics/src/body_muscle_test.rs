@@ -1449,6 +1449,30 @@ fn a_tangle_sets_the_relaxed_arms_to_a_half() {
     assert_ne!(run(false), 0.5);
 }
 
+/// The off-balance arms (both at 0.5) are the posture block's: its own
+/// test, which the bearing carries. A low balance measured this tick or an
+/// unsupported body leaves the arm setter on its other branches.
+#[test]
+fn only_the_posture_blocks_off_balance_loosens_the_arms() {
+    let pose = vec![Affine3A::IDENTITY; 3];
+    let run = |off_balance: bool, balance: f32, supported: bool| {
+        let mut body = both_arms();
+        body.set_arm_stiffness(0.9);
+        body.set_bearing(Bearing {
+            off_balance,
+            ..Bearing::default()
+        });
+        let d = body.drive.as_mut().unwrap();
+        d.balance.value = balance;
+        d.supported = supported;
+        body.aim(Affine3A::IDENTITY, pose.clone());
+        body.arm_stiffness().unwrap()
+    };
+    assert_eq!(run(true, 1.0, true), 0.5);
+    assert_ne!(run(false, 0.3, true), 0.5);
+    assert_ne!(run(false, 1.0, false), 0.5);
+}
+
 /// A golem's body links all take the smoothing 0.995 (the character
 /// init's golem set-up); any other race keeps the smoothing its links'
 /// points gave them.

@@ -76,10 +76,8 @@ const STEP_LIMIT_TAKE: f64 = 0.04;
 const GOLEM_THIGH: f32 = 0.5;
 const GOLEM_LIMIT: f32 = 0.25;
 /// Arm stiffness: off balance, and dazed (tone under 0.85) or striding
-/// (the walking arms of a character that is not feral). A body is off
-/// balance below this balance.
+/// (the walking arms of a character that is not feral).
 const ARM_OFF_BALANCE: f32 = 0.5;
-const OFF_BALANCE_BELOW: f32 = 0.6;
 const ARM_LOOSE: f32 = 0.2;
 const ARM_DAZED_TONE: f32 = 0.85;
 /// A human's support pins' factor (its race's 1.25).
@@ -770,12 +768,10 @@ impl Ragdoll {
             drive.support = if drive.supported { 1.0 } else { 0.0 };
         }
         drive.stance = stance_factor(drive.stance, &bearing, &drive.race);
-        let unsteady = Bearing {
-            off_balance: bearing.off_balance
-                || !drive.supported
-                || drive.balance.value < OFF_BALANCE_BELOW,
-            ..bearing
-        };
+        // Off balance is the posture block's own test (last tick's balance
+        // under 0.6, or getting up), which the bearing carries: the arm
+        // setter adds no support or balance term of its own.
+        let unsteady = bearing;
         // The two arm-drive slots are zeroed at the start of every body
         // tick, before the arm state machine; only an attack's branch
         // writes them. So every other tick saturates each arm at 0.1.
