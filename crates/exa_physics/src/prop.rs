@@ -62,6 +62,11 @@ pub struct PropBody {
 }
 
 impl PropBody {
+    /// A prop body registered with its parts at `placed`.
+    pub fn new(placed: Vec<Affine3A>) -> Self {
+        Self { placed }
+    }
+
     /// Each part's transform where the body was registered.
     pub fn placed(&self) -> &[Affine3A] {
         &self.placed

@@ -33,17 +33,22 @@
 //! height component over −1.19209e−7) refuses the placement whether or not
 //! it hit ([`lift_point`]). (A GUI drop uses the far placement limit
 //! −100000 cm instead, which no level reaches, and [`place_point`]'s tests.)
-//! The item is put there
-//! and the box test (its rest points and half extents in its turned saved
-//! frame at most 280 cm high and at least −1000 cm low,
-//! `hand::box_ok_local`) decides the routine's answer.
-//! The original then slides the item along the ray from 600 cm back to its
-//! first contact (at most 1000 cm on, [`per_sphere_contact`]): every
-//! collision sphere of every part, carried with the placed point, is swept
-//! against the level, and the nearest contact wins (Exarust sweeps
-//! rapier's level colliders, not the CPU triangles, and starts no nearer
-//! than the eye); a cursor that picks nothing places on the plane at the
-//! player's height. A level placement
+//! The original then puts the item's box centre 600 cm back along the ray
+//! from that point and slides it on to its first contact, at most 1000 cm
+//! ([`per_sphere_contact`]): every collision sphere of every part, carried
+//! rigidly with the box centre, is swept against the level and every other
+//! body's meshes (Exarust: rapier's level colliders and the props'
+//! stand-ins, the held body's own left out, and the loose props' meshes or
+//! spheres), and the nearest contact wins. A sphere that would start
+//! wholly in front of the camera's near plane starts where its far side
+//! reaches it ([`near_plane_pulls`]). The item goes where the contact
+//! leaves its box centre, nearer or further than the picked point; a sweep
+//! that meets nothing moves it the whole 1000 cm. The free placement
+//! copies that frame into the held node whole, the cursor's turned
+//! rotation with the box centre there ([`centred_frame`]); the box test
+//! (its rest points and half extents in that frame at most 280 cm high and
+//! at least −1000 cm low, `hand::box_ok_local`) and the reach, measured at
+//! the box centre, decide the routine's answer. A level placement
 //! marker whose eight-character hexadecimal name gives the item's object
 //! or model id snaps the item onto the marker's frame when the cursor's
 //! segment (to the pick, or 10 000 cm) meets the marker's sphere and the
@@ -286,24 +291,27 @@ pub fn drag_hit(hits: impl IntoIterator<Item = f32>) -> Option<f32> {
         })
 }
 
-/// One collision sphere of the dragged item, in its placed frame (m): the
-/// centre offset from the item's point and the radius.
+/// One collision sphere of the dragged item (m): its centre, offset from
+/// the point the sweep starts the item's box centre at, and its radius.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SweepSphere {
     pub centre: Vec3,
     pub radius: f32,
 }
 
-/// The part a collision sphere belongs to, so a hit can name the part the
-/// placement stopped against (the original sweeps every part's spheres).
+/// A sphere of the sweep: the part it belongs to (so a hit can name the
+/// part the placement stopped against; the original sweeps every body's
+/// spheres), the sphere, and how far along the ray (cm) its own sweep
+/// starts past the item's start ([`near_plane_pulls`]; 0 for most).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SphereOf {
     pub part: usize,
     pub sphere: SweepSphere,
+    pub pull: f32,
 }
 
-/// A sphere's first contact: the part and the distance along the ray, in cm
-/// from the sweep's start.
+/// The sweep's first contact: the part and the distance along the ray, in
+/// cm from the sweep's start.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SphereHit {
     pub part: usize,
@@ -311,36 +319,38 @@ pub struct SphereHit {
     pub contact: f32,
 }
 
-/// The sweep's per-sphere pull-back (cm), one per sphere, as the original
-/// computes it before a sphere is swept: with `world` the scene's world
-/// point, `up` its support axis and `offset` its plane constant, the plane
-/// term is `world·up − offset − frame.position·world`, the frame term is
-/// `world` in the frame's own axes (its dot with each axis, the transposed
-/// rotation), and a sphere whose `plane + radius − centre·frame`
-/// is under zero (an ordered compare; a NaN is not) is pulled back by that
-/// gap over `world·dir`. A gap at or over zero pulls back nothing. [The
-/// runtime sweeps rapier's level colliders, which expose no support plane, so
-/// this correction is a tested rule without a caller.]
-pub fn support_corrections(
-    world: Vec3,
-    up: Vec3,
-    offset: f32,
+/// How far along the ray each sphere's own sweep starts past the item's
+/// start: the camera's near plane, which no sphere starts wholly in front
+/// of. With `back` the camera's back axis (the third row of its matrix,
+/// the view looking down its negative), `eye` its position and `near` its
+/// near-plane distance, the plane term is `back·eye − near −
+/// frame.position·back`, the frame term is `back` in the frame's own axes
+/// (its dot with each axis, the transposed rotation), and a sphere whose
+/// gap `plane + radius − centre·frame_term` is under zero (an ordered
+/// compare; a NaN is not) starts that gap over `back·dir` further on, so
+/// its far side reaches the near plane. A gap at or over zero starts it
+/// where the item starts. The arithmetic is the original's, sums `x + y`,
+/// then `z`. All lengths in one unit; the answer is in that unit.
+pub fn near_plane_pulls(
+    back: Vec3,
+    eye: Vec3,
+    near: f32,
     frame: Frame,
     dir: Vec3,
     spheres: &[SweepSphere],
 ) -> Vec<f32> {
-    let plane = (world.x * up.x + world.y * up.y + world.z * up.z)
-        - offset
-        - (frame.position.x * world.x + frame.position.y * world.y + frame.position.z * world.z);
-    // The world point taken into the frame: its dot with each of the
+    let plane = (back.x * eye.x + back.y * eye.y + back.z * eye.z)
+        - near
+        - (frame.position.x * back.x + frame.position.y * back.y + frame.position.z * back.z);
+    // The back axis taken into the frame: its dot with each of the
     // frame's axes (the rotation's columns), summed x, y, then z.
-    let axis_dot = |axis: Vec3| world.x * axis.x + world.y * axis.y + world.z * axis.z;
+    let axis_dot = |axis: Vec3| back.x * axis.x + back.y * axis.y + back.z * axis.z;
     let in_frame = Vec3::new(
         axis_dot(frame.rotation.x_axis),
         axis_dot(frame.rotation.y_axis),
         axis_dot(frame.rotation.z_axis),
     );
-    let denominator = world.x * dir.x + world.y * dir.y + world.z * dir.z;
+    let denominator = back.x * dir.x + back.y * dir.y + back.z * dir.z;
     let inverse = 1.0 / denominator;
     spheres
         .iter()
@@ -355,31 +365,38 @@ pub fn support_corrections(
 }
 
 /// The first contact of every collision sphere of every part of the dragged
-/// item, in part and sphere order: `sweep` takes the part, the sphere's
-/// centre, the unit direction, the reach and the radius (all m) and gives
-/// the distance along the ray (m), or none when that sphere misses. A hit
-/// is kept only when it is nearer than the best so far (the original's
-/// ordered compare, so a NaN never is), and the best starts at the reach.
-/// A contact exactly at the reach is not nearer and is not kept.
+/// item, in part and sphere order, as the original's per-sphere sweep finds
+/// it. The best starts at the reach ([`DRAG_REACH_CM`]). Each sphere is
+/// swept from its pull on (`pull`, cm, along the unit `direction`) over
+/// what is left to the best so far: `sweep` takes the part, the sphere's
+/// centre at the item's start, the direction, the start along the ray
+/// and the length (m) and the radius, and gives the distance from that
+/// start (m), or none when that sphere meets nothing. The contact is the
+/// pull plus that distance, kept only when it is nearer than the best (the
+/// original's ordered compare, so a NaN never is; one at the reach is not
+/// nearer).
 pub fn per_sphere_contact(
     spheres: impl IntoIterator<Item = SphereOf>,
     direction: Vec3,
-    mut sweep: impl FnMut(usize, Vec3, Vec3, f32, f32) -> Option<f32>,
+    mut sweep: impl FnMut(usize, Vec3, Vec3, f32, f32, f32) -> Option<f32>,
 ) -> Option<SphereHit> {
-    let reach = DRAG_REACH_CM;
+    let mut reach = DRAG_REACH_CM;
     let mut best: Option<SphereHit> = None;
     for sphere in spheres {
+        let length = reach - sphere.pull;
         let Some(toi) = sweep(
             sphere.part,
             sphere.sphere.centre,
             direction,
-            DRAG_REACH_CM / 100.0,
+            sphere.pull / 100.0,
+            length / 100.0,
             sphere.sphere.radius,
         ) else {
             continue;
         };
-        let contact = toi * 100.0;
-        if contact < reach && best.is_none_or(|b| contact < b.contact) {
+        let contact = sphere.pull + toi * 100.0;
+        if reach > contact {
+            reach = contact;
             best = Some(SphereHit {
                 part: sphere.part,
                 contact,
@@ -389,19 +406,15 @@ pub fn per_sphere_contact(
     best
 }
 
-/// How far before the picked point the placement sweep starts (cm): the
+/// How far before the placed point the placement sweep starts (cm): the
 /// original backs the ray's point off by 600 along the ray and then
 /// searches [`DRAG_REACH_CM`] on from there.
 pub const SWEEP_BACK_CM: f32 = 600.0;
 
 /// The item's first contact along the cursor's ray, in cm from the sweep's
-/// start, through [`per_sphere_contact`]: every sphere is swept and only a
-/// contact nearer than the best so far (starting at [`DRAG_REACH_CM`]) is
-/// kept, so a NaN never is. `sweep` takes a sphere's centre, the unit
-/// direction, the reach and the radius (all m) and gives the distance along
-/// the ray (m). [The original also pulls a sphere already under the level's
-/// support plane back along the ray before its cast; that offset is not
-/// modelled.]
+/// start, through [`per_sphere_contact`] with no pulls. `sweep` takes a
+/// sphere's centre, the unit direction, the length and the radius (all m)
+/// and gives the distance along the ray (m).
 pub fn sweep_to_contact(
     spheres: &[SweepSphere],
     direction: Vec3,
@@ -411,21 +424,27 @@ pub fn sweep_to_contact(
         spheres.iter().map(|sphere| SphereOf {
             part: 0,
             sphere: *sphere,
+            pull: 0.0,
         }),
         direction,
-        |_, centre, dir, reach, radius| sweep(centre, dir, reach, radius),
+        |_, centre, dir, _, length, radius| sweep(centre, dir, length, radius),
     )
     .map(|hit| hit.contact)
 }
 
-/// Where the placement stops along the ray (cm from its origin): the
-/// sweep's contact when it is nearer than the picked point, else the
-/// pick (a NaN contact keeps the pick).
-pub fn placement_distance(hit: f32, contact: Option<f32>) -> f32 {
-    match contact {
-        Some(contact) if contact < hit => contact,
-        _ => hit,
-    }
+/// How far the placement moves the item along the ray from the sweep's
+/// start (cm): the first contact, or the whole reach when nothing is met.
+/// The original moves it that far whatever the pick's distance was, so
+/// a sweep that meets nothing leaves the item 400 cm past the picked point
+/// (where the reach test then refuses it).
+pub fn sweep_distance(hit: Option<SphereHit>) -> f32 {
+    hit.map_or(DRAG_REACH_CM, |hit| hit.contact)
+}
+
+/// Where the sweep starts the item's box centre (m): `SWEEP_BACK_CM` back
+/// along the unit ray `dir` from the placed point `at`.
+pub fn sweep_start(at: Vec3, dir: Vec3) -> Vec3 {
+    at - dir * (SWEEP_BACK_CM / 100.0)
 }
 
 /// The world point of a placement distance (cm) along a ray from `origin`
@@ -484,6 +503,15 @@ pub fn place_frame(rotation: Mat3, at: Vec3, centre: Vec3, half: Vec3) -> (Frame
     let frame = Frame::new(at, rotation);
     let affine = Affine3A::from_mat3_translation(rotation, at);
     (frame, hand::box_ok_local(centre, half, affine))
+}
+
+/// The item's placed frame with its box centre at `at` (m), as the
+/// original's free placement and GUI drop set it: the cursor's turned
+/// `rotation`, positioned at `at − rotation·centre` so the box's centre
+/// (`centre`, in the part's frame) lands on `at`; and whether its box fits
+/// there ([`place_frame`]).
+pub fn centred_frame(rotation: Mat3, at: Vec3, centre: Vec3, half: Vec3) -> (Frame, bool) {
+    place_frame(rotation, at - rotation * centre, centre, half)
 }
 
 /// The box of a part's rest points: its centre and half extents in the
@@ -1054,56 +1082,58 @@ mod tests {
         assert_eq!(drag_hit([]), None);
     }
 
-    /// The per-sphere pull-back: a sphere below the support plane is moved
-    /// up by the ordered gap over the world/direction dot; one at or above
-    /// it, and a NaN gap, is not moved.
+    /// The per-sphere pull: the near-plane gap of a sphere wholly in front
+    /// of the camera's near plane is taken over the back axis' dot with the
+    /// ray; one reaching past it, and a NaN gap, is not moved.
     #[test]
-    fn the_sphere_support_correction() {
-        let frame = Frame::default();
-        let world = Vec3::Y;
-        let up = Vec3::Y;
-        let dir = Vec3::NEG_Y;
+    fn the_near_plane_pull() {
+        // A camera at the origin looking down −z (back axis +z), its near
+        // plane 1 m out; the item's frame 3 m out, the ray straight ahead.
+        let back = Vec3::Z;
+        let eye = Vec3::ZERO;
+        let dir = Vec3::NEG_Z;
+        let frame = Frame::new(Vec3::new(0.0, 0.0, -3.0), Mat3::IDENTITY);
         let spheres = [
+            // 2.5 m further back toward the eye: its centre 0.5 m out, its
+            // far side 0.7 m out, 0.3 m short of the near plane.
+            SweepSphere {
+                centre: Vec3::new(0.0, 0.0, 2.5),
+                radius: 0.2,
+            },
+            // At the frame: well past the plane.
             SweepSphere {
                 centre: Vec3::ZERO,
-                radius: 0.5,
+                radius: 0.2,
             },
             SweepSphere {
-                centre: Vec3::new(0.0, 2.0, 0.0),
-                radius: 0.5,
-            },
-            SweepSphere {
-                centre: Vec3::new(0.0, 2.0, 0.0),
+                centre: Vec3::ZERO,
                 radius: f32::NAN,
             },
         ];
-        // The plane term is 1: the first sphere's gap is 1 + 0.5 − 1 = 0.5
-        // and is not under; the second's is 1 + 0.5 − 2 = −0.5, pulled back
-        // by −0.5 / −1 = 0.5 cm; the third's NaN is not under either.
-        assert_eq!(
-            support_corrections(world, up, 0.0, frame, dir, &spheres),
-            vec![0.0, 0.5, 0.0]
-        );
-        // A frame turned a quarter about z has the axes (0, 1, 0) and
-        // (−1, 0, 0): the world point (0, 1, 0) is (1, 0, 0) in it, so a
-        // sphere at (2, 0, 0) has the gap 1 + 0.5 − 2 = −0.5 and is pulled
-        // back 0.5 (turning the point the other way would give −2 and no
-        // pull).
+        // The plane term is 0 − 1 − (−3) = 2: the first gap 2 + 0.2 − 2.5
+        // = −0.3, over back·dir = −1, starts it 0.3 m on; the second's
+        // 2.2 is not under; the NaN is not either.
+        let pulls = near_plane_pulls(back, eye, 1.0, frame, dir, &spheres);
+        assert!((pulls[0] - 0.3).abs() < 1e-6, "{pulls:?}");
+        assert_eq!(&pulls[1..], &[0.0, 0.0]);
+        // A frame turned a quarter about y has the axes (0, 0, −1) and
+        // (1, 0, 0) for x and z: a sphere at x 2.5 in it lies toward the
+        // eye as the first did, and is pulled the same.
         let turned = Frame::new(
-            Vec3::ZERO,
-            Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            Vec3::new(0.0, 0.0, -3.0),
+            Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2),
         );
         let along_x = [SweepSphere {
-            centre: Vec3::new(2.0, 0.0, 0.0),
-            radius: 0.5,
+            centre: Vec3::new(-2.5, 0.0, 0.0),
+            radius: 0.2,
         }];
-        let corrections = support_corrections(world, up, 0.0, turned, dir, &along_x);
-        assert!((corrections[0] - 0.5).abs() < 1e-6, "{corrections:?}");
+        let pulls = near_plane_pulls(back, eye, 1.0, turned, dir, &along_x);
+        assert!((pulls[0] - 0.3).abs() < 1e-5, "{pulls:?}");
     }
 
     /// The first contact starts at the 1000 cm reach, keeps only a strictly
-    /// nearer sphere contact and ignores a NaN; a placement takes the
-    /// nearer of the pick and the contact.
+    /// nearer sphere contact and ignores a NaN; a sweep that meets nothing
+    /// moves the item the whole reach.
     #[test]
     fn the_sweep_finds_the_first_contact() {
         let spheres = [
@@ -1146,10 +1176,14 @@ mod tests {
             }),
             Some(400.0)
         );
-        assert_eq!(placement_distance(500.0, Some(300.0)), 300.0);
-        assert_eq!(placement_distance(500.0, None), 500.0);
-        assert_eq!(placement_distance(1200.0, Some(1300.0)), 1200.0);
-        assert_eq!(placement_distance(500.0, Some(f32::NAN)), 500.0);
+        assert_eq!(sweep_distance(None), DRAG_REACH_CM);
+        let hit = SphereHit {
+            part: 0,
+            contact: 250.0,
+        };
+        assert_eq!(sweep_distance(Some(hit)), 250.0);
+        let start = sweep_start(Vec3::new(0.0, 2.0, 0.0), Vec3::NEG_Y);
+        assert_eq!(start, Vec3::new(0.0, 8.0, 0.0));
         assert_eq!(placement_point(Vec3::ZERO, Vec3::NEG_Y, f32::NAN), None);
         let at = placement_point(Vec3::ZERO, Vec3::NEG_Y, 300.0).unwrap();
         assert_eq!(at, Vec3::new(0.0, -3.0, 0.0));
@@ -1315,6 +1349,11 @@ mod tests {
             Vec2f::new(std::f32::consts::FRAC_PI_2, 0.0),
         );
         assert!(!place_frame(turned, Vec3::new(0.0, 1.0, 0.0), centre, long).1);
+        // The free placement puts the box's centre on the point.
+        let off = Vec3::new(0.0, 0.2, 0.1);
+        let (frame, _) = centred_frame(turned, Vec3::new(0.0, 1.0, 0.0), off, half);
+        let at = frame.position + frame.rotation * off;
+        assert!((at - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-6, "{at}");
     }
 
     /// The GUI drag claim: only an item or object payload with no dialogue,
@@ -1427,6 +1466,7 @@ mod tests {
                     centre: Vec3::ZERO,
                     radius: 0.1,
                 },
+                pull: 0.0,
             },
             SphereOf {
                 part: 1,
@@ -1434,6 +1474,7 @@ mod tests {
                     centre: Vec3::Y,
                     radius: 0.2,
                 },
+                pull: 0.0,
             },
             SphereOf {
                 part: 2,
@@ -1441,34 +1482,64 @@ mod tests {
                     centre: Vec3::X,
                     radius: 0.3,
                 },
+                pull: 0.0,
             },
         ];
         let mut seen = Vec::new();
-        let hit = per_sphere_contact(spheres, Vec3::NEG_Y, |part, centre, dir, reach, radius| {
-            seen.push((part, centre, dir, reach, radius));
-            match part {
-                0 => Some(8.0),
-                1 => Some(2.5),
-                _ => Some(f32::NAN),
-            }
-        })
+        let hit = per_sphere_contact(
+            spheres,
+            Vec3::NEG_Y,
+            |part, centre, dir, from, length, radius| {
+                seen.push((part, centre, dir, from, length, radius));
+                match part {
+                    0 => Some(8.0),
+                    1 => Some(2.5),
+                    _ => Some(f32::NAN),
+                }
+            },
+        )
         .unwrap();
         assert_eq!(hit.part, 1);
         assert_eq!(hit.contact, 250.0);
         assert_eq!(seen.len(), 3);
-        assert_eq!(seen[1].3, 10.0);
+        // The second sphere sweeps only what is left to the first's 800 cm.
+        assert_eq!(seen[1].4, 8.0);
+        assert_eq!(seen[1].3, 0.0);
         // Only at the reach is not nearer.
         assert_eq!(
-            per_sphere_contact(spheres, Vec3::NEG_Y, |_, _, _, _, _| Some(10.0)),
+            per_sphere_contact(spheres, Vec3::NEG_Y, |_, _, _, _, _, _| Some(10.0)),
             None
         );
         // A NaN contact never replaces the best; a later one does.
-        let hit = per_sphere_contact(spheres, Vec3::NEG_Y, |part, _, _, _, _| match part {
+        let hit = per_sphere_contact(spheres, Vec3::NEG_Y, |part, _, _, _, _, _| match part {
             0 => Some(f32::NAN),
             _ => Some(4.0),
         })
         .unwrap();
         assert_eq!(hit.part, 1);
+    }
+
+    /// A sphere pulled past the near plane sweeps from its pull and only
+    /// over what is left to the best; its contact counts from the item's
+    /// start.
+    #[test]
+    fn a_pulled_sphere_sweeps_from_its_pull() {
+        let spheres = [SphereOf {
+            part: 0,
+            sphere: SweepSphere {
+                centre: Vec3::ZERO,
+                radius: 0.1,
+            },
+            pull: 150.0,
+        }];
+        let mut seen = Vec::new();
+        let hit = per_sphere_contact(spheres, Vec3::NEG_Y, |_, _, _, from, length, _| {
+            seen.push((from, length));
+            Some(2.0)
+        })
+        .unwrap();
+        assert_eq!(seen, vec![(1.5, 8.5)]);
+        assert_eq!(hit.contact, 350.0);
     }
 
     /// A marker takes the item when the cursor's descending ray meets its
