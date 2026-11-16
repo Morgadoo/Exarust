@@ -1601,6 +1601,8 @@ the factory paint job's shade scratch, the texture-only overlay regions (fullers
 
 the fires' particle systems are simulation objects as the original's sector objects are: each fixed step stages every flame into the solver's object stage, which ticks it (a carried flame at its part's solver pose) and meets the bodies with it, and the doses reach the characters' burn; behind the bridge the flame is the step's snapshot and the frame's light and sound half stays on the frame, so the draw never flickers and the light walk is unchanged in both simulation modes; the draw takes the original's render fraction (one to two ticks, an old reading had it a tick behind); the beds and portal sparks meet no body; the body passes read a kept cell index (about 30 to 45 microseconds a tick for 32 flames on exanima01). Torch and brazier scenes and determinism runs owed.
 
+the GI manager's shape list is cleared at the level teardown and its dirty-marking slot is proven unreachable; the voxel lights and shapes are blended one pass at a time in the manager's order over their whole boxes, the meshes splat in centimetres through their frames, the terrain columns read the tile's vertex grid, and moving meshes are boxed by their node bounds; pictures on exanima01 and an outdoor arena on the build worker's GPU are unchanged within noise and FPS holds. Left: the terrain-record block layout, the light-texture hand-off, the per-block live gather, the warm-up and camera-first build adaptations, the sky's depth map.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
