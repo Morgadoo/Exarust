@@ -1485,8 +1485,16 @@ pub enum Step {
     PlayerData {
         flags: u32,
     },
-    /// Show or hide the game's view.
+    /// Turn the in-game GUI's frame hook (the HUD) on or off: each session
+    /// start and continue turns it on once its level is in, the session's
+    /// leave turns it off.
     GameGui(bool),
+    /// The game GUI's sweep: the screens it names close, then the power
+    /// tree's part ([`crate::gui_screens::sweep_screens`]). The death, the
+    /// knock-out, the level exit, the story exit and the session leave
+    /// sweep every screen with the shown power bar; the application's quit
+    /// the container family.
+    SweepScreens(crate::gui_screens::ScreenSweep),
     /// The death fade's reset: a fade that paused the game gives the game
     /// time back, and the fade ends ([`crate::fall::reset_death_fade`]);
     /// a running heartbeat then starts its fade-out, as the original's
@@ -2221,7 +2229,9 @@ impl Flow {
                 START_MOTION_WAKING
             }
         };
-        let mut steps = vec![
+        // The game layer's leave first (its teardown is the load's own).
+        let mut steps = self.leave_game_layer();
+        steps.extend([
             Step::SessionTask(true),
             // The player's roles, gear and powers first (the original writes
             // them before the level is loaded), then the level, the light,
@@ -2238,12 +2248,14 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            // Once the level is in, the in-game GUI's frame hook goes on.
+            Step::GameGui(true),
             Step::StartRecord(start.start_record),
             // The player controls are attached to the loaded player (their
             // disabled flag cleared) before the background's light and
             // motion.
             Step::Controls(true),
-        ];
+        ]);
         if let Some(light) = start.light {
             steps.push(Step::StoryLight(light));
         }
@@ -2320,15 +2332,16 @@ impl Flow {
             position: Vec3::new(PRACTICE_POINT.x, 0.0, PRACTICE_POINT.z),
         };
         self.viewport = viewport;
-        vec![
-            Step::TeardownWorld,
-            Step::GameGui(false),
+        let mut steps = self.leave_game_layer();
+        steps.extend([
             Step::SessionTask(true),
             Step::LoadLevel {
                 locale: start.locale,
                 spawn: 0,
                 teardown: true,
             },
+            // Once the arena is in, the in-game GUI's frame hook goes on.
+            Step::GameGui(true),
             // The arena is imported without a filter: the original passes
             // its practice scene filter to the named level load, which never
             // reads that argument.
@@ -2355,7 +2368,8 @@ impl Flow {
                 restart: true,
             },
             Step::Hook(Hook::Practice),
-        ]
+        ]);
+        steps
     }
 
     /// Continues a story save: the menu form closes, the first wake-up's
@@ -2385,6 +2399,8 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            // Once the level is in, the in-game GUI's frame hook goes on.
+            Step::GameGui(true),
             Step::PlacePlayer(player),
             Step::ExitNudge,
             Step::Camera(camera::frame_point(player.position, true, false, viewport)),
@@ -2414,6 +2430,8 @@ impl Flow {
                 spawn: 0,
                 teardown: false,
             },
+            // Once the hub is in, the in-game GUI's frame hook goes on.
+            Step::GameGui(true),
             Step::PlacePlayer(player),
             Step::Camera(camera::frame_point(player.position, true, false, viewport)),
             Step::Music {
@@ -2581,12 +2599,15 @@ impl Flow {
             Action::ClassCancel => self.quit_to_menu(),
             Action::CreatorCancel => self.creator_cancel(),
             Action::Locale { locale, spawn } => {
-                self.phase = Phase::Playing;
-                vec![Step::LoadLevel {
+                // The end menu and the prelude close, the pending level
+                // loads, and the session plays again.
+                let mut steps = self.level_loaded();
+                steps.push(Step::LoadLevel {
                     locale,
                     spawn,
                     teardown: true,
-                }]
+                });
+                steps
             }
         }
     }
@@ -2868,7 +2889,7 @@ impl Flow {
         let mut steps = vec![
             Step::FadeHeartbeat,
             Step::EndGuiDrag,
-            Step::GameGui(false),
+            Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar),
             Step::Controls(false),
             Step::Hook(Hook::None),
         ];
@@ -2911,7 +2932,7 @@ impl Flow {
         vec![
             Step::FadeHeartbeat,
             Step::EndGuiDrag,
-            Step::GameGui(false),
+            Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar),
             Step::Controls(false),
             Step::Tip(2),
             Step::Block(true),
@@ -2939,7 +2960,7 @@ impl Flow {
     /// runs ([`Step::AlarmReturn`]), a session in a game
     /// mode is saved (without the death rule), combat mode is left,
     /// the dead body is raised and laid down, its wake held (0x40) and its
-    /// wake clock pushed two seconds on, the controls and the game view
+    /// wake clock pushed two seconds on, the controls
     /// return, the wake-up animation is watched again two seconds on, and
     /// the story hook resumes.
     pub fn revive(&mut self, now: u32) -> Vec<Step> {
@@ -2961,8 +2982,8 @@ impl Flow {
             });
         }
         // Combat mode is left before the dead body is raised and laid down
-        // (held, its wake two seconds later); the controls are enabled and
-        // the game view returns.
+        // (held, its wake two seconds later); the controls are enabled. (The
+        // in-game GUI stayed on through the knock-out.)
         steps.extend([
             Step::CombatMode(false),
             Step::ReviveBody,
@@ -2970,7 +2991,6 @@ impl Flow {
             // The block's release, after the wake is held.
             Step::Block(false),
             Step::Controls(true),
-            Step::GameGui(true),
             Step::Hook(Hook::Story),
         ]);
         steps
@@ -3040,11 +3060,14 @@ impl Flow {
         ]
     }
 
-    /// The world, the game view and the flow's own session state go: the
-    /// game layer's leave. The original does it only when its game object
-    /// exists.
+    /// The game layer's leave before a new session: the world goes and the
+    /// game's view form is shown again (out of the creator's view). The
+    /// in-game GUI is not touched: each start turns its frame hook on once
+    /// its level is in ([`Step::GameGui`]). The original does it only when
+    /// its game object exists. [Exarust draws its 3D view whatever form
+    /// shows, so the view form has no step.]
     pub fn leave_game_layer(&mut self) -> Vec<Step> {
-        vec![Step::TeardownWorld, Step::GameGui(false)]
+        vec![Step::TeardownWorld]
     }
 
     /// Builds and shows the main-menu form.
@@ -3077,7 +3100,8 @@ impl Flow {
         steps
     }
 
-    /// The story end menu's EXIT row: the game view and the dialogue close.
+    /// The story end menu's EXIT row: the game screens and the dialogue
+    /// close.
     /// A player the reconstruction device stripped clears its story bit and
     /// is saved without the death rule; any other story writes its save with
     /// the death rule, then leaves to the title behind the transition.
@@ -3085,7 +3109,7 @@ impl Flow {
         // The death fade is reset first, as the original's story leave does.
         let mut steps = vec![
             Step::ResetDeathFade,
-            Step::GameGui(false),
+            Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar),
             Step::Controls(false),
             // Every conversation ends (the original's third call).
             Step::EndDialogues,
@@ -3113,10 +3137,11 @@ impl Flow {
         vec![Step::HideEndMenu, Step::ClosePrelude]
     }
 
-    /// The level-load finish behind the transition: the end menu and the
-    /// prelude close and the session is playing again. (The original also
-    /// clears the pending exit words, saves the level's start state and runs
-    /// the scene's own loaded callback, which are the host's.)
+    /// The level-load action behind the transition, before its load: the end
+    /// menu and the prelude close and the session is playing again. (The
+    /// original also cancels the glow pulses, clears the pending exit words
+    /// and runs the experience's level-entry hook, which are the host's:
+    /// `glow_pulse`, `level_change`, `experience_live`.)
     pub fn level_loaded(&mut self) -> Vec<Step> {
         self.phase = Phase::Playing;
         self.close_end_menu()
@@ -3214,7 +3239,10 @@ impl Flow {
             steps.push(Step::ArenaPaused);
         }
         if self.phase == Phase::Playing {
-            steps.push(Step::GameGui(false));
+            // The container family's screens close first.
+            steps.push(Step::SweepScreens(
+                crate::gui_screens::ScreenSweep::ContainerFamily,
+            ));
             match self.mode {
                 Mode::Story => steps.push(Step::Save {
                     drop_on_low_health: true,
@@ -3266,12 +3294,13 @@ impl Flow {
     /// is named.
     pub fn leave_session(&mut self) -> Vec<Step> {
         // The original's leave sweeps the game screens, ends every
-        // conversation, then resets the death fade. [guess: the sweep is
-        // Exarust's game view step; the session task's place is not traced]
+        // conversation, then resets the death fade; the in-game GUI's frame
+        // hook goes near its end, before the world. [guess: the session
+        // task's place is not traced]
         let mut steps = vec![
             Step::Hook(Hook::None),
             Step::SessionTask(false),
-            Step::GameGui(false),
+            Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar),
             Step::EndDialogues,
             Step::ResetDeathFade,
             Step::ClosePrelude,
@@ -3298,6 +3327,7 @@ impl Flow {
         // menu hides, then the world goes.
         steps.push(Step::CloseSave);
         steps.push(Step::HideEndMenu);
+        steps.push(Step::GameGui(false));
         steps.push(Step::TeardownWorld);
         self.player = [false; 3];
         self.end_menu = None;
@@ -3307,7 +3337,7 @@ impl Flow {
     /// The story level change (a trigger, a portal or a script). Nothing
     /// happens during a transition or for a level the locale table does not
     /// name. Otherwise a player whose condition has neither dead bit loses
-    /// the controls, the game view goes, the save rule runs (every exit
+    /// the controls, the game screens close, the save rule runs (every exit
     /// saves; early levels also keep a checkpoint) and the new level loads at
     /// the exit's spawn point behind the transition. The portal bit also gives
     /// the transition screen its long hold (a 2000 ms fade, a 1000 ms hold);
@@ -3332,7 +3362,9 @@ impl Flow {
             steps.push(Step::Controls(false));
         }
         steps.push(Step::EndGuiDrag);
-        steps.push(Step::GameGui(false));
+        steps.push(Step::SweepScreens(
+            crate::gui_screens::ScreenSweep::EveryAndBar,
+        ));
         let checkpoint = exit_save(rule) == ExitSave::Checkpoint;
         steps.push(Step::Save {
             drop_on_low_health: false,
@@ -4395,6 +4427,11 @@ fn apply_steps(
                     overlays.start_session(show);
                 }
                 debug!("game flow step: SessionTask(true)");
+            }
+            Step::SweepScreens(sweep) => {
+                commands.queue(move |world: &mut World| {
+                    crate::gui_screens::sweep_screens(world, sweep);
+                });
             }
             Step::GameGui(shown) => {
                 if let Some(view) = view.as_mut() {
@@ -6105,7 +6142,7 @@ mod tests {
             drop_on_low_health: false
         }));
         assert!(steps.contains(&Step::Controls(true)));
-        assert!(steps.contains(&Step::GameGui(true)));
+        assert!(!steps.iter().any(|step| matches!(step, Step::GameGui(_))));
         assert!(steps.contains(&Step::Wake(WakePose::revived())));
         assert!(steps.contains(&Step::Hook(Hook::Story)));
         // Combat mode off, the body raised, then its held wake, then the
@@ -6324,7 +6361,7 @@ mod tests {
             vec![
                 Step::Controls(false),
                 Step::EndGuiDrag,
-                Step::GameGui(false),
+                Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar),
                 Step::Save {
                     drop_on_low_health: false
                 },
@@ -6347,17 +6384,24 @@ mod tests {
         let steps = run_to_black(&mut flow);
         assert_eq!(
             steps,
-            vec![Step::LoadLevel {
-                locale: "exanima03",
-                spawn: 4,
-                teardown: true,
-            }]
+            vec![
+                Step::HideEndMenu,
+                Step::ClosePrelude,
+                Step::LoadLevel {
+                    locale: "exanima03",
+                    spawn: 4,
+                    teardown: true,
+                }
+            ]
         );
         assert_eq!(flow.phase, Phase::Playing);
         // A dead player keeps no controls to lose.
         let steps = flow.level_exit(next, held, DEAD, false);
         assert_eq!(steps[0], Step::EndGuiDrag);
-        assert_eq!(steps[1], Step::GameGui(false));
+        assert_eq!(
+            steps[1],
+            Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar)
+        );
         assert!(!steps.contains(&Step::Checkpoint));
         // Without the portal bit nothing dissolves or hands over.
         assert!(!steps.contains(&Step::PortalUse));
@@ -7233,7 +7277,7 @@ mod tests {
             steps,
             vec![
                 Step::ResetDeathFade,
-                Step::GameGui(false),
+                Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar),
                 Step::Controls(false),
                 Step::EndDialogues,
                 Step::ClearStoryFlag,
@@ -7487,10 +7531,7 @@ mod tests {
         assert!(flow.menu_open);
         assert_eq!(flow.hide_menu_form(), vec![Step::HideMenu]);
         assert!(!flow.menu_open);
-        assert_eq!(
-            flow.leave_game_layer(),
-            vec![Step::TeardownWorld, Step::GameGui(false)]
-        );
+        assert_eq!(flow.leave_game_layer(), vec![Step::TeardownWorld]);
     }
 
     #[test]
@@ -7576,7 +7617,13 @@ mod tests {
             ..Default::default()
         };
         let steps = flow.quit_session(Page::InGame);
-        assert_eq!(steps, vec![Step::GameGui(false), Step::CloseSave]);
+        assert_eq!(
+            steps,
+            vec![
+                Step::SweepScreens(crate::gui_screens::ScreenSweep::ContainerFamily),
+                Step::CloseSave
+            ]
+        );
     }
 
     #[test]
@@ -8935,5 +8982,36 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    /// The in-game GUI goes on with each start once its level is in, stays
+    /// on through a death (which sweeps the game screens) and goes off with
+    /// the session's leave.
+    #[test]
+    fn the_in_game_gui_follows_the_session() {
+        let mut app = session_app();
+        app.insert_resource(GameView(false));
+        let steps = {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            let viewport = flow.viewport;
+            flow.start_practice(Ladder::Novice, 0.0, viewport, 0)
+        };
+        assert!(!steps.contains(&Step::GameGui(false)));
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        for _ in 0..AFTER_LOAD_WAIT_FRAMES + 3 {
+            app.update();
+        }
+        assert!(app.world().resource::<GameView>().0);
+        let steps = app.world_mut().resource_mut::<Flow>().die(0.0);
+        assert!(steps.contains(&Step::SweepScreens(
+            crate::gui_screens::ScreenSweep::EveryAndBar
+        )));
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        assert!(app.world().resource::<GameView>().0);
+        let steps = app.world_mut().resource_mut::<Flow>().leave_session();
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        assert!(!app.world().resource::<GameView>().0);
     }
 }
