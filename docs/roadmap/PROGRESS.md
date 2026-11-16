@@ -120,7 +120,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 See [`DECISIONS.md`](DECISIONS.md): DEC-1 definition of 100%, DEC-2 Steam, DEC-3
 character creator, DEC-4 start and budget of Phase A, DEC-5 kept deviations,
-DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's write past the contacts, DEC-10 desktop platform differences, DEC-11 the tendrils' reads past their data.
+DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's write past the contacts, DEC-10 desktop platform differences, DEC-11 the tendrils' reads past their data, DEC-12 generated textures on the CPU.
 
 ## Log
 
