@@ -801,6 +801,7 @@ const VOXEL_FRAME_FLAGS: u32 = 9;
 /// hangs under the electricity node). A point light is not this.
 /// An ended frame drops it. An emitter with no lamp (the kind set on its
 /// own) places nothing.
+#[allow(clippy::too_many_arguments)]
 fn drive_arc_voxel(
     commands: &mut Commands,
     entity: Entity,
@@ -2335,10 +2336,10 @@ mod tests {
         t.timer = 30;
         t.life = 1.0;
         for k in 0..4 {
-            t.points[k] = Vec3::new(k as f32 * 20.0 - 30.0, 0.0, 0.0);
-            t.previous[k] = t.points[k];
+            arcs.points[k] = Vec3::new(k as f32 * 20.0 - 30.0, 0.0, 0.0);
+            arcs.previous[k] = arcs.points[k];
         }
-        arcs.source = t.points[0];
+        arcs.source = arcs.points[0];
         arcs
     }
 
@@ -2427,9 +2428,9 @@ mod tests {
             live.node.render & super::super::arcs::LOCAL_FRAME,
             super::super::arcs::LOCAL_FRAME
         );
-        let tendril = &live.arcs.tendrils[0];
-        assert!(tendril.count >= 2);
-        let local = tendril.points[tendril.count as usize - 1];
+        let count = live.arcs.tendrils[0].count;
+        assert!(count >= 2);
+        let local = live.arcs.point(0, count as usize - 1);
         let handle = app.world().get::<Mesh3d>(arc).expect("a ribbon").0.clone();
         let meshes = app.world().resource::<Assets<Mesh>>();
         let mesh = meshes.get(&handle).unwrap();
