@@ -907,7 +907,11 @@ register (`item_effects::WornEffects`, from the armour pass's
 `exa_formats::encumbrance::WornSpecials`): a healing item on a body that
 takes remedies heals its red health by 0.004 of the maximum each second of
 game time and spends a charge; the golem suit's and gauntlets' ticks step
-their bytes but have no drawn light or garment switch. A worn mind ward
+their bytes but have no drawn light or garment switch. The golem suit's
+registration and worn tick power and unpower the body's golem-suit flag
+(`exa_physics::body::Drive::golem_powered`, which the character init sets
+for a golem race), which halves the standing thigh factor and quarters
+the leg limit. A worn mind ward
 also sets the caster's power-refusing bit and a focus charm its focus
 regeneration bonus (`thaum::cast::PowerCaster::apply_worn`).
 
