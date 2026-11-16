@@ -20,7 +20,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | section | functions | KB | components | reimplemented | by engine | ledger closed | live | engine | no code | partial | open | largest missing |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
-| Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 39% | 19% | 2% | 32% | 9% |  |
+| Core, math & threading | 282 | 37 | 11 | 86% | 1% | 60% | 39% | 19% | 2% | 31% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 34% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 59% | 51% | 5% | 3% | 32% | 9% |  |
@@ -28,7 +28,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 50% | 41% | 4% | 4% | 42% | 8% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 56% | 53% | 2% | 1% | 38% | 6% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 57% | 54% | 1% | 2% | 42% | 1% |  |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 57% | 53% | 1% | 2% | 42% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 64% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 86% | 84% | 2% | 0% | 10% | 3% |  |
@@ -136,7 +136,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Program main (Exanima.lpr) | Runtime & platform | 1 | 37% | 35% | 0% | 35% | 0% | 57% | 8% |
 | FPC Math helpers (FPC SysUtils by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | Windows-unit global memory helpers (FPC RTL: exeinfo (module info for backtraces) by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| FLX_System | Core, math & threading | 12 | 79% | 56% | 18% | 38% | 0% | 20% | 24% |
+| FLX_System | Core, math & threading | 12 | 79% | 57% | 19% | 38% | 0% | 19% | 24% |
 | RFT_BoundSphere | Core, math & threading | 8 | 95% | 54% | 54% | 0% | 0% | 46% | 0% |
 | Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 97% | 40% | 33% | 6% | 0% | 58% | 3% |
 | Core string/number formatting utilities | Core, math & threading | 4 | 94% | 89% | 78% | 4% | 6% | 9% | 2% |
@@ -352,7 +352,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TCombatant | AI & behaviour | 17 | 97% | 70% | 62% | 0% | 8% | 28% | 2% |
 | TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 0% |
 | Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 39% | 36% | 3% | 0% | 55% | 5% |
-| SG_CharacterAI | AI & behaviour | 5 | 88% | 23% | 21% | 3% | 0% | 77% | 0% |
+| SG_CharacterAI | AI & behaviour | 5 | 88% | 11% | 9% | 3% | 0% | 89% | 0% |
 | TCharViewBehaviour | AI & behaviour | 0 | 70% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TObjectEntity | AI & behaviour | 0 | 70% | 0% | 0% | 0% | 0% | 0% | 100% |
 | FLXG_Pathfinding | AI & behaviour | 0 | 70% | 8% | 0% | 8% | 0% | 92% | 0% |

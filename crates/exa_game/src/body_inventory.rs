@@ -385,8 +385,16 @@ pub struct BodyInventoryPlugin;
 
 impl Plugin for BodyInventoryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<exa_script::ScriptEffect>()
-            .add_systems(Update, (ensure_possessions, activate_cores));
+        app.add_message::<exa_script::ScriptEffect>().add_systems(
+            Update,
+            (
+                ensure_possessions.after(crate::save_live::bench_the_manager),
+                activate_cores
+                    .after(crate::npc_search::make_debug_searcher)
+                    .after(crate::zone_scripts::check_zones),
+            )
+                .in_set(exa_physics::FramePhase::Session),
+        );
     }
 }
 
@@ -435,7 +443,7 @@ type CoreBody<'a> = (
     Option<Mut<'a, exa_ai::brain::Npc>>,
 );
 
-fn activate_cores(
+pub fn activate_cores(
     mut commands: Commands,
     conversations: Option<ResMut<exa_script::Conversations>>,
     scripts: Option<Res<exa_script::Scripts>>,

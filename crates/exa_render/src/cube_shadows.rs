@@ -78,21 +78,24 @@ impl Plugin for CubeShadowsPlugin {
             .add_systems(
                 PostUpdate,
                 add_cube_shadows
+                    .after(crate::lights::assign_light_ids)
                     .in_set(LightsSystems::Ids)
-                    .after(TransformSystems::Propagate),
+                    .after(TransformSystems::Propagate)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             )
             .add_systems(
                 PostUpdate,
                 (
                     apply_failures,
                     dirty_dithered_casters,
-                    needed_faces,
+                    needed_faces.before(bevy::light::SimulationLightSystems::UpdateLightFrusta),
                     assign_slots,
-                    build_jobs,
+                    build_jobs.after(bevy::mesh::mark_3d_meshes_as_changed_if_their_assets_changed),
                 )
                     .chain()
                     .in_set(LightsSystems::Cubes)
-                    .after(VisibilitySystems::UpdateFrusta),
+                    .after(VisibilitySystems::UpdateFrusta)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -388,7 +391,7 @@ type NewLights<'w, 's> = Query<'w, 's, (Entity, &'static PointLight), Without<Cu
 
 /// Gives new lights a cube; a moved light's faces go out of date, and its
 /// casters' faces are worked out again from where it is now.
-fn add_cube_shadows(
+pub fn add_cube_shadows(
     mut commands: Commands,
     new: NewLights,
     mut moved: Query<

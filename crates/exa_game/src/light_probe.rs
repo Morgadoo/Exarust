@@ -15,7 +15,10 @@ impl Plugin for LightProbePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DebugLights>()
             .init_resource::<DebugLightsAtCamera>()
-            .add_systems(Update, log_lights_near_player);
+            .add_systems(
+                Update,
+                log_lights_near_player.in_set(exa_physics::FramePhase::Capture),
+            );
     }
 }
 

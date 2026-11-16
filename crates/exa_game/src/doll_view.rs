@@ -749,7 +749,7 @@ fn spawn_scene(
 /// kept at the backdrop, the pointer handed to the figure's turn, and
 /// everything dropped when it closes.
 #[allow(clippy::too_many_arguments)]
-fn sync_doll(
+pub(crate) fn sync_doll(
     mut commands: Commands,
     screens: Res<GameScreens>,
     mut doll: ResMut<InventoryDoll>,
@@ -1434,7 +1434,7 @@ pub fn give_back_displaced(
 /// drag end (the pack's linked view keeps its bulk), the record and the
 /// player's outfit, hands and held weapon.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn equip_dropped(
+pub(crate) fn equip_dropped(
     mut commands: Commands,
     mut drops: MessageReader<DollDrop>,
     mut screens: ResMut<GameScreens>,
@@ -2005,24 +2005,31 @@ impl Plugin for DollViewPlugin {
                 Update,
                 sync_doll_items
                     .before(gui_screens::draw_screens)
-                    .before(crate::panel_live::track_pointer),
+                    .before(crate::panel_live::track_pointer)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 (
-                    sync_doll,
-                    bind_shown_item,
-                    dress_doll,
+                    sync_doll
+                        .after(crate::dialogue_live::paint_dialogue)
+                        .after(crate::skill_screen::draw)
+                        .after(crate::char_view::turn_previews),
+                    bind_shown_item.after(crate::arsenal_view::open_arsenal),
+                    dress_doll.after(crate::hw_config::apply_options),
                     scripted_doll_drop,
                     equip_dropped,
-                    rebuild_doll_hands,
+                    rebuild_doll_hands.after(crate::creator_view::build_figure),
                 )
                     .chain()
-                    .after(gui_screens::draw_screens),
+                    .after(gui_screens::draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 PostUpdate,
-                tag_doll_parts.before(exa_world::shadow_links::LightCells),
+                tag_doll_parts
+                    .before(exa_world::shadow_links::LightCells)
+                    .in_set(exa_physics::FramePostPhase::Prepare),
             );
     }
 }

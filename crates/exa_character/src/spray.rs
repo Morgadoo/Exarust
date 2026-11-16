@@ -82,13 +82,16 @@ impl Plugin for SprayPlugin {
                         .run_if(resource_exists::<Game>)
                         .run_if(not(resource_exists::<SprayAssets>))
                         .run_if(|s: Res<BloodSprays>| !s.jets.is_empty()),
-                    draw_sprays.run_if(resource_exists::<SprayAssets>),
+                    draw_sprays
+                        .before(exa_world::room_view::track_rooms)
+                        .run_if(resource_exists::<SprayAssets>),
                 )
                     .chain()
                     // The blows of this frame, the parts and the camera where
                     // this frame puts them.
                     .after(TransformSystems::Propagate)
-                    .after(CombatSystems),
+                    .after(CombatSystems)
+                    .in_set(exa_physics::FramePostPhase::Placed),
             )
             // On the bodies' poses of the tick; the tick's bleeding blows
             // start their jets after it, in the post-step that dealt them,
@@ -661,7 +664,7 @@ fn tick_sprays(
 /// The droplet material once loaded, and the sprays' mesh and the entity
 /// drawing it from the first droplet on.
 #[derive(Resource)]
-struct SprayAssets {
+pub struct SprayAssets {
     material: Handle<SprayMaterial>,
     drawn: Option<(Handle<Mesh>, Entity)>,
 }
@@ -702,7 +705,7 @@ fn load_spray_assets(
 /// Builds the droplets' diamonds for the camera, between the last two
 /// ticks, oldest first, into one mesh in world space under no parent;
 /// hides it while no droplet flies.
-fn draw_sprays(
+pub fn draw_sprays(
     mut commands: Commands,
     sprays: Res<BloodSprays>,
     mut assets: ResMut<SprayAssets>,
@@ -824,7 +827,7 @@ impl DebugSpray {
 /// Sends the test jets of each marked body once it is dressed and bound,
 /// and again every second.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn fire_debug_sprays(
+pub(crate) fn fire_debug_sprays(
     sprays: Res<DebugSprays>,
     time: Res<Time>,
     bodies: Query<(Entity, &GlobalTransform), (With<DebugWoundTarget>, With<Dressed>)>,

@@ -367,7 +367,7 @@ fn narration_input(
     }
 }
 
-fn pad_talk(
+pub(crate) fn pad_talk(
     pad: Option<Res<crate::gamepad::PlayPad>>,
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
     conversations: Option<Res<Conversations>>,
@@ -393,7 +393,7 @@ fn pad_talk(
 /// Mirrors the engine's panel into the reply panel, follows the pointer
 /// over it and turns a click on a band into a pick.
 #[allow(clippy::too_many_arguments)]
-fn panel_input(
+pub(crate) fn panel_input(
     time: Res<Time<Virtual>>,
     real: Res<Time<Real>>,
     conversations: Option<Res<Conversations>>,
@@ -494,7 +494,7 @@ fn panel_input(
 
 /// Paints the frame's bubbles and the reply panel after the open screens.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn paint_dialogue(
+pub(crate) fn paint_dialogue(
     time: Res<Time<Virtual>>,
     real: Res<Time<Real>>,
     conversations: Option<ResMut<Conversations>>,
@@ -609,15 +609,21 @@ impl Plugin for DialogueLivePlugin {
                 Update,
                 (
                     focus_talk_target
+                        .after(crate::use_cursor::end_use)
                         .before(HotkeySet)
                         .after(crate::player::cursor_ground),
                     pad_talk.after(focus_talk_target),
                     narration_input.after(crate::panel_live::track_pointer),
                     panel_input
+                        .after(narration_input)
+                        .after(crate::use_cursor::end_use)
                         .after(crate::panel_live::track_pointer)
                         .before(crate::hand::HandSystems),
-                    paint_dialogue.after(crate::gui_screens::draw_screens),
-                ),
+                    paint_dialogue
+                        .after(crate::end_menu_screen::draw)
+                        .after(crate::gui_screens::draw_screens),
+                )
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }

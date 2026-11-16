@@ -691,24 +691,50 @@ impl Plugin for EquipPlugin {
             .add_message::<Redress>()
             .add_systems(
                 Update,
-                (redress_at_loadout_close, redress_bodies)
+                (
+                    redress_at_loadout_close.after(crate::thaum::power::teach_on_death),
+                    redress_bodies
+                        .after(forget_loose_hands)
+                        .after(crate::torch::rehand_torches),
+                )
                     .chain()
-                    .before(refresh_encumbrance),
+                    .before(refresh_encumbrance)
+                    .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 Update,
-                swap_at_switch_point.before(exa_items::catalogue::swap_weapon_sets),
+                swap_at_switch_point
+                    .before(exa_items::catalogue::swap_weapon_sets)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 apply_pending_hands
+                    .after(crate::save_live::load_arena_slot)
                     .after(exa_items::catalogue::swap_weapon_sets)
-                    .before(refresh_encumbrance),
+                    .before(refresh_encumbrance)
+                    .in_set(exa_physics::FramePhase::Session),
             )
-            .add_systems(Update, refresh_encumbrance)
-            .add_systems(Update, refresh_worn_specials.after(refresh_encumbrance))
+            .add_systems(
+                Update,
+                refresh_encumbrance
+                    .in_set(exa_physics::FramePhase::Session)
+                    .after(crate::arena_live::forfeit_match::<false>),
+            )
+            .add_systems(
+                Update,
+                refresh_worn_specials
+                    .after(refresh_encumbrance)
+                    .in_set(exa_physics::FramePhase::Session),
+            )
             .add_message::<exa_physics::grip::CameLoose>()
-            .add_systems(Update, forget_loose_hands.before(refresh_encumbrance))
+            .add_systems(
+                Update,
+                forget_loose_hands
+                    .after(crate::script_cast::mirror_items)
+                    .before(refresh_encumbrance)
+                    .in_set(exa_physics::FramePhase::Session),
+            )
             .add_systems(
                 FixedUpdate,
                 // After the bodies' impact class, before the shoves and the

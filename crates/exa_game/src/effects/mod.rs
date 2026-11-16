@@ -191,10 +191,18 @@ impl Plugin for EffectsPlugin {
             .add_systems(
                 Update,
                 (
-                    fire_row::frame_rows,
-                    portal::light_portals,
-                    bubble_draw::debug_bubble,
-                    (portal::debug_portal_use, portal::use_portals).chain(),
+                    fire_row::frame_rows
+                        .in_set(exa_physics::FramePhase::World)
+                        .before(exa_world::fire::flicker),
+                    portal::light_portals.in_set(exa_physics::FramePhase::World),
+                    bubble_draw::debug_bubble
+                        .in_set(exa_physics::FramePhase::Input)
+                        .after(crate::thaum::live::spawn_debug_effects),
+                    (
+                        portal::debug_portal_use.in_set(exa_physics::FramePhase::Input),
+                        portal::use_portals.in_set(exa_physics::FramePhase::Session),
+                    )
+                        .chain(),
                 ),
             );
     }

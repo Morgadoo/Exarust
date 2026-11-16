@@ -338,11 +338,18 @@ impl Plugin for HotkeyPlugin {
             .init_resource::<DialogueFocus>()
             .add_systems(
                 Update,
-                (retry_power_hold, press_hotkeys)
+                (
+                    retry_power_hold,
+                    press_hotkeys
+                        .after(crate::dialogue_live::pad_talk)
+                        .after(crate::item_card::tick_card)
+                        .after(crate::dialogue_live::panel_input),
+                )
                     .chain()
                     .in_set(HotkeySet)
                     .after(crate::player::cursor_ground)
-                    .before(crate::player::player_combat),
+                    .before(crate::player::player_combat)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }

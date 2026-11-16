@@ -76,7 +76,10 @@ impl Plugin for GolemBodyPlugin {
                     .before(exa_ai::route_walk::walk_routes),
             ),
         )
-        .add_systems(Update, trace_guardians);
+        .add_systems(
+            Update,
+            trace_guardians.in_set(exa_physics::FramePhase::Capture),
+        );
         {
             use exa_physics::sim_bridge::SimBridgeAppExt;
             app.bridge_copy::<StatueRest>()

@@ -577,7 +577,7 @@ pub fn column_layers(
 /// first shelf (its button starts down) from the arena's stores; with no
 /// stores the columns stay empty and no shelf is shown, so the close
 /// writes nothing back.
-fn open_arsenal(
+pub(crate) fn open_arsenal(
     mut window: ResMut<ArsenalWindow>,
     mut open: MessageReader<OpenArsenal>,
     control: Option<ResMut<crate::player_controls::PlayerControl>>,
@@ -695,7 +695,7 @@ pub fn arsenal_input(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn arsenal_live(
+pub(crate) fn arsenal_live(
     mut window: ResMut<ArsenalWindow>,
     mut keys: MessageReader<ArsenalKey>,
     mut mouse: MessageReader<ArsenalMouse>,
@@ -824,10 +824,17 @@ impl Plugin for ArsenalViewPlugin {
             .add_message::<OpenArsenal>()
             .add_systems(
                 Update,
-                (open_arsenal, arsenal_input, arsenal_live)
+                (
+                    open_arsenal.after(crate::gui_drop::claim_gui_drag),
+                    arsenal_input,
+                    arsenal_live
+                        .after(crate::doll_view::equip_dropped)
+                        .after(crate::creator_screen::paint),
+                )
                     .chain()
                     .after(crate::gui_screens::draw_screens)
-                    .after(crate::item_icon_render::IconRenderSystems),
+                    .after(crate::item_icon_render::IconRenderSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }

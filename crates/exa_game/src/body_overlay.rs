@@ -109,11 +109,11 @@ fn stretch_colour(band: Stretch) -> Color {
 
 /// The readout's text row for a part.
 #[derive(Component)]
-struct PanelRow(usize);
+pub(crate) struct PanelRow(usize);
 
 /// The readout's frame.
 #[derive(Component)]
-struct Panel;
+pub(crate) struct Panel;
 
 pub struct BodyOverlayPlugin;
 
@@ -124,15 +124,27 @@ impl Plugin for BodyOverlayPlugin {
             .init_resource::<InspectedBody>()
             .insert_gizmo_config(BodyGizmos, on_top(LINE_WIDTH))
             .insert_gizmo_config(BodyFrameGizmos, on_top(FRAME_WIDTH))
-            .add_systems(Update, overlay_keys)
+            .add_systems(Update, overlay_keys.in_set(exa_physics::FramePhase::Input))
             .add_systems(
                 Update,
-                (keep_inspected, pick_body, draw_overlay, update_panel)
+                (
+                    keep_inspected,
+                    pick_body.after(crate::use_cursor::end_use),
+                    draw_overlay,
+                    update_panel,
+                )
                     .chain()
                     .after(overlay_keys)
-                    .run_if(|o: Res<BodyOverlay>| o.on),
+                    .run_if(|o: Res<BodyOverlay>| o.on)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
-            .add_systems(Update, show_panel.run_if(resource_changed::<BodyOverlay>));
+            .add_systems(
+                Update,
+                show_panel
+                    .after(crate::splash::tick_splash)
+                    .run_if(resource_changed::<BodyOverlay>)
+                    .in_set(exa_physics::FramePhase::Gui),
+            );
     }
 }
 
@@ -304,7 +316,7 @@ fn draw_overlay(
     }
 }
 
-fn show_panel(
+pub(crate) fn show_panel(
     mut commands: Commands,
     overlay: Res<BodyOverlay>,
     mut panels: Query<&mut Visibility, With<Panel>>,
@@ -417,7 +429,7 @@ fn part_row(body: &Ragdoll, i: usize) -> (String, Color) {
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn update_panel(
+pub(crate) fn update_panel(
     inspected: Res<InspectedBody>,
     clock: Res<BodyTicks>,
     virt: Res<Time<Virtual>>,

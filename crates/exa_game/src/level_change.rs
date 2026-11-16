@@ -35,7 +35,8 @@ impl Plugin for LevelChangeBridgePlugin {
             Update,
             (return_to_world, leave_world)
                 .chain()
-                .after(LevelChangeSystems::Teardown),
+                .after(LevelChangeSystems::Teardown)
+                .in_set(exa_physics::FramePhase::Session),
         );
     }
 }

@@ -116,7 +116,8 @@ impl Plugin for SunShadowPlugin {
             PostUpdate,
             fit_sun_shadows
                 .after(SimulationLightSystems::UpdateDirectionalLightCascades)
-                .before(SimulationLightSystems::UpdateLightFrusta),
+                .before(SimulationLightSystems::UpdateLightFrusta)
+                .in_set(exa_physics::FramePostPhase::View),
         );
     }
 }
@@ -131,7 +132,7 @@ pub fn fitted_range() -> f32 {
 /// active camera, in a terrain level. Runs after Bevy has built its own
 /// cascades (which this overwrites) and before it derives the shadow frusta
 /// from them.
-fn fit_sun_shadows(
+pub fn fit_sun_shadows(
     mut lights: SunLights,
     cameras: SunCameras,
     region: Option<Res<SunShadowRegion>>,

@@ -161,7 +161,7 @@ fn vertical_fov(projection: &Projection) -> f32 {
     }
 }
 
-fn turn_previews(
+pub(crate) fn turn_previews(
     pointer: Res<PreviewPointer>,
     cameras: Query<(&GlobalTransform, &Projection), exa_render::supersample::SceneCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -205,7 +205,7 @@ pub struct CharViewPlugin;
 impl Plugin for CharViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PreviewPointer>()
-            .add_systems(Update, turn_previews);
+            .add_systems(Update, turn_previews.in_set(exa_physics::FramePhase::Gui));
     }
 }
 

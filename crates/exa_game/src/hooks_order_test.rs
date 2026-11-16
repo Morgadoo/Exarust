@@ -16,6 +16,7 @@ fn frame_app() -> App {
         exa_world::room_view::RoomViewPlugin,
         exa_world::scene_live::SceneLivePlugin,
     ));
+    exa_physics::frame_phase::configure_frame_phases(&mut app);
     app
 }
 
@@ -83,9 +84,8 @@ fn the_scene_frame_list_runs_in_its_priority_order() {
 /// its priority order: the session's frame, then the player controls'
 /// frame (the held item and the use list), then the scene task (whose
 /// scene frame list moves the camera), then the spirit screen. Exarust's
-/// pieces run in `Update`; where the schedule leaves two of them unordered
-/// their data does not conflict, so either order computes the same, and
-/// the held item reads the camera's propagated transform, which in `Update`
+/// pieces run in `Update`'s frame phases (`exa_physics::frame_phase`),
+/// which order them, and the held item (after the camera in Exarust) reads the camera's propagated transform, which in `Update`
 /// is still where the previous frame left it: where the original's
 /// controls, called before the camera's hook, find it.
 #[test]
@@ -121,19 +121,28 @@ fn the_game_task_list_keeps_its_order_by_schedule_or_by_data() {
         "player::chase_camera",
         "hand::hold_hand"
     ));
-    // The rest are unordered, and none of them conflicts with another.
+    // The frame's phases keep the rest in the list's order: the session's
+    // frame (`Session`), the camera (`Camera`), the held item and the spirit
+    // screen (`Hand`), then the player light with the world's draw
+    // (`World`).
     for (a, b) in [
         ("flow::tick", "hand::hold_hand"),
         ("flow::tick", "player::chase_camera"),
         ("flow::tick", "player_light::place_player_light"),
         ("flow::tick", "mind::runtime::step_spirit_screen"),
         ("hand::hold_hand", "player_light::place_player_light"),
-        ("hand::hold_hand", "mind::runtime::step_spirit_screen"),
         ("player::chase_camera", "player_light::place_player_light"),
         ("player::chase_camera", "mind::runtime::step_spirit_screen"),
     ] {
-        assert!(!conflicting(&mut app, Update, a, b), "{a} and {b}");
+        assert!(runs_before(&mut app, Update, a, b), "{a} before {b}");
     }
+    // The held item and the spirit screen share a phase and no data.
+    assert!(!conflicting(
+        &mut app,
+        Update,
+        "hand::hold_hand",
+        "mind::runtime::step_spirit_screen"
+    ));
 }
 
 /// The modal task list, which the original calls once a frame in its

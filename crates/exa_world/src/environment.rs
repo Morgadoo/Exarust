@@ -67,9 +67,15 @@ impl Plugin for EnvironmentPlugin {
         app.init_resource::<exa_physics::body::WaterLevel>();
         app.add_systems(
             PostUpdate,
-            (live_environment, tint_sky_cube, fog_cameras, sky_cameras)
+            (
+                live_environment.after(exa_physics::body::draw_bodies),
+                tint_sky_cube,
+                fog_cameras,
+                sky_cameras,
+            )
                 .chain()
-                .in_set(LiveEnvironment),
+                .in_set(LiveEnvironment)
+                .in_set(exa_physics::FramePostPhase::Prepare),
         );
     }
 }

@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r294, 11-16) | target |
+| measure | start (r186, 11-10) | now (r296, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **59.04%** | **100%** |
+| **Ledger: bytes in a final state** | — | **59.03%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,122 | all |
+| Tests passing | 8,489 | 9,142 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -103,18 +103,18 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | UI | 12 | 12 | 339 | 127,230 |
 | Thaumaturgy & effects | 9 | 9 | 151 | 109,619 |
 | Characters, motion & animation | 8 | 8 | 222 | 101,754 |
-| AI & behaviour | 8 | 8 | 121 | 90,389 |
+| AI & behaviour | 8 | 8 | 122 | 90,971 |
 | Game modes, arena & session | 7 | 7 | 178 | 76,192 |
 | World, levels & terrain | 5 | 5 | 146 | 73,180 |
 | Items, materials & crafting | 5 | 5 | 132 | 62,916 |
 | Data, assets & I/O | 6 | 6 | 118 | 38,360 |
 | Runtime & platform | 5 | 5 | 69 | 20,690 |
-| Core, math & threading | 3 | 3 | 79 | 15,557 |
+| Core, math & threading | 3 | 3 | 75 | 15,348 |
 | Script, dialogue & story | 2 | 2 | 28 | 6,544 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,018** | **1,027,744** |
+| **Total** | **90** | **90** | **2,015** | **1,028,117** |
 
 ## Open decisions
 
@@ -126,6 +126,8 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 296 | The frame's Update and PostUpdate are fully ordered in named phases following the original's frame order, and the schedule test now holds every schedule to zero unordered conflicting pairs (seven documented pairs with private engine systems allowed); ordering the frame fixed a GUI bug: paints that ran before the game screens' per-frame clear were wiped every frame, so the story death's tip banner now shows (ambiguity2) |
+| 2026-11-16 | 295 | The function oracle covers 110 original functions bit for bit over 5000 cases each: the callers now take the original's exact normaliser and lerp, the swing time on non-finite input matches, and about fifteen small port defects it found are fixed (NaN and negative-zero handling, a denormal sine, reciprocal-first weights, a bearing in double, a wrapped tick count); the simulation changes in the last bit from the first tick; F569 opened (oracle2) |
 | 2026-11-16 | 294 | The motile body and balance lane from the port queue: the golem-suit leg halving has the original's writers; a balance step's end stamps the stand-still clock; the servo and step-approach factors; the off-balance arms only from the posture block's test; the get-up turned from the body's heading; the femur posture in the engine's quaternion order (it had been reversed); held items sleep and wake with their holder; the AI's soft stop on a jolt; round 285's Height Query questions settled as the original's (bodybal) |
 | 2026-11-16 | 293 | F560's cause found with a new headless trace tool (the armour pass's head height was unordered in the fixed step, now first); F566 fixed (the hand's pick names sliding leaves by their door record, so a portcullis can be pulled); F563 closed as the original's (the placed portcullises stand open in their arches); F568 opened (a locked portcullis can be dragged aside) (physfix) |
 | 2026-11-16 | 292 | The first lane from the triage's port queue: the chase leave is reachable (it reads the brain's sight of its foe), a cast started while parrying ends the clinch, a released race shocked in combat resets its swing and a dying one takes no shock; six readings corrected; most of the lane's other items wait on NPC body turning and the brain's goal entity (npcbody lane) (combatai) |

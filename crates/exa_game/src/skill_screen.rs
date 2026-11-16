@@ -186,9 +186,14 @@ impl Plugin for SkillScreenPlugin {
             .add_message::<OpenSkills>()
             .add_systems(
                 Update,
-                (open_skills, pointer, draw)
+                (
+                    open_skills.after(crate::power_screen::ui_sounds),
+                    pointer.after(crate::figure_pick::release_figure),
+                    draw,
+                )
                     .chain()
-                    .after(crate::hotkeys::HotkeySet),
+                    .after(crate::hotkeys::HotkeySet)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -204,7 +209,7 @@ fn unit_of(gui: Option<&exa_ui::GuiScale>) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn open_skills(
+pub(crate) fn open_skills(
     mut requests: MessageReader<OpenSkills>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
@@ -386,7 +391,7 @@ pub fn key_closes(screen: &SkillScreen, now: i32) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn pointer(
+pub(crate) fn pointer(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
@@ -774,7 +779,7 @@ fn screen_font(unit: i32, textures: &GuiTextures) -> Option<(GuiFont, &GuiTextur
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw(
+pub(crate) fn draw(
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
     players: Query<&CharacterData, With<PlayerBody>>,

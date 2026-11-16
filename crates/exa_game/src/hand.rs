@@ -1214,7 +1214,7 @@ impl Plugin for HandPlugin {
                 Update,
                 (
                     combat_keeps_left,
-                    press_hand,
+                    press_hand.after(crate::hud::pick_hud),
                     lift_gui_drops,
                     take_cloth,
                     gather_markers,
@@ -1230,13 +1230,16 @@ impl Plugin for HandPlugin {
                     .chain()
                     .in_set(HandSystems)
                     .after(crate::player::chase_camera)
-                    .before(crate::cursor::pick_cursor),
+                    .before(crate::cursor::pick_cursor)
+                    .in_set(exa_physics::FramePhase::Hand),
             )
             .add_systems(
                 Update,
                 run_corpse_scripts
+                    .after(crate::character_use::run_character_uses)
                     .after(HandSystems)
-                    .before(crate::cursor::pick_cursor),
+                    .before(crate::cursor::pick_cursor)
+                    .in_set(exa_physics::FramePhase::Hand),
             );
     }
 }
@@ -1252,7 +1255,7 @@ type PlayerParts = (
 /// What the pick reads of the world beyond the characters: the colliders,
 /// the props' stand-ins and the scene nodes some static colliders came from.
 #[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct PickSources<'w> {
+pub struct PickSources<'w> {
     pub(crate) physics: Res<'w, exa_physics::collision_share::FramePhysics>,
     pub(crate) stand_ins: Res<'w, StandIns>,
     pub(crate) collider_nodes: Res<'w, ColliderNodes>,

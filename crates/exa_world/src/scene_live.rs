@@ -109,13 +109,16 @@ impl Plugin for SceneLivePlugin {
                     .after(VisibilitySystems::UpdateFrusta)
                     .after(crate::room_view::track_rooms)
                     .after(LightsSystems::Ids)
-                    .before(VisibilitySystems::CheckVisibility),
+                    .before(VisibilitySystems::CheckVisibility)
+                    .in_set(exa_physics::FramePostPhase::View),
             )
             .add_systems(
                 PostUpdate,
                 cull_undrawn
                     .after(VisibilitySystems::CheckVisibility)
-                    .before(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
+                    .before(bevy::light::SimulationLightSystems::CheckLightVisibility)
+                    .before(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
     }
 }
@@ -1026,7 +1029,7 @@ pub fn run_scene(
 
 /// Takes the registered meshes the visible pass did not draw out of the
 /// main camera's visible list.
-fn cull_undrawn(
+pub(crate) fn cull_undrawn(
     mut live: ResMut<LiveScene>,
     cull: Res<SectorCull>,
     mut cameras: Query<&mut VisibleEntities>,

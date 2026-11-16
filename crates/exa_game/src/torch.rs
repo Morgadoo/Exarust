@@ -33,7 +33,17 @@ impl Plugin for TorchPlugin {
             .init_resource::<StoryTorch>()
             .add_systems(
                 Update,
-                ((rehand_torches, light_torches).chain(), lay_floor_torch),
+                (
+                    (
+                        rehand_torches.in_set(exa_physics::FramePhase::Session),
+                        light_torches
+                            .in_set(exa_physics::FramePhase::World)
+                            .before(exa_character::equip_outfits)
+                            .after(exa_world::flame::attach_flames),
+                    )
+                        .chain(),
+                    lay_floor_torch.in_set(exa_physics::FramePhase::Session),
+                ),
             );
     }
 }
@@ -82,7 +92,7 @@ pub fn story_torch_transform(light: &crate::flow::StoryLight) -> Transform {
 /// the level: the torch's model, its fire and light burning as a wall
 /// torch's do.
 #[allow(clippy::too_many_arguments)]
-fn lay_floor_torch(
+pub fn lay_floor_torch(
     mut commands: Commands,
     mut floor: ResMut<FloorTorch>,
     mut story: ResMut<StoryTorch>,
@@ -146,7 +156,7 @@ pub struct CarriesTorch;
 
 /// The torch is in the hand, and which one.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-struct TorchLit(TorchHand);
+pub(crate) struct TorchLit(TorchHand);
 
 /// The root of a carried torch's model.
 #[derive(Component)]
@@ -227,7 +237,7 @@ impl TorchHand {
 /// the inventory figure's hand scene does; a weapon taken away brings it
 /// back to the right.
 #[allow(clippy::type_complexity)]
-fn rehand_torches(
+pub(crate) fn rehand_torches(
     mut commands: Commands,
     mut bodies: Query<
         (

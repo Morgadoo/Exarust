@@ -343,11 +343,21 @@ impl Plugin for CommandPlugin {
             .add_systems(
                 Update,
                 (
-                    run_queued_commands,
-                    view_keys.after(crate::hotkeys::HotkeySet),
+                    run_queued_commands.in_set(exa_physics::FramePhase::Input),
+                    view_keys
+                        .after(crate::destination::screen_input)
+                        .in_set(exa_physics::FramePhase::Gui)
+                        .after(crate::gui_screens::rescale_open_screens)
+                        .after(crate::skill_screen::open_skills)
+                        .after(crate::hotkeys::HotkeySet),
                 ),
             )
-            .add_systems(PostUpdate, root_task_keys.in_set(RootKeySet));
+            .add_systems(
+                PostUpdate,
+                root_task_keys
+                    .in_set(RootKeySet)
+                    .in_set(exa_physics::FramePostPhase::Prepare),
+            );
     }
 }
 

@@ -28,9 +28,10 @@ impl Plugin for ArcPlugin {
                 attach_arcs,
                 tick_arcs,
                 build_arcs,
-                drive_device_lights,
+                drive_device_lights.before(exa_anim::attach_body_parts),
             )
-                .chain(),
+                .chain()
+                .in_set(exa_physics::FramePhase::World),
         );
     }
 }
@@ -183,7 +184,7 @@ fn tick_arcs(time: Res<Time>, mut commands: Commands, mut arcs: Query<(Entity, &
 
 /// The level device's point light follows the frame: its strength and where
 /// the tendrils' mean sits. A voxel light is left as it was spawned.
-fn drive_device_lights(
+pub fn drive_device_lights(
     mut arcs: Query<(&mut ArcEffect, &Children)>,
     mut lights: Query<(&mut PointLight, &mut Transform), Without<ArcEffect>>,
 ) {

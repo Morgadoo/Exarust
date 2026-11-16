@@ -143,11 +143,27 @@ impl Plugin for ItemAbilityPlugin {
             .add_systems(
                 Update,
                 (
-                    debug_ability_item,
-                    ability_tick,
-                    check_focus_items,
-                    hit_hooks,
-                    (flame_row_lights, flame_row_draws, flame_row_loops)
+                    debug_ability_item.in_set(exa_physics::FramePhase::Input),
+                    ability_tick
+                        .in_set(exa_physics::FramePhase::World)
+                        .after(exa_combat::weapon_blood::clear_at_world_reset)
+                        .after(crate::thaum::effect_draw::ripple_strikes)
+                        .after(exa_combat::swing::pace_swings),
+                    check_focus_items.in_set(exa_physics::FramePhase::World),
+                    hit_hooks
+                        .before(exa_character::equip_outfits)
+                        .after(crate::hud::heartbeat)
+                        .in_set(exa_physics::FramePhase::World)
+                        .after(exa_world::flame::frame_flames),
+                    (
+                        flame_row_lights
+                            .in_set(exa_physics::FramePhase::World)
+                            .after(exa_world::arc::drive_device_lights),
+                        flame_row_draws
+                            .in_set(exa_physics::FramePhase::World)
+                            .after(exa_character::finish_skin_composites),
+                        flame_row_loops.in_set(exa_physics::FramePhase::World),
+                    )
                         .after(fire_row::frame_rows),
                 )
                     .chain(),

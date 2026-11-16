@@ -116,7 +116,12 @@ impl Plugin for LevelChangePlugin {
             .add_message::<WorldReset>()
             .init_resource::<LevelChangeState>()
             .init_resource::<BeforeDoorTeardown>()
-            .add_systems(Update, apply_requests.in_set(LevelChangeSystems::Teardown));
+            .add_systems(
+                Update,
+                apply_requests
+                    .in_set(LevelChangeSystems::Teardown)
+                    .in_set(exa_physics::FramePhase::Session),
+            );
     }
 }
 
@@ -127,7 +132,7 @@ pub struct LevelChangeState {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_requests(
+pub fn apply_requests(
     mut commands: Commands,
     mut requests: MessageReader<LevelChangeRequest>,
     mut resets: MessageReader<WorldReset>,

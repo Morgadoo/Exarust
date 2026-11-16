@@ -292,11 +292,11 @@ pub struct StatusView {
 const STATUS_Z: i32 = 898;
 
 #[derive(Component)]
-struct StatusNode(usize);
+pub(crate) struct StatusNode(usize);
 
 /// The atlas image, the built icon and what each node last showed.
 #[derive(Resource, Default)]
-struct StatusState {
+pub(crate) struct StatusState {
     clock: StatusClock,
     /// The atlas image's size and stored rows.
     image: Option<(u16, u16, Vec<u8>)>,
@@ -309,7 +309,13 @@ pub(crate) fn plugin(app: &mut App) {
     app.init_resource::<StatusView>()
         .init_resource::<StatusState>()
         .add_systems(Startup, spawn)
-        .add_systems(Update, draw_status.in_set(DrawHud));
+        .add_systems(
+            Update,
+            draw_status
+                .after(crate::hud_extra::draw_compass)
+                .in_set(DrawHud)
+                .in_set(exa_physics::FramePhase::Draw),
+        );
 }
 
 fn spawn(mut commands: Commands, game: Option<Res<Game>>, mut state: ResMut<StatusState>) {
@@ -343,7 +349,7 @@ fn spawn(mut commands: Commands, game: Option<Res<Game>>, mut state: ResMut<Stat
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_status(
+pub(crate) fn draw_status(
     view: Res<StatusView>,
     gui: Res<GuiScale>,
     time: Res<Time<Real>>,

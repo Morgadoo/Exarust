@@ -2633,7 +2633,8 @@ pub fn add_hub_draw(app: &mut App) {
         draw_hub_windows
             .after(crate::gui_screens::draw_screens)
             .after(crate::arena_hub_live::HubWindowSystems)
-            .before(crate::item_card::draw_card),
+            .before(crate::item_card::draw_card)
+            .in_set(exa_physics::FramePhase::Hub),
     );
 }
 

@@ -375,7 +375,12 @@ pub(crate) fn plugin(app: &mut App) {
         .init_resource::<Frames>()
         .init_resource::<OpaqueRed>()
         .add_systems(Startup, spawn)
-        .add_systems(Update, draw.in_set(DrawWorldCursor));
+        .add_systems(
+            Update,
+            draw.after(crate::hud::draw)
+                .in_set(DrawWorldCursor)
+                .in_set(exa_physics::FramePhase::Draw),
+        );
 }
 
 fn spawn(mut commands: Commands, game: Option<Res<Game>>) {
