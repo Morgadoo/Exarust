@@ -114,6 +114,7 @@ impl Plugin for DestinationPlugin {
             .add_message::<PortalInput>()
             .add_message::<TravelToLevel>()
             .add_message::<JourneySave>()
+            .add_message::<exa_render::post::FadeRequest>()
             .add_message::<JourneyStarted>()
             .add_systems(
                 Update,
@@ -146,6 +147,7 @@ fn bridge_destination_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<crate::destination::JourneySave>()
         .bridge_message::<crate::destination::TravelToLevel>()
+        .bridge_message::<exa_render::post::FadeRequest>()
         .bridge_copy::<crate::destination::TravelJourney>()
         .bridge_copy::<crate::effects::bubble::BubbleEffect>();
 }
@@ -377,16 +379,14 @@ pub(crate) fn tick_journeys(
     mut travel: MessageWriter<TravelToLevel>,
     mut saves: MessageWriter<JourneySave>,
     mut control: Option<ResMut<crate::player_controls::PlayerControl>>,
-    mut fade: Option<ResMut<exa_render::post::ScreenFade>>,
+    mut fades: MessageWriter<exa_render::post::FadeRequest>,
 ) {
     let now = clock.now_ms;
     for (entity, mut bubble, journey) in &mut journeys {
         // The hold's post-process point starts the main view's
         // desaturation fade with its bloom kind.
-        if bubble.0.step(now).post_process
-            && let Some(fade) = fade.as_mut()
-        {
-            fade.begin_desaturate(1);
+        if bubble.0.step(now).post_process {
+            fades.write(exa_render::post::FadeRequest::Desaturate(1));
             info!("journey: the bubble's hold starts the desaturation fade");
         }
         let crystal = journey

@@ -115,8 +115,9 @@ impl FadeControl {
     }
 }
 
-/// A fade the game asks for; the frame stamps it with its clock.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A fade the game asks for; the frame stamps it with its clock. The
+/// simulation step's callers (the teleport bubble) send it as a message.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FadeRequest {
     /// The screen fade in from black (the story's start and the revive).
     Screen,
@@ -391,8 +392,10 @@ impl Default for ExaPost {
 fn step_screen_fade(
     time: Res<Time>,
     mut fade: ResMut<ScreenFade>,
+    mut sent: MessageReader<FadeRequest>,
     mut posts: Query<&mut ExaPost>,
 ) {
+    fade.requests.extend(sent.read().copied());
     let clock = time.elapsed().as_millis() as u32;
     let busy = fade.control.fade || fade.control.desaturate || !fade.requests.is_empty();
     if !busy {
@@ -423,6 +426,7 @@ impl Plugin for PostPlugin {
         ))
         .init_resource::<PostSharpen>()
         .init_resource::<ScreenFade>()
+        .add_message::<FadeRequest>()
         .add_systems(
             PostUpdate,
             (adopt_cameras, follow_sharpen, step_screen_fade)
@@ -914,8 +918,11 @@ mod fade_tests {
         use std::time::Duration;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(100)))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                100,
+            )))
             .init_resource::<ScreenFade>()
+            .add_message::<FadeRequest>()
             .add_systems(Update, step_screen_fade);
         let camera = app.world_mut().spawn(ExaPost::default()).id();
         app.update();
