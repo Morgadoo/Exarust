@@ -37,6 +37,11 @@ pub struct GuiLevelState {
     pub glyphs: [i32; 12],
     /// The small atlas as a texture, upright.
     pub glyph_image: Option<Handle<Image>>,
+    /// The executable's `GUISymbl` square, once looked for: the first
+    /// glyph in place of the cross ([`symbol_square`]).
+    pub symbol: Option<IconImage>,
+    /// `GUISymbl` was looked for.
+    pub symbol_read: bool,
 }
 
 impl GuiLevelState {
@@ -56,7 +61,29 @@ impl GuiLevelState {
             small,
             glyphs,
             glyph_image: None,
+            symbol: None,
+            symbol_read: false,
         }
+    }
+
+    /// Takes the `GUISymbl` image (its `.rfi` bytes, `None` when the
+    /// executable has none) and draws the glyphs again with its square
+    /// first, as the level's glyph build does once the image is found.
+    pub fn take_symbol(&mut self, bytes: Option<&[u8]>) {
+        self.symbol_read = true;
+        self.symbol = bytes.and_then(symbol_square);
+        if self.symbol.is_some() {
+            self.small.clear();
+            self.glyphs = self.build_small();
+        }
+    }
+
+    /// The glyphs drawn into the small atlas at the level's unit, the
+    /// symbol's square resized to the cell first when there is one.
+    fn build_small(&mut self) -> [i32; 12] {
+        let cell = self.small.cell;
+        let first = self.symbol.as_ref().and_then(|s| symbol_cell(s, cell));
+        build_glyphs(&mut self.small, self.level.unit, first.as_ref())
     }
 
     /// Fills the large atlas from the common glyph sheet, as the level
@@ -99,7 +126,7 @@ impl GuiLevelState {
         self.sheet_filled = false;
         self.small.clear();
         self.small.cell = next.small_icon;
-        self.glyphs = build_glyphs(&mut self.small, next.unit, None);
+        self.glyphs = self.build_small();
         true
     }
 }
@@ -132,6 +159,59 @@ fn decode_sheet(bytes: &[u8]) -> Option<IconImage> {
     })
 }
 
+/// The pixel format word of the 48-pixel image the glyph build copies the
+/// `GUISymbl` square into (the small atlas's single channel) and its image
+/// flags.
+pub const SYMBOL_FORMAT: u32 = 0x0100_2008;
+pub const SYMBOL_FLAGS: u32 = 0x2000_0000;
+
+/// The `GUISymbl` image's square ([`crate::gui_glyphs::SYMBOL_REGION`],
+/// in its stored row order) as a four-channel image.
+pub fn symbol_square(bytes: &[u8]) -> Option<IconImage> {
+    let image = decode_sheet(bytes)?;
+    let (x, y, side) = crate::gui_glyphs::SYMBOL_REGION;
+    Some(image.region(x, y, side, side))
+}
+
+/// The symbol's square as a small-atlas glyph: its alpha kept as the
+/// glyph's one channel (the copy into the single-channel image) and the
+/// square resized to the atlas cell by the engine's resample, as the
+/// atlas add does for an icon off the cell's size. The small atlas does
+/// not sharpen.
+pub fn symbol_cell(square: &IconImage, cell: i32) -> Option<IconImage> {
+    if cell <= 0 || cell > i32::from(u16::MAX) || square.channels != 4 {
+        return None;
+    }
+    let side = cell as usize;
+    let alpha: Vec<u8> = square
+        .pixels
+        .chunks(4)
+        .flat_map(|p| [0xff, 0xff, 0xff, p[3]])
+        .collect();
+    let pixels = if i32::from(square.width) == cell && i32::from(square.height) == cell {
+        alpha
+    } else {
+        exa_render::mipmap::resample_rgba8_to_size(
+            &alpha,
+            usize::from(square.width),
+            usize::from(square.height),
+            side,
+            side,
+            SYMBOL_FORMAT,
+            SYMBOL_FLAGS & !crate::icon_atlas::RESIZE_CLEARED_FLAGS,
+        )
+    };
+    if pixels.len() != side * side * 4 {
+        return None;
+    }
+    Some(IconImage {
+        width: cell as u16,
+        height: cell as u16,
+        channels: 1,
+        pixels: pixels.chunks(4).map(|p| p[3]).collect(),
+    })
+}
+
 /// Keeps the level with the scale and the glyph texture with the atlas;
 /// once the game's data is there, the level's large atlas takes the common
 /// glyph sheet (the executable's `GlphCommon` image).
@@ -143,6 +223,19 @@ fn follow_scale(
 ) {
     if gui.is_changed() {
         state.set_level(level_for_unit(gui.scale as i32));
+    }
+    if !state.symbol_read
+        && let Some(game) = game.as_deref()
+    {
+        state.take_symbol(game.0.module_image(crate::gui_glyphs::SYMBOL_IMAGE));
+        info!(
+            "GUI: the first glyph is {}",
+            if state.symbol.is_some() {
+                "the GUISymbl square"
+            } else {
+                "the cross (no GUISymbl)"
+            }
+        );
     }
     if !state.sheet_filled
         && let Some(sheet) = game
@@ -180,6 +273,51 @@ fn upright(image: &IconImage) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The symbol's alpha becomes the glyph's channel, resized to the
+    /// cell; a square already the cell's size is kept as it is.
+    #[test]
+    fn the_symbol_square_becomes_the_first_glyph() {
+        let mut square = IconImage::new(48, 48, 4);
+        for p in square.pixels.chunks_mut(4) {
+            p.copy_from_slice(&[10, 20, 30, 200]);
+        }
+        let cell = symbol_cell(&square, 20).unwrap();
+        assert_eq!((cell.width, cell.height, cell.channels), (20, 20, 1));
+        assert!(cell.pixels.iter().all(|&a| a.abs_diff(200) <= 1), "{:?}", &cell.pixels[..4]);
+        let same = symbol_cell(&square, 48).unwrap();
+        assert!(same.pixels.iter().all(|&a| a == 200));
+        let mut s = GuiLevelState::at(2);
+        s.symbol = Some(square);
+        assert!(s.set_level(3));
+        let c = s.small.cell as usize;
+        let w = usize::from(s.small.image.width);
+        assert!(s.small.image.pixels[0].abs_diff(200) <= 1);
+        assert!(s.small.image.pixels[(c - 1) * w + c - 1].abs_diff(200) <= 1);
+        assert_eq!(s.glyphs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    /// The executable's GUISymbl square has ink, and taking it changes the
+    /// first glyph from the cross (skipped without `EXANIMA_DIR`).
+    #[test]
+    fn the_installed_symbol_replaces_the_cross() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let bytes = game.module_image(crate::gui_glyphs::SYMBOL_IMAGE).unwrap();
+        let square = symbol_square(bytes).unwrap();
+        assert_eq!((square.width, square.height), (48, 48));
+        assert!(square.pixels.chunks(4).any(|p| p[3] > 128));
+        let mut s = GuiLevelState::at(2);
+        let cross = s.small.image.clone();
+        s.take_symbol(Some(bytes));
+        assert!(s.symbol.is_some());
+        assert_ne!(s.small.image.pixels, cross.pixels);
+        assert_eq!(s.glyphs[11], 12);
+    }
 
     #[test]
     fn the_level_sets_atlas_cells_and_glyphs() {
