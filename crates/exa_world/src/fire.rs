@@ -812,10 +812,18 @@ pub struct Fire {
 /// emissive the marker import turns off and the fire then drives. `base` is
 /// the part's loaded emissive colour, taken at the first frame the material
 /// is readable; the fire scales it.
+///
+/// The original's per-frame pass writes the fire's emissive scale to the
+/// host node's first sub-object material and then to the first material of
+/// every geometry child of the host; `children` are those children's first
+/// parts, each with its own loaded colour.
 #[derive(Component, Debug, Clone)]
 pub struct FireHost {
     pub part: Entity,
     pub base: Option<[f32; 4]>,
+    /// The first part of each geometry child of the host node, with its
+    /// loaded emissive colour once read.
+    pub children: Vec<(Entity, Option<[f32; 4]>)>,
 }
 
 /// The flame ticks after which a fire counts as settled: two seconds of the
@@ -948,34 +956,75 @@ pub(crate) fn drive_hosts(
     fires: Query<&Fire>,
 ) {
     for (node, mut host) in &mut hosts {
-        if host.base.is_none() {
-            let Ok(mut handle) = handles.get_mut(host.part) else {
-                continue;
-            };
-            let Some(own) = materials.get(&handle.0).cloned() else {
-                continue;
-            };
-            let base = own.params.emissive;
-            handle.0 = materials.add(own);
-            host.base = Some(base.to_array());
-            if let Some(mut material) = materials.get_mut(&handle.0) {
-                material.params.emissive = Vec4::ZERO;
-            }
+        let host = &mut *host;
+        // Each driven part gets its own material copy, its loaded emissive
+        // kept as the base the fire scales.
+        // The marker import turned the host's own emissive off; the
+        // children keep theirs until a fire drives them.
+        take_base(
+            host.part,
+            &mut host.base,
+            true,
+            &mut handles,
+            &mut materials,
+        );
+        for (part, base) in &mut host.children {
+            take_base(*part, base, false, &mut handles, &mut materials);
         }
-        // The fire riding this node, if any, scales the part's emissive.
+        // The fire riding this node, if any, scales the parts' emissive.
         let scale = children
             .get(node)
             .ok()
             .and_then(|kids| kids.iter().find_map(|kid| fires.get(kid).ok()))
             .map(|fire| fire.emissive);
         let Some(scale) = scale else { continue };
-        let Some(base) = host.base else { continue };
-        let Ok(handle) = handles.get(host.part) else {
-            continue;
-        };
-        if let Some(mut material) = materials.get_mut(&handle.0) {
-            material.params.emissive = (Vec4::from(base).truncate() * scale).extend(base[3]);
+        let driven = std::iter::once((host.part, host.base)).chain(host.children.iter().copied());
+        for (part, base) in driven {
+            let Some(base) = base else { continue };
+            let Ok(handle) = handles.get(part) else {
+                continue;
+            };
+            // Written only when it changes, so an unchanged material is not
+            // prepared again.
+            let emissive = (Vec4::from(base).truncate() * scale).extend(base[3]);
+            if materials
+                .get(&handle.0)
+                .is_some_and(|m| m.params.emissive != emissive)
+                && let Some(mut material) = materials.get_mut(&handle.0)
+            {
+                material.params.emissive = emissive;
+            }
         }
+    }
+}
+
+/// Gives a driven part its own copy of its material and reads its loaded
+/// emissive colour as the base; `darken` turns it off until the fire drives
+/// it.
+fn take_base(
+    part: Entity,
+    base: &mut Option<[f32; 4]>,
+    darken: bool,
+    handles: &mut Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
+    materials: &mut Assets<exa_render::material::ExaMaterial>,
+) {
+    if base.is_some() {
+        return;
+    }
+    let Ok(mut handle) = handles.get_mut(part) else {
+        return;
+    };
+    let Some(own) = materials.get(&handle.0).cloned() else {
+        return;
+    };
+    let loaded = own.params.emissive;
+    handle.0 = materials.add(own);
+    *base = Some(loaded.to_array());
+    if !darken {
+        return;
+    }
+    if let Some(mut material) = materials.get_mut(&handle.0) {
+        material.params.emissive = Vec4::ZERO;
     }
 }
 
@@ -1226,7 +1275,30 @@ mod tests {
             .world_mut()
             .spawn((Mesh3d(Handle::default()), MeshMaterial3d(handle)))
             .id();
-        let node = app.world_mut().spawn(FireHost { part, base: None }).id();
+        // A geometry child of the host with a material of its own.
+        let child_base = Vec4::new(0.2, 0.6, 0.8, 1.0);
+        let child_handle = app
+            .world_mut()
+            .resource_mut::<Assets<exa_render::material::ExaMaterial>>()
+            .add(exa_render::material::ExaMaterial {
+                params: exa_render::material::ExaParams {
+                    emissive: child_base,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let child = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), MeshMaterial3d(child_handle)))
+            .id();
+        let node = app
+            .world_mut()
+            .spawn(FireHost {
+                part,
+                base: None,
+                children: vec![(child, None)],
+            })
+            .id();
         app.world_mut().spawn((
             Fire {
                 intensity: 1.0,
@@ -1259,6 +1331,22 @@ mod tests {
             material.params.emissive
         );
         assert_eq!(material.params.emissive.w, base.w);
+        // The geometry child takes the same scale on its own colour.
+        let handle = app
+            .world()
+            .get::<MeshMaterial3d<exa_render::material::ExaMaterial>>(child)
+            .expect("the child's material")
+            .0
+            .clone();
+        let material = app
+            .world()
+            .resource::<Assets<exa_render::material::ExaMaterial>>()
+            .get(&handle)
+            .expect("the child's copied material");
+        assert_eq!(
+            material.params.emissive.truncate(),
+            child_base.truncate() * 0.5
+        );
     }
 
     #[test]

@@ -4132,7 +4132,11 @@ its bounds), the Bubble's unturned; `ViewPos` the camera in that frame,
 `ColPt` the eight ripple points, `TexPos` and `Fade` the dome's, under the
 `_ForceBarrier01` record (emissive 0.25, opacity 0.5, blend word 0x163,
 flags 0x480008); once a frame, not once a supersample layer. The
-barricade's `effectfbrcd` program is not ported.
+barricade draws through `effectfbrcd_v`/`effectfbrcd_f`
+(`exa_render::force_effects::BarricadeMaterial`, `force_barricade.wesl`):
+its slid slab unscaled in its node's frame, `ViewPos` the camera in that
+frame, `BExt` the node's half extents, `ColPt`, `TexPos` and `Fade` its
+own, over `_ForceNoise` under the barrier record.
 `effects::emissive` models the seven GI lights the effects carry
 (`gi_dome`, `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`,
 `gi_multipoint`, `gi_telebubble`) with their extents, colours and world

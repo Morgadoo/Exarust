@@ -1962,13 +1962,6 @@ A link dragged out of a tree node SHALL keep its hover while `(0.55 · zoom)²` 
 - **WHEN** the pointer moves from 55 to 56 units from a node at fixed zoom 100
 - **THEN** the drag passes from the hover to the link
 
-### Requirement: Displacement tendril material
-The displacement tendrils SHALL draw with the `_TDispMat01` record: each fragment the vertex colour times the `FlameletsA3` sample at the strip's first coordinate set times the record's opacity 0.5, clamped to [0, 1], blended ONE / ONE_MINUS_SRC_ALPHA on both faces with no shadows.
-
-#### Scenario: A tendril fragment
-- **WHEN** a strip vertex of colour (1, 1, 1, 1) samples a texel of 1
-- **THEN** the fragment is 0.5 in every channel
-
 ### Requirement: AI Long Door destination
 An AI's Long Door at phase 0x10 with no destination SHALL ask the navigation grid for a path from its subject (the caster's target, else the caster) toward the point 300 cm back along the subject's body's forward vector, and take the path's last point as its destination when the path has more than one point and that point lies more than √200 cm away across the floor; any other answer SHALL end the door.
 
@@ -2590,3 +2583,38 @@ A Loyalty or Command Dead mark that ends on a body SHALL take the body out of th
 #### Scenario: A loyalty mark ends
 - **WHEN** the Loyalty mark on a target is told to end
 - **THEN** the walk sends the target's party leave
+
+### Requirement: Force strip in every state
+A blast's or wave's strip SHALL be built every frame from its live chunks whatever its state, a charging effect's chunks in the charge's colour; a strip whose points are not finite SHALL not be drawn that frame.
+
+#### Scenario: A charging blast
+- **WHEN** a duellist's blast has charged three ticks
+- **THEN** its strip is drawn with the force program and its chunks carry the charge byte
+
+### Requirement: Wave draw and light
+A force wave SHALL be drawn and lit as a blast of its 32 chunks: the blast's strip with its texture offset, and the blast's multi-point GI light over the life records' light points the frame writes, freed on the frame that builds nothing.
+
+#### Scenario: A charging wave
+- **WHEN** a wave has charged three ticks
+- **THEN** its strip is drawn and its light carries 32 finite points
+
+### Requirement: Arc visible gate
+An electricity emitter whose node is outside the scene camera's view SHALL keep its voxel light and hum but build no scroll, ribbon or light points and SHALL not put its tendrils' origins back that frame.
+
+#### Scenario: Off screen
+- **WHEN** an emitter with lit points draws unseen
+- **THEN** its ribbon is empty, its points' light is 0 and a voxel light still shines
+
+### Requirement: Barricade program
+The barricade SHALL draw its slid slab, unscaled, through the `effectfbrcd` program with `ViewPos` the camera in the node's frame, `BExt` the node's half extents, `TexPos` the slid texture place, the eight ripple points and `Fade` from the rise or fall, over the `_ForceNoise` picture with the barrier record's premultiplied blend.
+
+#### Scenario: Rising
+- **WHEN** a barricade rises at share t
+- **THEN** its `Fade` is ((1 − t)²)² and `BExt` is the drawn half width and height
+
+### Requirement: Displacement tendril smoke program
+The displacement tendrils SHALL draw through their geometry's own program, `effectforce_v` with `effectsmoke_f`, over the `_TDispMat01` record's `FlameletsA3` layer, with `TexOfs = (0, scroll, 1)` (the effect's scroll between its last two ticks), the strip's colour bytes and its two coordinate sets, blended ONE / ONE_MINUS_SRC_ALPHA on both faces with no shadows.
+
+#### Scenario: A tendril set
+- **WHEN** a lit tendril set has ticked four times
+- **THEN** its material is the smoke program with the shown scroll in `TexOfs` and its strip carries the second coordinate set

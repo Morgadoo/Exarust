@@ -222,3 +222,9 @@ A placed object whose record is condition-scaled SHALL scale its voxel lights un
 #### Scenario: A crystal spent to half
 - **WHEN** a condition-scaled object's condition goes from 0 to 128
 - **THEN** its voxel light's intensity becomes the record's times (127/255)² and its glow's emissive the same share
+### Requirement: Automatic sun reads the grid rooms
+A level whose record leaves the sun automatic SHALL get a sun only when it has no lights and no grid rooms.
+
+#### Scenario: A grid level without lights
+- **WHEN** a record level in automatic sun mode loads with no lights and five grid rooms
+- **THEN** it has no sun, while the same level with no rooms has one

@@ -1785,9 +1785,20 @@ pub fn spawn_model_nodes_at(
         }
         let Some(parent) = node.parent else { continue };
         if let Some(&part) = parts_of[parent].first() {
-            commands
-                .entity(entities[i])
-                .insert(fire::FireHost { part, base: None });
+            // The host's geometry children (nodes under the host with a
+            // mesh) take the same scale on their first part.
+            let children = model
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, child)| child.parent == Some(parent))
+                .filter_map(|(j, _)| parts_of[j].first().map(|&p| (p, None)))
+                .collect();
+            commands.entity(entities[i]).insert(fire::FireHost {
+                part,
+                base: None,
+                children,
+            });
         }
     }
     let mut excluded: Vec<Vec<Entity>> = vec![Vec::new(); model.nodes.len()];
@@ -2004,6 +2015,8 @@ pub struct LevelLoad {
     /// as the terrain loads (its water level follows it).
     terrain_wetness: Option<f32>,
     lights: usize,
+    /// The grid's room count, which the automatic sun rule reads.
+    grid_rooms: usize,
     min: Vec3,
     max: Vec3,
     missing: usize,
@@ -2165,6 +2178,7 @@ impl LevelLoad {
             &entry,
             scene.environment.as_ref(),
             0,
+            0,
             None,
             Some(environment::PresetInput {
                 seed: preset_seed,
@@ -2189,6 +2203,7 @@ impl LevelLoad {
             terrain_extent: None,
             terrain_wetness: None,
             lights: 0,
+            grid_rooms: 0,
             min: Vec3::splat(f32::MAX),
             max: Vec3::splat(f32::MIN),
             missing: 0,
@@ -2271,6 +2286,7 @@ impl LevelLoad {
                 };
                 if done {
                     let rooms = self.grid.as_ref().and_then(|b| b.rooms());
+                    self.grid_rooms = rooms.as_ref().map_or(0, |r| r.rooms().len());
                     self.grid_stats = self.grid.take().map(|b| b.stats());
                     // Lights stop at the grid's walls.
                     match self
@@ -2579,6 +2595,7 @@ impl LevelLoad {
             &self.entry,
             self.scene.environment.as_ref(),
             self.lights,
+            self.grid_rooms,
             None,
             Some(environment::PresetInput {
                 seed: self.preset_seed,

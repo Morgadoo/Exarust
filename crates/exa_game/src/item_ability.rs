@@ -944,7 +944,12 @@ fn flame_row_draws(
     time: Res<Time>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     rows: Query<(Entity, &Flame)>,
-    mut draws: Query<(Entity, &FlameRowDraw, &Mesh3d)>,
+    mut draws: Query<(
+        Entity,
+        &FlameRowDraw,
+        &Mesh3d,
+        &MeshMaterial3d<FlameRowMaterial>,
+    )>,
 ) {
     if rows.is_empty() && draws.is_empty() {
         return;
@@ -984,32 +989,38 @@ fn flame_row_draws(
     let t = fixed.overstep_fraction();
     let now_ms = time.elapsed().as_millis() as u32;
     let mut drawn = HashMap::new();
-    for (entity, draw, mesh) in &mut draws {
+    for (entity, draw, mesh, material) in &mut draws {
         match rows.get(draw.row) {
             Ok((_, flame)) => {
                 drawn.insert(draw.row, ());
                 if let Some(mut m) = meshes.get_mut(&mesh.0) {
                     *m = flame.row().ribbon_mesh(camera, t);
                 }
+                // Each row sets the material's animation from its own fade
+                // before its draw, as the original's row draw does.
+                if let Some(mut m) = materials.get_mut(&material.0) {
+                    m.set_animation(fire_row::texture_animation(now_ms, flame.row().fade));
+                }
             }
-            Err(_) => commands.entity(entity).despawn(),
+            Err(_) => {
+                commands.entity(entity).despawn();
+            }
         }
-    }
-    // One material per scene: the animation follows the first row's fade.
-    if let Some((_, flame)) = rows.iter().next()
-        && let Some(mut m) = materials.get_mut(&assets)
-    {
-        m.set_animation(fire_row::texture_animation(now_ms, flame.row().fade));
     }
     for (row, flame) in &rows {
         if drawn.contains_key(&row) || flame.row().removed() {
             continue;
         }
+        // The row's own copy of `_FlameMat01`, so its animation is its own.
+        let Some(mut own) = materials.get(&assets).cloned() else {
+            continue;
+        };
+        own.set_animation(fire_row::texture_animation(now_ms, flame.row().fade));
         commands.spawn((
             Name::new("FlameRowDraw"),
             FlameRowDraw { row },
             Mesh3d(meshes.add(flame.row().ribbon_mesh(camera, t))),
-            MeshMaterial3d(assets.clone()),
+            MeshMaterial3d(materials.add(own)),
             Transform::IDENTITY,
             NoFrustumCulling,
             // The ribbon runs through its own light: it neither casts nor
@@ -1092,6 +1103,57 @@ fn flame_row_loops(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_flame_row_draws_with_its_own_fade() {
+        use bevy::asset::AssetPlugin;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .init_asset::<FlameRowMaterial>()
+            .init_resource::<ModelCache>()
+            .add_systems(Update, flame_row_draws);
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<FlameRowMaterial>>()
+            .add(FlameRowMaterial::new(Handle::default(), Handle::default()));
+        app.insert_resource(FlameRowAssets { material });
+        app.world_mut().spawn((
+            Camera3d::default(),
+            Camera::default(),
+            GlobalTransform::default(),
+        ));
+        let row = |fade| Flame::new(Vec3::ZERO, Vec3::Y * 30.0, 0, 1).with_fade(fade);
+        let bright = app.world_mut().spawn(row(1.0)).id();
+        let dim = app.world_mut().spawn(row(0.25)).id();
+        app.update();
+        app.update();
+        let mut seen = Vec::new();
+        let mut draws = app
+            .world_mut()
+            .query::<(&FlameRowDraw, &MeshMaterial3d<FlameRowMaterial>)>();
+        for (draw, handle) in draws.iter(app.world()) {
+            let anim = app
+                .world()
+                .resource::<Assets<FlameRowMaterial>>()
+                .get(&handle.0)
+                .expect("the row's material")
+                .anim
+                .anim;
+            seen.push((draw.row, handle.0.id(), anim.z));
+        }
+        assert_eq!(seen.len(), 2);
+        assert_ne!(seen[0].1, seen[1].1, "each row owns its material");
+        for (row, _, half) in seen {
+            // Anim's third value is half of one less the row's own fade.
+            let fade = if row == bright { 1.0 } else { 0.25 };
+            assert!(row == bright || row == dim);
+            assert_eq!(half, (1.0 - fade) * 0.5);
+        }
+    }
 
     fn body(kind: u32, socket: u16) -> Vec<u8> {
         let mut b = vec![0u8; 0x60];

@@ -277,6 +277,9 @@ pub struct Barricade {
     pub drawn: [f32; 2],
     /// The texture's two random offsets.
     pub texture: [f32; 2],
+    /// The program's `TexPos`: the first offset slid by the rising frame
+    /// (a three-hundredth of the halves' offset), and the second as drawn.
+    pub tex_pos: Vec2,
     /// The node's half size and height: the mesh build's, then what each
     /// rising or falling frame writes (the half width and height drawn).
     pub node_half: Vec3,
@@ -344,6 +347,7 @@ impl Barricade {
             cost,
             drawn: [0.0, 0.0],
             texture,
+            tex_pos: Vec2::new(texture[0], texture[1]),
             node_half: NODE_HALF,
             node_at: frame.at,
             stamp,
@@ -633,6 +637,7 @@ impl Barricade {
                 let offset = ((e * REACH - right) + (left - e * REACH)) * 0.5;
                 out.at = self.base + self.frame.x * offset;
                 out.texture = offset * 0.003_333_333_4 + self.texture[0];
+                self.tex_pos.x = out.texture;
                 out.slide = REACH - out.half_width;
                 self.node_half.x = out.half_width;
                 self.node_half.y = out.half_height;

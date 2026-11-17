@@ -655,8 +655,10 @@ pub(crate) fn draw_torrents(
     let Some(camera) = cameras.iter().next() else {
         return;
     };
-    // The original carries the camera into the effect node's frame; the
-    // node is unturned here, so its place (cm) is the eye.
+    // The eye is the camera's place (cm) turned into the effect node's rows
+    // (a rotation only: the node's place never enters it). The torrent's
+    // frame writes only its node's bounds and nothing turns the node, so
+    // its rows stay the identity and the world place is the eye exactly.
     let eye = camera.translation() * CM;
     let alpha = time.overstep_fraction();
     for (entity, mut live, drawn) in &mut torrents {
