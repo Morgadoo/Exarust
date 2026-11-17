@@ -36,8 +36,9 @@ impl Plugin for ArcPlugin {
     }
 }
 
-/// The shared arc material (its texture is a white 1 × 1 stand-in until the
-/// effects lane supplies `_ElecMat01`'s emissive map).
+/// The shared arc texture: `_ElecMat01`'s emissive layer, `BeamNoise01`
+/// (the texture pack's `beamnoise01`), read raw; a white 1 × 1 texel when
+/// the install does not have it.
 #[derive(Resource)]
 struct ArcAssets {
     texture: Handle<Image>,
@@ -118,14 +119,34 @@ pub fn spawn_arc(
     id
 }
 
-/// One white pixel, the arc material's stand-in texture.
+/// The arc texture's entry in the texture pack.
+pub const ARC_TEXTURE: &str = "beamnoise01";
+
+/// Loads `_ElecMat01`'s emissive layer once, the level devices' arcs
+/// binding it as the power arcs do; one white pixel stands in without the
+/// game.
 fn arc_assets(
     mut commands: Commands,
     done: Option<Res<ArcAssets>>,
+    game: Option<Res<exa_assets::Game>>,
+    arcs: Query<(), With<ArcEffect>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    if done.is_some() {
+    // Made with the first arc, once its level (and the game) is loaded.
+    if done.is_some() || arcs.is_empty() {
         return;
+    }
+    let loaded = game
+        .as_deref()
+        .map(|game| game.load_texture(ARC_TEXTURE, exa_assets::texture::ColorSpace::Linear, None));
+    match loaded {
+        Some(Ok(image)) => {
+            let texture = images.add(image);
+            commands.insert_resource(ArcAssets { texture });
+            return;
+        }
+        Some(Err(e)) => warn!("level arcs: {ARC_TEXTURE}: {e}; a white texel stands in"),
+        None => {}
     }
     let image = Image::new(
         Extent3d {

@@ -329,6 +329,23 @@ fn the_tele_bubble_shader_composes_and_validates() {
 }
 
 #[test]
+fn the_force_barricade_shader_composes_and_validates() {
+    let (mut cache, wall) =
+        cache_with_every_shader_and("embedded://exa_render/force_barricade.wesl");
+    // The wall's slab: positions, normals, coordinates and colours.
+    let module = cache
+        .get(
+            0,
+            wall,
+            &defs(&["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_NORMALS"]),
+        )
+        .unwrap_or_else(|error| panic!("force_barricade.wesl: {error}"));
+    let stages = stages(&module);
+    assert!(stages.contains(&naga::ShaderStage::Vertex));
+    assert!(stages.contains(&naga::ShaderStage::Fragment));
+}
+
+#[test]
 fn the_mind_sight_shader_composes_and_validates() {
     let (mut cache, sight) = cache_with_every_shader_and("embedded://exa_render/mind_sight.wesl");
     // A sphere mesh with and without normals (the shader's eye term falls

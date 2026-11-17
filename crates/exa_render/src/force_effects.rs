@@ -57,8 +57,10 @@ impl Plugin for ForceEffectsPlugin {
         embedded_asset!(app, "disp_shell.wesl");
         embedded_asset!(app, "tele_bubble.wesl");
         embedded_asset!(app, "force_dome.wesl");
+        embedded_asset!(app, "force_barricade.wesl");
         app.add_plugins((
             MaterialPlugin::<ForceDomeMaterial>::default(),
+            MaterialPlugin::<BarricadeMaterial>::default(),
             MaterialPlugin::<ForceRibbonMaterial>::default(),
             MaterialPlugin::<ForceShellMaterial>::default(),
             MaterialPlugin::<DispShellMaterial>::default(),
@@ -129,6 +131,7 @@ fn shader(name: &str) -> ShaderRef {
         "disp" => embedded_path!("disp_shell.wesl"),
         "tele" => embedded_path!("tele_bubble.wesl"),
         "dome" => embedded_path!("force_dome.wesl"),
+        "barricade" => embedded_path!("force_barricade.wesl"),
         _ => embedded_path!("force_shell.wesl"),
     };
     ShaderRef::Path(AssetPath::from_path_buf(path).with_source("embedded"))
@@ -690,6 +693,88 @@ impl Material for ForceDomeMaterial {
             && let Some(fragment) = descriptor.fragment.as_mut()
         {
             fragment.shader_defs.push("BUBBLE".into());
+        }
+        Ok(())
+    }
+}
+
+/// The Force Barricade's program uniforms (`effectfbrcd_v` with
+/// `effectfbrcd_f`), laid out as `BarricadeParams` in
+/// `force_barricade.wesl`.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub struct BarricadeParams {
+    /// `ViewPos`: the camera in the node's frame (cm); w unused.
+    pub view_pos: Vec4,
+    /// `BExt`: the node's half extents (cm); w unused.
+    pub extent: Vec4,
+    /// `TexPos` in xy, `TexOfs` in zw.
+    pub tex_pos: Vec4,
+    /// `ColPt`: the eight ripple points in the node's frame (cm), their
+    /// shown amount in z; w unused.
+    pub colour_points: [Vec4; 8],
+    /// `Fade`.
+    pub fade: f32,
+}
+
+impl Default for BarricadeParams {
+    fn default() -> Self {
+        Self {
+            view_pos: Vec4::ZERO,
+            extent: Vec4::new(30.0, 100.0, 5.0, 0.0),
+            tex_pos: Vec4::ZERO,
+            colour_points: [Vec4::ZERO; 8],
+            fade: 1.0,
+        }
+    }
+}
+
+/// The Force Barricade's material (the `_ForceBarrier01` record drawn
+/// through the barricade geometry's own program): one a wall, over the
+/// wall's slab in centimetres whose entity carries the node's frame and
+/// the centimetre-to-metre scale.
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+pub struct BarricadeMaterial {
+    #[uniform(0)]
+    pub params: BarricadeParams,
+    /// `EmiTex` (unit 0): the `_ForceNoise` picture.
+    #[texture(1)]
+    #[sampler(2)]
+    pub noise: Handle<Image>,
+}
+
+impl Material for BarricadeMaterial {
+    fn vertex_shader() -> ShaderRef {
+        shader("barricade")
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        shader("barricade")
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        blend_alpha_mode(FORCE_BARRIER_BLEND_WORD).unwrap_or(AlphaMode::Premultiplied)
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn enable_oit() -> bool {
+        false
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if FORCE_BARRIER_RECORD_FLAGS & TWO_SIDED != 0 {
+            descriptor.primitive.cull_mode = None;
         }
         Ok(())
     }

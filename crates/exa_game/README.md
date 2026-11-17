@@ -88,8 +88,10 @@ restore; a cast puts it on the running body (`thaum::veil_live`): the
 parts' collision bit `0x4000`, the phasing veto (`exa_combat::veto`) whose
 passes play `thmdsp_phs`, phase the striker (bits `0xC000`) for 500 ms and
 hang a tendril from it, the looping `thmdsp_cns01` hum at the power's
-volume, and the power's end ending the body wisps so they trail away. The tendrils draw with their `_TDispMat01` record
-(`exa_render::force_effects::DispTendrilMaterial`), and an AI's Long Door
+volume, and the power's end ending the body wisps so they trail away. The tendrils draw through their geometry's `effectsmoke_f` program with
+their scroll (`exa_render::force_effects::ForceRibbonMaterial::smoke`), the
+barricade through `effectfbrcd` (`BarricadeMaterial`), the wave and a
+charging blast through the blast's strip, and an AI's Long Door
 asks the navigation grid for its place (`thaum::long_door_live`). The running screen (`power_screen`) opens the tree with P, and in its creation mode for the creator (while it is
 shown its form has the keys: the arrows step the bar, any other key closes
 it after the opening fade's first 50 ms) and draws the

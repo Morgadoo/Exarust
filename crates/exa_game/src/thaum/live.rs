@@ -27,11 +27,11 @@
 //!   penalty (`exa_world::nav::stamp_line`, from the first tick a grid is
 //!   there) and taken back when its fall ends. Wisps follow their body
 //!   parts.
-//! - **Each frame**: the arcs' and wisps' ribbons and the barricade's slab
-//!   are drawn with [`exa_render::glow::GlowMaterial`], a stand-in for the
-//!   original's effect programs, which are not ported (the arcs' ribbon
-//!   carries its texture coordinates). An effect that ends leaves the
-//!   scene.
+//! - **Each frame**: the arcs' ribbons draw with the electricity program
+//!   (`_ElecMat01`, built only while their node is on screen), the wisps'
+//!   strips with their geometry's `effectsmoke_f` and the barricade's slab
+//!   with `effectfbrcd` ([`draw_barricades`]). An effect that ends leaves
+//!   the scene.
 //! - **Debug** ([`ThaumDebug`], `--debug-arcs`, `--debug-barricade`,
 //!   `--debug-wisps`): the Shock power's hand arcs on the player's right
 //!   hand (respawned while they last), a barricade raised 2 m in front of
@@ -64,7 +64,6 @@ use exa_physics::body::locomotion::Locomotor;
 use exa_physics::body::{BodyTicks, Ragdoll, step_length};
 use exa_render::electricity::ArcMaterial;
 use exa_render::gi::VoxelLight;
-use exa_render::glow::GlowMaterial;
 use exa_world::nav::{NavGrid, NavPatch, stamp_line, unstamp_line};
 
 use super::arcs::{
@@ -1578,14 +1577,6 @@ pub(crate) fn spawn_debug_effects(
     }
 }
 
-/// The glow tint each effect draws with.
-const WALL_TINT: Vec4 = Vec4::new(0.45, 0.33, 0.95, 0.25);
-
-fn mesh_of(positions: Vec<[f32; 3]>, colours: Vec<[f32; 4]>, indices: Vec<u32>) -> Mesh {
-    let uvs = vec![[0.0, 0.0]; positions.len()];
-    mesh_of_uv(positions, uvs, colours, indices)
-}
-
 /// A mesh with its texture coordinates (the arcs' ribbon scrolls them).
 pub(super) fn mesh_of_uv(
     positions: Vec<[f32; 3]>,
@@ -1633,37 +1624,6 @@ pub(super) fn mesh_of_ribbon(ribbon: &crate::effects::ribbon::RibbonMesh) -> Mes
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, ribbon.uvs2.clone());
     }
     mesh
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn show(
-    commands: &mut Commands,
-    entity: Entity,
-    drawn: Option<&EffectMesh>,
-    mesh: Mesh,
-    tint: Vec4,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<GlowMaterial>,
-) {
-    match drawn {
-        Some(EffectMesh(handle)) => {
-            if let Some(mut m) = meshes.get_mut(handle) {
-                *m = mesh;
-            }
-        }
-        None => {
-            let handle = meshes.add(mesh);
-            commands.entity(entity).insert((
-                EffectMesh(handle.clone()),
-                Mesh3d(handle),
-                MeshMaterial3d(materials.add(GlowMaterial { tint })),
-                Transform::IDENTITY,
-                NoFrustumCulling,
-                bevy::light::NotShadowCaster,
-                bevy::light::NotShadowReceiver,
-            ));
-        }
-    }
 }
 
 fn camera_axis(cameras: &Query<&GlobalTransform, exa_render::supersample::SceneCamera>) -> Vec3 {
@@ -2003,14 +1963,43 @@ impl ArcLook<'_, '_> {
     }
 }
 
+/// The Force Barricade's wall through its geometry's own program,
+/// `effectfbrcd_v` with `effectfbrcd_f`
+/// ([`exa_render::force_effects::BarricadeMaterial`]): the slab with its
+/// halves slid toward the middle (never scaled: the program shapes the
+/// height and the ends), the entity carrying the node's frame (the rising
+/// frame's slid middle, else the centre) with the centimetre-to-metre
+/// scale, and the uniforms the geometry binds each draw: `ViewPos` (the
+/// camera in the node's frame), `BExt` (the node's half extents the frames
+/// write), the eight ripple points of `ColPt`, `TexPos` and the `Fade` of
+/// [`crate::effects::effect_geometry::barricade_alpha`]. `EmiTex` is the
+/// `_ForceNoise` picture the barrier record binds; `TexOfs` is the
+/// super-sampling pass's offset, 0 with one draw a frame.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn draw_barricades(
     mut commands: Commands,
-    mut walls: Query<(Entity, &mut LiveBarricade, Option<&EffectMesh>)>,
+    mut walls: Query<(
+        Entity,
+        &mut LiveBarricade,
+        Option<(
+            &EffectMesh,
+            &MeshMaterial3d<exa_render::force_effects::BarricadeMaterial>,
+        )>,
+    )>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
+    noise: Res<super::effect_draw::ForceNoise>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<GlowMaterial>>,
+    mut materials: ResMut<Assets<exa_render::force_effects::BarricadeMaterial>>,
     mut slab: Local<Option<super::barricade::WallMesh>>,
 ) {
+    let Some(image) = noise.image.clone() else {
+        return;
+    };
+    let camera = cameras
+        .iter()
+        .next()
+        .map_or(Vec3::ZERO, |c| c.translation() * CM);
     let alpha = time.overstep_fraction();
     let slab = slab.get_or_insert_with(barricade_mesh);
     for (entity, mut live, drawn) in &mut walls {
@@ -2026,29 +2015,74 @@ fn draw_barricades(
             at,
             ..live.wall.frame
         };
-        let (local, _) = slide_mesh(slab, out.slide);
-        let height = (out.half_height / super::barricade::HALF_HEIGHT).max(0.0);
-        let positions = local
-            .iter()
-            .map(|p| (frame.world(Vec3::new(p.x, p.y * height, p.z)) / CM).to_array())
-            .collect();
-        let colours = vec![[1.0; 4]; local.len()];
-        let indices = slab
-            .triangles
-            .iter()
-            .flatten()
-            .map(|&i| u32::from(i))
-            .collect();
-        let mesh = mesh_of(positions, colours, indices);
-        show(
-            &mut commands,
-            entity,
-            drawn,
-            mesh,
-            WALL_TINT,
-            &mut meshes,
-            &mut materials,
+        let (local, uvs) = slide_mesh(slab, out.slide);
+        let mesh = mesh_of_uv(
+            local.iter().map(|p| p.to_array()).collect(),
+            uvs.iter().map(|uv| uv.to_array()).collect(),
+            vec![[1.0; 4]; local.len()],
+            slab.triangles
+                .iter()
+                .flatten()
+                .map(|&i| u32::from(i))
+                .collect(),
         );
+        let params = barricade_params(&live.wall, &out, &frame, camera);
+        let transform = Transform::from_matrix(Mat4::from_cols(
+            frame.x.extend(0.0) / CM,
+            frame.y.extend(0.0) / CM,
+            frame.z.extend(0.0) / CM,
+            (frame.at / CM).extend(1.0),
+        ));
+        match drawn {
+            Some((EffectMesh(handle), MeshMaterial3d(material))) => {
+                if let Some(mut m) = meshes.get_mut(handle) {
+                    *m = mesh;
+                }
+                if let Some(mut m) = materials.get_mut(material) {
+                    m.params = params;
+                }
+                commands.entity(entity).insert(transform);
+            }
+            None => {
+                let handle = meshes.add(mesh);
+                let material = materials.add(exa_render::force_effects::BarricadeMaterial {
+                    params,
+                    noise: image.clone(),
+                });
+                commands.entity(entity).insert((
+                    EffectMesh(handle.clone()),
+                    Mesh3d(handle),
+                    MeshMaterial3d(material),
+                    transform,
+                    NoFrustumCulling,
+                    bevy::light::NotShadowCaster,
+                    bevy::light::NotShadowReceiver,
+                ));
+            }
+        }
+    }
+}
+
+/// The barricade program's uniforms for a frame's draw: the camera (cm)
+/// taken into the node's frame, the node's half extents, `TexPos`, the
+/// eight ripple points (in the wall's plane, their shown amount in z) and
+/// the `Fade`.
+pub(crate) fn barricade_params(
+    wall: &super::barricade::Barricade,
+    out: &super::barricade::WallFrameOut,
+    frame: &WallFrame,
+    camera: Vec3,
+) -> exa_render::force_effects::BarricadeParams {
+    let mut colour_points = [Vec4::ZERO; 8];
+    for (point, ripple) in colour_points.iter_mut().zip(out.ripples.iter()) {
+        *point = ripple.extend(0.0);
+    }
+    exa_render::force_effects::BarricadeParams {
+        view_pos: frame.local(camera).extend(0.0),
+        extent: wall.node_half.extend(0.0),
+        tex_pos: Vec4::new(wall.tex_pos.x, wall.tex_pos.y, 0.0, 0.0),
+        colour_points,
+        fade: crate::effects::effect_geometry::barricade_alpha(wall.state, wall.progress),
     }
 }
 
@@ -2163,6 +2197,35 @@ pub(crate) fn mesh_of_wisps(r: &super::wisps::WispRibbon) -> Mesh {
 mod tests {
     use super::*;
 
+    /// The barricade's program uniforms: the camera in the node's frame,
+    /// the node's half extents, `TexPos` slid by the rising frame, the
+    /// ripples in the wall's plane and the rising `Fade` (`(1 − t)²`
+    /// squared).
+    #[test]
+    fn the_barricade_binds_its_programs_uniforms() {
+        let frame = WallFrame::facing(Vec3::new(0.0, 110.0, 0.0), Vec3::Z);
+        let mut draws = Mt19937::new(5489);
+        let mut wall = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
+        wall.shown = [0.25, 0.5];
+        let out = wall.frame(0.5).expect("rising");
+        let drawn = WallFrame {
+            at: out.at,
+            ..wall.frame
+        };
+        let camera = Vec3::new(0.0, 170.0, -300.0);
+        let p = barricade_params(&wall, &out, &drawn, camera);
+        assert_eq!(p.view_pos.truncate(), drawn.local(camera));
+        assert_eq!(p.extent.truncate(), wall.node_half);
+        assert_eq!(p.extent.x, out.half_width);
+        assert_eq!(p.tex_pos.x, out.texture);
+        assert_eq!(p.tex_pos.y, wall.texture[1]);
+        assert_eq!(p.tex_pos.zw(), Vec2::ZERO);
+        let t = wall.progress;
+        let e = (1.0 - t) * (1.0 - t);
+        assert_eq!(p.fade, e * e);
+        assert_eq!(p.colour_points, [Vec4::ZERO; 8]);
+    }
+
     /// A lit tendril set draws through the geometry's own smoke program:
     /// its material is `effectsmoke_f` with `TexOfs = (0, scroll, 1)`, the
     /// scroll following the effect's ticks, and its strip carries the light
@@ -2238,7 +2301,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
-            .init_asset::<GlowMaterial>()
+            .init_asset::<exa_render::glow::GlowMaterial>()
+            .init_asset::<exa_render::force_effects::BarricadeMaterial>()
             .init_asset::<Image>()
             .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
             .init_asset::<exa_render::force_effects::ForceShellMaterial>()
@@ -3437,7 +3501,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
-            .init_asset::<GlowMaterial>()
+            .init_asset::<exa_render::glow::GlowMaterial>()
+            .init_asset::<exa_render::force_effects::BarricadeMaterial>()
             .init_asset::<Image>()
             .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
             .init_asset::<exa_render::force_effects::ForceShellMaterial>()
