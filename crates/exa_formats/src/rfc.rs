@@ -957,7 +957,7 @@ pub struct PlacedObject {
     /// database; otherwise `objdb.rdb`. The low 30 bits are the record id.
     pub id: u32,
     /// The placement flags word: condition in bits 16–23; bit `0x10` sets
-    /// node flag `0x80000` on the object's root.
+    /// node flag `0x80000` on the object's root and every node under it.
     pub flags: u32,
     /// The object's own flags word: its bits under `0xB80000` are copied onto
     /// its root node (`0x80000` marks it level geometry; the rest are not
@@ -979,8 +979,8 @@ pub struct PlacedObject {
 
 impl PlacedObject {
     pub const ID_MASK: u32 = 0x3FFF_FFFF;
-    /// The placement flags bit that marks the object's root node as level
-    /// geometry (the flag is not spread to the nodes under it).
+    /// The placement flags bit that marks the object's tree as level
+    /// geometry (the create spreads the flag to every node under the root).
     pub const STATIC: u32 = 0x10;
     /// The object flag that marks the root node level geometry.
     pub const OBJECT_STATIC: u32 = 0x8_0000;
@@ -990,9 +990,8 @@ impl PlacedObject {
     }
 
     /// Whether the object's root node is level geometry: the placement's
-    /// static bit or the object's own static flag, either of which the
-    /// original turns into node flag `0x80000` on its root (and on no other
-    /// node).
+    /// static bit (which marks every node of the tree) or the object's own
+    /// static flag (its root).
     pub fn is_static(&self) -> bool {
         self.flags & Self::STATIC != 0 || self.object_flags & Self::OBJECT_STATIC != 0
     }
@@ -1194,7 +1193,10 @@ impl Scene {
         let mut placed_objects = Vec::new();
         let mut unknown_chunks = Vec::new();
         let mut level_errors = Vec::new();
-        while c.remaining() >= 8 {
+        // The original reads another root chunk only while more than eight
+        // bytes remain (`pos + 8 < size`): a file ending in an empty chunk
+        // header is not dispatched.
+        while c.remaining() > 8 {
             let (tag, mut chunk) = c.chunk()?;
             if tag == level::GRID {
                 match level::read_grid(chunk.b) {
@@ -1277,7 +1279,8 @@ impl Scene {
         }
         let version = c.u16()?;
         let mut db = LocalDatabase::default();
-        while c.remaining() >= 8 {
+        // More than eight bytes, as the scene's root loop.
+        while c.remaining() > 8 {
             let (tag, chunk) = c.chunk()?;
             if tag == LOCAL_DATABASE {
                 let LocalDatabase {
@@ -3173,6 +3176,24 @@ mod tests {
         assert_eq!(db.strings.unwrap().get(id).as_deref(), Some("Brass key"));
         assert!(db.items.is_empty() && db.placed_objects.is_empty());
         assert!(Scene::parse_database(b"not an rfc").is_err());
+    }
+
+    /// The root loop reads another chunk only while more than eight bytes
+    /// remain, as the original's: a file ending in a bare (empty) chunk
+    /// header leaves it unread; one byte more and it is read.
+    #[test]
+    fn a_trailing_empty_chunk_is_not_dispatched() {
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(0xDEAD_BEEF, &[]));
+        assert_eq!(file.len() - 4, 8);
+        assert!(Scene::parse(&file).unwrap().unknown_chunks.is_empty());
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(0xDEAD_BEEF, &[7]));
+        assert_eq!(Scene::parse(&file).unwrap().unknown_chunks, [0xDEAD_BEEF]);
+        // The database-only read stops the same way.
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(LOCAL_DATABASE, &[]));
+        assert!(Scene::parse_database(&file).is_ok());
     }
 
     #[test]

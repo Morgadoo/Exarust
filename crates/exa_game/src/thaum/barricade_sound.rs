@@ -106,7 +106,7 @@ pub(crate) fn sound_barricades(
         .collect();
     for entity in gone {
         if let Some(handle) = state.voices.remove(&entity) {
-            env.free_handle(bank, handle);
+            env.finish_handle(bank, handle);
             info!("barricade {entity:?}: gone, its hum stopped");
         }
     }

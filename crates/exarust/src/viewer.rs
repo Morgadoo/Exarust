@@ -1096,7 +1096,7 @@ fn play_level(
     } else {
         (
             exa_audio::music_for_level(name).to_string(),
-            exa_audio::MUSIC_VOLUME,
+            exa_audio::music_volume_for_level(name),
         )
     };
     commands.insert_resource(exa_audio::LevelMusic(track));

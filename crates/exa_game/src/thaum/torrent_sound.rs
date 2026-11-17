@@ -114,7 +114,7 @@ pub(crate) fn sound_torrents(
     for entity in gone {
         if let Some(voices) = state.voices.remove(&entity) {
             for handle in [voices.charge, voices.stream].into_iter().flatten() {
-                env.free_handle(bank, handle);
+                env.finish_handle(bank, handle);
             }
             info!("torrent {entity:?}: gone, its voices freed");
         }

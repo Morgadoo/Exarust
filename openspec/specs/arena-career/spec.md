@@ -1053,11 +1053,11 @@ Forfeiting the entire tourney ("Do you wish to forfeit the entire tourney?") SHA
 - **THEN** the counts are 0, 1, 0, 0, 2, 0
 
 ### Requirement: Hub arrival
-Arriving at the hub SHALL, when a physician is on the staff, remove the weapon-kind object lying within 10 cm in x and z of (−2100, 0, 900) cm, as the physician's hire does, and SHALL build the tournament board when it holds no prize.
+Arriving at the hub SHALL, when a physician is on the staff, unlatch the doors of the door object standing within 10 cm in x and z of (−2100, 900) cm, as the physician's hire does, and SHALL build the tournament board when it holds no prize.
 
 #### Scenario: A physician and an empty board
 - **WHEN** the staff holds a physician and the board's prize is 0, then a merchant and a prize of 7
-- **THEN** the object is removed and the board built, then neither
+- **THEN** the door is unlatched and the board built, then neither
 
 ### Requirement: Rematch lineup
 The automatic rematch SHALL enter, from the second employee on, those whose class is under 4, until the match's team size is reached or the staff ends.

@@ -213,6 +213,8 @@ pub struct ClickOutputs<'w> {
     witness: MessageWriter<'w, crate::script_cast::WitnessGrant>,
     /// A teleporter's or reconstruction device's own use.
     device_uses: MessageWriter<'w, UseDevice>,
+    /// A kind-4 device's revelation (its record's event word).
+    revelations: MessageWriter<'w, crate::game_event_live::DeviceRevelation>,
     /// A kind 0 use starts the object's keyframe tracks.
     tracks: Option<ResMut<'w, Messages<exa_anim::tracks::StartTracks>>>,
 }
@@ -234,12 +236,12 @@ impl Narrator<'_> {
             info!("object click: narrator line {text:?} (no dialogue loaded)");
             return;
         };
+        let world_time = conversations.world_time(now);
         let exa_script::Conversations {
             engine,
             cast,
             player,
             player2,
-            world_base,
             locale,
             ..
         } = conversations;
@@ -250,7 +252,7 @@ impl Narrator<'_> {
             },
             cast,
             now,
-            world_time: exa_script::topics::world_time(*world_base, now, 0),
+            world_time,
             player: *player,
             player2: *player2,
             locale: *locale,
@@ -297,12 +299,21 @@ impl Narrator<'_> {
 fn use_device(
     out: &mut ClickOutputs,
     reads: &DeviceReads,
-    kind: u8,
+    usable: &exa_formats::objdb::Operative,
     id: u32,
     now: u64,
     device: Entity,
     user: Option<Entity>,
 ) -> bool {
+    let kind = usable.kind;
+    if kind == player_controls::DEVICE_SIGNAL {
+        // The use runs the revelation on the record's event word and
+        // answers no.
+        out.revelations
+            .write(crate::game_event_live::DeviceRevelation {
+                event: usable.target,
+            });
+    }
     let uses = &mut out.device_uses;
     player_controls::device_use(kind, id, now, &mut out.devices, || {
         let Some(user) = user else {
@@ -424,7 +435,7 @@ pub fn run_object_clicks(
                         continue;
                     };
                     let used = usable.class == USABLE_DEVICE
-                        && use_device(&mut out, &reads, usable.kind, id, now, entity, user);
+                        && use_device(&mut out, &reads, &usable, id, now, entity, user);
                     if used {
                         let script = sections.as_deref().and_then(|s| s.use_script.clone());
                         scripted_device_use(
@@ -478,8 +489,7 @@ pub fn run_object_clicks(
                         .with_strings(named, !description.is_empty());
                     let used = match sections.as_deref().and_then(|s| s.usable) {
                         Some(usable) if usable.class == USABLE_DEVICE => {
-                            let used =
-                                use_device(&mut out, &reads, usable.kind, id, now, entity, user);
+                            let used = use_device(&mut out, &reads, &usable, id, now, entity, user);
                             if used {
                                 let script = sections.as_deref().and_then(|s| s.use_script.clone());
                                 scripted_device_use(
@@ -804,6 +814,7 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.add_message::<ObjectClick>()
+            .add_message::<crate::game_event_live::DeviceRevelation>()
             .add_message::<WorldCard>()
             .add_message::<ContainerRequest>()
             .add_message::<OpenDivination>()

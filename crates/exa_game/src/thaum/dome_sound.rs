@@ -239,7 +239,7 @@ pub(crate) fn sound_domes(
         .collect();
     for entity in gone {
         if let Some(handle) = voices.0.remove(&entity) {
-            env.free_handle(bank, handle);
+            env.finish_handle(bank, handle);
             info!("dome {entity:?}: gone, its hum freed");
         }
     }
