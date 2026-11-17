@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 563 | 142,825 | B1 wire (or prove unreachable) |
-| partial | 1,316 | 830,533 | B4 complete the port |
+| uncalled | 560 | 142,417 | B1 wire (or prove unreachable) |
+| partial | 1,300 | 827,036 | B4 complete the port |
 | missing | 47 | 9,665 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -16,18 +16,18 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 141,997 | 16,867 | 276 |
 | render | 113,202 | 21,704 | 3,232 |
-| ui | 83,814 | 39,045 | 288 |
+| ui | 83,216 | 39,045 | 288 |
 | powers | 100,181 | 2,261 | 2,321 |
 | characters | 84,180 | 14,061 | 1,543 |
-| world | 56,743 | 15,874 | 563 |
+| world | 55,355 | 15,716 | 563 |
 | modes | 63,606 | 7,005 | 363 |
 | ai | 67,985 | 1,271 | 28 |
 | items | 51,394 | 7,741 | 525 |
-| data | 27,192 | 9,435 | 0 |
+| data | 26,520 | 9,435 | 0 |
 | runtime | 18,365 | 2,355 | 467 |
 | core | 11,735 | 3,305 | 59 |
-| script | 4,913 | 1,631 | 0 |
-| audio | 3,025 | 270 | 0 |
+| script | 4,074 | 1,453 | 0 |
+| audio | 3,025 | 198 | 0 |
 | combat | 2,201 | 0 | 0 |
 
 ## By component, largest first
@@ -127,8 +127,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
 | RF_Terrain (unit routines) | world | 1 / 609 | 2 / 2,801 | 0 / 0 | 3,410 |
 | TShadowCubeMap | render | 8 / 3,310 | 0 / 0 | 0 / 0 | 3,310 |
-| RF_DBObjects (unit routines) | data | 4 / 2,779 | 3 / 524 | 0 / 0 | 3,303 |
 | TShadowMapDirect | render | 4 / 3,259 | 0 / 0 | 0 / 0 | 3,259 |
+| RF_DBObjects (unit routines) | data | 2 / 2,672 | 3 / 524 | 0 / 0 | 3,196 |
 | TGeometry | render | 6 / 2,254 | 0 / 0 | 1 / 804 | 3,058 |
 | RF_Terrain_Materials (unit routines) | world | 1 / 2,474 | 3 / 484 | 0 / 0 | 2,958 |
 | TItemGUIManager | items | 8 / 1,889 | 7 / 1,052 | 0 / 0 | 2,941 |
@@ -140,13 +140,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Pixel-format converters (8-bit and float) | render | 0 / 0 | 11 / 2,594 | 0 / 0 | 2,594 |
 | TGUITableView | ui | 1 / 2,523 | 0 / 0 | 0 / 0 | 2,523 |
 | FLX_IconRender (unit routines) | render | 0 / 0 | 7 / 2,195 | 2 / 286 | 2,481 |
-| TSelectionUI | ui | 7 / 2,454 | 0 / 0 | 0 / 0 | 2,454 |
-| RF_Dynamics_Game (unit routines) | world | 7 / 1,969 | 3 / 470 | 0 / 0 | 2,439 |
 | RFE_MeshTools (unit routines) | render | 1 / 37 | 6 / 2,341 | 0 / 0 | 2,378 |
 | TProjectManager | data | 3 / 2,370 | 0 / 0 | 0 / 0 | 2,370 |
 | RF_kdTrees (unit routines) | world | 10 / 2,369 | 0 / 0 | 0 / 0 | 2,369 |
-| TAudioEnvironment | audio | 3 / 2,097 | 2 / 270 | 0 / 0 | 2,367 |
 | TInventory | items | 8 / 2,297 | 1 / 41 | 0 / 0 | 2,338 |
+| TAudioEnvironment | audio | 3 / 2,097 | 1 / 198 | 0 / 0 | 2,295 |
 | TGridEnvManager | world | 3 / 2,199 | 0 / 0 | 0 / 0 | 2,199 |
 | TScene | world | 1 / 740 | 8 / 1,355 | 0 / 0 | 2,095 |
 | SG_ObjectDB2 (unit routines) | data | 6 / 1,848 | 2 / 228 | 0 / 0 | 2,076 |
@@ -163,31 +161,30 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TSceneEnvironment | world | 4 / 1,897 | 0 / 0 | 0 / 0 | 1,897 |
 | SG_Dynamics_Effects (unit routines) | powers | 3 / 1,876 | 0 / 0 | 0 / 0 | 1,876 |
 | TDivCardForm | modes | 1 / 1,863 | 0 / 0 | 0 / 0 | 1,863 |
+| TSelectionUI | ui | 5 / 1,856 | 0 / 0 | 0 / 0 | 1,856 |
 | TCharDecomp2 | characters | 5 / 1,766 | 0 / 0 | 0 / 0 | 1,766 |
-| TRTDialogue | script | 2 / 1,734 | 0 / 0 | 0 / 0 | 1,734 |
 | RF_Env_Effects (unit routines) | powers | 1 / 1,666 | 0 / 0 | 0 / 0 | 1,666 |
 | Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 1 / 1,662 | 0 / 0 | 0 / 0 | 1,662 |
 | XA_ExperienceSys (unit routines) | modes | 2 / 1,506 | 2 / 153 | 0 / 0 | 1,659 |
 | FLX_PostProcess (unit routines) | render | 3 / 1,480 | 2 / 52 | 1 / 127 | 1,659 |
 | TPwrDispLongDoor_I | powers | 2 / 1,649 | 0 / 0 | 0 / 0 | 1,649 |
 | TTransitionScreen | ui | 3 / 1,605 | 0 / 0 | 0 / 0 | 1,605 |
-| RF_Import_RFC2 (unit routines) | data | 6 / 1,210 | 1 / 386 | 0 / 0 | 1,596 |
 | RF_Dynamics_Animation (unit routines) | characters | 4 / 1,411 | 0 / 0 | 2 / 173 | 1,584 |
 | TTErrainkdTree | world | 0 / 0 | 5 / 1,513 | 0 / 0 | 1,513 |
 | RF_ObjectLibs (unit routines) | data | 4 / 1,227 | 1 / 284 | 0 / 0 | 1,511 |
 | SG_Thaum_Mind (unit routines) | powers | 3 / 1,121 | 1 / 375 | 0 / 0 | 1,496 |
 | TWeaponBlood | combat | 2 / 1,494 | 0 / 0 | 0 / 0 | 1,494 |
-| SG_GameFunctions (unit routines) | script | 4 / 817 | 3 / 673 | 0 / 0 | 1,490 |
 | TPwrForceThrow_I | powers | 3 / 1,309 | 1 / 170 | 0 / 0 | 1,479 |
+| TRTDialogue | script | 1 / 1,461 | 0 / 0 | 0 / 0 | 1,461 |
 | Screen-quad GLSL snippets | render | 5 / 1,457 | 0 / 0 | 0 / 0 | 1,457 |
 | TGridEnvBuilder | world | 2 / 431 | 4 / 1,004 | 0 / 0 | 1,435 |
+| RF_Dynamics_Game (unit routines) | world | 4 / 1,111 | 2 / 312 | 0 / 0 | 1,423 |
 | TTerrainMesh | render | 3 / 1,408 | 0 / 0 | 0 / 0 | 1,408 |
 | TGUIDrawSkinTex | ui | 4 / 1,400 | 0 / 0 | 0 / 0 | 1,400 |
 | RF_UIDManager (unit routines) | data | 1 / 248 | 7 / 1,148 | 0 / 0 | 1,396 |
 | TMemBlockLibrary | data | 1 / 272 | 4 / 1,092 | 0 / 0 | 1,364 |
 | TGUITask | ui | 6 / 956 | 4 / 400 | 0 / 0 | 1,356 |
 | RF_SceneEditor (unit routines) | world | 1 / 234 | 3 / 1,117 | 0 / 0 | 1,351 |
-| FG_AIFunctions (unit routines) | script | 11 / 1,343 | 0 / 0 | 0 / 0 | 1,343 |
 | TTexture | render | 2 / 872 | 2 / 451 | 0 / 0 | 1,323 |
 | Equipment effects and focus-item slot (RFE_Effects_Electricity (unit routines) by address) | characters | 5 / 1,151 | 1 / 167 | 0 / 0 | 1,318 |
 | RF_Renderer (unit routines) | render | 0 / 0 | 6 / 1,315 | 0 / 0 | 1,315 |
@@ -197,6 +194,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceDomeEffect | powers | 1 / 1,253 | 0 / 0 | 0 / 0 | 1,253 |
 | TPostProcessor | render | 4 / 1,210 | 0 / 0 | 0 / 0 | 1,210 |
 | TPwrDispVanish_I | powers | 2 / 1,175 | 0 / 0 | 0 / 0 | 1,175 |
+| FG_AIFunctions (unit routines) | script | 8 / 1,166 | 0 / 0 | 0 / 0 | 1,166 |
 | THairColPicker | ui | 2 / 1,159 | 0 / 0 | 0 / 0 | 1,159 |
 | TSceneTaskInt | world | 0 / 0 | 4 / 1,133 | 0 / 0 | 1,133 |
 | TBlastEntity | powers | 2 / 1,124 | 0 / 0 | 0 / 0 | 1,124 |
@@ -206,8 +204,10 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RFE_Effects_Electricity (unit routines) | powers | 2 / 1,050 | 0 / 0 | 0 / 0 | 1,050 |
 | T3DView | render | 2 / 977 | 1 / 69 | 0 / 0 | 1,046 |
 | SG_Teleporters (unit routines) | world | 2 / 1,042 | 0 / 0 | 0 / 0 | 1,042 |
-| RFG_Dialogue (unit routines) | script | 1 / 17 | 4 / 958 | 0 / 0 | 975 |
+| RF_Import_RFC2 (unit routines) | data | 5 / 645 | 1 / 386 | 0 / 0 | 1,031 |
+| RFG_Dialogue (unit routines) | script | 0 / 0 | 4 / 958 | 0 / 0 | 958 |
 | THairEditForm | ui | 1 / 828 | 1 / 117 | 0 / 0 | 945 |
+| SG_GameFunctions (unit routines) | script | 3 / 445 | 2 / 495 | 0 / 0 | 940 |
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
 | TForceBlastGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
 | TTendrilGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
@@ -246,7 +246,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceWaveEntity | powers | 1 / 603 | 0 / 0 | 0 / 0 | 603 |
 | TBarricadeGeometry | powers | 2 / 592 | 0 / 0 | 0 / 0 | 592 |
 | TMaterialManager3 | render | 0 / 0 | 2 / 585 | 0 / 0 | 585 |
-| TRBRotator | world | 3 / 583 | 0 / 0 | 0 / 0 | 583 |
 | SG_Prelude_Main (unit routines) | modes | 2 / 575 | 0 / 0 | 0 / 0 | 575 |
 | TLightAlias | render | 3 / 566 | 0 / 0 | 0 / 0 | 566 |
 | GUI support routines (unit before RF_GUI_Main) | ui | 0 / 0 | 1 / 564 | 0 / 0 | 564 |
@@ -334,6 +333,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPhysicsController | physics | 2 / 51 | 2 / 15 | 0 / 0 | 66 |
 | TScriptActor | script | 1 / 61 | 0 / 0 | 0 / 0 | 61 |
 | TRBPushSurface | world | 1 / 53 | 0 / 0 | 0 / 0 | 53 |
+| TRBRotator | world | 1 / 53 | 0 / 0 | 0 / 0 | 53 |
 | TArsenalContFrame | items | 0 / 0 | 1 / 40 | 0 / 0 | 40 |
 | TKFCLinear3f | characters | 0 / 0 | 1 / 36 | 0 / 0 | 36 |
 | Steam API glue | runtime | 0 / 0 | 1 / 12 | 0 / 0 | 12 |
