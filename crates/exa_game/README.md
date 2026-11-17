@@ -269,6 +269,8 @@ the load's global reset (old-settings flag clear, default settings tag,
 zero saved word and sun height) is
 `save_chunk::load_reset` plus `SceneEnvironment::reset_for_load`.
 
+A save writes the part records of each placed object's and prop's owned bodies and cloth from the live scene (`level_save::part_records`, over `exa_world::saved_parts::PartTree`): a hung leaf's, an arm's or a chain link's live world frame (a body part's tick frame), a moved cloth's live particles (the drawn mesh, every position element in the level's frame), nested as the exporter nests them; a stored record its node stands within a millimetre of stays, and an unmoved node with none writes none. A mechanism's placement word is its live object word (`level_save::LiveWord`: a door's or sliding leaf's stored word, a lever's word, a push surface's state byte), so an opened door, a latched door and an armed lever come back from the save.
+
 The level-change bridge (`level_transition`) ties the transition together:
 `export_for_save` writes the current level's section with the save's
 exporter and the story's settings-chunk gate, and `plan` pairs it with the
@@ -538,7 +540,9 @@ a rise, `apply_technique_word` puts it on the body's caster and adds the
 record's perks to its fighter (a companion's rise puts its own word on its
 body; a rise in the armour skill, the player's or a companion's, puts
 `ArmourRefresh` on the body and `refresh_armour` re-reads Deflection and
-runs the armour pass again over `exa_character::WornArmour`), and play's end writes a changed account
+runs the armour pass again over `exa_character::WornArmour`; a companion's
+rise also writes its combat skill and confidence trait over 100 into its
+AI's `Personality`), and play's end writes a changed account
 experience back through a `SettingsEntry`. Each pass first explores in a
 grid level (`StoryExperience::explore` over `RoomCells`, the level's rooms):
 the 5 × 5 cells around the player whose plane A open flag is set and whose
