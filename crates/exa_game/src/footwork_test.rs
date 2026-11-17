@@ -3,7 +3,9 @@ use crate::steering::{MOVE_FORWARD, MOVE_LEFT};
 
 const OPEN: StepGate = StepGate {
     condition: 0,
-    energy: 1.0,
+    tone: 1.0,
+    support: 1.0,
+    blocking: 0,
     swinging: false,
 };
 
@@ -54,11 +56,33 @@ fn a_free_body_lays_the_goal_from_the_held_word() {
     }
     assert!(
         StepGate {
-            energy: 0.7,
+            tone: 0.7,
             ..OPEN
         }
         .open()
     );
+    // The original's can-act gate: tone under 0.7, support at 0.7 or
+    // below, or a trailing-foot request close it; energy is not read.
+    for gate in [
+        StepGate {
+            tone: 0.69,
+            ..OPEN
+        },
+        StepGate {
+            support: 0.7,
+            ..OPEN
+        },
+        StepGate {
+            support: f32::NAN,
+            ..OPEN
+        },
+        StepGate {
+            blocking: 1,
+            ..OPEN
+        },
+    ] {
+        assert!(!gate.open(), "{gate:?}");
+    }
 }
 
 /// A young step (under 300 ms) queues a raw word different from its own
