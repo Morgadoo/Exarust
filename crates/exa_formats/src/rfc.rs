@@ -1194,7 +1194,10 @@ impl Scene {
         let mut placed_objects = Vec::new();
         let mut unknown_chunks = Vec::new();
         let mut level_errors = Vec::new();
-        while c.remaining() >= 8 {
+        // The original reads another root chunk only while more than eight
+        // bytes remain (`pos + 8 < size`): a file ending in an empty chunk
+        // header is not dispatched.
+        while c.remaining() > 8 {
             let (tag, mut chunk) = c.chunk()?;
             if tag == level::GRID {
                 match level::read_grid(chunk.b) {
@@ -1277,7 +1280,8 @@ impl Scene {
         }
         let version = c.u16()?;
         let mut db = LocalDatabase::default();
-        while c.remaining() >= 8 {
+        // More than eight bytes, as the scene's root loop.
+        while c.remaining() > 8 {
             let (tag, chunk) = c.chunk()?;
             if tag == LOCAL_DATABASE {
                 let LocalDatabase {
@@ -3173,6 +3177,24 @@ mod tests {
         assert_eq!(db.strings.unwrap().get(id).as_deref(), Some("Brass key"));
         assert!(db.items.is_empty() && db.placed_objects.is_empty());
         assert!(Scene::parse_database(b"not an rfc").is_err());
+    }
+
+    /// The root loop reads another chunk only while more than eight bytes
+    /// remain, as the original's: a file ending in a bare (empty) chunk
+    /// header leaves it unread; one byte more and it is read.
+    #[test]
+    fn a_trailing_empty_chunk_is_not_dispatched() {
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(0xDEAD_BEEF, &[]));
+        assert_eq!(file.len() - 4, 8);
+        assert!(Scene::parse(&file).unwrap().unknown_chunks.is_empty());
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(0xDEAD_BEEF, &[7]));
+        assert_eq!(Scene::parse(&file).unwrap().unknown_chunks, [0xDEAD_BEEF]);
+        // The database-only read stops the same way.
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(LOCAL_DATABASE, &[]));
+        assert!(Scene::parse_database(&file).is_ok());
     }
 
     #[test]

@@ -657,3 +657,20 @@ fn a_value_block_with_a_word_list_skips_it() {
     assert_eq!(block.second_area(), &bytes[0x10 + 0x20..]);
     assert_eq!(block.flagged_word(), 0);
 }
+
+/// A zero node slot is the shared empty node and steps four bytes; a slot
+/// of one to four bytes is a node of that size to the original, which
+/// steps by it: a two-byte slot leaves the next slot two bytes on.
+#[test]
+fn a_short_node_slot_steps_by_its_size() {
+    let mut b = u32s(&[0, 0, 0, 2]);
+    b.extend([2, 0, 0, 0, 0, 0]);
+    let size = b.len() as u32;
+    b[4..8].copy_from_slice(&size.to_le_bytes());
+    let d = Dialogue::parse(&b).unwrap();
+    assert_eq!(d.nodes, [None, None]);
+    let mut b = u32s(&[0, 0, 0, 2, 0, 0]);
+    let size = b.len() as u32;
+    b[4..8].copy_from_slice(&size.to_le_bytes());
+    assert_eq!(Dialogue::parse(&b).unwrap().node_count(), 2);
+}
