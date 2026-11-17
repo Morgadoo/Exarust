@@ -1016,10 +1016,10 @@ A movement word's step vector SHALL sum the facing (W), the side vector `(facing
 - **THEN** the step vector is 56.5685 cm on x and on z
 
 ### Requirement: Footwork step gate
-In combat mode the footwork SHALL lay no step while the condition word has any of the bits 0x82C1, the energy is under 0.7 (a NaN energy lays none), a swing is under way, or the held movement word is zero.
+In combat mode the footwork SHALL lay no step unless the body may act: none of the bits 0x82C1 in the condition word, a muscle tone of at least 0.7, a support above 0.7 compared in double precision, and no trailing-foot request. It SHALL lay none while a swing is under way or the held movement word is zero. Energy is not read.
 
 #### Scenario: The gate
-- **WHEN** W is pressed while the condition word is walking, or the energy is 0.69, or a swing is under way
+- **WHEN** W is pressed while the condition word is walking, or the tone is 0.69, or the support is 0.5, or a trailing foot is pending, or a swing is under way
 - **THEN** no step starts
 
 ### Requirement: Footwork step under way

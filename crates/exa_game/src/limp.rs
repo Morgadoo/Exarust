@@ -700,6 +700,8 @@ pub(crate) fn place_on_ground(
         Option<&exa_combat::Fighter>,
         Option<&mut Locomotion>,
         Option<&mut crate::player::PlayerBody>,
+        Option<&mut exa_ai::brain::Npc>,
+        Option<&mut exa_ai::route_walk::AiRoute>,
     )>,
     mut stages: Option<ResMut<exa_physics::body::SolverStages>>,
 ) {
@@ -754,9 +756,10 @@ pub(crate) fn place_on_ground(
         }
         // The placement's facing, from the frame's forward: the heading
         // normalised approximately and its yaw by the original's arc cosine.
-        if let Ok((_, Some(mut motor), _, Some(mut req), player)) = states.get_mut(root) {
+        if let Ok((_, Some(mut motor), _, Some(mut req), player, npc, route)) = states.get_mut(root)
+        {
             let was = motor.yaw;
-            motor.face(&mut req, Vec3::from(floor.matrix3.z_axis));
+            let heading = motor.face(&mut req, Vec3::from(floor.matrix3.z_axis));
             debug!(
                 "ground placement {root:?}: facing yaw {:.6} rad (was {was:.6})",
                 motor.yaw
@@ -764,6 +767,9 @@ pub(crate) fn place_on_ground(
             // The placement then calls the behaviour's heading store.
             if let Some(mut player) = player {
                 player.placed(req.desired);
+            }
+            if let Some(mut npc) = npc {
+                npc.placed(heading, route.map(Mut::into_inner));
             }
         }
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
@@ -930,6 +936,8 @@ fn place_living(
         Option<&exa_combat::Fighter>,
         Option<&mut Locomotion>,
         Option<&mut crate::player::PlayerBody>,
+        Option<&mut exa_ai::brain::Npc>,
+        Option<&mut exa_ai::route_walk::AiRoute>,
     )>,
 ) {
     for (root, placement, mut body, parent) in &mut asked {
@@ -982,11 +990,15 @@ fn place_living(
         if let Ok(mut model) = writes.get_mut(root) {
             model.rotation = turn_about.inverse() * turn;
         }
-        if let Ok((_, Some(mut motor), _, Some(mut req), player)) = states.get_mut(root) {
-            motor.placed(&mut req, Vec3::from(frame.matrix3.z_axis));
+        if let Ok((_, Some(mut motor), _, Some(mut req), player, npc, route)) = states.get_mut(root)
+        {
+            let heading = motor.placed(&mut req, Vec3::from(frame.matrix3.z_axis));
             // The placement then calls the behaviour's heading store.
             if let Some(mut player) = player {
                 player.placed(req.desired);
+            }
+            if let Some(mut npc) = npc {
+                npc.placed(heading, route.map(Mut::into_inner));
             }
         }
         if !body.place_living(frame, &posed, pelvis) {
@@ -2702,6 +2714,53 @@ pub(crate) mod tests {
             assert!(!req.moving && !req.free_walk && req.flags == 0 && !motor.turning);
             assert!((motor.yaw - 1.0).abs() < 1e-3, "{}", motor.yaw);
         }
+    }
+
+    /// A living placement calls the AI's heading store after the facing:
+    /// the aim snap takes the frame's forward (the AI's look and heading at
+    /// its yaw, the body's directions along it) and the route stops.
+    #[test]
+    fn the_living_placement_snaps_the_ais_heading() {
+        let mut app = placement_app();
+        let world = app.world_mut();
+        let character = world
+            .spawn((Transform::from_translation(START), CharacterBody::default()))
+            .id();
+        let root = spawn_body(world, character);
+        let (req, motor) = Locomotion::facing(YAW);
+        let mut npc = exa_ai::brain::Npc::new([0.0; 4]);
+        npc.turn.look = -2.0;
+        npc.turn.heading = -2.0;
+        npc.gaze.body_look = Vec3::X;
+        let route = exa_ai::route_walk::AiRoute {
+            following: true,
+            mode: 3,
+            ..Default::default()
+        };
+        world.entity_mut(root).insert((req, motor, npc, route));
+        app.update();
+        app.world_mut().entity_mut(root).insert(LivingPlacement::at(
+            Vec3::new(10.0, 0.5, 6.0),
+            1.0,
+            FrameHeight::Given,
+        ));
+        app.update();
+        let world = app.world();
+        let yaw = world.get::<Locomotor>(root).unwrap().yaw;
+        assert!((yaw - 1.0).abs() < 1e-3, "{yaw}");
+        let npc = world.get::<exa_ai::brain::Npc>(root).unwrap();
+        let forward = Vec3::new(1.0f32.sin(), 0.0, 1.0f32.cos());
+        assert!((npc.gaze.body_look - forward).length() < 1e-3);
+        assert_eq!(npc.gaze.body_look, npc.gaze.body_heading);
+        assert_eq!(npc.gaze.body_look, npc.gaze.body_smooth);
+        let snapped = exa_ai::motion::yaw_of(npc.gaze.body_look);
+        assert!((snapped - yaw).abs() < 1e-3, "{snapped} {yaw}");
+        assert_eq!(
+            (npc.turn.look, npc.turn.heading, npc.gaze.look),
+            (snapped, snapped, snapped)
+        );
+        let route = world.get::<exa_ai::route_walk::AiRoute>(root).unwrap();
+        assert!(!route.following && route.mode == 0);
     }
 
     /// Moves the character as its controller would, once a tick.

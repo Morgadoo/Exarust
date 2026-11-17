@@ -142,6 +142,11 @@ pub struct MindPowers {
     /// The body resists mind control (its technique bit): applying its
     /// roles ignores a binding marker.
     pub resists_control: bool,
+    /// The masked body flag (a Mask Mind, or a worn mind ward): other
+    /// characters' perception sees it as hidden. Inside, the two radius
+    /// factors of its first Mask Mind power, when it carries one
+    /// ([`Observed::mask`]); none takes the perception's 0.9 and 0.8.
+    pub mask: Option<Option<(f32, f32)>>,
 }
 
 /// A raw attitude and the tolerance beside it, both from the role database.

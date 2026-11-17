@@ -1717,7 +1717,13 @@ pub(crate) fn steer_player(
                     scale_root: scale.sqrt(),
                     gate: StepGate {
                         condition: state.0,
-                        energy,
+                        tone: ragdoll
+                            .and_then(|r| r.drive.as_ref())
+                            .map_or(1.0, |d| d.tone),
+                        support: ragdoll
+                            .and_then(|r| r.drive.as_ref())
+                            .map_or(1.0, |d| d.support()),
+                        blocking: body.plant_request,
                         swinging,
                     },
                     // The behaviour's auto-target stands for the body's
@@ -4034,7 +4040,9 @@ mod tests {
             scale_root: 1.0,
             gate: StepGate {
                 condition: 0,
-                energy: 1.0,
+                tone: 1.0,
+                support: 1.0,
+                blocking: 0,
                 swinging: false,
             },
             target: None,
@@ -4196,30 +4204,39 @@ mod tests {
         assert_eq!(pb.step.queue, 1);
     }
 
-    /// No step is laid while walking (condition 1), under 0.7 energy (or a
-    /// NaN energy) or during a swing.
+    /// No step is laid while walking (condition 1), under 0.7 tone (or a
+    /// NaN tone), with no support, while a trailing foot is pending or
+    /// during a swing.
     #[test]
     fn the_gate_holds_the_footwork() {
+        let free = StepGate {
+            condition: 0,
+            tone: 1.0,
+            support: 1.0,
+            blocking: 0,
+            swinging: false,
+        };
         for gate in [
             StepGate {
                 condition: 1,
-                energy: 1.0,
-                swinging: false,
+                ..free
+            },
+            StepGate { tone: 0.69, ..free },
+            StepGate {
+                tone: f32::NAN,
+                ..free
             },
             StepGate {
-                condition: 0,
-                energy: 0.69,
-                swinging: false,
+                support: 0.5,
+                ..free
             },
             StepGate {
-                condition: 0,
-                energy: f32::NAN,
-                swinging: false,
+                blocking: 1,
+                ..free
             },
             StepGate {
-                condition: 0,
-                energy: 1.0,
                 swinging: true,
+                ..free
             },
         ] {
             let mut pb = PlayerBody::new(0.0);

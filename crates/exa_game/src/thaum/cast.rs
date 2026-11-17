@@ -3155,7 +3155,7 @@ fn bone_part(body: &Ragdoll, bone: usize) -> Option<usize> {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 /// A character entering the scene resets its body: the cast hook is asked
 /// event −1 and cleared with the power id.
-fn reset_entered_casts(
+pub(crate) fn reset_entered_casts(
     mut entered: MessageReader<exa_ai::presence::Entered>,
     mut casters: Query<&mut PowerCaster>,
 ) {

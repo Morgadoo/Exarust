@@ -348,6 +348,21 @@ pub fn death_glow(npc: &Npc) -> Option<f32> {
 }
 
 impl Npc {
+    /// The AI's heading store (the behaviour's class slot 23), which the
+    /// body's placements call once they have written the facing along the
+    /// frame's `forward`: the aim snap ([`motion::snap_to_body`]: the look,
+    /// heading and offsets take the forward's yaw, the body's heading, look
+    /// and aim directions the forward) and the route stop
+    /// ([`crate::route_walk::AiRoute::stop`]), so the turn after a
+    /// placement starts from where the body was put. The original also
+    /// copies the frame's origin into a goal word Exarust does not keep.
+    pub fn placed(&mut self, forward: Vec3, route: Option<&mut crate::route_walk::AiRoute>) {
+        motion::snap_to_body(&mut self.gaze, &mut self.turn, forward);
+        if let Some(route) = route {
+            route.stop();
+        }
+    }
+
     /// The body's facing yaw as the AI's routines read it.
     ///
     /// The original reads the body's direction vectors through the
@@ -870,6 +885,8 @@ impl Npc {
             c.soothe = record.soothe;
             c.seen = record.seen;
             c.dead = record.dead;
+            // The live contact's new events join the event word.
+            c.marks |= record.marks;
             if lying {
                 c.concern = 0.0;
                 c.hostility = 0.0;
@@ -915,8 +932,10 @@ struct Sensed {
     condition: u32,
     asleep: bool,
     invisible: bool,
-    /// Its mind-masked bit ([`MindWarded`]).
+    /// Its masked bit ([`MindWarded`], or a Mask Mind on its mind powers).
     hidden: bool,
+    /// The two radius factors of its first Mask Mind power.
+    mask: Option<(f32, f32)>,
     phase: f32,
     /// Its locomotion is active [guess: read as a non-zero locomotion
     /// amount, since the body's locomotion flag is not exposed here].
@@ -993,6 +1012,7 @@ pub fn perceive_all(
                 Option<&exa_physics::body::locomotion::Locomotor>,
                 Option<&StateFlags>,
                 Option<&combatant::PlayerContacts>,
+                Option<&combatant::MindPowers>,
             ),
         )>,
         Query<(
@@ -1034,9 +1054,10 @@ pub fn perceive_all(
                 roles,
                 child,
                 npc,
-                hidden,
-                (locomotor, flags, player_contacts),
+                warded,
+                (locomotor, flags, player_contacts, powers),
             )| {
+                let masked = powers.and_then(|p| p.mask);
                 let phase = anim
                     .zip(motions.as_deref())
                     .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
@@ -1057,7 +1078,11 @@ pub fn perceive_all(
                     // as asleep (a sleeper, or a body knocked out).
                     asleep: dormant(flags),
                     invisible: unseen.is_some(),
-                    hidden,
+                    // The body's masked flag: a worn mind ward or a Mask
+                    // Mind; the first Mask Mind power's factors scale the
+                    // range.
+                    hidden: warded || masked.is_some(),
+                    mask: masked.flatten(),
                     phase,
                     locomotion: locomotor.is_some_and(|l| l.amount != 0.0),
                     in_combat: combatant.is_some_and(|c| c.in_combat)
@@ -1202,7 +1227,7 @@ pub fn perceive_all(
                 condition: sensed.condition,
                 gone: sensed.invisible,
                 hidden: sensed.hidden,
-                mask: None,
+                mask: sensed.mask,
                 asleep: sensed.asleep,
                 removed: false,
                 phase: sensed.phase,
@@ -1384,6 +1409,9 @@ pub fn perceive_all(
                 relations.add_familiarity(sensed.character_id, drift);
             }
             let mut record = ContactRecord::of(&combatant.contacts[index], sensed.id);
+            // Its events move into the brain's event word, which the
+            // dialogue's AI events read and clear.
+            combatant.contacts[index].events = 0;
             // The integration skips the calming of a knocked-out character
             // (the out bit of its condition); the perception clears the
             // concern and hostility of a dead, asleep or removed one and
@@ -3667,6 +3695,7 @@ mod tests {
                 state: 1,
             }],
             resists_control: false,
+            mask: None,
         };
         let brain = app
             .world_mut()
@@ -3722,6 +3751,7 @@ mod tests {
                 state: 1,
             }],
             resists_control: false,
+            mask: None,
         };
         let brain = app
             .world_mut()
@@ -4260,6 +4290,38 @@ mod tests {
         assert_eq!(cb.target, Some(player));
         assert!(cb.contact(player).unwrap().hostility > 0.0);
         assert!(cb.contact(root).is_none(), "no contact for the bare root");
+    }
+
+    /// A masked player (its mind powers carry the masked flag) is sensed
+    /// only within the shrunk radius: with no Mask Mind power the
+    /// perception's 0.9 and 0.8, with one its two factors. A blind observer
+    /// (perception 0) at 2 m loses the player under 0.9 but keeps it under
+    /// a mask of 0.5.
+    #[test]
+    fn a_mask_minds_factors_scale_the_sight() {
+        let noticed = |mask: Option<Option<(f32, f32)>>| {
+            let (mut app, player, npc) = perception();
+            app.world_mut()
+                .get_mut::<Fighter>(npc)
+                .unwrap()
+                .stats
+                .perception = 0.0;
+            app.world_mut()
+                .entity_mut(player)
+                .insert(combatant::MindPowers {
+                    mask,
+                    ..Default::default()
+                });
+            app.update();
+            app.world()
+                .get::<Combatant>(npc)
+                .unwrap()
+                .contact(player)
+                .map_or(0.0, |c| c.noticeability)
+        };
+        assert!(noticed(None) > 0.0);
+        assert_eq!(noticed(Some(None)), 0.0);
+        assert!(noticed(Some(Some((0.5, 0.5)))) > 0.0);
     }
 
     /// An NPC brain and a player two metres apart, the brain's duellist

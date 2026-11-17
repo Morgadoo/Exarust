@@ -1211,8 +1211,10 @@ the movement goal (`steering::key_goal_direction`, `goal_stride`, the
 line walk and its 400 cm² test, then the grid snap), re-lays a young step
 at the tapped stride, or queues the next step on the body (`key_step`);
 a landing takes the queue by `exa_physics::body::queued_step`, and the
-word takes the queued word back. Its gate is the condition mask `0x82C1`,
-0.7 energy and no swing. The step is the body's (`StepRecord` mirrors
+word takes the queued word back. Its gate is the body's can-act gate
+(`exa_physics::motile::action_allowed`: the condition mask `0x82C1`, a tone
+of at least 0.7, a support above 0.7 in double, no trailing-foot request)
+and no swing. The step is the body's (`StepRecord` mirrors
 `exa_physics::body::FootworkStep`, read before the dispatcher and written
 back after it): the body walks it, ends it and takes the queue at a
 landing; the behaviour clamps a taken queued target by the line walk and
@@ -2564,7 +2566,14 @@ the AI's relation and the cast's record (`LastEnc`) before they run. The
 greeting the same pass reports runs right after (`run_greetings`): the
 brain's contacts are synced into the cast and the dialogue engine looks for
 a calm class 0 entry with the brain's mood code (arousal at most 1, not
-already talking). The follow and search, the golem sentry (`golem_body`), the encounter
+already talking). The pass's round-robin refresh then runs the dialogue's
+AI events about the contact it reached (`run_ai_events`): the contact's
+event word (Aggressor, Engage, Intimidated, Threatened) is the mask, and
+the bits of the nodes that ran leave it. The cast mirror replays the
+relation roles a script added or removed and the entries a stored topic
+memory created on the AI's `Relations` (`script_cast::apply_relation_edits`,
+with the "Invalid role identifier." reports), and the mind feed gives the
+perception a Mask Mind's masked flag and factors (`mind::runtime::mask_of`). The follow and search, the golem sentry (`golem_body`), the encounter
 scripts (right after the AI tick that reported them) and the duellists'
 power system (`thaum::cast`: the answers before their combat state, the
 cast after it) run in the brains' chain (`exa_ai::BrainChain`), in the

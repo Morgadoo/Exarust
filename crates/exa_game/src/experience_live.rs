@@ -673,6 +673,7 @@ mod tests {
                 state: 1,
             }],
             resists_control: false,
+            mask: None,
         };
         let body = |app: &mut App| {
             app.world_mut()

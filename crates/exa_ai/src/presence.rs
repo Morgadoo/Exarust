@@ -300,6 +300,7 @@ pub fn check_presence(
             Option<&mut Locomotion>,
             Option<&mut Locomotor>,
             Option<&mut Ragdoll>,
+            Option<&mut crate::brain::Npc>,
         ),
         With<Duellist>,
     >,
@@ -316,6 +317,7 @@ pub fn check_presence(
         locomotion,
         locomotor,
         ragdoll,
+        npc,
     ) in &mut characters
     {
         let was = presence.state;
@@ -376,6 +378,13 @@ pub fn check_presence(
                         "presence: {entity} enters the scene and settles {} ticks",
                         exa_physics::body::ENTERED_SETTLE
                     );
+                }
+            }
+            // The move back into the scene zeroes every contact's count of
+            // the ticks it has been seen.
+            if let Some(mut npc) = npc {
+                for c in &mut npc.contacts {
+                    c.ticks_seen = 0;
                 }
             }
             entered.write(Entered(entity));
@@ -477,6 +486,12 @@ mod tests {
                 ChildOf(root),
             ))
             .id();
+        let mut npc = crate::brain::Npc::new([0.0; 4]);
+        npc.contacts.push(crate::contacts::ContactRecord {
+            ticks_seen: 12,
+            ..Default::default()
+        });
+        app.world_mut().entity_mut(foe).insert(npc);
         let tick = |app: &mut App| app.world_mut().run_schedule(FixedUpdate);
         tick(&mut app);
         let presence = *app.world().get::<Presence>(foe).unwrap();
@@ -516,6 +531,11 @@ mod tests {
             .drain()
             .collect();
         assert_eq!(sent, vec![Entered(foe)]);
+        // The re-entry zeroed the contact's seen-tick count.
+        assert_eq!(
+            app.world().get::<crate::brain::Npc>(foe).unwrap().contacts[0].ticks_seen,
+            0
+        );
         tick(&mut app);
         assert!(app.world().get::<Presence>(foe).unwrap().moves());
         assert!(app.world().get::<OutOfScene>(foe).is_none());
