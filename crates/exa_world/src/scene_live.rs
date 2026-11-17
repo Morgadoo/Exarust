@@ -237,6 +237,18 @@ impl LiveScene {
         self.light_node.len()
     }
 
+    /// Whether the sector a registered mesh stands in was seen by the main
+    /// view in the last classification (the sector word's main-view bit,
+    /// whatever the frustum did to the mesh itself); `None` for a mesh the
+    /// scene does not hold, which stands in the scene's own sector, always
+    /// walked.
+    pub fn sector_seen(&self, entity: Entity) -> Option<bool> {
+        let node = *self.node_of.get(&entity)?;
+        let scene = self.scene.as_ref()?;
+        let sector = scene.nodes[node].sector?;
+        Some(scene.sectors[sector].mask & crate::scene_nodes::MAIN != 0)
+    }
+
     /// Whether the last visible pass drew a registered mesh (its node's
     /// main-view bit); `None` for a mesh the scene does not hold.
     pub fn drawn_by_main(&self, entity: Entity) -> Option<bool> {
@@ -1243,6 +1255,91 @@ mod tests {
     /// with the walls' answer as its gate, the plain luma test for an
     /// unranged one), so a mesh's buckets carry the original's weights and
     /// are ordered heaviest first.
+    #[test]
+    fn a_mesh_behind_the_eye_stands_in_a_seen_sector() {
+        let (rooms, grid) = two_rooms();
+        let a = rooms.cell_centre(6 + 1);
+        let mut app = light_app(rooms, &grid);
+        // The eye in the first room, looking along -X, away from the door.
+        let eye = Vec3::new(a.x + 2.0, 1.5, a.y);
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<Camera3d>>();
+        for mut t in cameras.iter_mut(app.world_mut()) {
+            *t = Transform::from_translation(eye).looking_to(Vec3::NEG_X, Vec3::Y);
+        }
+        let mesh = |app: &mut App, at: Vec3, room: u16| {
+            app.world_mut()
+                .spawn((
+                    Mesh3d::default(),
+                    Aabb::from_min_max(Vec3::splat(-0.2), Vec3::splat(0.2)),
+                    Transform::from_translation(at),
+                    InRoom(room),
+                ))
+                .id()
+        };
+        // The first room is the active one.
+        {
+            let mut level = app.world_mut().resource_mut::<LevelRooms>();
+            let rooms = level.rooms.clone();
+            level.tracker.update(&rooms, a, 0);
+        }
+        // One ahead of the eye, one behind it (outside the frustum).
+        let ahead = mesh(&mut app, Vec3::new(a.x - 1.0, 0.5, a.y), 0);
+        let behind = mesh(&mut app, Vec3::new(a.x + 4.0, 0.5, a.y), 0);
+        let loose = app.world_mut().spawn_empty().id();
+        app.update();
+        app.update();
+        let live = app.world().resource::<LiveScene>();
+        assert_eq!(live.sector_seen(ahead), Some(true));
+        // The mesh behind the eye is not drawn, but its sector was seen, so
+        // the camera's wall probe still asks it.
+        assert_eq!(live.drawn_by_main(behind), Some(false));
+        assert_eq!(live.sector_seen(behind), Some(true));
+        // A mesh the scene does not hold stands in the scene's own sector.
+        assert_eq!(live.sector_seen(loose), None);
+    }
+
+    #[test]
+    fn a_plant_chunk_takes_its_rooms_view_test() {
+        let (rooms, grid) = two_rooms();
+        let a = rooms.cell_centre(6 + 1);
+        let b = rooms.cell_centre(6 + 4);
+        let mut app = light_app(rooms, &grid);
+        let eye = Vec3::new(a.x + 2.0, 1.5, a.y);
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<Camera3d>>();
+        for mut t in cameras.iter_mut(app.world_mut()) {
+            *t = Transform::from_translation(eye).looking_to(Vec3::NEG_X, Vec3::Y);
+        }
+        {
+            let mut level = app.world_mut().resource_mut::<LevelRooms>();
+            let rooms = level.rooms.clone();
+            level.tracker.update(&rooms, a, 0);
+        }
+        // The terrain's plant chunks are meshes of their block's room: the
+        // grass hook's view-mask test is the room's view test here.
+        let chunk = |app: &mut App, at: Vec2, room: u16| {
+            app.world_mut()
+                .spawn((
+                    crate::terrain::PlantChunk,
+                    Mesh3d::default(),
+                    Aabb::from_min_max(Vec3::splat(-0.2), Vec3::splat(0.2)),
+                    Transform::from_xyz(at.x - 1.0, 0.2, at.y),
+                    InRoom(room),
+                ))
+                .id()
+        };
+        let seen = chunk(&mut app, a, 0);
+        let unseen = chunk(&mut app, b, 1);
+        app.update();
+        app.update();
+        let live = app.world().resource::<LiveScene>();
+        assert_eq!(live.drawn_by_main(seen), Some(true));
+        assert_eq!(live.drawn_by_main(unseen), Some(false));
+    }
+
     #[test]
     fn the_live_link_pass_weighs_a_room_mesh_by_its_lights() {
         use crate::light_alias::{AliasNode, reach, reach_plain};

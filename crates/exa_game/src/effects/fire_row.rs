@@ -744,6 +744,13 @@ impl Flame {
         &self.0
     }
 
+    /// A row at a given fade, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_fade(mut self, fade: f32) -> Self {
+        self.0.fade = fade;
+        self
+    }
+
     /// Puts the row out: its extinguish flag, so it fades and leaves.
     pub fn extinguish(&mut self) {
         self.0.flags |= EXTINGUISHING;

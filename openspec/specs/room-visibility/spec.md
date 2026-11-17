@@ -275,3 +275,10 @@ While the view follows no player (the Spectate mode of an arena match in which n
 #### Scenario: A spectated match
 - **WHEN** the manager is benched because no entrant is the player's
 - **THEN** the walk is forced to the room at the arena's spawn spot until the match level is left
+
+### Requirement: Wall probe over seen sectors
+The camera's wall probe SHALL ask an unhidden obstacle mesh when the sector it stands in was seen by the main view at the last classification, whatever its own frustum test gave; a mesh outside the live scene SHALL always be asked.
+
+#### Scenario: A wall behind the eye
+- **WHEN** a mesh of the active room stands behind the camera
+- **THEN** it is not drawn but its sector is seen, so the probe asks it

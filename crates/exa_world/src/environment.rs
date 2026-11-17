@@ -515,16 +515,20 @@ pub fn level_lighting_preset(
     legacy_grid: Option<bool>,
     input: Option<PresetInput>,
 ) -> Lighting {
-    level_lighting_scene(level, record, lights, legacy_grid, input).lighting
+    level_lighting_scene(level, record, lights, 0, legacy_grid, input).lighting
 }
 
 /// The lighting a level load settles on **and** the scene environment that
 /// produced it, for the load to keep as its live [`SceneEnvRuntime`]. The
 /// two are the same computation as [`level_lighting_preset`].
+///
+/// `lights` and `rooms` are the scene's light count and grid-room count,
+/// which the automatic sun rule reads.
 pub fn level_lighting_scene(
     level: &str,
     record: Option<&Environment>,
     lights: usize,
+    rooms: usize,
     legacy_grid: Option<bool>,
     input: Option<PresetInput>,
 ) -> LevelScene {
@@ -618,7 +622,14 @@ pub fn level_lighting_scene(
         sky || match (preset, env.sun_mode) {
             (LevelPreset::Record, SunMode::On) => true,
             (LevelPreset::Record, SunMode::Off) => false,
-            (LevelPreset::Record, SunMode::Auto) => lights == 0,
+            (LevelPreset::Record, SunMode::Auto) => {
+                // The automatic rule the original runs when the level's
+                // nodes are added: a sun only in a scene without lights and
+                // without grid rooms.
+                env.sun_light = false;
+                env.update_auto_sunlight(lights, rooms);
+                env.sun_light
+            }
             _ => false,
         }
     };
@@ -1085,7 +1096,7 @@ mod tests {
             now: 0,
             log: false,
         };
-        let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+        let scene = level_lighting_scene("arenao3", None, 0, 0, None, Some(input));
         assert_eq!(
             scene.lighting,
             level_lighting_preset("arenao3", None, 0, None, Some(input))
@@ -1110,8 +1121,8 @@ mod tests {
                 now: 0,
                 log: false,
             };
-            let first = level_lighting_scene("arenao3", None, 0, None, Some(input)).env;
-            let second = level_lighting_scene("arenao3", None, 3, None, Some(input)).env;
+            let first = level_lighting_scene("arenao3", None, 0, 0, None, Some(input)).env;
+            let second = level_lighting_scene("arenao3", None, 3, 0, None, Some(input)).env;
             assert_eq!(first.time_of_day, second.time_of_day, "seed {seed}");
             assert_eq!(first.daylight_scale, second.daylight_scale, "seed {seed}");
             assert_eq!(first.weather.target, second.weather.target, "seed {seed}");
@@ -1133,7 +1144,7 @@ mod tests {
                 now: 0,
                 log: false,
             };
-            level_lighting_scene("arenao4", None, 0, None, Some(input)).env
+            level_lighting_scene("arenao4", None, 0, 0, None, Some(input)).env
         };
         let (first, second) = (draw(), draw());
         fix_seed(0);
@@ -1167,7 +1178,7 @@ mod tests {
             now: 0,
             log: false,
         };
-        let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+        let scene = level_lighting_scene("arenao3", None, 0, 0, None, Some(input));
         let start = scene.env.time_of_day;
         assert!(start > 0.5 && start < 0.74, "a day time {start}");
         let mut runtime = SceneEnvRuntime::new(scene.env, 15);
@@ -1210,7 +1221,7 @@ mod tests {
                 now: 0,
                 log: false,
             };
-            let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+            let scene = level_lighting_scene("arenao3", None, 0, 0, None, Some(input));
             let load = scene.lighting.clone();
             let sun = load.sun.expect("the outdoor preset lights a sun");
             // 4.5 units under the sky, 160 lux a unit.
@@ -1259,7 +1270,7 @@ mod tests {
             sun_mode: SunMode::On,
             ..Default::default()
         };
-        let scene = level_lighting_scene("menuscene", Some(&env), 0, None, None);
+        let scene = level_lighting_scene("menuscene", Some(&env), 0, 0, None, None);
         let mut runtime = SceneEnvRuntime::new(scene.env, 1);
         let frame = runtime.env.apply_frame([0.0, 0.0, 1.0]);
         let live = republished(&runtime.env, &frame);
@@ -1270,7 +1281,8 @@ mod tests {
         ));
         assert!(close(live.ambient, scene.lighting.ambient));
         // An indoor level republishes no sun.
-        let scene = level_lighting_scene("exanima01", None, 3, None, Some(PresetInput::default()));
+        let scene =
+            level_lighting_scene("exanima01", None, 3, 0, None, Some(PresetInput::default()));
         let mut runtime = SceneEnvRuntime::new(scene.env, 1);
         let frame = runtime.env.apply_frame([0.0, 0.0, 1.0]);
         assert!(republished(&runtime.env, &frame).sun.is_none());
@@ -1289,7 +1301,7 @@ mod tests {
             now: 0,
             log: false,
         };
-        let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+        let scene = level_lighting_scene("arenao3", None, 0, 0, None, Some(input));
         let load = scene.lighting.clone();
         let mut runtime = SceneEnvRuntime::new(scene.env, 1);
         let SceneEnvRuntime {
@@ -1356,7 +1368,7 @@ mod tests {
             now: 0,
             log: false,
         };
-        let mut scene = level_lighting_scene("arenao3", None, 0, None, Some(input(15)));
+        let mut scene = level_lighting_scene("arenao3", None, 0, 0, None, Some(input(15)));
         // Seed 15 is a clear noon (cloudiness 1.258): nothing dims.
         assert_eq!(scene.env.sun_softness_source(), 0.0);
         // At 0.86 the moon is up, daylight 0.351: 0.089 under the 0.44
@@ -1372,7 +1384,7 @@ mod tests {
         let cloudy = scene.env.sun_softness_source();
         assert!((cloudy - (c + 0.4)).abs() < 1e-5, "{cloudy} vs {c}");
         // An indoor level has no sky, so no source.
-        let indoor = level_lighting_scene("exanima01", None, 3, None, Some(input(1)));
+        let indoor = level_lighting_scene("exanima01", None, 3, 0, None, Some(input(1)));
         assert_eq!(indoor.env.sun_softness_source(), 0.0);
 
         // The live frame writes it into the sun map's region.
@@ -1434,7 +1446,7 @@ mod tests {
 
     #[test]
     fn the_outdoor_fog_is_linear_and_a_kilometre_deep() {
-        let scene = level_lighting_scene("arenao3", None, 0, None, None);
+        let scene = level_lighting_scene("arenao3", None, 0, 0, None, None);
         let outdoor = scene.lighting.clone();
         let fog = outdoor.fog.unwrap();
         // The shader's fog runs from the eye over the stored span, 1 km;
@@ -1479,6 +1491,29 @@ mod tests {
     }
 
     #[test]
+    fn the_automatic_sun_needs_a_scene_without_grid_rooms() {
+        let env = Environment {
+            sun_mode: SunMode::Auto,
+            ..Default::default()
+        };
+        // No lights and no rooms: the automatic rule makes a sun.
+        let scene = level_lighting_scene("menuscene", Some(&env), 0, 0, None, None);
+        assert!(scene.lighting.sun.is_some());
+        // A grid level without lights keeps no sun, one room or many.
+        for rooms in [1, 5] {
+            let scene = level_lighting_scene("menuscene", Some(&env), 0, rooms, None, None);
+            assert!(scene.lighting.sun.is_none(), "{rooms} rooms");
+        }
+        // A forced sun stands whatever the rooms.
+        let on = Environment {
+            sun_mode: SunMode::On,
+            ..Default::default()
+        };
+        let scene = level_lighting_scene("menuscene", Some(&on), 0, 5, None, None);
+        assert!(scene.lighting.sun.is_some());
+    }
+
+    #[test]
     fn a_legacy_grid_level_is_forced_indoor() {
         let env = Environment {
             ambient: [0.5, 0.4, 0.3],
@@ -1491,7 +1526,7 @@ mod tests {
         assert_eq!(lit.ambient.z, lit.ambient.y);
         // A black background and a grey fog colour in every case.
         assert_eq!(lit.background, Vec3::ZERO);
-        let scene = level_lighting_scene("menuscene", Some(&env), 0, Some(false), None);
+        let scene = level_lighting_scene("menuscene", Some(&env), 0, 0, Some(false), None);
         assert_eq!(scene.env.fog.colour, [0.5, 0.5, 0.5, 1.0]);
         // With terrain, or without the legacy build, the record's own
         // ambient stands.
@@ -1654,11 +1689,11 @@ mod tests {
             ("exanima67", 1.8),
         ] {
             assert_eq!(story_level_fog(level), Some(distance), "{level}");
-            let scene = level_lighting_scene(level, None, 3, None, Some(PresetInput::default()));
+            let scene = level_lighting_scene(level, None, 3, 0, None, Some(PresetInput::default()));
             assert_eq!(scene.env.fog.distance, distance, "{level}");
         }
         assert_eq!(story_level_fog("arena"), None);
-        let scene = level_lighting_scene("arena", None, 3, None, Some(PresetInput::default()));
+        let scene = level_lighting_scene("arena", None, 3, 0, None, Some(PresetInput::default()));
         assert_eq!(
             scene.env.fog.distance,
             crate::scene_env::INDOOR_FOG_DISTANCE
