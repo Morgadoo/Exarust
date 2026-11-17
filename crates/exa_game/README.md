@@ -1125,8 +1125,8 @@ The controls' spectate session (`spectate`, the original's Spectate game
 mode): its start sets the spectate flag and frees the camera, the player is
 not steered while it runs, a double click makes the chase camera follow the
 picked character (anything else frees it: the camera runs the controller's
-free branch from its last point, `nav_camera::FreeFocus`, W/A/S/D panning
-the point, the terrain lifting it toward a metre over the ground, its
+free branch from its last point, `nav_camera::FreeFocus`, the bound
+movement keys (W/A/S/D shipped) panning the point, the terrain lifting it toward a metre over the ground, its
 height held to 0–2 m), and its end clears both. The arena starts it when no participant
 is the player's to control (only hired employees entered): the bench
 (`save_live`) keeps the manager's record as the next player spawn's and
@@ -1858,7 +1858,10 @@ rad to 1.5, 0.000125 steeper per zoom unit, the held pitch), the integer
 frame clock (`FrameDriver`: the millisecond tick clock against the frame
 stamp, at most nine ticks, the backlog dropped, the fractional position
 computed in double), the camera placement with its height, distance and
-pitch clamps, the free zoom's 0.2 % per wheel unit, the preset record's
+pitch clamps (on the stepped camera `fixed_placement`: the zoom on its
+nearest stop, the held pitch, the placement's pitch kept as the target
+until a zoom or orbit handler runs; a new chase camera and every shot run
+it, a fast shot clears the asked pitch first), the free zoom's 0.2 % per wheel unit, the preset record's
 numeric fields (the 59² view and size scales, the 59th roots of the
 retention and the rate, the pitch bounds, the 10/10000 distance range and
 both cameras' speeds, the distance raised to the smallest, and the

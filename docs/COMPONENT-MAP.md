@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 60.8% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 60.9% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **60.8% closed**, of which 48.5% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 33.1% partial and 6.1% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **60.9% closed**, of which 48.5% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 33.1% partial and 6.1% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -22,7 +22,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 61% | 40% | 19% | 2% | 31% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 61% | 52% | 7% | 2% | 29% | 10% |  |
-| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 33% | 7% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 60% | 42% | 15% | 2% | 33% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 59% | 51% | 5% | 3% | 32% | 9% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 36% | 33% | 1% | 2% | 57% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 51% | 42% | 4% | 4% | 42% | 8% |  |
@@ -177,7 +177,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | RFE_MeshTools | Rendering & GPU | 19 | 95% | 88% | 86% | 2% | 0% | 0% | 12% |
 | RFE_MeshSubdivide | Rendering & GPU | 18 | 89% | 93% | 91% | 1% | 0% | 7% | 1% |
 | FLX_GPUPrograms | Rendering & GPU | 16 | 84% | 49% | 6% | 44% | 0% | 49% | 2% |
-| RF_Navigation | Rendering & GPU | 16 | 87% | 56% | 46% | 3% | 7% | 31% | 13% |
+| RF_Navigation | Rendering & GPU | 16 | 87% | 61% | 50% | 3% | 7% | 26% | 13% |
 | RFP_Mipmaps_Kaiser | Rendering & GPU | 15 | 86% | 99% | 88% | 2% | 10% | 0% | 1% |
 | FLX_Terrain_Texrender2 | Rendering & GPU | 14 | 81% | 16% | 13% | 3% | 0% | 84% | 0% |
 | RF_Mesh | Rendering & GPU | 13 | 88% | 66% | 57% | 3% | 5% | 17% | 17% |
@@ -462,7 +462,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TScriptClass | Script, dialogue & story | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | XA_Arena | Game modes, arena & session | 71 | 96% | 75% | 74% | 2% | 0% | 22% | 2% |
 | XA_SaveGames | Game modes, arena & session | 27 | 96% | 57% | 54% | 3% | 0% | 43% | 0% |
-| SG_GameMain | Game modes, arena & session | 20 | 87% | 70% | 65% | 2% | 4% | 28% | 2% |
+| SG_GameMain | Game modes, arena & session | 20 | 87% | 70% | 65% | 2% | 4% | 30% | 0% |
 | TMatchBoard | Game modes, arena & session | 17 | 90% | 63% | 62% | 1% | 0% | 37% | 0% |
 | SG_Character_Create | Game modes, arena & session | 17 | 86% | 34% | 31% | 3% | 0% | 40% | 26% |
 | TLoadoutForm | Game modes, arena & session | 7 | 85% | 14% | 14% | 0% | 0% | 85% | 1% |
