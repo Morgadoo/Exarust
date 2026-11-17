@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 61.0% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 61.1% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **61.0% closed**, of which 48.7% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 32.9% partial and 6.1% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **61.1% closed**, of which 48.7% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 32.9% partial and 6.0% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -31,7 +31,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 67% | 64% | 1% | 2% | 32% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 65% | 64% | 1% | 0% | 33% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 83% | 60% | 22% | 0% | 16% | 1% |  |
-| Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 88% | 86% | 2% | 0% | 9% | 3% |  |
+| Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 90% | 88% | 2% | 0% | 8% | 2% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 64% | 62% | 2% | 0% | 32% | 4% |  |
 | UI | 959 | 312 | 63 | 86% | 0% | 62% | 52% | 1% | 9% | 26% | 12% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
@@ -290,7 +290,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Equipment effects and focus-item slot (RFE_Effects_Electricity by address) | Characters, motion & animation | 3 | 93% | 58% | 58% | 0% | 0% | 37% | 5% |
 | FLXG_Character_Races | Characters, motion & animation | 3 | 68% | 85% | 82% | 3% | 0% | 15% | 0% |
 | Golem guardians and alarm zones (RFE_Effects_Electricity by address) | Characters, motion & animation | 3 | 80% | 61% | 61% | 0% | 0% | 39% | 0% |
-| RF_Dynamics_Animation | Characters, motion & animation | 3 | 60% | 43% | 36% | 7% | 0% | 51% | 6% |
+| RF_Dynamics_Animation | Characters, motion & animation | 3 | 60% | 46% | 40% | 7% | 0% | 51% | 3% |
 | TCharDecomp2 | Characters, motion & animation | 2 | 70% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TKFCCatRom3f | Characters, motion & animation | 1 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TMotionController | Characters, motion & animation | 1 | 90% | 100% | 0% | 100% | 0% | 0% | 0% |
@@ -351,7 +351,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TPlayerBehaviour | AI & behaviour | 17 | 99% | 68% | 65% | 3% | 0% | 32% | 0% |
 | TCombatant | AI & behaviour | 17 | 97% | 78% | 70% | 0% | 8% | 21% | 2% |
 | TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 0% |
-| Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 39% | 36% | 3% | 0% | 55% | 5% |
+| Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 43% | 40% | 3% | 0% | 51% | 5% |
 | SG_CharacterAI | AI & behaviour | 5 | 88% | 11% | 9% | 3% | 0% | 89% | 0% |
 | TCharViewBehaviour | AI & behaviour | 0 | 70% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TObjectEntity | AI & behaviour | 0 | 70% | 100% | 100% | 0% | 0% | 0% | 0% |
@@ -359,7 +359,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TAbstractPathFinder | AI & behaviour | 0 | 85% | 12% | 1% | 3% | 8% | 0% | 88% |
 | TPlayerControl | AI & behaviour | 0 | 50% | 100% | 100% | 0% | 0% | 0% | 0% |
 | FG_AI_Behaviours | AI & behaviour | 0 | 43% | 100% | 39% | 61% | 0% | 0% | 0% |
-| FLX_Entities | AI & behaviour | 0 | 90% | 0% | 0% | 0% | 0% | 100% | 0% |
+| FLX_Entities | AI & behaviour | 0 | 90% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TEntity | AI & behaviour | 0 | 40% | 0% | 0% | 0% | 0% | 33% | 67% |
 | TAIActivity | AI & behaviour | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TThaumTree | Thaumaturgy & effects | 38 | 91% | 99% | 96% | 0% | 3% | 1% | 1% |
@@ -449,8 +449,8 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | OpenAL loader | Audio | 4 | 72% | 79% | 0% | 79% | 0% | 21% | 0% |
 | RFA_Main | Audio | 1 | 72% | 90% | 29% | 61% | 0% | 10% | 0% |
 | TDummyAudioEnv | Audio | 0 | 70% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| RFG_Dialogue | Script, dialogue & story | 18 | 91% | 95% | 93% | 2% | 0% | 0% | 5% |
-| FG_AIFunctions | Script, dialogue & story | 11 | 86% | 89% | 88% | 2% | 0% | 11% | 0% |
+| RFG_Dialogue | Script, dialogue & story | 18 | 91% | 98% | 96% | 2% | 0% | 0% | 2% |
+| FG_AIFunctions | Script, dialogue & story | 11 | 86% | 92% | 90% | 2% | 0% | 8% | 0% |
 | RFG_Scripts | Script, dialogue & story | 6 | 86% | 100% | 99% | 1% | 0% | 0% | 0% |
 | SG_GameFunctions | Script, dialogue & story | 3 | 82% | 73% | 70% | 3% | 0% | 13% | 14% |
 | TRTDialogue | Script, dialogue & story | 3 | 85% | 56% | 51% | 5% | 0% | 44% | 0% |
