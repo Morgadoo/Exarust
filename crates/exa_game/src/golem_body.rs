@@ -162,27 +162,58 @@ pub fn clear_fighting_poses(mut fighters: Query<(&exa_ai::Duellist, &mut StatueR
     }
 }
 
-/// The sentry tick of every brain standing sentry out of combat.
+/// The sentry tick of every brain standing sentry out of combat: a body
+/// that follows a route soft-stops first (the route ends, the run bit
+/// clears and the goal is pulled in), and the body's look and aim
+/// directions take its frame's forward, so a sentry stands looking where
+/// its body faces.
 #[allow(clippy::type_complexity)]
 pub fn stand_sentries(
     mut commands: Commands,
     motions: Option<Res<Motions>>,
+    nav: Option<Res<exa_world::nav::NavGrid>>,
     mut sentries: Query<(
         Entity,
-        &Npc,
+        &mut Npc,
         &mut Animator,
         Option<&Duellist>,
         Option<&mut Ragdoll>,
         Option<&mut StateFlags>,
         Option<&mut StatueRest>,
+        SentryWalk,
     )>,
+    roots: Query<&GlobalTransform, With<exa_physics::CharacterBody>>,
 ) {
     let Some(motions) = motions else { return };
-    for (entity, npc, mut anim, duellist, body, flags, rest) in &mut sentries {
+    let grid = nav.as_deref();
+    for (entity, mut npc, mut anim, duellist, body, flags, rest, walk) in &mut sentries {
         if npc.routine.kind != exa_ai::idle::Kind::Sentry
             || duellist.is_some_and(|d| d.engaged || d.fighting())
         {
             continue;
+        }
+        let (route, parent, req, locomotor, driven) = walk;
+        let standing = parent.and_then(|p| roots.get(p.parent()).ok());
+        let at = locomotor.map(|l| {
+            exa_ai::drive::DriveBody::of(
+                standing.map_or(Vec3::ZERO, GlobalTransform::translation),
+                l,
+                body.as_deref(),
+            )
+        });
+        if let Some(mut route) = route
+            && route.following
+        {
+            match (req, driven, at.as_ref(), standing) {
+                (Some(mut req), Some(mut driven), Some(at), Some(_)) => {
+                    exa_ai::route_walk::stop_request(&mut route, &mut req, &mut driven.0, at, grid);
+                }
+                _ => route.stop(),
+            }
+        }
+        if let Some(at) = &at {
+            npc.gaze.body_look = at.frame_forward;
+            npc.gaze.body_smooth = at.frame_forward;
         }
         let current = motions
             .0
@@ -218,6 +249,15 @@ pub fn stand_sentries(
         }
     }
 }
+
+/// What the sentry's soft stop and look read of the walking body.
+type SentryWalk = (
+    Option<&'static mut exa_ai::route_walk::AiRoute>,
+    Option<&'static ChildOf>,
+    Option<&'static mut exa_physics::body::locomotion::Locomotion>,
+    Option<&'static exa_physics::body::locomotion::Locomotor>,
+    Option<&'static mut exa_ai::drive::Driven>,
+);
 
 /// Frames between two lines of [`trace_guardians`].
 const TRACE_FRAMES: u32 = 60;
@@ -360,6 +400,52 @@ mod tests {
             app.world().get::<StatueRest>(statue),
             Some(&StatueRest(false))
         );
+    }
+
+    /// A sentry whose body follows a route soft-stops it (the route ends and
+    /// the request's run bit clears), and its look and aim directions take
+    /// its frame's forward.
+    #[test]
+    fn a_sentry_stops_its_route_and_looks_where_it_faces() {
+        use exa_physics::body::locomotion::{Locomotion, Locomotor, flags};
+        let mut app = app();
+        let character = app
+            .world_mut()
+            .spawn((
+                exa_physics::CharacterBody::default(),
+                GlobalTransform::from_translation(Vec3::new(2.0, 0.0, 3.0)),
+            ))
+            .id();
+        let (mut req, motor) = Locomotion::facing(0.6);
+        req.flags = flags::RUN;
+        req.moving = true;
+        let mut route = exa_ai::route_walk::AiRoute::default();
+        route.following = true;
+        route.mode = 2;
+        let mut npc = sentry(false);
+        npc.gaze.body_look = Vec3::X;
+        let golem = app
+            .world_mut()
+            .spawn((
+                npc,
+                Animator::new("Golem", "Stand 2"),
+                route,
+                req,
+                motor,
+                exa_ai::drive::Driven::default(),
+                ChildOf(character),
+            ))
+            .id();
+        app.update();
+        let w = app.world();
+        let route = w.get::<exa_ai::route_walk::AiRoute>(golem).unwrap();
+        assert!(!route.following);
+        assert_eq!(route.mode, 0);
+        assert_eq!(w.get::<Locomotion>(golem).unwrap().flags & flags::RUN, 0);
+        let npc = w.get::<Npc>(golem).unwrap();
+        let facing = exa_physics::body::locomotion::forward(0.6);
+        assert!((npc.gaze.body_look - facing).length() < 1e-5, "{}", npc.gaze.body_look);
+        assert_eq!(npc.gaze.body_smooth, npc.gaze.body_look);
     }
 
     /// A brain that is not standing sentry is left alone.

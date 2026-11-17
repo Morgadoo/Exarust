@@ -353,7 +353,7 @@ impl Npc {
     /// along the frame's `forward`: the look, the heading and the two
     /// words beside them (the combat look and the sway word) take the yaw,
     /// the route stops ([`crate::route_walk::AiRoute::stop`]), and the
-    /// body's heading and look directions take the forward, so the turn
+    /// body's heading, look and aim directions take the forward, so the turn
     /// after a placement starts from where the body was put rather than
     /// from where the AI last looked. The original also copies the frame's
     /// origin into a goal word Exarust does not keep.
@@ -367,6 +367,7 @@ impl Npc {
         }
         self.gaze.body_heading = forward;
         self.gaze.body_look = forward;
+        self.gaze.body_smooth = forward;
     }
 
     /// The body's facing yaw as the AI's routines read it.
