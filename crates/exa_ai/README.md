@@ -162,7 +162,15 @@ that is down stops its route. The original's reset when the level is
 written out on leaving it (the body heals to its lasting health, forgets
 every contact, and a roaming AI is put down along fresh wander paths and
 leaves combat) is `presence::reenter`; Exarust writes no level on leaving,
-so nothing calls it yet. Once a body tick (as the original runs it from
+so nothing calls it yet. The presence check's move back into the scene
+zeroes every contact's seen-tick count; a placement calls the AI's heading
+store (`Npc::placed`: look, heading and sway word at the placed yaw, the
+route stopped, the body's directions along the frame's forward). A
+contact's event word (`ContactRecord::marks`) gathers the quick swing, the
+engagement and the concern's 1.2 and 4 steps (`ContactRecord::set_concern`,
+which the integration calls); the game's dialogue refresh reads and clears
+it. A masked body (`MindPowers::mask`) is hidden from the perception, by its
+Mask Mind's factors. Once a body tick (as the original runs it from
 the body tick) the brain's perception pass clears its
 contacts' concern targets, closeness and view (as the original's target
 pass does before it perceives), looks at every character within the largest

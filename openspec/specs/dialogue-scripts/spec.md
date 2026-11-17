@@ -476,3 +476,10 @@ Behind the simulation bridge the contact mirror and the greeting SHALL post a sc
 #### Scenario: A script write behind the bridge
 - **WHEN** a script sets a contact's concern while the simulation runs behind the bridge
 - **THEN** the frame's brain shows it at once, the frame's brain is not sent, and the simulation's brain takes the write at its next step
+
+### Requirement: AI events refresh
+The contact the target pass's round-robin refresh reaches SHALL get the dialogue's AI events about it, with the contact's event word as the mask; the bit of each event node that ran SHALL leave the word.
+
+#### Scenario: An Engage event
+- **WHEN** the refresh reaches a contact whose event word is 2 and 8 and the brain's dialogue has an Engage node only
+- **THEN** the Engage node's action runs and the word keeps 8
