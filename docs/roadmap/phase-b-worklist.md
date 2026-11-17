@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 564 | 143,267 | B1 wire (or prove unreachable) |
-| partial | 1,316 | 830,805 | B4 complete the port |
+| uncalled | 563 | 142,825 | B1 wire (or prove unreachable) |
+| partial | 1,316 | 830,533 | B4 complete the port |
 | missing | 47 | 9,665 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,12 +15,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 141,997 | 16,867 | 276 |
-| render | 113,916 | 21,704 | 3,232 |
+| render | 113,202 | 21,704 | 3,232 |
 | ui | 83,814 | 39,045 | 288 |
 | powers | 100,181 | 2,261 | 2,321 |
 | characters | 84,180 | 14,061 | 1,543 |
 | world | 56,743 | 15,874 | 563 |
-| modes | 63,164 | 7,447 | 363 |
+| modes | 63,606 | 7,005 | 363 |
 | ai | 67,985 | 1,271 | 28 |
 | items | 51,394 | 7,741 | 525 |
 | data | 27,192 | 9,435 | 0 |
@@ -67,7 +67,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_SceneNodes (unit routines) | world | 5 / 6,798 | 2 / 333 | 0 / 0 | 7,131 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
 | RFE_Export_RFC2 (unit routines) | data | 11 / 6,799 | 2 / 240 | 0 / 0 | 7,039 |
-| RF_Navigation (unit routines) | render | 7 / 4,895 | 9 / 2,080 | 0 / 0 | 6,975 |
 | SG_GameGUI (unit routines) | ui | 13 / 6,927 | 0 / 0 | 0 / 0 | 6,927 |
 | TRenderer | render | 15 / 6,335 | 1 / 526 | 1 / 10 | 6,871 |
 | TMesh | render | 10 / 6,133 | 2 / 703 | 0 / 0 | 6,836 |
@@ -79,7 +78,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | FLX_Materials_Procedural (unit routines) | items | 4 / 3,720 | 11 / 2,821 | 0 / 0 | 6,541 |
 | TMatchBoard | modes | 4 / 6,481 | 0 / 0 | 0 / 0 | 6,481 |
 | TLoadoutForm | modes | 6 / 6,320 | 1 / 80 | 0 / 0 | 6,400 |
-| SG_GameMain (unit routines) | modes | 15 / 5,692 | 1 / 442 | 0 / 0 | 6,134 |
+| RF_Navigation (unit routines) | render | 6 / 4,181 | 9 / 2,080 | 0 / 0 | 6,261 |
+| SG_GameMain (unit routines) | modes | 16 / 6,134 | 0 / 0 | 0 / 0 | 6,134 |
 | FLX_Character_Textures (unit routines) | characters | 13 / 5,935 | 1 / 187 | 0 / 0 | 6,122 |
 | TCharacterView | ui | 13 / 5,178 | 1 / 866 | 0 / 0 | 6,044 |
 | T3DViewport | ui | 19 / 4,915 | 2 / 1,101 | 0 / 0 | 6,016 |

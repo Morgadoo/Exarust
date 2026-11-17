@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r303, 11-16) | target |
+| measure | start (r186, 11-10) | now (r304, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **60.83%** | **100%** |
+| **Ledger: bytes in a final state** | — | **60.86%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,209 | all |
+| Tests passing | 8,489 | TESTS | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,7 +99,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 142 | 159,140 |
-| Rendering & GPU | 10 | 10 | 275 | 138,640 |
+| Rendering & GPU | 10 | 10 | 274 | 137,926 |
 | UI | 12 | 12 | 320 | 123,147 |
 | Thaumaturgy & effects | 9 | 9 | 134 | 104,763 |
 | Characters, motion & animation | 8 | 8 | 214 | 99,784 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,919** | **982,827** |
+| **Total** | **90** | **90** | **1,918** | **982,113** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 304 | The game camera finishes its placement as the original (zoom snapped to its stop, 1280 not 1300, matching the retail field of view 29.93 deg; pitch held at the stop's floor; fast shots clear the asked pitch); the arena's spectated start is the original's fast two-point shot and the free camera pans with the bound movement keys; every play view reframes about 1.5 percent tighter. |
 | 2026-11-16 | 303 | Last round, four lanes cut short: saves store the live props and leave out the triangle data, an armour skill rise redoes the armour, the golem alarm reset keeps its pass (savesflow); hair cloth blood painted in place, plain meshes per position element, object tracks proven live (charanim); right and middle buttons with modifiers, focus loss and return, 500 ms double click, dialogs close on a press off their buttons, manual pictures, rounded tooltip back (uitoolkit); text box line count, centred forget dialog, InputMode 3, saved binding rows, weapon icon preset, GUI reselect on mode switches, pad view tabs (uiscreens). |
 | 2026-11-16 | 302 | Worn effects write their bytes back to the items, the golem suit's switches set the body's stance factor (0.75 powered, the race's value off) and rerun the equipment pass, so a spent suit weighs on its wearer; copies weigh as their template; material lookups follow the manager's provider order and prefer the library record; level, world-tier and archive migrations rebuild factory weapons; the CPU painter magnifies region maps bilinearly and game bodies' skin maps follow the texture detail (1024 at the retail setting). |
 | 2026-11-16 | 301 | Third oracle pass: the door press, wisps, ragdoll detection, placement and overlap touches, sector meets, pushes, negations and rigid inverses now use the original's arithmetic at their call sites; F569 fixed (the barricade place is measured along the wall from the fighter's chest, identical over 5000 cases); head look identical and the light update fixed to the original's sRGB routine (identical over 5000 cases). |
