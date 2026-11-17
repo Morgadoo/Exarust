@@ -11,7 +11,7 @@ import bevy_pbr::render::{
     clustered_forward as clustering,
 };
 import exa_render::shading::{
-    Surface, Lit, Taps, taps, gi_mean, lit_by, light_shadow, light_shadow_fast, fast_taps, sun_shadow, light, light_fast, light_translucent, light_skin, schlick, view_depth, vertical_shaping,
+    Surface, Lit, Taps, taps, gi_mean, lit_by, light_shadow, light_shadow_fast, fast_taps, sun_shadow, light, light_fast, light_translucent, light_skin, schlick, view_depth, vertical_shaping, falloff,
     gi_frame, gi_tap, gi_slot_tagged, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
     REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -789,7 +789,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let lt = &view_bindings::clustered_lights.data[id];
         let to = (*lt).position_radius.xyz - p;
         let d = length(to);
-        let atn = pow(max(1.0 - d / max((*lt).range, 1e-3), 0.0), 4.0) * vertical_shaping(id, to.y / max(d, 1e-4));
+        let atn = falloff(d, (*lt).range) * vertical_shaping(id, to.y / max(d, 1e-4));
         if atn <= 0.0 {
             continue;
         }

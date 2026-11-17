@@ -1,7 +1,7 @@
 // The original's lighting, shared by its surface programs (`exa.wesl` for
 // models, the terrain shader): GGX specular with Schlick Fresnel and no 1/π
 // (the normalisation is in the light colours), point lights falling off as
-// (1 − d/range)⁴ with the original's cube-shadow filter, the sun, and the
+// (1 − d/range)⁴ (unranged ones not at all) with the original's cube-shadow filter, the sun, and the
 // voxel GI ambient. Rules: docs/RENDERING.md.
 
 import bevy_pbr::render::{
@@ -497,6 +497,20 @@ fn lit_by(tag: u32, index: u32) -> bool {
         || (n > 3u && b.x == id) || (n > 4u && b.y == id) || (n > 5u && b.z == id);
 }
 
+// Bevy's range for a light without the original's range flag (metres); the
+// original leaves its attenuation at 0, so it does not fall off at all.
+// Matches `exa_render::lights::UNRANGED_RANGE`.
+const UNRANGED_RANGE: f32 = 500.0;
+
+// A point light's distance falloff: max(1 − d/range, 0)⁴ (Bevy's range is
+// 1.25 radii, so 1 − 0.8·d/R), or 1 for an unranged light.
+fn falloff(d: f32, range: f32) -> f32 {
+    if range >= UNRANGED_RANGE {
+        return 1.0;
+    }
+    return pow(max(1.0 - d / max(range, 1e-3), 0.0), 4.0);
+}
+
 // A level light's vertical shaping for the vertical part `ly` of the
 // direction to it (1 straight below): max((2^(z·(ly + (1 − ly)·y)) − 1) /
 // (2^z − 1), 0), with y and z from the light's record. Unshaped lights
@@ -538,7 +552,7 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
         let lt = &view_bindings::clustered_lights.data[id];
         let to = (*lt).position_radius.xyz - p;
         let d = length(to);
-        let atn = pow(max(1.0 - d / max((*lt).range, 1e-3), 0.0), 4.0) * vertical_shaping(id, to.y / max(d, 1e-4));
+        let atn = falloff(d, (*lt).range) * vertical_shaping(id, to.y / max(d, 1e-4));
         if atn <= 0.0 {
             continue;
         }

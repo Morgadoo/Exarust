@@ -463,8 +463,8 @@ impl Mesh {
     /// Render flag `0x800`: in the shadow depth pass the original culls
     /// this mesh's front faces (it draws the back ones); without the bit the
     /// pass culls the back faces. Only the two shadow-pass draw routines
-    /// read the bit, the colour pass does not. No shipped mesh sets it, and
-    /// Exarust draws no mesh with it.
+    /// read the bit, the colour pass does not. No shipped mesh sets it;
+    /// Exarust's cube shadow pass honours it (`exa_render::lights::ShadowCullFront`).
     pub fn shadow_cull_front(&self) -> bool {
         self.render_flags & 0x800 != 0
     }
