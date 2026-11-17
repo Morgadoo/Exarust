@@ -673,7 +673,8 @@ fn build_jobs(
                     gated += 1;
                     continue;
                 }
-                let Ok((mesh, at, bias, material, skin, dither, cull_front)) = casters.get(caster) else {
+                let Ok((mesh, at, bias, material, skin, dither, cull_front)) = casters.get(caster)
+                else {
                     continue;
                 };
                 let joint_offset = match skin {
