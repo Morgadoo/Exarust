@@ -1400,7 +1400,7 @@ self-sharpening sword (2) gains slash from a crystal B one run in eight and
 loses it on each hit; a blade of ability type 3 ("Sword GSF 01") whose
 first socket holds a Power Crystal C lights its flame row
 (`effects::fire_row`, its warm light at the line's middle, its `FireS02`
-loop and its `_FlameMat01` ribbon), takes the "Flaming" moveset overlay and
+loop and its `_FlameMat01` ribbon, each row drawing with its own copy of the material so its `Anim` takes the row's own fade), takes the "Flaming" moveset overlay and
 the body's lit-blade byte (a lit two-hander rests in both hands) and puts
 the player light out; a cold socket puts it out, and its hits sizzle
 (`--ability-item N[,cold][,npc|,npc-only]` hands out an ability item with
@@ -2896,6 +2896,8 @@ bought items off the company's shelf and the sold ones onto it through the
 transaction settle; the panels then hand the bought items to the pack and
 the sold ones to the stock [guess: the Trade button's callback is not
 read].
+
+The chase camera's wall probe asks the obstacle meshes standing in a sector the main view saw at the last classification (`exa_world::scene_live::LiveScene::sector_seen`; a mesh the live scene does not hold always), not those the view drew, so a wall of a seen room outside the frustum is still asked; a hidden mesh never is.
 
 `nav_camera::terrain_focus_lift` is the free camera's pull of its looked-at point towards a metre above the terrain (the static terrain's height query, eased in double precision): the only caller of that query in the shipped game, reached when the camera has no node to follow or the movement keys pan it. Exarust does not run that tick, so it has no caller yet.
 

@@ -3436,7 +3436,10 @@ pub fn chase_camera(
             &GlobalTransform,
             Option<&exa_world::cut_away::CutAway>,
         )>,
-        Query<&ViewVisibility>,
+        (
+            Option<Res<exa_world::scene_live::LiveScene>>,
+            Query<&InheritedVisibility>,
+        ),
         Res<ButtonInput<KeyCode>>,
         Option<Res<exa_world::terrain::ground::TerrainGround>>,
         Local<Option<Vec3>>,
@@ -3587,15 +3590,27 @@ pub fn chase_camera(
         cam.user_pitch = clamp_pitch(cam.user_pitch, floor, MAX_PITCH);
         // The wall probe at the end of each tick asks the meshes the
         // original's scene walk asks: those marked as its obstacles (the
-        // outdoor levels' walls, trees and buildings) that a view drew last
-        // frame, in spawn order; the first that meets the probe answers. A
-        // mesh the cut-away fade has marked (the node's mark bit the walk
+        // outdoor levels' walls, trees and buildings) standing in a sector
+        // the main view saw at the last classification (the sector word's
+        // main-view bit, not the mesh's own frustum test; a mesh the live
+        // scene does not hold stands in the scene's own sector, always
+        // walked), in spawn order; the first that meets the probe answers.
+        // A mesh the cut-away fade has marked (the node's mark bit the walk
         // reads) is skipped.
         let mut seen: Vec<_> = obstacles
             .iter()
             .filter(|(o, _, cut)| {
                 !cut.is_some_and(|c| c.cut)
-                    && o.parts.iter().any(|&p| views.get(p).is_ok_and(|v| v.get()))
+                    && o.parts.iter().any(|&p| {
+                        // A hidden mesh (the render bit the walk tests)
+                        // is never asked.
+                        views.1.get(p).is_ok_and(|v| v.get())
+                            && views
+                                .0
+                                .as_deref()
+                                .and_then(|live| live.sector_seen(p))
+                                .unwrap_or(true)
+                    })
             })
             .map(|(o, frame, _)| (o, frame))
             .collect();
