@@ -4,8 +4,12 @@
 //! side of the role database. The AI's roles, the body's health and
 //! condition and the brain's arousal live on the world's entities; this
 //! module copies them in each frame, so scripts and dialogues see the same
-//! characters the AI does. A character's relations, topic memory and role
-//! values stay in the cast (the AI keeps no copy of them). When a script
+//! characters the AI does. A character's topic memory and role values stay
+//! in the cast (the AI keeps no copy of them). The relation roles a script
+//! adds or removes (`AddRelation`, `RemRelation`) and the entries a stored
+//! topic memory creates are replayed on the AI's [`Relations`] too (through
+//! the bridge's writes), so they move the attitude the AI works out, as
+//! the original's one shared record does. When a script
 //! changed a character's roles (`AddRole`, `RemoveRole`, a role value) the
 //! cast's list is the newer one: it is written back to the AI's [`Roles`]
 //! and the change flag is cleared, so the AI applies the roles anew.
@@ -96,12 +100,14 @@ impl Plugin for ScriptCastPlugin {
 
 /// The component set one live character is mirrored from.
 type LiveCharacter<'a> = (
+    Entity,
     &'a CharacterId,
     &'a mut Roles,
     Option<&'a Name>,
     Option<&'a Fighter>,
     Option<&'a Condition>,
     Option<&'a Npc>,
+    Option<&'a mut Relations>,
 );
 
 /// The session's player is the player body's character id.
@@ -189,21 +195,41 @@ fn grant_witness_roles(
 /// condition bit; arousal is the brain's readiness word (the one the
 /// greeting and the dialogue entries test), zero for a body without one (a
 /// player or a body the AI does not run). A role list a script changed goes
-/// the other way first.
+/// the other way first, and so do the relation roles a script or a stored
+/// topic memory changed ([`apply_relation_edits`]).
 pub(crate) fn mirror_cast(
     conversations: Option<ResMut<Conversations>>,
+    db: Option<Res<exa_ai::brain::RoleDatabase>>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     mut characters: Query<LiveCharacter<'_>>,
 ) {
     let Some(mut conversations) = conversations else {
         return;
     };
-    for (id, mut roles, name, fighter, condition, npc) in &mut characters {
-        if let Some(c) = conversations.cast.get_mut(id.0)
-            && c.roles_changed
-        {
-            c.roles_changed = false;
-            if roles.0 != c.roles {
-                roles.0 = c.roles.clone();
+    for (entity, id, mut roles, name, fighter, condition, npc, relations) in &mut characters {
+        if let Some(c) = conversations.cast.get_mut(id.0) {
+            if c.roles_changed {
+                c.roles_changed = false;
+                if roles.0 != c.roles {
+                    roles.0 = c.roles.clone();
+                }
+            }
+            if !c.relation_edits.is_empty() {
+                let edits = std::mem::take(&mut c.relation_edits);
+                if let (Some(db), Some(mut relations)) = (db.as_deref(), relations) {
+                    // The relations are the simulation's: behind the bridge
+                    // the same edits land on its copy at the next step.
+                    let db = db.clone();
+                    let held = roles.clone();
+                    let write = move |r: &mut Relations| apply_relation_edits(&db, &held, r, &edits);
+                    let reports = match fixed.as_deref_mut() {
+                        Some(fixed) => fixed.write(entity, &mut relations, write),
+                        None => write(&mut relations),
+                    };
+                    for report in reports {
+                        crate::engine_log::log(4, report, "Invalid role identifier.");
+                    }
+                }
             }
         }
         let reading = Reading {
@@ -217,6 +243,44 @@ pub(crate) fn mirror_cast(
         };
         conversations.cast.mirror(&[reading]);
     }
+}
+
+/// Replays a character's script relation changes on the AI's relations, as
+/// the original's script `AddRelation` and `RemRelation` and the dialogue's
+/// memory write-back change the one record the AI reads: an add holds the
+/// role toward the partner (its value once), then checks the character's
+/// roles and its relation roles toward the partner and reports an unknown
+/// one under "Add Relation"; a remove that dropped a held role checks the
+/// same and reports under "Remove Relation"; a stored memory block adds its
+/// entry and key with no check. Answers the report titles, in order.
+pub fn apply_relation_edits(
+    db: &exa_ai::brain::RoleDatabase,
+    roles: &Roles,
+    relations: &mut Relations,
+    edits: &[exa_script::cast::RelationEdit],
+) -> Vec<&'static str> {
+    use exa_script::cast::RelationEdit;
+    let mut reports = Vec::new();
+    for edit in edits {
+        match *edit {
+            RelationEdit::Add { other, role, value } => {
+                if relations.add_role(&db.book, roles, other, role, value, db.locale) {
+                    reports.push("Add Relation");
+                }
+            }
+            RelationEdit::Remove { other, role } => {
+                if relations.remove_role(other, role, db.locale)
+                    && exa_ai::roles::invalid(roles, relations, &db.book, other)
+                {
+                    reports.push("Remove Relation");
+                }
+            }
+            RelationEdit::Store { other, role, key } => {
+                relations.add_role(&db.book, roles, other, role, key, db.locale);
+            }
+        }
+    }
+    reports
 }
 
 /// The items a script's `HasItem` finds on a character: its carried list
@@ -1108,4 +1172,156 @@ mod tests {
             vec![exa_script::cast::Contact::new(5)]
         );
     }
+
+    /// A script's `AddRelation` reaches the AI's relations, so the relation
+    /// role decides the attitude the AI works out; `RemRelation` takes it
+    /// away again. A role unknown to the book is still held and reported.
+    /// A dialogue's stored memory under a new entry adds it with no report.
+    #[test]
+    fn script_relations_reach_the_ais_relations() {
+        use exa_formats::roles::{ATTITUDE, RELATION_ROLE, Role, RoleDb, RoleEntry};
+        use exa_script::topics;
+        let mut book = RoleDb::default();
+        book.roles.push(Role {
+            id: 0x1E,
+            flags: RELATION_ROLE,
+            weight: 100,
+            entries: vec![RoleEntry {
+                kind: ATTITUDE,
+                target: 0,
+                value: u32::from((-60i8) as u8),
+                ..RoleEntry::default()
+            }],
+            ..Role::default()
+        });
+        let db = exa_ai::brain::RoleDatabase {
+            book: book.clone(),
+            locale: 2,
+            ..Default::default()
+        };
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin)
+            .insert_resource(exa_script::Scripts {
+                roles: book.clone(),
+                narrator: None,
+            })
+            .insert_resource(db)
+            .insert_resource(Conversations::default());
+        let partner = Roles(Vec::new());
+        let brain = app
+            .world_mut()
+            .spawn((CharacterId(3), Roles(Vec::new()), Relations::default()))
+            .id();
+        app.world_mut().spawn((CharacterId(7), partner.clone()));
+        app.update();
+        let run = |app: &mut App, text: &'static [u8]| {
+            app.world_mut()
+                .resource_scope(|world, mut conversations: Mut<Conversations>| {
+                    let scripts = world.resource::<exa_script::Scripts>();
+                    conversations.with_scene(scripts, 0, |engine, scene| {
+                        engine.run_script(scene, vec![Some(3), Some(7)], 0, text)
+                    });
+                });
+            app.update();
+        };
+        let attitude = |app: &mut App| {
+            let mut relations = app.world_mut().get_mut::<Relations>(brain).unwrap();
+            let roles = Roles(Vec::new());
+            exa_ai::roles::attitude(
+                &book,
+                &roles,
+                &mut relations,
+                &exa_ai::roles::Partner {
+                    id: 7,
+                    roles: &partner,
+                    former: None,
+                },
+                2,
+            )
+            .attitude
+        };
+        assert_eq!(attitude(&mut app), 0.0);
+        run(&mut app, b"Actor[0].AddRelation(Actor[1], $1E);");
+        assert_eq!(attitude(&mut app), -60.0);
+        let held = |app: &App| {
+            app.world()
+                .get::<Relations>(brain)
+                .unwrap()
+                .find(7)
+                .and_then(|r| r.roles.clone())
+                .unwrap_or_default()
+                .iter()
+                .map(|r| (r.id, r.values.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(held(&app), [(0x1E, vec![])]);
+        run(&mut app, b"Actor[0].RemRelation(Actor[1], $1E);");
+        assert_eq!(attitude(&mut app), 0.0);
+        assert!(held(&app).is_empty());
+        // An unknown relation role is held (the report is the log's).
+        run(&mut app, b"Actor[0].AddRelation(Actor[1], $55, $9);");
+        assert_eq!(held(&app), [(0x55, vec![9])]);
+        // A stored memory block under a new entry: entry and key.
+        {
+            let mut conversations = app.world_mut().resource_mut::<Conversations>();
+            let c = conversations.cast.get_mut(3).unwrap();
+            topics::store(
+                c,
+                topics::MemoryKey {
+                    other: 7,
+                    role: 0x1E,
+                    key: 4,
+                },
+                &[1, 0],
+            );
+        }
+        app.update();
+        assert_eq!(held(&app), [(0x55, vec![9]), (0x1E, vec![4])]);
+        // The queue is drained.
+        let cast = &app.world().resource::<Conversations>().cast;
+        assert!(cast.get(3).unwrap().relation_edits.is_empty());
+    }
+
+    /// The edits' reports: an add naming an unknown role reports under
+    /// "Add Relation", a remove that leaves one under "Remove Relation", a
+    /// stored block never.
+    #[test]
+    fn relation_edits_report_an_invalid_role() {
+        use exa_script::cast::RelationEdit;
+        let db = exa_ai::brain::RoleDatabase::default();
+        let roles = Roles(Vec::new());
+        let mut relations = Relations::default();
+        let reports = apply_relation_edits(
+            &db,
+            &roles,
+            &mut relations,
+            &[
+                RelationEdit::Store {
+                    other: 7,
+                    role: 0x40,
+                    key: 1,
+                },
+                RelationEdit::Add {
+                    other: 7,
+                    role: 0x41,
+                    value: 0,
+                },
+                RelationEdit::Add {
+                    other: 7,
+                    role: 0x41,
+                    value: 0,
+                },
+                RelationEdit::Remove {
+                    other: 7,
+                    role: 0x41,
+                },
+                RelationEdit::Remove {
+                    other: 7,
+                    role: 0x41,
+                },
+            ],
+        );
+        assert_eq!(reports, ["Add Relation", "Remove Relation"]);
+    }
+
 }
