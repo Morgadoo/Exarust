@@ -1068,9 +1068,13 @@ fn alpha_byte(value: f32) -> u8 {
 }
 
 /// The glow shader's `FrameCol` at rest: the accent's colour at 0.4 and its
-/// alpha (the vector scale the original calls multiplies three lanes).
+/// alpha (the vector scale the original calls multiplies three lanes). The
+/// three colour bytes go through the engine's unpack, each byte times the
+/// stored 1/255 ([`exa_formats::pixel::BYTE_UNIT`]), not over 255.
 fn accent_frame(accent: [u8; 4]) -> [f32; 4] {
-    let [red, green, blue, alpha] = ink(accent);
+    let [red, green, blue] =
+        [accent[0], accent[1], accent[2]].map(|b| f32::from(b) * exa_formats::pixel::BYTE_UNIT);
+    let alpha = ink(accent)[3];
     [red * 0.4, green * 0.4, blue * 0.4, alpha]
 }
 
@@ -2722,6 +2726,13 @@ mod tests {
             .find(|b| b.program == Program::Frame)
             .unwrap();
         assert!(close(glow.uniforms.frame_col[0], 0.4));
+        // The colour bytes are unpacked as the engine does, each times the
+        // stored 1/255, then scaled.
+        let accent = accent_frame([51, 7, 254, 9]);
+        for (lane, byte) in [51u8, 7, 254].into_iter().enumerate() {
+            let unit = f32::from(byte) * exa_formats::pixel::BYTE_UNIT;
+            assert_eq!(accent[lane].to_bits(), (unit * 0.4).to_bits(), "{byte}");
+        }
         // The vector scale takes three lanes: the alpha stays.
         assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0));
         // A flash on the first node scales its colour by 0.333 + 0.667

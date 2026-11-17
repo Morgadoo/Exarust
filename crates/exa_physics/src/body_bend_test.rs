@@ -64,6 +64,23 @@ fn the_thigh_turns_three_quarters_and_then_decays() {
     assert!(close(left, 0.4712389), "decayed to {left}");
 }
 
+/// The extra turn's edges as the original's compares take them: a NaN
+/// pair and a pair at or under the tiny floor have no angle, a cosine
+/// under the floor is a right angle; the decay is the engine's lerp toward
+/// the identity and its normaliser, not a slerp.
+#[test]
+fn the_extra_turn_follows_the_original_compares() {
+    let none = Quat::from_xyzw(0.0, 0.0, 0.0, 1.0);
+    assert_eq!(extra_turn(Vec3::NAN, Vec3::X), none);
+    assert_eq!(extra_turn(Vec3::ZERO, Vec3::X), none);
+    let (_, right) = extra_turn(Vec3::Z, Vec3::X).to_axis_angle();
+    assert!(close(right, 1.5707964 * 0.75), "{right}");
+    let held = Quat::from_axis_angle(Vec3::X, 0.5235988);
+    let lerped = crate::engine_math::lerp4(Vec4::from(held), Vec4::W, 0.1);
+    let expected = crate::engine_math::normalize_quat(Quat::from_vec4(lerped));
+    assert_eq!(decay_turn(held), expected);
+}
+
 /// The feet routine's lift rule at a scale of 16 cm (0.4 of a 40 cm step)
 /// and 40 cm to the anchor, crouch 0, stance 0.5: −11.5185 cm; beyond
 /// 3·scale half the scale, −8 cm. At the scale the original's feet routine

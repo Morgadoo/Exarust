@@ -1110,6 +1110,21 @@ pub fn library_arcsin(x: f64) -> f64 {
     library_arctan2(x, ((1.0 + x) * (1.0 - x)).sqrt())
 }
 
+/// The rest basis (a 4×4 matrix, its rows as [`Mat4`] columns) times the
+/// four particles (rows of three): row `i` of the result is
+/// `((b[i][0]·p0 + b[i][1]·p1) + b[i][2]·p2) + b[i][3]·p3`, lane by lane.
+/// The original's body matrix from its particles: the first three rows are
+/// the turn (not orthonormalised) and the fourth the translation.
+pub fn basis_points(basis: &Mat4, points: &[[f32; 3]; 4]) -> [[f32; 3]; 4] {
+    let b = basis.to_cols_array_2d();
+    std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            ((b[i][0] * points[0][j] + b[i][1] * points[1][j]) + b[i][2] * points[2][j])
+                + b[i][3] * points[3][j]
+        })
+    })
+}
+
 /// The inverse of a 4×4 matrix by Gauss-Jordan elimination, starting from
 /// the identity and working on the four stored rows (a [`Mat4`]'s
 /// columns). The pivot search compares each lower row's magnitude with the

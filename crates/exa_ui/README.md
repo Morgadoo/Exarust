@@ -570,7 +570,8 @@ digits filter, Enter's submitted bits and the notify call), the caret a
 press or drag places from the field's text origin, the focus message's
 selection, and the colour swatch's drop and the emblem's drop callback.
 
-The thaumaturgy power tree's drawing is `tree_draw`: the six immediate
+The thaumaturgy power tree's drawing is `tree_draw` (its glow's frame
+colour unpacks the accent bytes by the engine's stored 1/255): the six immediate
 programs and the spline renderer's procedural ribbon, the empty slot, icon,
 frame, glow, flame, link glow and new/picked rings, the bar's icons, marks,
 flames, glows and empty slots with its opening and closing animation, the
