@@ -284,8 +284,12 @@ pub struct CameraFrame {
     pub target: Vec3,
     /// The distance the camera's placement takes (`Some(1300.0)` after a
     /// session start: the zoom starts again from it; `None` keeps the view's
-    /// own).
+    /// own: the original passes the controller's current distance).
     pub distance: Option<f32>,
+    /// A fast point or two-point shot also clears the pitch the orbit drag
+    /// asked for, so the camera starts again from the zoom's pitch floor
+    /// (the story shot leaves it).
+    pub clears_pitch: bool,
     /// The client point the cursor is moved to.
     pub warp: (i32, i32),
 }
@@ -346,11 +350,14 @@ pub mod camera {
             camera: (if far { FAR_OFFSET } else { NEAR_OFFSET }) + point,
             target: point,
             distance: fast.then_some(START_DISTANCE),
+            clears_pitch: fast,
             warp: warp(viewport.width, viewport.height, WARP_X, WARP_Y),
         }
     }
 
-    /// Frames two points: the camera at `camera`, looking at `target`.
+    /// Frames two points: the camera at `camera`, looking at `target`, with
+    /// [`frame_point`]'s fast-shot rules (the arena's match starts frame
+    /// the spawn spot so, from the spot plus [`NEAR_OFFSET`]).
     pub fn frame_two_points(
         target: Vec3,
         camera: Vec3,
@@ -361,6 +368,7 @@ pub mod camera {
             camera,
             target,
             distance: fast.then_some(START_DISTANCE),
+            clears_pitch: fast,
             warp: warp(viewport.width, viewport.height, WARP_X, WARP_Y),
         }
     }
@@ -373,6 +381,7 @@ pub mod camera {
             camera: point + STORY_OFFSET,
             target: point,
             distance: Some(START_DISTANCE),
+            clears_pitch: false,
             warp: warp(viewport.width, viewport.height, -STORY_WARP_X, 0.0),
         }
     }
@@ -4751,12 +4760,13 @@ pub(crate) fn apply_steps(
                     }
                 });
                 // The shot places the chase camera as the original's
-                // placement does: the bearing of the eye from the target,
-                // and a fast shot's distance as the zoom. The view position
-                // is not taken (the chase camera keeps its own distance and
-                // pitch rules).
+                // placement does (`ChaseCamera::take_shot`): the bearing of
+                // the eye from the target, a fast shot's distance as the
+                // zoom (else the camera's own), the zoom's stop and the
+                // pitch held at once; a fast shot first clears the asked
+                // pitch.
                 for mut camera in &mut cameras {
-                    camera.face_shot(frame.camera, frame.target, frame.distance);
+                    camera.take_shot(&frame);
                     info!(
                         "camera shot: eye {} target {} distance {:?}: yaw {:.6} zoom {}",
                         frame.camera,

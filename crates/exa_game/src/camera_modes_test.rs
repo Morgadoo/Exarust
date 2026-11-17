@@ -118,7 +118,9 @@ fn each_mode_start_gives_the_camera_its_record() {
     assert!(app.world().resource::<SpectateSession>().active);
     assert_eq!(cam(&app, camera).mode, Some(GameMode::Spectate));
     assert_eq!(cam(&app, camera).record_flags(), 0x0062_0b01);
-    assert_eq!(cam(&app, camera).zoom(), 1300.0);
+    // The record's 1300 starts the zoom again, moved to its nearest stop by
+    // the stepped placement.
+    assert_eq!(cam(&app, camera).zoom(), 1280.0);
     // The room walk reads the mode word in the next frame.
     app.update();
     assert!(
@@ -216,5 +218,64 @@ fn the_menu_scene_holds_the_camera_at_its_fixed_view() {
     assert!(
         followed.distance(Vec3::new(0.0, 5.0, 7.0)) > 1.0,
         "{followed:?}"
+    );
+}
+
+/// The arena's spectated start frames the spawn spot with the original's
+/// fast two-point shot: the free camera looks at the spot from the spot
+/// plus 700, 1180, 1100 cm, the zoom starts again from 1300 (its stop
+/// 1280), the asked pitch is cleared and the pitch held at the stop's
+/// floor at once, and the pointer is warped while the window has the
+/// focus.
+#[test]
+fn the_spectated_arena_start_is_a_fast_two_point_shot() {
+    let mut app = app();
+    app.add_message::<crate::os_pointer::WarpPointer>();
+    app.world_mut().spawn((
+        Window {
+            resolution: bevy::window::WindowResolution::new(1600, 1140),
+            ..Default::default()
+        },
+        bevy::window::PrimaryWindow,
+    ));
+    let camera = camera(&mut app);
+    app.update();
+    {
+        let mut cam = app.world_mut().get_mut::<ChaseCamera>(camera).unwrap();
+        cam.set_asked_pitch(1.3);
+    }
+    let spot = Vec3::new(4.0, 1.0, -2.0);
+    app.world_mut()
+        .resource_mut::<SpectateSession>()
+        .start_arena(spot);
+    app.update();
+    let c = cam(&app, camera);
+    assert!(c.is_free());
+    assert_eq!(c.asked_pitch(), 0.0);
+    assert_eq!(c.zoom(), 1280.0);
+    let floor = crate::nav_camera::pitch_floor(1280.0);
+    assert!(
+        (c.shown_pitch() - floor).abs() < 1e-6,
+        "{}",
+        c.shown_pitch()
+    );
+    let yaw = crate::nav_camera::planar_yaw(Vec3::new(700.0, 1180.0, 1100.0).normalize());
+    assert!((c.yaw - yaw).abs() < 1e-5, "{} {yaw}", c.yaw);
+    let warps: Vec<_> = app
+        .world_mut()
+        .resource_mut::<Messages<crate::os_pointer::WarpPointer>>()
+        .drain()
+        .collect();
+    let view = crate::flow::Viewport {
+        width: 1600,
+        height: 1140,
+    };
+    let frame = crate::flow::camera::frame_two_points(spot, spot, true, view);
+    assert_eq!(
+        warps,
+        vec![crate::os_pointer::WarpPointer(Vec2::new(
+            frame.warp.0 as f32,
+            frame.warp.1 as f32
+        ))]
     );
 }
