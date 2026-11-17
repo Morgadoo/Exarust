@@ -2724,6 +2724,11 @@ pub struct ChaseCamera {
     /// below the horizon).
     user_pitch: f32,
     pitch: f32,
+    /// The pitch target a stepped camera's placement left (positive below
+    /// the horizon): the shot's own pitch held between the held pitch and
+    /// the steepest, kept until the wheel, a zoom step or an orbit sets the
+    /// target again.
+    shot_pitch: Option<f32>,
     /// Zoom: the target (800–2000) and the stored shown value, which a
     /// frame moves to the zoom it draws once they lie 0.01 apart.
     zoom: f32,
@@ -2807,7 +2812,17 @@ impl Default for ChaseCamera {
             yaw: 0.0,
             shown_yaw: 0.0,
             user_pitch: 0.0,
-            pitch: min_pitch(ZOOM_START),
+            // The node's axis starts at the floor of the stop the record's
+            // distance lands on [guess: the original's axis is the scene
+            // camera's own at that moment, which the placement then holds
+            // between that floor and the cap].
+            pitch: min_pitch(crate::nav_drag::zoom_detents(
+                ZOOM_START,
+                0,
+                preset.min_distance,
+                preset.max_distance,
+            )),
+            shot_pitch: None,
             zoom: ZOOM_START,
             shown_zoom: ZOOM_START,
             zoom_spring: crate::nav_camera::ZoomSpring {
@@ -2836,6 +2851,11 @@ impl Default for ChaseCamera {
             free: None,
         };
         cam.settle_back();
+        // The constructor's preset places the camera with the record's
+        // distance along the node's axis, so a stepped camera starts on
+        // the stop nearest it (1280 for the Character record's 1300).
+        let back = cam.back;
+        cam.face_shot(back, Vec3::ZERO, Some(preset.distance));
         cam
     }
 }
@@ -2966,20 +2986,36 @@ impl ChaseCamera {
         self.shown_zoom
     }
 
+    /// Takes a camera shot ([`crate::flow::CameraFrame`]): a fast shot
+    /// first clears the pitch the orbit drag asked for (the original zeroes
+    /// it before the placement), then the camera is placed from the shot's
+    /// eye to its target ([`Self::face_shot`]) at the shot's distance, or at
+    /// the camera's current distance without one.
+    pub fn take_shot(&mut self, frame: &crate::flow::CameraFrame) {
+        if frame.clears_pitch {
+            self.user_pitch = 0.0;
+        }
+        self.face_shot(frame.camera, frame.target, frame.distance);
+    }
+
     /// Places the camera for a shot from `eye` to `focus` (any units), as
     /// the original's placement routine does
     /// ([`crate::nav_camera::place`]): the target and shown yaw become the
     /// engine's planar yaw of the backward vector from the focus to the eye,
-    /// and the orbit stops. A shot with a `distance` (a fast shot's 1300)
-    /// starts the zoom again from it: the shown zoom takes the distance and
-    /// the zoom raised to the smallest distance and, the camera being the
-    /// stepped one, lowered to the largest. A shot without one keeps the
-    /// zoom [guess: the original passes the controller's own last placed
-    /// distance, which Exarust does not keep apart from the wheel's zoom].
-    /// The backward vector takes the shot's and stops, and the wall
-    /// avoidance starts over (no step, no tilt); the pitch stays the
-    /// camera's own rules', toward which the next ticks spring the vector.
-    /// A shot with no horizontal offset leaves the camera.
+    /// and the orbit stops. The backward vector takes the shot's and stops,
+    /// and the wall avoidance starts over (no step, no tilt). A shot with
+    /// no horizontal offset leaves the camera.
+    ///
+    /// The distance is the shot's (a fast shot's 1300) or, without one, the
+    /// controller's current distance (the shown zoom). The shown zoom and
+    /// both spring values take it as it is, and the zoom takes it raised to
+    /// the smallest distance. On the stepped camera (the preset's
+    /// `0x200000`) the placement then finishes as the original's does
+    /// ([`crate::nav_camera::fixed_placement`]): the zoom is lowered to the
+    /// largest distance and moved to its nearest stop (the wheel's routine
+    /// run with no turn), the pitch is held at the steeper of the asked
+    /// pitch and the stop's floor, and the shown pitch jumps to the shot's
+    /// own pitch held between that and the steepest pitch.
     pub fn face_shot(&mut self, eye: Vec3, focus: Vec3, distance: Option<f32>) {
         let back = eye - focus;
         if back.x == 0.0 && back.z == 0.0 || !back.is_finite() {
@@ -2999,17 +3035,29 @@ impl ChaseCamera {
         self.wall_climb = false;
         self.wall_tilt = 0.0;
         self.wall_before = 0.0;
-        if let Some(distance) = distance {
-            self.zoom = crate::nav_camera::clamp_distance(
-                distance,
+        let distance = distance.unwrap_or(self.shown_zoom);
+        self.zoom = if distance < preset.min_distance {
+            preset.min_distance
+        } else {
+            distance
+        };
+        // The shown zoom and both spring values take the distance as it is.
+        self.shown_zoom = distance;
+        self.zoom_spring.motion = distance;
+        self.zoom_spring.previous = distance;
+        if preset.flags & crate::nav_camera::STEPPED_CAMERA != 0 {
+            let fixed = crate::nav_camera::fixed_placement(
+                self.zoom,
+                self.user_pitch,
+                placed.pitch,
                 preset.min_distance,
                 preset.max_distance,
+                preset.pitch_high,
             );
-            // The shown zoom and both spring values take the distance as
-            // it is.
-            self.shown_zoom = distance;
-            self.zoom_spring.motion = distance;
-            self.zoom_spring.previous = distance;
+            self.zoom = fixed.zoom;
+            // Exarust keeps the pitch below the horizon positive.
+            self.pitch = -fixed.pitch;
+            self.shot_pitch = Some(-fixed.pitch);
         }
     }
 
@@ -3101,10 +3149,11 @@ impl ChaseCamera {
     /// `width` pixels wide: the navigation unit's relative orbit drag by
     /// the orbit's rate ([`crate::gamepad::look_turn`]).
     pub(crate) fn look_turn(&mut self, input: Vec2, width: f32) {
+        self.shot_pitch = None;
         (self.yaw, self.user_pitch) = crate::gamepad::look_turn(
             self.yaw,
             self.user_pitch,
-            pitch_floor(self.shown_zoom),
+            pitch_floor(self.zoom),
             MAX_PITCH,
             input,
             orbit_per_pixel(width),
@@ -3140,7 +3189,13 @@ impl ChaseCamera {
             self.shake = Vec3::ZERO;
             self.shake_before = Vec3::ZERO;
         }
-        let target_pitch = pitch_held(self.user_pitch, pitch_floor(self.shown_zoom));
+        // The pitch target is the one the last zoom, orbit or placement
+        // left: a placement's own pitch until a handler runs, else the
+        // asked pitch held at the floor of the target zoom (the original
+        // derives the floor from the zoom it moves to, not the drawn one).
+        let target_pitch = self
+            .shot_pitch
+            .unwrap_or_else(|| pitch_held(self.user_pitch, pitch_floor(self.zoom)));
         self.pitch = nav::ease_pitch(self.pitch, target_pitch);
         let heading = nav::planar_yaw(self.back);
         self.yaw = nav::wrap_target_yaw(self.yaw, self.shown_yaw, heading);
@@ -3219,6 +3274,24 @@ impl ChaseCamera {
         self.free = None;
     }
 
+    /// The pitch the orbit drag asked for (rad below the horizon).
+    #[cfg(test)]
+    pub(crate) fn asked_pitch(&self) -> f32 {
+        self.user_pitch
+    }
+
+    /// Sets the pitch the orbit drag asked for (rad below the horizon).
+    #[cfg(test)]
+    pub(crate) fn set_asked_pitch(&mut self, pitch: f32) {
+        self.user_pitch = pitch;
+    }
+
+    /// The shown pitch (rad below the horizon).
+    #[cfg(test)]
+    pub(crate) fn shown_pitch(&self) -> f32 {
+        self.pitch
+    }
+
     /// Whether the camera follows nothing.
     pub(crate) fn is_free(&self) -> bool {
         self.free.is_some()
@@ -3230,12 +3303,13 @@ impl ChaseCamera {
         self.free.map(|f| f.shown(t) * CM)
     }
 
-    /// Places a free camera for a shot from `eye` looking at `at` (m), as
-    /// the original's placement routine does: the backward vector and yaw
-    /// as [`Self::face_shot`] sets them, and the looked-at point at `at`
-    /// with its height held within the preset's limits.
-    pub(crate) fn place_free(&mut self, eye: Vec3, at: Vec3) {
-        self.face_shot(eye, at, None);
+    /// Places a free camera for a shot (eye and target in metres), as the
+    /// original's placement routine does: the zoom, pitch, backward vector
+    /// and yaw as [`Self::take_shot`] sets them, and the looked-at point at
+    /// the target with its height held within the preset's limits.
+    pub(crate) fn place_free(&mut self, frame: &crate::flow::CameraFrame) {
+        self.take_shot(frame);
+        let at = frame.target;
         let preset = self.controller.preset;
         let limits = crate::nav_camera::HeightLimits {
             min: preset.min_height,
@@ -3344,6 +3418,8 @@ pub fn chase_camera(
         mut logged,
         loading,
         menu,
+        mut warps,
+        bindings,
     ): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
@@ -3360,6 +3436,8 @@ pub fn chase_camera(
         Local<Option<Vec3>>,
         Option<Res<exa_ui::LoadingStatus>>,
         Option<Res<crate::level_change::MenuSceneView>>,
+        Option<ResMut<Messages<crate::os_pointer::WarpPointer>>>,
+        Option<Res<Bindings>>,
     ),
 ) {
     // Behind the main menu the view stands at the menu scene's fixed camera
@@ -3437,13 +3515,14 @@ pub fn chase_camera(
         // frame after it began (`cursor_look`); a drag ends an alignment.
         if look.orbits() && !look.began {
             cam.aligning = false;
+            cam.shot_pitch = None;
             let per_pixel = orbit_per_pixel(width);
             cam.yaw = orbit_yaw(cam.yaw, motion.delta.x, per_pixel);
             cam.user_pitch = orbit_pitch(
                 cam.user_pitch,
                 motion.delta.y,
                 per_pixel,
-                pitch_floor(cam.shown_zoom),
+                pitch_floor(cam.zoom),
                 MAX_PITCH,
             );
         } else if look.ended {
@@ -3466,6 +3545,7 @@ pub fn chase_camera(
             let preset = cam.controller.preset;
             // The record installs the wheel's handler (its `0x200`).
             if preset.handlers.wheel {
+                cam.shot_pitch = None;
                 cam.zoom = crate::nav_drag::zoom_detents(
                     cam.zoom,
                     units,
@@ -3487,6 +3567,7 @@ pub fn chase_camera(
             ] {
                 if held {
                     let preset = cam.controller.preset;
+                    cam.shot_pitch = None;
                     cam.zoom = crate::gamepad::zoom_step(
                         cam.zoom,
                         steps,
@@ -3496,7 +3577,7 @@ pub fn chase_camera(
                 }
             }
         }
-        let floor = pitch_floor(cam.shown_zoom);
+        let floor = pitch_floor(cam.zoom);
         cam.user_pitch = clamp_pitch(cam.user_pitch, floor, MAX_PITCH);
         // The wall probe at the end of each tick asks the meshes the
         // original's scene walk asks: those marked as its obstacles (the
@@ -3514,7 +3595,28 @@ pub fn chase_camera(
             .collect();
         seen.sort_unstable_by_key(|(o, _)| o.parts.first().copied());
         if let Some((eye, at)) = pose {
-            cam.place_free(eye, at);
+            // The arena's spectated start is the original's fast two-point
+            // shot: the camera placed from the eye to the spot at the start
+            // distance with the asked pitch cleared, and the pointer warped
+            // to the shot's point while the window has the focus.
+            let window = windows.single().ok();
+            let viewport = window.map_or(
+                crate::flow::Viewport {
+                    width: 1600,
+                    height: 1000,
+                },
+                |w| crate::flow::Viewport {
+                    width: w.physical_width(),
+                    height: w.physical_height(),
+                },
+            );
+            let frame = crate::flow::camera::frame_two_points(at, eye, true, viewport);
+            cam.place_free(&frame);
+            if let (Some(window), Some(warps)) = (window.filter(|w| w.focused), warps.as_mut()) {
+                let to =
+                    Vec2::new(frame.warp.0 as f32, frame.warp.1 as f32) / window.scale_factor();
+                warps.write(crate::os_pointer::WarpPointer(to));
+            }
         }
         let was_free = cam.is_free();
         match followed {
@@ -3527,9 +3629,20 @@ pub fn chase_camera(
                 None => info!("camera: follows a body"),
             }
         }
-        // The free branch's keys (A/D along the drawn right axis, S/W
-        // along the forward one) and the terrain's height query, in the
-        // original's centimetres.
+        // The free branch's keys and the terrain's height query, in the
+        // original's centimetres. The keys are the first four binding
+        // slots (forward, back, left, right: W, S, A, D shipped), which the
+        // controls' table rebuilds from the saved rows: left and right
+        // along the drawn right axis, back and forward along the forward
+        // one.
+        let shipped;
+        let bindings = match bindings.as_deref() {
+            Some(bindings) => bindings,
+            None => {
+                shipped = Bindings::default();
+                &shipped
+            }
+        };
         let ground = |at: Vec3| {
             terrain
                 .as_deref()
@@ -3538,10 +3651,10 @@ pub fn chase_camera(
         };
         let free_input = FreeInput {
             keys: crate::nav_camera::PanKeys {
-                left: keys.pressed(KeyCode::KeyA),
-                right: keys.pressed(KeyCode::KeyD),
-                back: keys.pressed(KeyCode::KeyS),
-                forward: keys.pressed(KeyCode::KeyW),
+                left: bindings.pressed(&keys, Action::Left),
+                right: bindings.pressed(&keys, Action::Right),
+                back: bindings.pressed(&keys, Action::Back),
+                forward: bindings.pressed(&keys, Action::Forward),
             },
             pad: pad_move,
             right: *t.right(),
@@ -5292,6 +5405,22 @@ mod tests {
         }
     }
 
+    /// A new camera's preset places it as the original's constructor does:
+    /// the Character record's 1300 is drawn at first and the zoom is its
+    /// nearest stop, 1280 (the retail camera's 29.93 degrees at 1600 by
+    /// 1080), with the pitch at that stop's floor.
+    #[test]
+    fn a_new_camera_starts_on_the_stop_nearest_its_records_distance() {
+        let cam = ChaseCamera::default();
+        assert_eq!((cam.zoom, cam.shown_zoom), (1280.0, 1300.0));
+        // The axis's pitch read back through the engine's arc sine lands a
+        // hair above the floor, and the placement keeps it.
+        assert!(cam.pitch >= min_pitch(1280.0) && cam.pitch - min_pitch(1280.0) < 2e-4);
+        assert_eq!(cam.shot_pitch, Some(cam.pitch));
+        let fov = zoom_fov(1280.0, 1600.0 / 1080.0).to_degrees();
+        assert!((fov - 29.93).abs() < 0.005, "{fov}");
+    }
+
     #[test]
     fn a_shot_places_the_camera_by_the_engines_yaw_and_distance() {
         let mut cam = ChaseCamera {
@@ -5315,7 +5444,10 @@ mod tests {
         assert!((cam.back - back).length() < 1e-6);
         assert_eq!((cam.shown_yaw, cam.back_before), (cam.yaw, cam.back));
         assert_eq!((cam.wall_steps, cam.wall_tilt), (0, 0.0));
-        assert_eq!((cam.zoom, cam.shown_zoom), (1300.0, 1300.0));
+        // The stepped camera's zoom goes to its nearest stop (1280: level
+        // 2 of 800 + 240·level); the shown zoom and the spring keep the
+        // shot's distance and ease to it.
+        assert_eq!((cam.zoom, cam.shown_zoom), (1280.0, 1300.0));
         assert_eq!(
             (cam.zoom_spring.motion, cam.zoom_spring.previous),
             (1300.0, 1300.0)
@@ -5324,11 +5456,55 @@ mod tests {
         // takes it as it is.
         cam.face_shot(focus + Vec3::X, focus, Some(5000.0));
         assert_eq!((cam.zoom, cam.shown_zoom), (2000.0, 5000.0));
-        // A shot without a distance keeps the zoom.
+        // A shot without a distance takes the camera's current distance
+        // (the shown zoom) and its stop.
         cam.zoom = 900.0;
+        cam.shown_zoom = 1100.0;
         cam.face_shot(focus - Vec3::Z, focus, None);
-        assert_eq!(cam.zoom, 900.0);
+        assert_eq!((cam.zoom, cam.shown_zoom), (1040.0, 1100.0));
         assert!((cam.yaw.abs() - std::f32::consts::PI).abs() < 1e-6);
+    }
+
+    /// A stepped camera's shot holds the pitch at once: the shown pitch
+    /// jumps to the shot's own, held between the steeper of the asked
+    /// pitch and the stop's floor and the steepest pitch; a fast shot
+    /// clears the asked pitch first, the story shot keeps it.
+    #[test]
+    fn a_shot_holds_the_pitch_at_the_stops_floor_and_a_fast_one_clears_the_asked_pitch() {
+        let view = crate::flow::Viewport {
+            width: 1600,
+            height: 1000,
+        };
+        let focus = Vec3::new(100.0, 0.0, 500.0);
+        let mut cam = ChaseCamera {
+            user_pitch: 1.2,
+            pitch: 1.4,
+            ..default()
+        };
+        // The practice start's fast shot: eye 700, 1180, 1100 cm off, a
+        // look-down of about 0.736 rad, under the floor of the 1280 stop.
+        cam.take_shot(&crate::flow::camera::frame_point(focus, true, false, view));
+        assert_eq!(cam.user_pitch, 0.0);
+        let floor = crate::nav_camera::pitch_floor(1280.0);
+        assert_eq!(cam.pitch, floor);
+        // A slow shot keeps the asked pitch, which is steeper here.
+        cam.user_pitch = 1.1;
+        cam.take_shot(&crate::flow::camera::frame_point(focus, false, false, view));
+        assert_eq!((cam.user_pitch, cam.pitch), (1.1, 1.1));
+        // The story shot (not fast) keeps it too.
+        cam.take_shot(&crate::flow::camera::frame_player(focus, view));
+        assert_eq!((cam.user_pitch, cam.pitch), (1.1, 1.1));
+        // A shot from straight above is held to the steepest pitch.
+        cam.user_pitch = 0.0;
+        cam.face_shot(focus + Vec3::new(1.0, 5000.0, 0.0), focus, Some(1300.0));
+        assert_eq!(cam.pitch, 1.5);
+        // The next ticks hold it there although the asked pitch is
+        // shallower, until a handler sets the target again.
+        cam.advance(0.1);
+        assert_eq!(cam.pitch, 1.5);
+        cam.look_turn(Vec2::ZERO, 1600.0);
+        cam.advance(0.1);
+        assert!(cam.pitch < 1.5);
     }
 
     #[test]
@@ -5584,7 +5760,8 @@ mod tests {
         // The first tick pulls by the stiffness times the retention.
         let start = crate::nav_camera::camera_axis(-cam.pitch, PI - 0.1);
         let preset = cam.controller.preset;
-        let target = crate::nav_camera::camera_axis(-min_pitch(ZOOM_START), PI + 0.2);
+        // The camera started on the 1280 stop and holds its floor.
+        let target = crate::nav_camera::camera_axis(-min_pitch(1280.0), PI + 0.2);
         let expect = crate::thaum::engine::normalize(
             start + (target - start) * preset.view * preset.retention,
         );

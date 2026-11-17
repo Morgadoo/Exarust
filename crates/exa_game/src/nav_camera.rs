@@ -295,6 +295,49 @@ pub fn clamp_fixed_pitch(pitch: f32, floor: f32, cap: f32) -> f32 {
     }
 }
 
+/// The preset flag of the stepped camera: a fixed eye distance with the
+/// zoom carried by the field of view, six zoom stops and the zoom's pitch
+/// floor.
+pub const STEPPED_CAMERA: u32 = 0x20_0000;
+
+/// What the end of a stepped camera's placement leaves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FixedPlacement {
+    /// The zoom target, on its stop.
+    pub zoom: f32,
+    /// The pitch held by the asked pitch and the stop's floor (positive
+    /// below the horizon).
+    pub held: f32,
+    /// The controller's pitch (negative with the eye above the point) that
+    /// both the pitch target and the shown pitch take.
+    pub pitch: f32,
+}
+
+/// The end of a placement on the stepped camera, in the original's order:
+/// the zoom (already raised to `min`) is lowered to `max`; the wheel's
+/// routine runs with no turn, so the zoom moves to its nearest stop
+/// ([`crate::nav_drag::zoom_detents`]), the pitch floor follows that zoom
+/// ([`pitch_floor`]) and the held pitch is the steeper of it and the
+/// `asked` pitch ([`pitch_held`]); then the placement's own `pitch` is held
+/// between that and `cap` ([`clamp_fixed_pitch`]).
+pub fn fixed_placement(
+    zoom: f32,
+    asked: f32,
+    pitch: f32,
+    min: f32,
+    max: f32,
+    cap: f32,
+) -> FixedPlacement {
+    let zoom = if zoom > max { max } else { zoom };
+    let zoom = crate::nav_drag::zoom_detents(zoom, 0, min, max);
+    let held = pitch_held(asked, pitch_floor(zoom));
+    FixedPlacement {
+        zoom,
+        held,
+        pitch: clamp_fixed_pitch(pitch, held, cap),
+    }
+}
+
 /// The stepped camera's wall-avoidance tilt per step (rad).
 pub const WALL_TILT_STEP: f32 = 0.15;
 /// The most steps the wall avoidance climbs.
@@ -1755,6 +1798,40 @@ mod tests {
         assert_eq!(planar_yaw(Vec3::new(1e-5, 3.0, 0.0)), 0.0);
         // A NaN falls through to the arc cosine.
         assert!(planar_yaw(Vec3::new(f32::NAN, 0.0, 1.0)).is_nan());
+    }
+
+    #[test]
+    fn a_stepped_placement_snaps_the_zoom_to_a_stop_and_holds_the_pitch() {
+        // 1300 is between stops: level round(500 / 240) = 2, zoom 1280.
+        let fixed = fixed_placement(1300.0, 0.0, -0.7, 800.0, 2000.0, 1.5);
+        assert_eq!(fixed.zoom, 1280.0);
+        assert_eq!(fixed.held, pitch_floor(1280.0));
+        assert_eq!(fixed.pitch, -pitch_floor(1280.0));
+        // Past the largest distance the zoom comes down to it first.
+        assert_eq!(
+            fixed_placement(9000.0, 0.0, -1.0, 800.0, 2000.0, 1.5).zoom,
+            2000.0
+        );
+        // A steeper asked pitch holds; a steeper shot keeps its own pitch
+        // up to the cap.
+        assert_eq!(
+            fixed_placement(800.0, 1.1, -0.5, 800.0, 2000.0, 1.5).pitch,
+            -1.1
+        );
+        assert_eq!(
+            fixed_placement(800.0, 0.0, -1.2, 800.0, 2000.0, 1.5).pitch,
+            -1.2
+        );
+        assert_eq!(
+            fixed_placement(800.0, 0.0, -1.57, 800.0, 2000.0, 1.5).pitch,
+            -1.5
+        );
+        // A NaN placement pitch takes neither clamp.
+        assert!(
+            fixed_placement(800.0, 0.0, f32::NAN, 800.0, 2000.0, 1.5)
+                .pitch
+                .is_nan()
+        );
     }
 
     #[test]
