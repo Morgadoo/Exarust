@@ -248,6 +248,13 @@ The system SHALL draw the supersampled scene without hardware multisampling, as 
 - **WHEN** a level is drawn with supersampling on
 - **THEN** the scene image has one sample per pixel
 
+### Requirement: Resolve drawn without multisampling
+The system SHALL draw the supersampled scene's resolve to the window without hardware multisampling, so that the resolved scene shows in a window on every supported GPU.
+
+#### Scenario: Supersampled window frame
+- **WHEN** a level is drawn with supersampling on in a window
+- **THEN** the display camera has one sample per pixel and the world shows under the interface
+
 ### Requirement: Taps split over sub-frames
 The system SHALL give each sub-frame of a supersampled frame two of the eight shadow-filter taps (sub-frame i takes taps 2i and 2i + 1, turned per window pixel), and SHALL split the GI lookup's taps the same way, as the original does.
 
