@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 61.2% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 61.3% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **61.2% closed**, of which 48.9% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 32.7% partial and 6.0% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **61.3% closed**, of which 49.0% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 32.7% partial and 6.0% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -22,14 +22,14 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 65% | 44% | 19% | 2% | 27% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 61% | 53% | 7% | 2% | 29% | 10% |  |
-| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 60% | 43% | 15% | 2% | 33% | 7% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 60% | 43% | 15% | 2% | 32% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 60% | 52% | 5% | 3% | 31% | 9% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 36% | 33% | 1% | 2% | 57% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 51% | 42% | 4% | 4% | 42% | 8% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 58% | 55% | 2% | 1% | 36% | 6% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 67% | 64% | 1% | 2% | 32% | 1% |  |
-| Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 65% | 64% | 1% | 0% | 33% | 2% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 66% | 64% | 1% | 0% | 33% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 83% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 90% | 88% | 2% | 0% | 8% | 2% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 64% | 62% | 2% | 0% | 32% | 4% |  |
@@ -187,7 +187,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Texture compression formats (DXT/LATC) | Rendering & GPU | 11 | 88% | 64% | 63% | 1% | 0% | 32% | 4% |
 | TRenderer | Rendering & GPU | 10 | 75% | 33% | 10% | 20% | 3% | 62% | 5% |
 | RF_MeshVoxels | Rendering & GPU | 10 | 93% | 81% | 80% | 0% | 0% | 15% | 5% |
-| TNavCameraControl | Rendering & GPU | 8 | 73% | 37% | 29% | 1% | 7% | 61% | 2% |
+| TNavCameraControl | Rendering & GPU | 8 | 73% | 46% | 39% | 1% | 7% | 51% | 2% |
 | RFE_Image_Noise | Rendering & GPU | 7 | 90% | 100% | 100% | 0% | 0% | 0% | 0% |
 | .rfi image codec | Rendering & GPU | 6 | 78% | 55% | 51% | 5% | 0% | 0% | 45% |
 | Pixel-format converters (8-bit and float) | Rendering & GPU | 6 | 95% | 56% | 46% | 10% | 0% | 0% | 44% |
@@ -364,7 +364,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TAIActivity | AI & behaviour | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TThaumTree | Thaumaturgy & effects | 38 | 91% | 99% | 96% | 0% | 3% | 1% | 1% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 21 | 96% | 93% | 93% | 0% | 0% | 5% | 2% |
-| TParticleSystem | Thaumaturgy & effects | 19 | 89% | 70% | 68% | 2% | 0% | 25% | 5% |
+| TParticleSystem | Thaumaturgy & effects | 19 | 89% | 71% | 69% | 2% | 0% | 24% | 5% |
 | TForceBlastEffect | Thaumaturgy & effects | 17 | 92% | 65% | 63% | 2% | 0% | 35% | 0% |
 | TForceTorrentEffect | Thaumaturgy & effects | 15 | 89% | 33% | 32% | 1% | 0% | 67% | 0% |
 | TTendrilEmitter | Thaumaturgy & effects | 15 | 90% | 41% | 39% | 2% | 0% | 59% | 0% |
@@ -372,7 +372,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | SG_Thaum_DIsp | Thaumaturgy & effects | 12 | 86% | 64% | 62% | 2% | 0% | 32% | 3% |
 | TForceBarricadeEffect | Thaumaturgy & effects | 12 | 86% | 33% | 33% | 0% | 0% | 67% | 0% |
 | TTendrilEffect | Thaumaturgy & effects | 10 | 86% | 55% | 55% | 0% | 0% | 45% | 0% |
-| TFireEffectRow | Thaumaturgy & effects | 8 | 82% | 48% | 47% | 1% | 0% | 52% | 0% |
+| TFireEffectRow | Thaumaturgy & effects | 8 | 82% | 60% | 58% | 1% | 0% | 40% | 0% |
 | TForceShellEffect | Thaumaturgy & effects | 7 | 84% | 33% | 33% | 0% | 0% | 67% | 0% |
 | Fire particle presets | Thaumaturgy & effects | 7 | 94% | 95% | 85% | 8% | 2% | 5% | 0% |
 | TDomainWheel | Thaumaturgy & effects | 6 | 88% | 100% | 100% | 0% | 0% | 0% | 0% |
