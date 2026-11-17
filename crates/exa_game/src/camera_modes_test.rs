@@ -279,3 +279,29 @@ fn the_spectated_arena_start_is_a_fast_two_point_shot() {
         ))]
     );
 }
+
+/// The free camera's pan keys are the first four binding slots: a forward
+/// key bound to I pans the spectating camera, and W then does not.
+#[test]
+fn the_free_camera_pans_with_the_bound_movement_keys() {
+    let mut app = app();
+    let mut bindings = crate::bindings::Bindings::default();
+    bindings.set_key(crate::bindings::Action::Forward, 0x49);
+    app.insert_resource(bindings);
+    let camera = camera(&mut app);
+    app.world_mut().spawn((Player, Transform::default()));
+    app.update();
+    app.world_mut().insert_resource(SpectateOnLoad);
+    app.update();
+    app.update();
+    assert!(cam(&app, camera).is_free());
+    assert_eq!(pan_forward(&mut app, camera, 10), 0.0);
+    let from = cam(&app, camera).free_focus(1.0).unwrap();
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::KeyI);
+    for _ in 0..10 {
+        app.update();
+    }
+    assert!(cam(&app, camera).free_focus(1.0).unwrap().distance(from) > 0.01);
+}

@@ -3419,6 +3419,7 @@ pub fn chase_camera(
         loading,
         menu,
         mut warps,
+        bindings,
     ): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
@@ -3436,6 +3437,7 @@ pub fn chase_camera(
         Option<Res<exa_ui::LoadingStatus>>,
         Option<Res<crate::level_change::MenuSceneView>>,
         Option<ResMut<Messages<crate::os_pointer::WarpPointer>>>,
+        Option<Res<Bindings>>,
     ),
 ) {
     // Behind the main menu the view stands at the menu scene's fixed camera
@@ -3627,9 +3629,20 @@ pub fn chase_camera(
                 None => info!("camera: follows a body"),
             }
         }
-        // The free branch's keys (A/D along the drawn right axis, S/W
-        // along the forward one) and the terrain's height query, in the
-        // original's centimetres.
+        // The free branch's keys and the terrain's height query, in the
+        // original's centimetres. The keys are the first four binding
+        // slots (forward, back, left, right: W, S, A, D shipped), which the
+        // controls' table rebuilds from the saved rows: left and right
+        // along the drawn right axis, back and forward along the forward
+        // one.
+        let shipped;
+        let bindings = match bindings.as_deref() {
+            Some(bindings) => bindings,
+            None => {
+                shipped = Bindings::default();
+                &shipped
+            }
+        };
         let ground = |at: Vec3| {
             terrain
                 .as_deref()
@@ -3638,10 +3651,10 @@ pub fn chase_camera(
         };
         let free_input = FreeInput {
             keys: crate::nav_camera::PanKeys {
-                left: keys.pressed(KeyCode::KeyA),
-                right: keys.pressed(KeyCode::KeyD),
-                back: keys.pressed(KeyCode::KeyS),
-                forward: keys.pressed(KeyCode::KeyW),
+                left: bindings.pressed(&keys, Action::Left),
+                right: bindings.pressed(&keys, Action::Right),
+                back: bindings.pressed(&keys, Action::Back),
+                forward: bindings.pressed(&keys, Action::Forward),
             },
             pad: pad_move,
             right: *t.right(),
