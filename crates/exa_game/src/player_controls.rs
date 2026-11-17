@@ -809,20 +809,28 @@ pub const DEVICE_SIGNAL: u8 = 4;
 /// The one placed id whose device use runs once a game.
 pub const DEVICE_ONCE_ID: u32 = 0x24c;
 
-/// The devices' shared clock: the last kind 3 use and the once-a-game id's
-/// flag.
+/// The background unlock bit the id 0x24c's use sets (the Proctor's).
+pub const DEVICE_ONCE_UNLOCK: u32 = 2;
+
+/// The devices' shared clock: the last kind 3 use, and the background
+/// unlock word the id 0x24c's use tests and sets: `unlocked` is the flow's
+/// word as last copied ([`crate::flow::sync_device_unlocks`]), `pending`
+/// the bits a use set since, which the flow then keeps and writes to the
+/// settings file.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeviceClock {
     pub last_slow_ms: u64,
-    pub once_used: bool,
+    pub unlocked: u32,
+    pub pending: u32,
 }
 
 /// What a device's use answers, as the single click runs it before it
 /// decides: kind 3 answers no while `now_ms` is under the last kind 3 use
 /// plus 2400 ms, else yes and the clock takes `now_ms`; the teleporter and
 /// the reconstruction device answer through their own use (`own`); the
-/// signal kind 4 answers no (its hook only reveals a power in one game
-/// mode); the id 0x24c answers yes once a game and no after; anything else
+/// signal kind 4 answers no (the caller runs its revelation); the id 0x24c
+/// answers yes while the background unlock word lacks its bit, which it
+/// then sets (the flow keeps and saves it), and no after; anything else
 /// answers yes.
 pub fn device_use(
     kind: u8,
@@ -843,7 +851,17 @@ pub fn device_use(
         }
         TELEPORTER | RES_DEVICE => own(),
         DEVICE_SIGNAL => false,
-        _ if id == DEVICE_ONCE_ID => !std::mem::replace(&mut clock.once_used, true),
+        // The persisted unlock word: once its bit is set (in this game or
+        // an earlier one, the settings file keeps it), the use answers no.
+        _ if id == DEVICE_ONCE_ID => {
+            if clock.unlocked & DEVICE_ONCE_UNLOCK != 0 {
+                false
+            } else {
+                clock.unlocked |= DEVICE_ONCE_UNLOCK;
+                clock.pending |= DEVICE_ONCE_UNLOCK;
+                true
+            }
+        }
         _ => true,
     }
 }
@@ -2428,8 +2446,15 @@ mod tests {
         assert!(!device_use(0x12, 1, 0, &mut clock, || false));
         assert!(!device_use(4, 0x24c, 0, &mut clock, || true));
         assert!(device_use(0, 0x24c, 0, &mut clock, || false));
-        assert!(clock.once_used);
+        assert_eq!((clock.unlocked, clock.pending), (2, 2));
         assert!(!device_use(0, 0x24c, 0, &mut clock, || true));
+        // A word the settings file already unlocked answers no at once.
+        let mut unlocked = DeviceClock {
+            unlocked: 2,
+            ..DeviceClock::default()
+        };
+        assert!(!device_use(0, 0x24c, 0, &mut unlocked, || true));
+        assert_eq!(unlocked.pending, 0);
         assert!(device_use(0, 0x24d, 0, &mut clock, || false));
     }
 

@@ -2485,10 +2485,11 @@ mod tests {
             .resource_mut::<ButtonInput<MouseButton>>()
             .press(MouseButton::Right);
         app.update();
-        assert!(
+        assert_eq!(
             app.world()
                 .resource::<crate::player_controls::DeviceClock>()
-                .once_used
+                .pending,
+            crate::player_controls::DEVICE_ONCE_UNLOCK
         );
         // The card itself waits on the delay timer.
         assert!(

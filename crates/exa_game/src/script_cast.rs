@@ -74,12 +74,15 @@ impl Plugin for ScriptCastPlugin {
                 (
                     mirror_player
                     .in_set(exa_physics::FramePhase::Session),
+                    mirror_world
+                    .in_set(exa_physics::FramePhase::Session),
                     grant_witness_roles
                         .in_set(exa_physics::FramePhase::Session)
                         .after(crate::game_event_live::scripted_game_events),
                     mirror_cast
                         .in_set(exa_physics::FramePhase::Session)
-                        .after(crate::scene_bodies::reset_kept_bodies),
+                        .after(crate::scene_bodies::reset_kept_bodies)
+                        .after(crate::thaum::power::teach_on_death),
                     mirror_items
                     .in_set(exa_physics::FramePhase::Session),
                     sync_contacts
@@ -102,6 +105,7 @@ type LiveCharacter<'a> = (
     Option<&'a Fighter>,
     Option<&'a Condition>,
     Option<&'a Npc>,
+    Option<&'a exa_character::record::CharacterData>,
 );
 
 /// The session's player is the player body's character id.
@@ -115,6 +119,49 @@ fn mirror_player(
     let player = players.iter().next().map(|id| id.0);
     if conversations.player != player {
         conversations.player = player;
+    }
+}
+
+/// The world the scripts read: the world clock (`WorldTime`, and the time
+/// every topic's memory is stamped with), from the save's seconds carried
+/// on since the load ([`exa_combat::remedy::WorldClock`] at the step's
+/// tick), and the current locale, the loaded level's id in `locales.rdb`
+/// (`InLocale`, `InZone`; 0 for a level the database does not name).
+fn mirror_world(
+    conversations: Option<ResMut<Conversations>>,
+    clock: Option<Res<exa_combat::remedy::WorldClock>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    source: Option<Res<exa_world::LevelSource>>,
+    game: Option<Res<exa_assets::Game>>,
+    mut known: Local<Option<(String, u32)>>,
+) {
+    let Some(mut conversations) = conversations else {
+        return;
+    };
+    let now = ticks.map_or(0, |t| t.millis() as u32);
+    let seconds = exa_combat::remedy::world_seconds(clock.as_deref(), now);
+    if conversations.world_now != Some(seconds) {
+        conversations.world_now = Some(seconds);
+    }
+    let Some(source) = source else {
+        return;
+    };
+    if known
+        .as_ref()
+        .is_none_or(|(entry, _)| *entry != source.entry)
+    {
+        let locale = game
+            .as_deref()
+            .and_then(|g| g.0.pack(exa_assets::PackKind::Resource))
+            .and_then(|p| p.get("locales.rdb"))
+            .and_then(|b| exa_formats::roles::locale_id(b, &source.entry))
+            .unwrap_or(0);
+        info!("scripts: the locale is {locale} ({})", source.entry);
+        *known = Some((source.entry.clone(), locale));
+    }
+    let locale = known.as_ref().map_or(0, |(_, l)| *l);
+    if conversations.locale != locale {
+        conversations.locale = locale;
     }
 }
 
@@ -197,7 +244,7 @@ pub(crate) fn mirror_cast(
     let Some(mut conversations) = conversations else {
         return;
     };
-    for (id, mut roles, name, fighter, condition, npc) in &mut characters {
+    for (id, mut roles, name, fighter, condition, npc, data) in &mut characters {
         if let Some(c) = conversations.cast.get_mut(id.0)
             && c.roles_changed
         {
@@ -216,6 +263,15 @@ pub(crate) fn mirror_cast(
             out_of_action: condition.map(|c| c.dying()),
         };
         conversations.cast.mirror(&[reading]);
+        // `SkillTecs` reads the character's six skill point words.
+        if let Some(data) = data {
+            let skills = data.record.skills.map(|skill| skill.points);
+            if let Some(c) = conversations.cast.get_mut(id.0)
+                && c.skills != skills
+            {
+                c.skills = skills;
+            }
+        }
     }
 }
 
@@ -592,6 +648,46 @@ mod tests {
         // cast had it.
         assert_eq!(c.arousal, 0.0);
         assert_eq!(c.health, (1.0, 1.0));
+    }
+
+    /// The scripts read the world clock carried on from the save
+    /// (`WorldTime`), the loaded level's locale id (`InLocale`) and each
+    /// character's skill points (`SkillTecs`). The locale needs the game's
+    /// `locales.rdb` (`EXANIMA_DIR`); without it the level's locale is 0.
+    #[test]
+    fn the_scripts_read_the_world_clock_the_locale_and_the_skills() {
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin);
+        app.insert_resource(Conversations::default());
+        app.insert_resource(crate::world_clock::restored(8684, 0));
+        let ticks = 3000 / exa_physics::body::GAME_MS_PER_TICK;
+        app.insert_resource(exa_physics::body::BodyTicks(ticks));
+        let game =
+            exa_assets::locate_install(None).and_then(|dir| exa_assets::GameData::open(&dir).ok());
+        let expected = if let Some(game) = game {
+            app.insert_resource(exa_assets::Game(std::sync::Arc::new(game)));
+            2
+        } else {
+            0
+        };
+        app.insert_resource(exa_world::LevelSource {
+            entry: "exanima01.rfc".into(),
+            bytes: std::sync::Arc::from(Vec::new()),
+            from_save: false,
+            spawned: Vec::new(),
+        });
+        let mut data = exa_character::record::CharacterData::new();
+        data.record.skills[0].points = 12_000;
+        data.record.skills[3].points = 5_000;
+        app.world_mut()
+            .spawn((CharacterId(9), Roles(vec![role(5)]), data));
+        app.update();
+        let conversations = app.world().resource::<Conversations>();
+        // 8684 s saved, three seconds of game time since the load.
+        assert_eq!(conversations.world_time(0), 8687);
+        assert_eq!(conversations.locale, expected);
+        let c = conversations.cast.get(9).unwrap();
+        assert_eq!(c.skill_techniques(), 3);
     }
 
     /// A script's `HasItem` finds a character's carried items and what its

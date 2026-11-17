@@ -720,11 +720,14 @@ pub struct TravelStep {
     pub charge: Option<u8>,
     /// Change level: the row's level id with [`ARRIVAL_WORD`].
     pub change_level: Option<u32>,
-    /// The player's controls are handed back after the menu.
+    /// The player's controls are handed back after the menu (the release
+    /// below, scheduled through the menu's task list).
     pub restore_controls: bool,
-    /// The player's controls stop (the level change, or the journey's
-    /// end).
-    pub stop_controls: bool,
+    /// The player's controls are released from their block (the level
+    /// change, or the adapter journey's end): the original's controls
+    /// switch with "off", which clears the block byte and sets the drag's
+    /// reach limit again.
+    pub release_controls: bool,
     /// The marker word whose record gets the single-row bit.
     pub mark: Option<u32>,
     /// The game saves.
@@ -762,7 +765,7 @@ pub fn travel_step(
     if bubble == BUBBLE_SHRINKING {
         if in_game {
             step.change_level = Some(journey.level);
-            step.stop_controls = true;
+            step.release_controls = true;
         } else {
             step.restore_controls = true;
         }
@@ -773,7 +776,7 @@ pub fn travel_step(
         if journey.hold {
             step.mark = mark_destination(journey.marker);
             if let Some(red) = player_red {
-                step.stop_controls = true;
+                step.release_controls = true;
                 step.save = f64::from(red) > SAVE_RED;
             }
         }
@@ -1330,7 +1333,7 @@ mod tests {
         // The bubble told to shrink changes level in a game.
         let step = travel_step(&small, None, BUBBLE_SHRINKING, 3_300, true, Some(1.0));
         assert_eq!(step.change_level, Some(7));
-        assert!(step.stop_controls);
+        assert!(step.release_controls);
         let step = travel_step(&small, None, BUBBLE_SHRINKING, 3_300, false, Some(1.0));
         assert_eq!(step.change_level, None);
         assert!(step.restore_controls);
@@ -1362,7 +1365,7 @@ mod tests {
         );
         assert_eq!(step.charge, Some(255));
         assert_eq!(step.mark, Some(3));
-        assert!(step.stop_controls && step.save && step.done);
+        assert!(step.release_controls && step.save && step.done);
         // The red health compares in double: 0.01 as a float is under it.
         let step = travel_step(&held, None, BUBBLE_FREED, 8_800, true, Some(0.01));
         assert!(!step.save);
@@ -1370,6 +1373,6 @@ mod tests {
         assert!(!step.save);
         // No player: nothing saves.
         let step = travel_step(&held, None, BUBBLE_FREED, 8_800, true, None);
-        assert!(!step.save && !step.stop_controls);
+        assert!(!step.save && !step.release_controls);
     }
 }

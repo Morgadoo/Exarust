@@ -16,11 +16,11 @@
 //!   above 0.01, [`JourneySave`] asks for a save;
 //! - either way the crystal ends spent (255).
 //!
-//! The level change, the save and the player's controls (stopped and
-//! handed back in the original) belong to the session, which is not in
-//! yet; the screen's drawing waits for the form renderer. Exarust runs
-//! only in a game mode, so the menu's branch (hand the controls back, no
-//! level change) is never taken here.
+//! The level change ([`TravelToLevel`]) and the save ([`JourneySave`]) go
+//! to the session; the player's controls are released from their block
+//! when the journey changes level or ends (the controls' switch with
+//! "off"). Exarust runs only in a game mode, so the menu's branch (the
+//! same release, scheduled, and no level change) is never taken here.
 
 use bevy::prelude::*;
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
@@ -376,6 +376,7 @@ pub(crate) fn tick_journeys(
     fighters: Query<&exa_combat::Fighter>,
     mut travel: MessageWriter<TravelToLevel>,
     mut saves: MessageWriter<JourneySave>,
+    mut control: Option<ResMut<crate::player_controls::PlayerControl>>,
 ) {
     let now = clock.now_ms;
     for (entity, mut bubble, journey) in &mut journeys {
@@ -412,6 +413,11 @@ pub(crate) fn tick_journeys(
             && let Ok(mut device) = devices.get_mut(journey.device)
         {
             device.operative.flags |= MARK_FLAG;
+        }
+        if (step.release_controls || step.restore_controls)
+            && let Some(control) = control.as_deref_mut()
+        {
+            crate::controls_live::block_controls(control, false, "journey");
         }
         if step.save {
             saves.write(JourneySave { user: journey.user });
@@ -645,6 +651,10 @@ mod tests {
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.red = 0.5;
         app.world_mut().entity_mut(user).insert(fighter);
+        // A blocked control (as a fall leaves it) is released at the end.
+        let mut control = crate::player_controls::PlayerControl::new();
+        control.set_blocked(true);
+        app.insert_resource(control);
         at(&mut app, 0);
         assert!(
             app.world()
@@ -689,6 +699,10 @@ mod tests {
             .drain()
             .collect();
         assert_eq!(saves, vec![JourneySave { user }]);
+        let control = app
+            .world()
+            .resource::<crate::player_controls::PlayerControl>();
+        assert!(!control.blocked && control.drag_limit);
     }
 
     #[test]
