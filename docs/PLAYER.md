@@ -1097,9 +1097,12 @@ level shows; not in the arena hub).
   whose goal and queued step run along that vector (kept as it was read);
   an analog word is a tap only when the stick's squared length is also
   over 0.9. In combat mode only the pad's sprint still reaches the keys.
-- **The gate.** No step is laid while the condition word has any of
-  `0x82C1` (walking, the shocked bits, down, the kick), the energy is
-  under 0.7, a swing is under way, or the word is zero.
+- **The gate.** No step is laid unless the body may act, the gate the
+  AI's duellist reads too: none of `0x82C1` (walking, the shocked bits,
+  down, the kick) in the condition word, a muscle tone of at least 0.7, a
+  support above 0.7 (compared in double precision) and no trailing-foot
+  request pending. Energy is not read. A swing under way or a zero word
+  lays none either.
 - **Starting a step.** With no step under way the goal is laid from the
   word: the chest plus the key sum (summed W, A, D, S; a side key weighs
   0.8 of the facing, its height dropped) scaled by

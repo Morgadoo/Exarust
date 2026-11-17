@@ -56,7 +56,10 @@ pub struct ContactRecord {
     pub alarm: f32,
     /// A threat term the perception fills [?].
     pub threat: f32,
-    /// Bit 2: engaged; bit 1: cleared while the brain engages [?].
+    /// The event word the dialogue's AI events read ([`EVENT_BITS`]): 1
+    /// the other attacked at mid swing (cleared while the brain fights
+    /// it), 2 the brain engaged it, 4 and 8 the concern first reached 1.2
+    /// and 4. An event node that runs clears its bit.
     pub marks: u32,
     pub level: i32,
     /// Where the concern is heading (the pass clears it; the perception
@@ -92,7 +95,27 @@ pub const MOST_CONTACTS: usize = crate::combatant::MAX_CONTACTS;
 /// The contact flag a bad route sets: engaging the contact is level 2.
 pub const UNREACHABLE: u32 = 0x10;
 
+/// The event bits of a contact's event word (the dialogue's Aggressor,
+/// Engage, Intimidated and Threatened).
+pub const EVENT_BITS: u32 = 0xF;
+
 impl ContactRecord {
+    /// Stores a new concern as the live contact's setter does
+    /// ([`crate::combatant::Contact::set_concern`]): first reaching 1.2
+    /// raises event bit 4, else first reaching 4 raises bit 8; a NaN
+    /// reaches neither.
+    pub fn set_concern(&mut self, concern: f32) {
+        use crate::combatant::{CONCERN_EVENT, CONCERN_EVENT_HIGH, EVENT_ALARMED, EVENT_CONCERNED};
+        if self.concern < CONCERN_EVENT {
+            if concern >= CONCERN_EVENT {
+                self.marks |= EVENT_CONCERNED;
+            }
+        } else if self.concern < CONCERN_EVENT_HIGH && concern >= CONCERN_EVENT_HIGH {
+            self.marks |= EVENT_ALARMED;
+        }
+        self.concern = concern;
+    }
+
     /// The classifier's view of a combatant's contact with `id`: its
     /// noticeability is the admission's sighting, its closeness is this
     /// tick's sighting, its attitude is the soothing term and the
@@ -112,7 +135,9 @@ impl ContactRecord {
             tolerance: c.tolerance,
             alarm: c.threat,
             threat: c.threat,
-            marks: 0,
+            // The live contact's events (the quick swing, the concern
+            // steps) are the same word.
+            marks: c.events & EVENT_BITS,
             level: 0,
             concern_target: c.concern_target,
             ticks_seen: 0,
@@ -617,15 +642,14 @@ pub fn drift(state: &mut Integration, contacts: &mut [ContactRecord], now_ms: u3
                     c.hostility -= one_minus * ((c.soothe * drift) * soothe_scale);
                 }
             }
-            // The live contact's concern setter raises the 1.2 and 4.0
-            // event bits (crate::combatant::Contact::set_concern); this
-            // brain record keeps only the value.
+            // Through the concern setter, which raises the 1.2 and 4.0
+            // event bits.
             if c.concern < c.concern_target {
                 let value =
                     (f64::from(c.concern_target - c.concern) * 0.005 + f64::from(c.concern)) as f32;
-                c.concern = value;
+                c.set_concern(value);
             } else {
-                c.concern = (f64::from(c.concern) * 0.9997) as f32;
+                c.set_concern((f64::from(c.concern) * 0.9997) as f32);
             }
             c.decay = (f64::from(c.decay) * 0.999) as f32;
             concern_sum += c.concern;

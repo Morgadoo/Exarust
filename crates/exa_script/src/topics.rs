@@ -22,7 +22,7 @@
 //! activation-delay table (8 words) and the world clock (REA on
 //! `Exanima.exe` 0.9.5).
 
-use crate::cast::{Character, Memory, RelationRole};
+use crate::cast::{Character, Memory, RelationEdit, RelationRole};
 
 /// Re-use cooldown by class (node flag bits 0–3; bits 16–19 pick the
 /// activation window from the same table), in seconds: never, a year, 30
@@ -213,6 +213,19 @@ pub fn load(owner: &Character, at: MemoryKey, count: usize) -> (Option<Vec<u32>>
 /// Store the node words, creating the relation record, the entry and the
 /// block as needed.
 pub fn store(owner: &mut Character, at: MemoryKey, words: &[u32]) {
+    // The record written back carries any new entry or block: the AI's copy
+    // takes it too.
+    if owner
+        .relation(at.other)
+        .and_then(|r| r.role(at.role))
+        .is_none_or(|e| !e.memories.iter().any(|m| m.key == at.key))
+    {
+        owner.relation_edits.push(RelationEdit::Store {
+            other: at.other,
+            role: at.role,
+            key: at.key,
+        });
+    }
     let rel = owner.relation_entry(at.other);
     let entry = match rel.roles.iter().position(|r| r.role == at.role) {
         Some(i) => &mut rel.roles[i],

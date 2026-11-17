@@ -37,6 +37,13 @@
 //! a conversation already ([`exa_script::dialogue::Engine::greet`]). The
 //! brain's contacts are synced into the cast first, so the mood reads the
 //! level and concern the pass just left ([`crate::script_cast::sync_brain`]).
+//!
+//! **AI events.** At its end the pass steps its round-robin cursor to the
+//! next contact seen this tick ([`exa_ai::contacts::PassReport::refresh`]);
+//! a character there gets the dialogue's AI events about it
+//! ([`exa_script::dialogue::Engine::ai_events`]): the event nodes its
+//! contact's event word names (Aggressor, Engage, Intimidated, Threatened)
+//! run, or a reply. A node that ran clears its bit of the word.
 
 use bevy::prelude::*;
 use exa_ai::brain::{CharacterId, Npc};
@@ -57,7 +64,7 @@ impl Plugin for RoleScriptsPlugin {
         // body tick, right after the AI tick that reported them.
         app.add_systems(
             exa_ai::BrainChain,
-            (run_encounter_scripts, run_greetings)
+            (run_encounter_scripts, run_greetings, run_ai_events)
                 .chain()
                 .after(exa_ai::brain::ai_tick)
                 .before(exa_ai::DuelSystems),
@@ -320,6 +327,130 @@ fn greet_on_frame(
         }
         for effect in out {
             effects.write(exa_script::ScriptEffect(effect));
+        }
+    }
+}
+
+/// Runs the dialogue's AI events the last target passes asked for: the
+/// step takes each brain's refresh and the contact's event word; the frame
+/// mirrors the brain into the cast, runs the events and clears the bits of
+/// the nodes that ran ([`events_on_frame`]).
+pub fn run_ai_events(
+    mut brains: Query<(Entity, &CharacterId, &mut Npc)>,
+    ids: Query<&CharacterId>,
+    time: Option<Res<Time<Virtual>>>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
+) {
+    let now = time.map_or(0, |t| t.elapsed().as_millis() as u32);
+    let mut asked = Vec::new();
+    for (entity, id, mut npc) in &mut brains {
+        let Some(at) = npc.pass.refresh.take() else {
+            continue;
+        };
+        let Some(contact) = npc.contacts.get(at) else {
+            continue;
+        };
+        let Some(partner) = Entity::try_from_bits(contact.id)
+            .and_then(|e| ids.get(e).ok())
+            .map(|id| id.0)
+        else {
+            continue;
+        };
+        if partner == 0 || partner == id.0 {
+            continue;
+        }
+        let mask = contact.marks & exa_ai::contacts::EVENT_BITS;
+        asked.push(AiEvents {
+            entity,
+            me: id.0,
+            partner,
+            key: contact.id,
+            mask,
+        });
+    }
+    if asked.is_empty() {
+        return;
+    }
+    frame.send(move |world| {
+        if let Err(e) = world.run_system_cached_with(events_on_frame, (now, asked)) {
+            warn!("AI events: {e}");
+        }
+    });
+}
+
+/// One brain's dialogue refresh: the brain, the pair's character ids, the
+/// contact's key and its event word.
+#[derive(Debug, Clone, Copy)]
+struct AiEvents {
+    entity: Entity,
+    me: u32,
+    partner: u32,
+    key: u64,
+    mask: u32,
+}
+
+/// The frame's half of the AI events: the brain mirrored into the cast, the
+/// events run with the contact's word, and the bits of the nodes that ran
+/// cleared on the brain's contact (through the bridge's writes).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn events_on_frame(
+    In((now, asked)): In<(u32, Vec<AiEvents>)>,
+    scripts: Option<Res<exa_script::Scripts>>,
+    conversations: Option<ResMut<exa_script::Conversations>>,
+    mirror: Option<ResMut<crate::script_cast::ContactMirror>>,
+    mut brains: Query<(&mut Npc, Option<&Relations>)>,
+    ids: Query<&CharacterId>,
+    mut effects: MessageWriter<exa_script::ScriptEffect>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+) {
+    let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
+        return;
+    };
+    let mut local = crate::script_cast::ContactMirror::default();
+    let mut mirror = mirror;
+    let mirror = mirror.as_deref_mut().unwrap_or(&mut local);
+    let character_of = |key: u64| {
+        Entity::try_from_bits(key)
+            .and_then(|e| ids.get(e).ok())
+            .map(|id| id.0)
+    };
+    for ask in asked {
+        let Ok((mut npc, relations)) = brains.get_mut(ask.entity) else {
+            continue;
+        };
+        crate::script_cast::sync_brain(
+            &mut conversations.cast,
+            mirror,
+            ask.me,
+            ask.entity,
+            &mut npc,
+            relations,
+            character_of,
+            fixed.as_deref_mut(),
+        );
+        let (left, out) = conversations.with_scene(&scripts, now, |engine, scene| {
+            engine.ai_events(scene, ask.me, ask.partner, ask.mask, Some(ask.partner))
+        });
+        for effect in out {
+            effects.write(exa_script::ScriptEffect(effect));
+        }
+        let ran = ask.mask & !left;
+        if ran == 0 {
+            continue;
+        }
+        debug!(
+            "character {}: AI events about {} ran {ran:#x} of {:#x}",
+            ask.me, ask.partner, ask.mask
+        );
+        let key = ask.key;
+        let clear = move |npc: &mut Npc| {
+            if let Some(c) = npc.contacts.iter_mut().find(|c| c.id == key) {
+                c.marks &= !ran;
+            }
+        };
+        match fixed.as_deref_mut() {
+            Some(fixed) => fixed.write(ask.entity, &mut npc, clear),
+            None => clear(&mut npc),
         }
     }
 }

@@ -150,6 +150,24 @@ pub struct ContextItem {
     pub name: Option<String>,
 }
 
+/// A change to a character's relation roles the scripts made, waiting for
+/// the app to apply it to the AI's relations too. The original keeps one
+/// character record the scripts and the AI share; Exarust keeps the
+/// script's copy here and replays each change on the AI's copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationEdit {
+    /// The script `AddRelation`: the role toward `other`, with `value` (0
+    /// none). The AI's add reports an invalid role identifier.
+    Add { other: u32, role: u32, value: u32 },
+    /// The script `RemRelation`. A role that was held and is gone reports
+    /// an invalid role identifier left behind.
+    Remove { other: u32, role: u32 },
+    /// A dialogue's topic memory stored under a new relation-role entry or
+    /// block: the record written back gains the entry (and the key as its
+    /// value) with no report.
+    Store { other: u32, role: u32, key: u32 },
+}
+
 /// One character.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Character {
@@ -179,6 +197,8 @@ pub struct Character {
     pub out_of_action: bool,
     /// The zone markers around it, as `InZone` tests them.
     pub zones: Vec<ZoneMarker>,
+    /// Relation changes the AI's copy has not taken yet, oldest first.
+    pub relation_edits: Vec<RelationEdit>,
 }
 
 impl Character {
@@ -201,6 +221,7 @@ impl Character {
             arousal: 0.0,
             out_of_action: false,
             zones: Vec::new(),
+            relation_edits: Vec::new(),
         }
     }
 

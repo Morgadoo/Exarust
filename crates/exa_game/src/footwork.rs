@@ -8,9 +8,12 @@
 //! footwork step): the body walks it on its feet. Rules: `docs/PLAYER.md`
 //! (Combat footwork).
 //!
-//! - **The gate.** No step is laid while the condition has any of
-//!   [`NO_STEP`] (walking, down, the shocked word's bits, the kick), the
-//!   energy is under 0.7, a swing is under way, or the word is zero.
+//! - **The gate.** No step is laid unless the body may act
+//!   ([`exa_physics::motile::action_allowed`], the gate the AI's duellist
+//!   reads too): none of `0x82C1` (walking, down, the shocked word's
+//!   bits, the kick) in the condition, a muscle tone of at least 0.7, a
+//!   support above 0.7 (a double compare) and no trailing-foot request
+//!   pending. A swing under way or a zero word lays none either.
 //! - **Under way.** A step counts as under way while the body steps and
 //!   either the episode is not a balance step or its target is still more
 //!   than 20·scale cm from the feet centre across the ground (a NaN
@@ -30,13 +33,6 @@ use exa_physics::body::FootworkStep;
 
 use crate::steering::{MOVE_ANALOG, MoveWord, key_goal_direction, key_step};
 
-/// The condition bits under which no step is laid: walking (1), the
-/// shocked word's two bits (0x40, 0x80), down (0x200) and the kick
-/// (0x8000).
-pub(crate) const NO_STEP: u32 = 0x82C1;
-/// A step needs at least this much energy (an ordered compare: a NaN
-/// energy lays no step).
-pub(crate) const STEP_ENERGY: f32 = 0.7;
 /// A step this young (ms) re-lays or queues by the tap rules.
 pub(crate) const YOUNG_STEP_MS: u64 = 300;
 /// A balance step's target this far from the feet centre (cm, times the
@@ -159,8 +155,12 @@ pub(crate) enum StepAsk {
 pub(crate) struct StepGate {
     /// The body's condition word.
     pub(crate) condition: u32,
-    /// Its energy (0 to 1).
-    pub(crate) energy: f32,
+    /// Its muscle tone (0 to 1).
+    pub(crate) tone: f32,
+    /// Its support (grounded times balance, 0 to 1).
+    pub(crate) support: f32,
+    /// Its trailing-foot request (a clip leaving Walk or Run raises it).
+    pub(crate) blocking: i32,
     /// A swing is under way (the cursor's attack mode).
     pub(crate) swinging: bool,
 }
@@ -168,8 +168,9 @@ pub(crate) struct StepGate {
 impl StepGate {
     /// Whether a step may be laid at all.
     pub(crate) fn open(&self) -> bool {
-        // The ordered energy compare fails on NaN.
-        self.condition & NO_STEP == 0 && self.energy >= STEP_ENERGY && !self.swinging
+        // The ordered compares fail on NaN.
+        exa_physics::motile::action_allowed(self.condition, self.tone, self.support, self.blocking)
+            && !self.swinging
     }
 }
 

@@ -218,3 +218,94 @@ fn a_reported_greeting_reads_the_mirrored_contact() {
     assert_eq!(run(0, 0.0), (Some("Good day.".into()), 0, 0.0));
     assert_eq!(run(1, 5.0), (Some("Halt!".into()), 1, 5.0));
 }
+
+/// The refresh a pass reports runs the dialogue's AI events about that
+/// contact: the guard's Engage node runs (its action adds role 0x1F) and
+/// its bit leaves the contact's event word; a bit with no node stays, and
+/// the refresh is consumed.
+#[test]
+fn a_refresh_runs_the_contacts_ai_events() {
+    use exa_formats::roles::{
+        Branch, Dialogue, DialogueActor, Line, NODE_ENTRY, NODE_NOT_ENTRY, Node,
+    };
+    let engage = Node {
+        flags: NODE_ENTRY | NODE_NOT_ENTRY | 0x40,
+        title: Name::from_bytes(b"Engage"),
+        position: [0.0; 2],
+        links: Vec::new(),
+        branches: vec![Branch {
+            flags: 0,
+            lines: vec![Line {
+                speaker: 1,
+                text: Vec::new(),
+            }],
+            condition: Vec::new(),
+            action: b"Actor[0].AddRole($1F);".to_vec(),
+            replies: Vec::new(),
+        }],
+    };
+    let dialogue = Dialogue {
+        target: 1,
+        actors: ["Actor 1", "Actor 2"]
+            .iter()
+            .map(|n| DialogueActor {
+                name: Name::from_bytes(n.as_bytes()),
+                ..DialogueActor::default()
+            })
+            .collect(),
+        nodes: vec![Some(engage)],
+    };
+    let role = |id: u32, entries: Vec<RoleEntry>| Role {
+        id,
+        name: Name::from_bytes(format!("role {id}").as_bytes()),
+        weight: 50,
+        entries,
+        ..Role::default()
+    };
+    let db = RoleDb {
+        roles: vec![
+            role(
+                100,
+                vec![RoleEntry {
+                    kind: 0x2,
+                    target: 1,
+                    dialogue: Some(dialogue),
+                    ..RoleEntry::default()
+                }],
+            ),
+            role(1, Vec::new()),
+            role(0x1F, Vec::new()),
+        ],
+    };
+    let mut world = World::new();
+    let mut conversations = exa_script::Conversations::default();
+    let mut guard = exa_script::cast::Character::new(1, "Guard");
+    guard.add_role(&db, 100);
+    let mut human = exa_script::cast::Character::new(2, "Human");
+    human.add_role(&db, 1);
+    conversations.cast.characters = vec![guard, human];
+    world.insert_resource(conversations);
+    world.insert_resource(exa_script::Scripts {
+        roles: db,
+        narrator: None,
+    });
+    world.init_resource::<crate::script_cast::ContactMirror>();
+    world.init_resource::<exa_physics::sim_app::FrameCommands>();
+    world.init_resource::<Messages<exa_script::ScriptEffect>>();
+    let partner = world.spawn((Roles::default(), CharacterId(2))).id();
+    let mut npc = Npc::new([0.0; 4]);
+    npc.contacts.push(exa_ai::contacts::ContactRecord {
+        id: partner.to_bits(),
+        marks: 2 | 8,
+        ..Default::default()
+    });
+    npc.pass.refresh = Some(0);
+    let observer = world.spawn((npc, CharacterId(1))).id();
+    world.run_system_once(run_ai_events).unwrap();
+    exa_physics::sim_app::run_frame_commands(&mut world);
+    let npc = world.get::<Npc>(observer).unwrap();
+    assert_eq!(npc.pass.refresh, None);
+    assert_eq!(npc.contacts[0].marks, 8);
+    let conversations = world.resource::<exa_script::Conversations>();
+    assert!(conversations.cast.get(1).unwrap().holds(0x1F));
+}

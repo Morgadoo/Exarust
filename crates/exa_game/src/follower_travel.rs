@@ -285,17 +285,30 @@ pub fn restore_arrivals(
             &mut exa_combat::Fighter,
             Option<&mut exa_combat::StateFlags>,
             Option<&mut exa_ai::brain::Npc>,
+            Option<&mut exa_ai::roles::Relations>,
         ),
         With<ArrivedFollower>,
     >,
 ) {
-    for (entity, data, mut fighter, flags, brain) in &mut arrived {
-        // The arrival restarts the follower's idle activity (its search
-        // stands again at the world origin with nothing picked).
-        if let Some(mut brain) = brain
-            && brain.restart_idle_activity()
+    for (entity, data, mut fighter, flags, brain, relations) in &mut arrived {
+        // The arrival drops the follower's current level relation table (a
+        // table of no locale goes with it; a stored one stays stored), so
+        // the new level's characters are kept in a table chosen anew.
+        if let Some(mut relations) = relations
+            && relations.current.is_some()
         {
-            info!("Migration: {} restarts its idle activity", data.record.name);
+            relations.current = None;
+        }
+        // The arrival restarts the follower's idle activity (its search
+        // stands again at the world origin with nothing picked), and its
+        // readiness is raised to at least 5.
+        if let Some(mut brain) = brain {
+            if brain.restart_idle_activity() {
+                info!("Migration: {} restarts its idle activity", data.record.name);
+            }
+            if brain.integration.readiness < 5.0 {
+                brain.integration.readiness = 5.0;
+            }
         }
         let mut state = flags.as_deref().copied().unwrap_or_default();
         let mut focus = crate::save_live::record_focus(&data.record);
@@ -368,6 +381,37 @@ mod tests {
         assert!(search.candidates.is_empty());
         assert_eq!(search.picked, 0);
         assert!(app.world().get::<ArrivedFollower>(follower).is_none());
+        assert_eq!(brain.integration.readiness, 5.0);
+    }
+
+    /// An arrival drops the follower's current level relation table: a
+    /// stored one stays among the stored tables, unselected.
+    #[test]
+    fn an_arrival_unselects_the_level_relations() {
+        let mut app = App::new();
+        app.add_systems(Update, restore_arrivals);
+        let mut relations = exa_ai::roles::Relations::default();
+        relations.select(3);
+        relations.create(0x8000_0005, 10.0, 0, 3);
+        let follower = app
+            .world_mut()
+            .spawn((
+                exa_character::record::CharacterData::of_record(
+                    exa_formats::characters::CharacterRecord::new(),
+                ),
+                exa_combat::Fighter::default(),
+                relations,
+                ArrivedFollower,
+            ))
+            .id();
+        app.update();
+        let relations = app
+            .world()
+            .get::<exa_ai::roles::Relations>(follower)
+            .unwrap();
+        assert!(relations.current.is_none());
+        assert_eq!(relations.levels.len(), 1);
+        assert!(relations.find(0x8000_0005).is_none());
     }
 
     #[test]

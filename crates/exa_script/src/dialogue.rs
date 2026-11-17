@@ -613,11 +613,16 @@ impl Host for SceneHost<'_, '_> {
     fn add_relation(&mut self, actor: u32, other: u32, role: u32, value: u32) {
         if let Some(c) = self.character_mut(actor) {
             c.add_relation(other, role, value);
+            c.relation_edits
+                .push(crate::cast::RelationEdit::Add { other, role, value });
         }
     }
     fn remove_relation(&mut self, actor: u32, other: u32, role: u32, _value: u32) -> bool {
-        self.character_mut(actor)
-            .is_some_and(|c| c.remove_relation(other, role))
+        self.character_mut(actor).is_some_and(|c| {
+            c.relation_edits
+                .push(crate::cast::RelationEdit::Remove { other, role });
+            c.remove_relation(other, role)
+        })
     }
     fn set_activity(&mut self, actor: u32, slot: i32, value: i32) {
         if let (Some(c), Ok(i)) = (self.character_mut(actor), usize::try_from(slot))
