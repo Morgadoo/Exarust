@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 558 | 141,842 | B1 wire (or prove unreachable) |
-| partial | 1,294 | 824,635 | B4 complete the port |
+| partial | 1,286 | 822,238 | B4 complete the port |
 | missing | 44 | 9,519 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,7 +14,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 141,968 | 16,867 | 238 |
+| physics | 141,157 | 16,867 | 238 |
 | render | 111,641 | 21,704 | 3,232 |
 | ui | 83,216 | 39,045 | 288 |
 | powers | 100,181 | 2,261 | 2,321 |
@@ -25,7 +25,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | items | 51,394 | 7,741 | 525 |
 | data | 26,520 | 9,435 | 0 |
 | runtime | 18,365 | 2,355 | 467 |
-| core | 11,735 | 3,305 | 59 |
+| core | 10,149 | 3,305 | 59 |
 | script | 3,796 | 878 | 0 |
 | audio | 3,025 | 198 | 0 |
 | combat | 2,201 | 0 | 0 |
@@ -56,7 +56,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Character equipment & inventory routines (TCharacterView by address) | items | 19 / 8,669 | 0 / 0 | 0 / 0 | 8,669 |
 | FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
 | RF_3DView (unit routines) | render | 14 / 7,385 | 0 / 0 | 7 / 1,146 | 8,531 |
-| TTetraRBD | physics | 15 / 7,723 | 2 / 661 | 0 / 0 | 8,384 |
 | RF_OS_Functions (unit routines) | runtime | 12 / 6,629 | 5 / 1,749 | 0 / 0 | 8,378 |
 | FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
 | RF_GUI_Main (unit routines) | ui | 10 / 6,565 | 9 / 1,469 | 2 / 144 | 8,178 |
@@ -64,6 +63,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceBarricadeEffect | powers | 4 / 7,984 | 0 / 0 | 0 / 0 | 7,984 |
 | TVCCloth | physics | 12 / 7,143 | 5 / 688 | 0 / 0 | 7,831 |
 | TRBDDoor | world | 3 / 7,666 | 0 / 0 | 0 / 0 | 7,666 |
+| TTetraRBD | physics | 13 / 6,912 | 2 / 661 | 0 / 0 | 7,573 |
 | RF_SceneNodes (unit routines) | world | 5 / 6,798 | 2 / 333 | 0 / 0 | 7,131 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
 | RFE_Export_RFC2 (unit routines) | data | 11 / 6,799 | 2 / 240 | 0 / 0 | 7,039 |
@@ -92,9 +92,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_Character_Data (unit routines) | characters | 9 / 2,332 | 21 / 3,211 | 0 / 0 | 5,543 |
 | TAISearchActivity | ai | 5 / 5,505 | 0 / 0 | 0 / 0 | 5,505 |
 | TNavCameraControl | render | 2 / 5,215 | 1 / 192 | 0 / 0 | 5,407 |
-| FLX_System (unit routines) | core | 24 / 2,242 | 22 / 2,983 | 1 / 59 | 5,284 |
+| FLX_System (unit routines) | core | 23 / 2,171 | 22 / 2,983 | 1 / 59 | 5,213 |
 | TSkinController2 | characters | 6 / 3,997 | 2 / 1,193 | 0 / 0 | 5,190 |
-| Engine math (vectors, matrices, fast trig) | core | 17 / 4,810 | 1 / 235 | 0 / 0 | 5,045 |
 | TForceShellEffect | powers | 6 / 4,985 | 0 / 0 | 0 / 0 | 4,985 |
 | Item description phrases | items | 5 / 4,855 | 0 / 0 | 0 / 0 | 4,855 |
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
@@ -123,6 +122,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_Thaum_Force (unit routines) | powers | 7 / 3,561 | 0 / 0 | 1 / 181 | 3,742 |
 | FLX_Character_Motions (unit routines) | characters | 1 / 1,612 | 8 / 2,034 | 0 / 0 | 3,646 |
 | TGUIItemContainer | items | 2 / 2,080 | 1 / 1,476 | 0 / 0 | 3,556 |
+| Engine math (vectors, matrices, fast trig) | core | 12 / 3,295 | 1 / 235 | 0 / 0 | 3,530 |
 | RF_Intersection (unit routines) | physics | 2 / 288 | 9 / 3,188 | 0 / 0 | 3,476 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
 | RF_Terrain (unit routines) | world | 1 / 609 | 2 / 2,801 | 0 / 0 | 3,410 |
