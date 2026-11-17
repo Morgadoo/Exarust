@@ -1691,9 +1691,20 @@ pub fn spawn_model_nodes_at(
         }
         let Some(parent) = node.parent else { continue };
         if let Some(&part) = parts_of[parent].first() {
-            commands
-                .entity(entities[i])
-                .insert(fire::FireHost { part, base: None });
+            // The host's geometry children (nodes under the host with a
+            // mesh) take the same scale on their first part.
+            let children = model
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, child)| child.parent == Some(parent))
+                .filter_map(|(j, _)| parts_of[j].first().map(|&p| (p, None)))
+                .collect();
+            commands.entity(entities[i]).insert(fire::FireHost {
+                part,
+                base: None,
+                children,
+            });
         }
     }
     let mut excluded: Vec<Vec<Entity>> = vec![Vec::new(); model.nodes.len()];
