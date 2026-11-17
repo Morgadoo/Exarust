@@ -156,7 +156,7 @@ impl Plugin for ThaumEffectsPlugin {
                     )
                         .chain(),
                     (
-                        draw_barricades,
+                        draw_barricades.after(super::effect_draw::tick_force_noise),
                         super::barricade_sound::sound_barricades
                             .after(crate::thaum::dome_sound::sound_domes),
                     )

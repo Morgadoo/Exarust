@@ -69,6 +69,8 @@ type ForceEffect = Or<(
     With<crate::effects::bubble::BubbleEffect>,
     With<super::barrier_live::LiveBarrier>,
     With<super::bubble_live::LiveBubble>,
+    With<super::wave_live::LiveWave>,
+    With<super::live::LiveBarricade>,
 )>;
 
 /// Whether any force effect that binds the noise picture is alive.
