@@ -344,6 +344,10 @@ struct CasterDraw {
     cut: Option<AssetId<Image>>,
     /// A room's lid: front faces culled instead of back faces.
     lid: bool,
+    /// The mesh's render flag `0x800`: front faces culled instead of back
+    /// faces, as the original's per-face caster draw switches the cull face
+    /// by it.
+    cull_front: bool,
 }
 
 /// One draw as the caster shader reads it.
@@ -581,6 +585,7 @@ type CasterData<'w, 's> = Query<
         Option<&'static MeshMaterial3d<ExaMaterial>>,
         Option<&'static SkinnedMesh>,
         Option<&'static ShadowDither>,
+        Option<&'static crate::lights::ShadowCullFront>,
     ),
 >;
 
@@ -668,7 +673,8 @@ fn build_jobs(
                     gated += 1;
                     continue;
                 }
-                let Ok((mesh, at, bias, material, skin, dither)) = casters.get(caster) else {
+                let Ok((mesh, at, bias, material, skin, dither, cull_front)) = casters.get(caster)
+                else {
                     continue;
                 };
                 let joint_offset = match skin {
@@ -705,6 +711,7 @@ fn build_jobs(
                     skinned: joint_offset.is_some(),
                     cut,
                     lid: false,
+                    cull_front: cull_front.is_some(),
                 });
             }
             if let Some(mesh) = lid {
@@ -744,6 +751,7 @@ fn lid_draw(mesh: AssetId<Mesh>, clip_from_world: Mat4, light: Vec3, radius: f32
         skinned: false,
         cut: None,
         lid: true,
+        cull_front: false,
     }
 }
 
@@ -761,8 +769,9 @@ struct CubePipelineKey {
     alpha_cut: bool,
     two_sided: bool,
     skinned: bool,
-    /// Front faces culled (a room's lid).
-    lid: bool,
+    /// Front faces culled (a room's lid, or a mesh with render flag
+    /// `0x800`, [`crate::lights::ShadowCullFront`]).
+    cull_front: bool,
 }
 
 impl CubePipeline {
@@ -820,7 +829,7 @@ impl SpecializedMeshPipeline for CubePipeline {
             primitive: PrimitiveState {
                 cull_mode: if key.two_sided {
                     None
-                } else if key.lid {
+                } else if key.cull_front {
                     Some(Face::Front)
                 } else {
                     Some(Face::Back)
@@ -998,7 +1007,7 @@ fn prepare_draws(
                 alpha_cut: d.cut.is_some(),
                 two_sided: d.two_sided,
                 skinned: d.skinned,
-                lid: d.lid,
+                cull_front: d.lid || d.cull_front,
             };
             let Ok(layout) = mesh
                 .layout
@@ -1311,7 +1320,7 @@ mod tests {
             alpha_cut: false,
             two_sided: false,
             skinned: true,
-            lid: false,
+            cull_front: false,
         };
         let ids: Vec<_> = CubePipeline::vertex_attributes(key)
             .iter()
@@ -1346,7 +1355,7 @@ mod tests {
             alpha_cut: false,
             two_sided: false,
             skinned: false,
-            lid: false,
+            cull_front: false,
         };
         let first = cached_pipeline(&mut cache, (layout.clone(), plain), || {
             calls += 1;
@@ -1366,7 +1375,7 @@ mod tests {
             alpha_cut: true,
             two_sided: false,
             skinned: false,
-            lid: false,
+            cull_front: false,
         };
         let failed = cached_pipeline(&mut cache, (layout, cut), || {
             calls += 1;
@@ -1378,6 +1387,57 @@ mod tests {
 
     /// A room's lid goes into a face in world space at the light's plain
     /// reciprocal radius, culled the other way round.
+    /// A caster whose mesh carries render flag 0x800 is drawn into the
+    /// faces with its front faces culled; the others keep the back-face
+    /// cull.
+    #[test]
+    fn a_front_culled_caster_draws_its_back_faces() {
+        let mut app = App::new();
+        app.init_resource::<CubeJobs>()
+            .init_resource::<CubeLids>()
+            .init_resource::<CubeCasterGate>()
+            .init_resource::<CubeStats>()
+            .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
+            .init_resource::<Assets<ExaMaterial>>()
+            .add_systems(Update, build_jobs);
+        let mesh = Handle::<Mesh>::default();
+        let plain = app
+            .world_mut()
+            .spawn((Mesh3d(mesh.clone()), GlobalTransform::default()))
+            .id();
+        let front = app
+            .world_mut()
+            .spawn((
+                Mesh3d(mesh),
+                GlobalTransform::default(),
+                crate::lights::ShadowCullFront,
+            ))
+            .id();
+        let all = CasterFaces {
+            faces: ALL_FACES,
+            centre: Vec3::ZERO,
+            radius: 1.0,
+        };
+        app.world_mut().spawn((
+            GlobalTransform::from_translation(Vec3::Y),
+            CubeSlot {
+                slot: Some(0),
+                radius: 8.0,
+            },
+            CubeCasters([(plain, all), (front, all)].into_iter().collect()),
+            CubeShadow {
+                slot: Some(0),
+                dirty: ALL_FACES,
+                needed: ALL_FACES,
+            },
+        ));
+        app.update();
+        let jobs = app.world().resource::<CubeJobs>();
+        assert_eq!(jobs.draws.len(), 12);
+        assert_eq!(jobs.draws.iter().filter(|d| d.cull_front).count(), 6);
+        assert!(jobs.draws.iter().all(|d| !d.lid));
+    }
+
     #[test]
     fn a_lid_draw_is_world_space_at_the_plain_radius() {
         let clip = Mat4::from_scale(Vec3::splat(2.0));

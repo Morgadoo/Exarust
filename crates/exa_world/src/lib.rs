@@ -1600,6 +1600,13 @@ pub fn spawn_model_nodes_at(
                         .entity(part)
                         .insert(exa_render::lights::ShadowBias(node.shadow_bias));
                 }
+                // Render flag 0x800: the cube shadow pass culls the mesh's
+                // front faces.
+                if node.render_flags & 0x800 != 0 {
+                    commands
+                        .entity(part)
+                        .insert(exa_render::lights::ShadowCullFront);
+                }
                 parts.push(part);
             }
             // `_null` geometry never draws, but the cursor's pick meets it:
@@ -1786,8 +1793,9 @@ pub fn vertical_shaping(light: &Light) -> (f32, f32) {
     (y, p + 1.0)
 }
 
-/// How far an unranged light reaches, metres (it does not fall off).
-const UNRANGED: f32 = 500.0;
+/// Bevy's range for an unranged light, metres: it bounds the clustering
+/// only, since the shaders give such a light no falloff.
+const UNRANGED: f32 = exa_render::lights::UNRANGED_RANGE;
 
 /// A level light as the original shades it, with its share of the GI
 /// injection: colour linearised and scaled by the intensity (the multiplier
@@ -2691,6 +2699,36 @@ mod tests {
         };
         let (point, ..) = light_bundle(&light);
         assert_eq!(point.shadow_map_near_z, 0.03);
+    }
+
+    /// A light without its range flag (or with no radius) reaches everywhere
+    /// at full strength, as the original's activation leaves its
+    /// attenuation 0; a ranged light falls to nothing at 1.25 radii.
+    #[test]
+    fn an_unranged_light_does_not_fall_off() {
+        let ranged = exa_formats::rfc::Light {
+            flags: 0,
+            color: [1.0; 3],
+            multiplier: 1.0,
+            intensity: 1.0,
+            radius: 8.0,
+            softness: 0.0,
+            spot: None,
+            ranged: true,
+            animation: None,
+        };
+        let (point, ..) = light_bundle(&ranged);
+        assert_eq!(point.range, 10.0);
+        assert_eq!(exa_render::lights::falloff(10.0, point.range), 0.0);
+        assert!((exa_render::lights::falloff(5.0, point.range) - 0.5f32.powi(4)).abs() < 1e-6);
+        let unranged = exa_formats::rfc::Light {
+            ranged: false,
+            ..ranged
+        };
+        let (point, ..) = light_bundle(&unranged);
+        for d in [0.0, 10.0, 100.0, 499.0] {
+            assert_eq!(exa_render::lights::falloff(d, point.range), 1.0);
+        }
     }
 
     /// Placing a light operative whose value bit is set starts one device
