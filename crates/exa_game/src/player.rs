@@ -2812,7 +2812,16 @@ impl Default for ChaseCamera {
             yaw: 0.0,
             shown_yaw: 0.0,
             user_pitch: 0.0,
-            pitch: min_pitch(ZOOM_START),
+            // The node's axis starts at the floor of the stop the record's
+            // distance lands on [guess: the original's axis is the scene
+            // camera's own at that moment, which the placement then holds
+            // between that floor and the cap].
+            pitch: min_pitch(crate::nav_drag::zoom_detents(
+                ZOOM_START,
+                0,
+                preset.min_distance,
+                preset.max_distance,
+            )),
             shot_pitch: None,
             zoom: ZOOM_START,
             shown_zoom: ZOOM_START,
@@ -2842,6 +2851,11 @@ impl Default for ChaseCamera {
             free: None,
         };
         cam.settle_back();
+        // The constructor's preset places the camera with the record's
+        // distance along the node's axis, so a stepped camera starts on
+        // the stop nearest it (1280 for the Character record's 1300).
+        let back = cam.back;
+        cam.face_shot(back, Vec3::ZERO, Some(preset.distance));
         cam
     }
 }
@@ -5378,6 +5392,22 @@ mod tests {
         }
     }
 
+    /// A new camera's preset places it as the original's constructor does:
+    /// the Character record's 1300 is drawn at first and the zoom is its
+    /// nearest stop, 1280 (the retail camera's 29.93 degrees at 1600 by
+    /// 1080), with the pitch at that stop's floor.
+    #[test]
+    fn a_new_camera_starts_on_the_stop_nearest_its_records_distance() {
+        let cam = ChaseCamera::default();
+        assert_eq!((cam.zoom, cam.shown_zoom), (1280.0, 1300.0));
+        // The axis's pitch read back through the engine's arc sine lands a
+        // hair above the floor, and the placement keeps it.
+        assert!(cam.pitch >= min_pitch(1280.0) && cam.pitch - min_pitch(1280.0) < 2e-4);
+        assert_eq!(cam.shot_pitch, Some(cam.pitch));
+        let fov = zoom_fov(1280.0, 1600.0 / 1080.0).to_degrees();
+        assert!((fov - 29.93).abs() < 0.005, "{fov}");
+    }
+
     #[test]
     fn a_shot_places_the_camera_by_the_engines_yaw_and_distance() {
         let mut cam = ChaseCamera {
@@ -5717,7 +5747,8 @@ mod tests {
         // The first tick pulls by the stiffness times the retention.
         let start = crate::nav_camera::camera_axis(-cam.pitch, PI - 0.1);
         let preset = cam.controller.preset;
-        let target = crate::nav_camera::camera_axis(-min_pitch(ZOOM_START), PI + 0.2);
+        // The camera started on the 1280 stop and holds its floor.
+        let target = crate::nav_camera::camera_axis(-min_pitch(1280.0), PI + 0.2);
         let expect = crate::thaum::engine::normalize(
             start + (target - start) * preset.view * preset.retention,
         );
