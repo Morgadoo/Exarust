@@ -151,9 +151,9 @@ pub fn settle_first_undecided(winners: &mut [u32; 6], field: &[u32], roll: &mut 
 /// What arriving at the hub does beyond the staff's renumbering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubArrival {
-    /// A physician is on the staff: the weapon-kind object lying within
-    /// 10 cm (x and z) of (−2100, 0, 900) cm in the hub is removed.
-    pub clear_physician_spot: bool,
+    /// A physician is on the staff: the doors of the door object standing
+    /// within 10 cm (x and z) of (−2100, 900) cm in the hub are unlatched.
+    pub unlatch_physician_door: bool,
     /// The tournament board holds no prize and is built.
     pub build_tournament: bool,
 }
@@ -162,7 +162,7 @@ pub struct HubArrival {
 /// board's prize word.
 pub fn arrive_at_hub(classes: &[u8], tournament_prize: u32) -> HubArrival {
     HubArrival {
-        clear_physician_spot: classes.contains(&crate::staff::PHYSICIAN),
+        unlatch_physician_door: classes.contains(&crate::staff::PHYSICIAN),
         build_tournament: tournament_prize == 0,
     }
 }
@@ -308,14 +308,14 @@ mod tests {
         assert_eq!(
             arrive_at_hub(&[2, 8], 0),
             HubArrival {
-                clear_physician_spot: true,
+                unlatch_physician_door: true,
                 build_tournament: true
             }
         );
         assert_eq!(
             arrive_at_hub(&[2, 4], 7),
             HubArrival {
-                clear_physician_spot: false,
+                unlatch_physician_door: false,
                 build_tournament: false
             }
         );

@@ -2015,6 +2015,36 @@ pub struct SettingsEntry {
     pub bytes: [u8; 4],
 }
 
+/// Keeps the devices' copy of the background unlock word: the bits a
+/// device's use set since the last frame (the id 0x24c's) join the flow's
+/// word, which the settings file then stores, as the original's use sets
+/// the word and flushes the settings at once; then the devices see the
+/// flow's word (a load or a game event may have changed it).
+pub fn sync_device_unlocks(
+    mut flow: ResMut<Flow>,
+    devices: Option<ResMut<crate::player_controls::DeviceClock>>,
+    mut queued: ResMut<FlowSteps>,
+) {
+    let Some(mut devices) = devices else {
+        return;
+    };
+    if devices.pending != 0 {
+        let word = flow.unlocks.backgrounds | devices.pending;
+        devices.pending = 0;
+        if word != flow.unlocks.backgrounds {
+            flow.unlocks.backgrounds = word;
+            info!("flow: a device unlocked background bits {word:#x}");
+            queued.steps.push(Step::SettingsWrite {
+                key: BACKGROUND_UNLOCK_KEY,
+                bytes: flow.unlocks.background_bytes(),
+            });
+        }
+    }
+    if devices.unlocked != flow.unlocks.backgrounds {
+        devices.unlocked = flow.unlocks.backgrounds;
+    }
+}
+
 /// The steps the flow asked for since the last frame: every producer pushes
 /// here and [`apply_steps`] applies the ones the running app owns.
 #[derive(Resource, Debug, Default)]
@@ -3857,6 +3887,7 @@ impl Plugin for FlowPlugin {
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()
+            .add_message::<crate::game_event_live::DeviceRevelation>()
             // What the story events' effects go through.
             .add_message::<exa_script::Narrate>()
             .add_message::<exa_combat::pain::PainSounded>()
@@ -3898,6 +3929,7 @@ impl Plugin for FlowPlugin {
                             .after(crate::thaum::cast::broadcast_level_change),
                         run_transition.in_set(FlowSystems::Transition),
                         release_after_load.after(crate::revive_pass::reset_brains),
+                        sync_device_unlocks,
                         apply_steps
                             .after(crate::crystal_drain::drain_sources)
                             .after(exa_script::run_conversations)
@@ -9339,6 +9371,38 @@ mod tests {
         assert!(other.is_empty());
     }
 
+    /// The Proctor's Seal (id 0x24c) used through the device rules sets
+    /// the background unlock word's bit 2, which the flow keeps and writes
+    /// to the settings file once; the devices then see the word, so a
+    /// second use answers no, in this game and after a restart.
+    #[test]
+    fn a_device_unlock_reaches_the_flow_and_the_settings() {
+        use crate::player_controls::{DEVICE_ONCE_ID, DeviceClock, device_use};
+        let mut app = App::new();
+        app.init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<DeviceClock>()
+            .add_systems(Update, sync_device_unlocks);
+        app.world_mut().resource_mut::<Flow>().unlocks.backgrounds = 1;
+        app.update();
+        assert_eq!(app.world().resource::<DeviceClock>().unlocked, 1);
+        let mut clock = app.world_mut().resource_mut::<DeviceClock>();
+        assert!(device_use(0, DEVICE_ONCE_ID, 0, &mut clock, || false));
+        app.update();
+        assert_eq!(app.world().resource::<Flow>().unlocks.backgrounds, 3);
+        assert_eq!(
+            std::mem::take(&mut app.world_mut().resource_mut::<FlowSteps>().steps),
+            vec![Step::SettingsWrite {
+                key: BACKGROUND_UNLOCK_KEY,
+                bytes: [3, 0, 0, 0],
+            }]
+        );
+        let mut clock = app.world_mut().resource_mut::<DeviceClock>();
+        assert!(!device_use(0, DEVICE_ONCE_ID, 0, &mut clock, || true));
+        app.update();
+        assert!(app.world().resource::<FlowSteps>().steps.is_empty());
+    }
+
     /// The flow keeps the fragments seen: a fragment's bits are or-ed in,
     /// an awakening sets the word whole, and a new story clears it and
     /// keeps its background.
@@ -9390,6 +9454,7 @@ mod tests {
             .init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .add_message::<exa_script::ScriptEffect>()
+            .add_message::<crate::game_event_live::DeviceRevelation>()
             .add_message::<exa_script::Narrate>()
             .add_message::<exa_combat::pain::PainSounded>()
             .add_message::<exa_audio::PointSounded>()

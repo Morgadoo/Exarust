@@ -79,6 +79,18 @@ pub fn music_for_level(level: &str) -> &'static str {
     }
 }
 
+/// The volume a level's track plays at: a story level's is its track's own
+/// (the story level hook's table: 0.1 for the first level's, 0.15, 0.2, 0.25
+/// or 0.3 for the others'); any other level's [`MUSIC_VOLUME`].
+pub fn music_volume_for_level(level: &str) -> f32 {
+    let l = level.to_ascii_lowercase();
+    if l.starts_with("exanima0") || l.starts_with("exanimac") {
+        story_music(level.as_bytes()).volume
+    } else {
+        MUSIC_VOLUME
+    }
+}
+
 /// What the story's level hook plays for a level.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StoryMusic {
@@ -692,6 +704,26 @@ impl Default for MusicSetting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A story level's track plays at its own volume; other levels at the
+    /// level track's.
+    #[test]
+    fn a_story_track_plays_at_its_own_volume() {
+        assert_eq!(
+            music_volume_for_level("exanima01.rfc"),
+            f32::from_bits(0x3dcc_cccd)
+        );
+        assert_eq!(
+            music_volume_for_level("exanima02.rfc"),
+            f32::from_bits(0x3e19_999a)
+        );
+        assert_eq!(
+            music_volume_for_level("exanima04.rfc"),
+            f32::from_bits(0x3e19_999a)
+        );
+        assert_eq!(music_volume_for_level("exanima06.rfc"), 0.25);
+        assert_eq!(music_volume_for_level("arenahub.rfc"), MUSIC_VOLUME);
+    }
     use crate::environment::voice_flags;
 
     /// A loader that hands out `buffer` whatever the name.

@@ -1016,17 +1016,11 @@ fn spawn_placed_object(
     }
     // A hinged door's leaves, a lever's arm and a push surface register with
     // their rules (a sliding door's leaf too when asked for); any other
-    // mechanism body stays static. The
-    // placement's static bits (`PlacedObject::is_static`) mark only the
-    // object's root node in the original, which, unlike the prop reader,
-    // does not spread the flag to the nodes under it; what that root flag
-    // does to the model's bodies is not traced, so it is not applied.
+    // mechanism body stays static. The placement's static bit marks the
+    // object's tree level geometry, every node under its root too
+    // ([`bodies::placement_geometry`]).
     let placement = bodies::placement_of(item, object, mechanism_bodies);
-    let geometry = if object.is_static() {
-        bodies::LevelGeometry::Root
-    } else {
-        bodies::LevelGeometry::None
-    };
+    let geometry = bodies::placement_geometry(object);
     bodies::mark_moving_meshes(commands, model, &nodes, geometry);
     bodies::mark_grid_queued(commands, model, &nodes);
     Some(PlacedSpawn::Placed {

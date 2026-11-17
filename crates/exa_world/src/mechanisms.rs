@@ -59,10 +59,11 @@ impl Plugin for MechanismPlugin {
             app.add_message::<LockSounded>();
         }
         app.add_message::<OpenDoorsUnder>()
+            .add_message::<LatchDoorsAt>()
             .add_message::<RelayForward>()
             .add_systems(
                 FixedUpdate,
-                (open_doors_under, route_signals)
+                (latch_doors_at, open_doors_under, route_signals)
                     .chain()
                     .in_set(exa_physics::body::AfterSolver::Level)
                     .before(send_relay_forwards),
@@ -169,11 +170,113 @@ fn bridge_mechanism_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<exa_physics::mechanism::LockSounded>()
         .bridge_message::<crate::mechanisms::OpenDoorsUnder>()
+        .bridge_message::<crate::mechanisms::LatchDoorsAt>()
         .bridge_message::<crate::mechanisms::RelayForward>()
         .bridge_snapshot::<exa_physics::body::plate_body::PlateBody>()
         .bridge_snapshot::<exa_physics::body::slide_body::SlideBody>()
         .bridge_copy::<crate::arc::ElectricDevice>()
         .bridge_copy::<crate::mechanisms::MechanismRecords>();
+}
+
+/// An order to latch or unlatch the doors of the first placed door object
+/// standing within ten centimetres of a spot, on x and on z (`fabs` of
+/// each difference below 10 cm), as the arena does with the door at the
+/// physician's hub spot. The object's word takes the value in bit 0 and
+/// every door body under it its latch ([`mechanism::latch_doors`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct LatchDoorsAt {
+    /// The spot's x and z, in centimetres.
+    pub x_cm: f32,
+    pub z_cm: f32,
+    pub latched: bool,
+}
+
+/// How many steps an order waits for its door's body to be registered (the
+/// loader builds the bodies a few frames after the level's nodes) before it
+/// is dropped: four seconds.
+const LATCH_WAIT_STEPS: u32 = 240;
+
+/// Runs each [`LatchDoorsAt`]: the first placed object with a door record
+/// within ten centimetres of the spot has the door bodies under it latched
+/// or unlatched. An order whose object or door body is not there yet waits
+/// for it ([`LATCH_WAIT_STEPS`]); one that never finds them does nothing.
+pub fn latch_doors_at(
+    mut orders: MessageReader<LatchDoorsAt>,
+    mut waiting: Local<Vec<(LatchDoorsAt, u32)>>,
+    objects: Query<(Entity, &MechanismRecords, &GlobalTransform)>,
+    children: Query<&Children>,
+    mut bodies: Query<MechanismParts>,
+) {
+    waiting.extend(orders.read().map(|order| (*order, 0)));
+    if waiting.is_empty() {
+        return;
+    }
+    let mut left = Vec::new();
+    for (order, waited) in waiting.drain(..) {
+        // The original walks the level's groups in order and takes the
+        // first door object at the spot; the hub holds one there.
+        let found = objects
+            .iter()
+            .filter(|(_, records, _)| records.door.is_some())
+            .find(|(_, _, at)| {
+                let at = at.translation() * 100.0;
+                (at.x - order.x_cm).abs() < 10.0 && (at.z - order.z_cm).abs() < 10.0
+            })
+            .map(|(e, records, _)| (e, records.id));
+        let latched = found.and_then(|(node, id)| {
+            let nodes = under(node, &children);
+            let mut doors: Vec<(Entity, door::Door)> = nodes
+                .iter()
+                .filter_map(|&e| {
+                    let (_, hinged, sliding, _) = bodies.get(e).ok()?;
+                    hinged
+                        .map(|g| g.door)
+                        .or(sliding.map(|g| g.door))
+                        .map(|d| (e, d))
+                })
+                .collect();
+            if doors.is_empty() {
+                return None;
+            }
+            let word = doors[0].1.saved as u32;
+            let mut leaves: Vec<door::Door> = doors.iter().map(|(_, d)| *d).collect();
+            let word = mechanism::latch_doors(&mut leaves, word, order.latched);
+            for ((e, d), mut changed) in doors.iter_mut().zip(leaves) {
+                changed.saved = (changed.saved & !1) | (word & 1) as i32;
+                *d = changed;
+                // The original only writes the latch byte; the body is
+                // not woken.
+                if let Ok((_, hinged, sliding, _)) = bodies.get_mut(*e) {
+                    if let Some(mut glue) = hinged {
+                        glue.door = changed;
+                    } else if let Some(mut glue) = sliding {
+                        glue.door = changed;
+                    }
+                }
+            }
+            Some((id, doors.len()))
+        });
+        match latched {
+            Some((id, count)) => info!(
+                "mechanism: {} the {count} door(s) of {id:#x} at ({}, {}) cm",
+                if order.latched {
+                    "latched"
+                } else {
+                    "unlatched"
+                },
+                order.x_cm,
+                order.z_cm
+            ),
+            None if waited < LATCH_WAIT_STEPS => left.push((order, waited + 1)),
+            None => info!(
+                "mechanism: no door body at ({}, {}) cm to {}",
+                order.x_cm,
+                order.z_cm,
+                if order.latched { "latch" } else { "unlatch" }
+            ),
+        }
+    }
+    *waiting = left;
 }
 
 /// An order to open the doors under a placed object's node, as the
@@ -206,25 +309,8 @@ pub fn open_doors_under(
             continue;
         };
         let nodes = under(node, &children);
-        if let Some(sound) = first_lock_sound(&nodes, &bodies) {
-            sounds.write(sound);
-        }
-        order_doors(DoorOrder::Open, &nodes, &mut bodies, now);
+        sounds.write_batch(order_doors(DoorOrder::Open, &nodes, &mut bodies, now));
     }
-}
-
-/// The lock sound of the first door among `nodes`: its record's `LkO`
-/// sound at the leaf's first part. [guess: the original plays it at a
-/// point the door controller keeps; the leaf's origin stands in]
-fn first_lock_sound(nodes: &[Entity], bodies: &Query<MechanismParts>) -> Option<LockSounded> {
-    nodes.iter().find_map(|&e| {
-        let (body, hinged, sliding, _) = bodies.get(e).ok()?;
-        let door = hinged.map(|g| g.door).or(sliding.map(|g| g.door))?;
-        Some(LockSounded {
-            name: door::sound_name(door.record.lock_sound, "LkO"),
-            position: body.origin_at(0).unwrap_or_default(),
-        })
-    })
 }
 
 /// The entities at and under `node`, the node first, parents before
@@ -276,11 +362,12 @@ struct NodeLinks<'w, 's> {
     devices: Query<'w, 's, &'static mut crate::arc::ElectricDevice>,
 }
 
-#[allow(private_interfaces)]
+#[allow(private_interfaces, clippy::too_many_arguments)]
 pub fn route_signals(
     mut signals: MessageReader<MechanismSignal>,
     mut commands: Commands,
     mut forwards: MessageWriter<RelayForward>,
+    mut locks: MessageWriter<LockSounded>,
     ticks: Option<Res<BodyTicks>>,
     mut objects: Query<(Entity, &mut MechanismRecords)>,
     mut links: NodeLinks,
@@ -307,7 +394,9 @@ pub fn route_signals(
         );
         let nodes = under(node, &links.children);
         match dispatch {
-            Dispatch::Doors(order) => order_doors(order, &nodes, &mut bodies, now),
+            Dispatch::Doors(order) => {
+                locks.write_batch(order_doors(order, &nodes, &mut bodies, now));
+            }
             Dispatch::Plate { pushed } => {
                 for &e in &nodes {
                     if let Ok((mut body, _, _, Some(mut glue))) = bodies.get_mut(e) {
@@ -659,33 +748,55 @@ fn relay_forwards(
 
 /// A door order on the door bodies (hinged or sliding) among `nodes`, in
 /// their order, each woken to run it.
-fn order_doors(order: DoorOrder, nodes: &[Entity], bodies: &mut Query<MechanismParts>, now: i32) {
-    let mut found: Vec<(Entity, door::Door)> = Vec::new();
+/// Runs a door order on the door bodies among `nodes` and returns the lock
+/// sounds it plays, in the order the doors produced them: an open sounds
+/// the first door's lock set once, a close and lock each unlatched sliding
+/// leaf's, a toggle whichever its doors chose. The doors under a node
+/// share their object's word: a close that finds a shut leaf sets its bit 0
+/// on every door's copy (the latch a save carries), as the original sets it
+/// on the node's word.
+fn order_doors(
+    order: DoorOrder,
+    nodes: &[Entity],
+    bodies: &mut Query<MechanismParts>,
+    now: i32,
+) -> Vec<LockSounded> {
+    let mut found: Vec<(Entity, door::Door, Vec3)> = Vec::new();
     for &e in nodes {
-        if let Ok((_, hinged, sliding, _)) = bodies.get(e) {
+        if let Ok((body, hinged, sliding, _)) = bodies.get(e) {
+            let at = body.origin_at(0).unwrap_or_default();
             if let Some(glue) = hinged {
-                found.push((e, glue.door));
+                found.push((e, glue.door, at));
             } else if let Some(glue) = sliding {
-                found.push((e, glue.door));
+                found.push((e, glue.door, at));
             }
         }
     }
     if found.is_empty() {
-        return;
+        return Vec::new();
     }
-    let mut doors: Vec<door::Door> = found.iter().map(|(_, d)| *d).collect();
-    match order {
-        DoorOrder::Open => {
-            mechanism::open_doors(&mut doors, now);
+    let mut doors: Vec<door::Door> = found.iter().map(|(_, d, _)| *d).collect();
+    let word = doors[0].saved as u32;
+    let (sounds, word) = match order {
+        DoorOrder::Open => (mechanism::open_doors(&mut doors, now), word),
+        DoorOrder::CloseAndLock => mechanism::close_and_lock_doors(&mut doors, word),
+        DoorOrder::Toggle => mechanism::toggle_doors(&mut doors, word, now),
+    };
+    let played = sounds
+        .0
+        .iter()
+        .filter_map(|&(k, _)| {
+            let (_, door, at) = found.get(k)?;
+            Some(LockSounded {
+                name: door::sound_name(door.record.lock_sound, "LkO"),
+                position: *at,
+            })
+        })
+        .collect();
+    for ((e, _, _), mut changed) in found.iter().zip(doors) {
+        if word & 1 != 0 {
+            changed.saved |= 1;
         }
-        DoorOrder::CloseAndLock => {
-            mechanism::close_and_lock_doors(&mut doors, 0);
-        }
-        DoorOrder::Toggle => {
-            mechanism::toggle_doors(&mut doors, 0, now);
-        }
-    }
-    for ((e, _), changed) in found.iter().zip(doors) {
         if let Ok((mut body, hinged, sliding, _)) = bodies.get_mut(*e) {
             if let Some(mut glue) = hinged {
                 glue.door = changed;
@@ -695,6 +806,7 @@ fn order_doors(order: DoorOrder, nodes: &[Entity], bodies: &mut Query<MechanismP
             body.wake_to(WAKE_COUNT);
         }
     }
+    played
 }
 
 /// The records of a placed object that a signal or a mechanism reads.
@@ -815,6 +927,158 @@ mod tests {
         assert!(app.world().get_entity(object).is_ok());
         // No door under it: no lock sound.
         assert!(app.world().resource::<Messages<LockSounded>>().is_empty());
+    }
+
+    /// A sliding leaf on level rails, as the shipped portcullis's.
+    fn sliding_leaf(lock_sound: u8) -> (Ragdoll, SlideBody) {
+        use exa_physics::body::{PendingSlide, RigidLink, RigidPart, world_link};
+        let slider = |x: f32, y: f32| RigidLink {
+            on_body: Vec3::new(x, y, 0.0),
+            on_parent: Vec3::new(x, y, 0.0),
+            slack: 1.7,
+            strength: 0.0,
+            smoothing: 0.01,
+            flags: world_link::SLIDER,
+            axis: Vec3::new(-1.7, 0.0, 0.0),
+        };
+        let mut body = Ragdoll::rigid(&[RigidPart {
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::from_translation(Vec3::new(3.0, 0.0, 0.0)),
+            rest: [
+                Vec3::new(0.0, 0.0, 0.1),
+                Vec3::new(0.0, 0.0, -0.1),
+                Vec3::new(1.0, 2.0, 0.0),
+                Vec3::new(-1.0, 2.0, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: bevy::math::Affine3A::IDENTITY,
+            mobility: 0.048,
+            spheres: vec![(Vec3::new(0.0, 1.0, 0.0), 0.06)],
+            origin: Vec3::new(3.0, 0.0, 0.0),
+            links: vec![slider(0.7, 0.2), slider(0.7, 1.9), slider(-0.7, 1.0)],
+            mesh: None,
+            triangles: None,
+        }]);
+        let pending = PendingSlide {
+            record: door::Record {
+                lock_sound,
+                ..door::Record::default()
+            },
+            saved: 0,
+            handle_height: 1.0,
+        };
+        let glue = SlideBody::new(&mut body, &pending).expect("a sliding leaf");
+        (body, glue)
+    }
+
+    /// A signal that closes and locks a gate sounds each unlatched sliding
+    /// leaf's lock set at the leaf, and a signalled open sounds the first
+    /// door's once; a shut leaf latches and the group's word keeps bit 0.
+    #[test]
+    fn a_signalled_door_order_plays_its_lock_sounds() {
+        let mut app = App::new();
+        app.add_plugins(MechanismPlugin);
+        let gate = 0x8000_0030;
+        let object = app
+            .world_mut()
+            .spawn((
+                MechanismRecords {
+                    id: gate,
+                    body: Some(objdb::Mechanism::Door),
+                    door: Some(door::Record::default()),
+                    operative: None,
+                },
+                Transform::default(),
+            ))
+            .id();
+        let leaf = app
+            .world_mut()
+            .spawn((sliding_leaf(2), ChildOf(object)))
+            .id();
+        let shut = app
+            .world()
+            .get::<SlideBody>(leaf)
+            .unwrap()
+            .door
+            .slide
+            .closed;
+        let signal = |value| MechanismSignal {
+            target: gate,
+            source: 0x8000_0031,
+            value,
+        };
+        // Value 0 on a plain door record closes and locks.
+        app.world_mut().write_message(signal(0));
+        app.world_mut().run_schedule(FixedUpdate);
+        let sounded: Vec<LockSounded> = app
+            .world_mut()
+            .resource_mut::<Messages<LockSounded>>()
+            .drain()
+            .collect();
+        assert_eq!(sounded.len(), 1, "the unlatched leaf sounds its lock");
+        assert_eq!(sounded[0].name, "doorc_LkO");
+        assert!((sounded[0].position - Vec3::new(3.0, 0.0, 0.0)).length() < 1e-3);
+        let door = app.world().get::<SlideBody>(leaf).unwrap().door;
+        assert_eq!(door.latched, shut);
+        assert_eq!(door.saved & 1, i32::from(shut));
+
+        // An open sounds the first door once.
+        app.world_mut().write_message(signal(1));
+        app.world_mut().run_schedule(FixedUpdate);
+        let sounded: Vec<LockSounded> = app
+            .world_mut()
+            .resource_mut::<Messages<LockSounded>>()
+            .drain()
+            .collect();
+        assert_eq!(sounded.len(), 1);
+        assert_eq!(sounded[0].name, "doorc_LkO");
+    }
+
+    /// The arena's order unlatches the door object standing within ten
+    /// centimetres of the spot (x and z), its word losing bit 0; an order
+    /// that arrives before the door body is registered waits for it, and
+    /// an object outside the ten centimetres is left.
+    #[test]
+    fn a_latch_order_finds_the_door_at_its_spot() {
+        let mut app = App::new();
+        app.add_plugins(MechanismPlugin);
+        let records = |id| MechanismRecords {
+            id,
+            body: Some(objdb::Mechanism::Door),
+            door: Some(door::Record::default()),
+            operative: None,
+        };
+        let at = |x: f32, z: f32| GlobalTransform::from(Transform::from_xyz(x, 0.0, z));
+        let near = app
+            .world_mut()
+            .spawn((records(0x8000_0040), at(-20.95, 9.05)))
+            .id();
+        let far = app
+            .world_mut()
+            .spawn((records(0x8000_0041), at(-20.85, 9.0)))
+            .id();
+        app.world_mut().write_message(LatchDoorsAt {
+            x_cm: -2100.0,
+            z_cm: 900.0,
+            latched: false,
+        });
+        // No body yet: the order waits.
+        app.world_mut().run_schedule(FixedUpdate);
+        let latched_leaf = || {
+            let (body, mut glue) = sliding_leaf(0);
+            glue.door.latched = true;
+            glue.door.saved = 0x101;
+            (body, glue)
+        };
+        let leaf = app.world_mut().spawn((latched_leaf(), ChildOf(near))).id();
+        let other = app.world_mut().spawn((latched_leaf(), ChildOf(far))).id();
+        app.world_mut().run_schedule(FixedUpdate);
+        let door = app.world().get::<SlideBody>(leaf).unwrap().door;
+        assert!(!door.latched);
+        assert_eq!(door.saved, 0x100);
+        let untouched = app.world().get::<SlideBody>(other).unwrap().door;
+        assert!(untouched.latched);
     }
 
     fn item(door: Option<objdb::Door>, operative: Option<objdb::Operative>) -> Item {

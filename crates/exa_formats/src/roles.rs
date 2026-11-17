@@ -533,8 +533,17 @@ impl Dialogue {
         let mut nodes = Vec::new();
         for _ in 0..nnodes {
             let size = r.peek_u32()? as usize;
-            if size < 5 {
+            if size == 0 {
+                // The original points a zero slot at a shared empty node
+                // whose size word is 4, and steps by it.
                 r.u32()?;
+                nodes.push(None);
+            } else if size < 5 {
+                // A slot of 1 to 4 bytes is a node of that size to the
+                // original, which steps by it (its fields beyond are the
+                // next slot's bytes); no shipped graph holds one, and
+                // Exarust keeps it empty.
+                r.bytes(size)?;
                 nodes.push(None);
             } else {
                 nodes.push(Some(Node::parse(r.bytes(size)?)?));

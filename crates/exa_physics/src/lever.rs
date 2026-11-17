@@ -106,6 +106,10 @@ pub struct Lever {
     pub deadline_ms: i32,
     /// The counted-down time the object word holds, in milliseconds.
     pub remaining_ms: i32,
+    /// The lever's object word (the operative object's, which a save
+    /// carries): an armed return keeps its remaining time there, in units
+    /// of 100 ms, in bits 16 and up; the low half is left alone.
+    pub word: i32,
     /// The tick sound is looping and its volume.
     pub tick_playing: bool,
     pub tick_volume: f32,
@@ -432,6 +436,7 @@ impl Lever {
             return_ms: 0,
             deadline_ms: 0,
             remaining_ms: 0,
+            word: 0,
             tick_playing: false,
             tick_volume: 0.0,
             has_target: false,
@@ -489,6 +494,8 @@ impl Lever {
     pub fn arm(&mut self, now_ms: i32, ms: i32) {
         self.deadline_ms = now_ms.saturating_add(ms);
         self.remaining_ms = ms;
+        // The time is taken unsigned here.
+        self.word = ((((ms as u32) / 100) << 16) | (self.word as u32 & 0xFFFF)) as i32;
         self.returning = false;
         self.tick_playing = true;
         self.tick_volume = TICK_VOLUME;
@@ -510,16 +517,20 @@ impl Lever {
     }
 
     /// The timed return's own tick: while the clock is short of the
-    /// deadline it counts down, at the deadline it aims home (the detent
+    /// deadline it counts down (the object word keeps the time left), at the deadline it aims home (the detent
     /// whose report is 0) and returns true. The original only runs it while
     /// the lever's node is live; the caller keeps that gate (a dead node
     /// drops the return without firing it).
     pub fn timed_return(&mut self, now_ms: i32) -> bool {
         if now_ms < self.deadline_ms {
             self.remaining_ms = self.deadline_ms - now_ms;
+            // A signed division here (toward zero).
+            self.word =
+                (((self.remaining_ms / 100) as u32) << 16 | (self.word as u32 & 0xFFFF)) as i32;
             false
         } else {
             self.remaining_ms = 0;
+            self.word &= 0xFFFF;
             self.home = if self.on_at_rest { 1 } else { 0 };
             self.returning = true;
             true
@@ -564,6 +575,7 @@ mod tests {
             return_ms: 0,
             deadline_ms: 0,
             remaining_ms: 0,
+            word: 0,
             tick_playing: false,
             tick_volume: 0.0,
             has_target: true,
@@ -690,18 +702,28 @@ mod tests {
         assert_eq!(lever.deadline_ms, 1500);
         assert_eq!(lever.remaining_ms, 500);
         assert_eq!(lever.return_word(), 5 << 16);
+        assert_eq!(lever.word, 5 << 16);
         assert!(lever.tick_playing);
         assert!((lever.tick_volume - TICK_VOLUME).abs() < 1e-6);
 
         assert!(!lever.timed_return(1200));
         assert_eq!(lever.remaining_ms, 300);
         assert_eq!(lever.return_word(), 3 << 16);
+        assert_eq!(lever.word, 3 << 16);
         assert!(!lever.timed_return(1499));
         assert_eq!(lever.remaining_ms, 1);
         // 1 ms left rounds down to no units in the word.
         assert_eq!(lever.return_word(), 0);
         assert!(lever.timed_return(1500));
         assert_eq!(lever.remaining_ms, 0);
+        assert_eq!(lever.word, 0);
+        // The low half of the word is the object's own and is kept.
+        let mut flagged = Lever::new(swing, 0.873_195_4);
+        flagged.word = 0x7_0123;
+        flagged.arm(0, 1250);
+        assert_eq!(flagged.word, (12 << 16) | 0x0123);
+        flagged.timed_return(1250);
+        assert_eq!(flagged.word, 0x0123);
         assert!(lever.returning);
         // Without the first detent reporting on, home is the first detent.
         assert_eq!(lever.home, 0);

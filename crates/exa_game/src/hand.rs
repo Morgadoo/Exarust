@@ -1210,6 +1210,7 @@ impl Plugin for HandPlugin {
             .add_message::<ContainerRequest>()
             .add_message::<exa_world::mechanisms::OpenDoorsUnder>()
             .add_message::<exa_world::nav::NavMoved>()
+            .add_message::<crate::game_event_live::DeviceRevelation>()
             .add_systems(
                 Update,
                 (

@@ -713,6 +713,26 @@ impl AudioEnvironment {
         }
     }
 
+    /// Finishes a handle's voice, as a force effect's end does with its
+    /// voices: a playing one-shot is marked auto-free and plays out, a loop
+    /// (or a voice that is not playing) is freed now. Either way the handle
+    /// is left unbound, as the original clears the caller's voice word.
+    pub fn finish_handle(&mut self, bank: &mut SoundBank, handle: VoiceHandle) {
+        let Some(id) = self.handles.get(handle.0 as usize).copied().flatten() else {
+            return;
+        };
+        let playing_once = self.voices.get(id as usize).is_some_and(|voice| {
+            voice.flags & (voice_flags::ACTIVE | voice_flags::LOOPING) == voice_flags::ACTIVE
+        });
+        if playing_once {
+            self.voices[id as usize].owner = None;
+            if let Some(slot) = self.handles.get_mut(handle.0 as usize) {
+                *slot = None;
+            }
+        }
+        self.finish_voice(bank, id);
+    }
+
     /// Restarts a voice on a random variant of a set, keeping the caller's
     /// record. The original assigns the restart flags rather than adding them,
     /// and, unlike the one-shots, does not ask whether the environment is live.
@@ -1697,6 +1717,31 @@ mod tests {
             command,
             SourceCommand::Refresh(update) if update.slot == env.voice(interface).unwrap().source as u8
         )));
+    }
+
+    /// A finished handle lets its playing one-shot play out unbound, and
+    /// frees its loop at once.
+    #[test]
+    fn a_finished_handle_lets_a_one_shot_play_out() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        let set = bank.insert_test_set(vec![1]);
+        let handle = env.new_handle();
+        assert!(env.play_set_attached(&mut bank, set, handle, Vec3::ZERO, 1.0, 1.0));
+        let voice = env.handles[handle.index() as usize].unwrap();
+        env.voices[voice as usize].flags |= voice_flags::ACTIVE;
+        env.finish_handle(&mut bank, handle);
+        assert!(!env.handle_is_bound(handle));
+        assert_ne!(env.voice(voice).unwrap().flags & voice_flags::AUTO_FREE, 0);
+        assert!(env.voice(voice).unwrap().owner.is_none());
+
+        let handle = env.new_handle();
+        assert!(env.play_set_attached(&mut bank, set, handle, Vec3::ZERO, 1.0, 1.0));
+        let looping = env.handles[handle.index() as usize].unwrap();
+        env.voices[looping as usize].flags |= voice_flags::ACTIVE | voice_flags::LOOPING;
+        env.finish_handle(&mut bank, handle);
+        assert!(!env.handle_is_bound(handle));
+        assert_eq!(env.voice(looping).unwrap().flags, 0);
     }
 
     /// Finishing a playing one-shot marks it auto-free and lets it play on,

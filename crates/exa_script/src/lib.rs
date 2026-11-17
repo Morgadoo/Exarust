@@ -101,12 +101,24 @@ pub struct Conversations {
     pub player2: Option<u32>,
     /// World time (s) the session started at (the save's clock).
     pub world_base: u32,
-    /// The current locale id (`locales.rdb`).
+    /// The world clock (s) as the game last mirrored it (the save's clock
+    /// carried on since its load, `WorldTime`); without it the world time
+    /// counts from [`Self::world_base`] at time zero.
+    pub world_now: Option<u32>,
+    /// The current locale id (`locales.rdb`): the loaded level's, 0 for a
+    /// level the database does not name.
     pub locale: u32,
     pub objects: objects::Objects,
 }
 
 impl Conversations {
+    /// The world time (s) scripts and topics read at game time `now` (ms):
+    /// the mirrored world clock, else the base plus the seconds since zero.
+    pub fn world_time(&self, now: u32) -> u32 {
+        self.world_now
+            .unwrap_or_else(|| topics::world_time(self.world_base, now, 0))
+    }
+
     /// Runs `f` on the engine with the session's scene at game time `now`
     /// (ms): the role library, the cast, the world clock, the players and
     /// the locale. Returns `f`'s answer and the effects the scripts asked
@@ -117,12 +129,12 @@ impl Conversations {
         now: u32,
         f: impl FnOnce(&mut Engine, &mut Scene<'_>) -> R,
     ) -> (R, Vec<Effect>) {
+        let world_time = self.world_time(now);
         let Self {
             engine,
             cast,
             player,
             player2,
-            world_base,
             locale,
             ..
         } = self;
@@ -133,7 +145,7 @@ impl Conversations {
             },
             cast,
             now,
-            world_time: topics::world_time(*world_base, now, 0),
+            world_time,
             player: *player,
             player2: *player2,
             locale: *locale,

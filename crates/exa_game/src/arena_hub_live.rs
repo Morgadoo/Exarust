@@ -155,6 +155,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
+            .add_message::<exa_world::mechanisms::LatchDoorsAt>()
             .add_message::<crate::equip::Redress>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<ArenaLeave>()
@@ -303,8 +304,9 @@ fn enter_loaded_hub(
     players: Query<&mut Transform, With<Player>>,
     bodies: Query<(&Condition, &Fighter, Option<&Ragdoll>), With<PlayerBody>>,
     player_bodies: Query<Entity, With<PlayerBody>>,
-    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    career: ResMut<crate::hub_windows::ArenaCareer>,
     mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
+    mut latches: MessageWriter<exa_world::mechanisms::LatchDoorsAt>,
     (mut animators, motions): (
         Query<&mut exa_anim::Animator, With<PlayerBody>>,
         Option<Res<exa_anim::Motions>>,
@@ -341,15 +343,15 @@ fn enter_loaded_hub(
         hub.specialists_placed.clear();
         hub.fall = None;
         hub.roll = entry.roll;
-        // Only a physician clears the weapon object at the hub's spot.
+        // Only a physician unlatches the door at the physician's spot.
         if career
             .company
             .roster
             .iter()
             .any(|member| member.profession == crate::career::Profession::Physician)
-            && let Some(index) = clear_physician_weapon(&mut career)
         {
-            info!("arena hub: cleared the physician's weapon object {index}");
+            latches.write(physician_door_order());
+            info!("arena hub: the physician's door is unlatched");
         }
         commands.insert_resource(exa_audio::LevelMusic(entry.music.name.to_ascii_lowercase()));
         commands.insert_resource(exa_audio::LevelMusicVolume(entry.music.volume));
@@ -449,6 +451,7 @@ fn place_hired_specialists(
     mut hub: ResMut<ArenaHub>,
     career: Res<crate::hub_windows::ArenaCareer>,
     mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
+    mut latches: MessageWriter<exa_world::mechanisms::LatchDoorsAt>,
 ) {
     if !hub.npcs_spawned {
         return;
@@ -464,6 +467,10 @@ fn place_hired_specialists(
         plan.name = Some(member.name.clone());
         scene_commands.write(crate::scene_bodies::SceneCommand::Spawn(Box::new(plan)));
         hub.specialists_placed.push(member.profession);
+        // A hired physician's room opens at once, as on the hub's entry.
+        if member.profession == crate::career::Profession::Physician {
+            latches.write(physician_door_order());
+        }
         info!(
             "arena hub: the hired {:?} {} stands at its spot",
             member.profession, member.name
@@ -992,16 +999,16 @@ fn auto_rematch(
     }
 }
 
-/// Removes the first weapon object within ten centimetres of the physician's
-/// hub spot, as arriving at the hub does. The host supplies the level's
-/// items; the play-mode hub has none to give yet.
-pub fn clear_physician_weapon(career: &mut crate::hub_windows::ArenaCareer) -> Option<usize> {
-    let at = crate::arena_spawn::find_nearby_weapon(
-        &career.venue_items,
-        crate::arena_spawn::PHYSICIAN_ITEM_POINT,
-    )?;
-    career.venue_items.remove(at);
-    Some(at)
+/// The order a physician on the staff gives on arriving at the hub: the
+/// door at the physician's spot is unlatched, so the physician's room
+/// opens ([`crate::arena_spawn::PHYSICIAN_DOOR_SPOT`]).
+pub fn physician_door_order() -> exa_world::mechanisms::LatchDoorsAt {
+    let [x_cm, z_cm] = crate::arena_spawn::PHYSICIAN_DOOR_SPOT;
+    exa_world::mechanisms::LatchDoorsAt {
+        x_cm,
+        z_cm,
+        latched: false,
+    }
 }
 
 /// The mode word the click hook compares: the flow's mode, else the arena's
@@ -4361,28 +4368,6 @@ mod tests {
         };
         let board = career.board();
         assert_eq!(plan_launch_at(&mut career, &board, false, 0), None);
-    }
-
-    #[test]
-    fn the_physician_weapon_is_cleared_from_the_hosts_items() {
-        let mut career = crate::hub_windows::ArenaCareer {
-            venue_items: vec![
-                crate::arena_spawn::PlacedItem {
-                    position: [-2100.0, 0.0],
-                    type_bits: 0x4000,
-                    template_kind: 0x40000,
-                },
-                crate::arena_spawn::PlacedItem {
-                    position: [1.0, 2.0],
-                    type_bits: 0x4000,
-                    template_kind: 0x40000,
-                },
-            ],
-            ..Default::default()
-        };
-        assert_eq!(clear_physician_weapon(&mut career), Some(0));
-        assert_eq!(career.venue_items.len(), 1);
-        assert_eq!(clear_physician_weapon(&mut career), None);
     }
 
     fn spawn_player(app: &mut App) -> Entity {

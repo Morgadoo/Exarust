@@ -207,12 +207,18 @@ pub fn pulse(t: u32, fade: u32, hold: u32) -> Option<f32> {
     })
 }
 
-/// What the revelation does: `None` outside story mode, for another
+/// What the revelation does: `None` outside a game being played (the
+/// session's phase word 3), for another
 /// event, or when the player already has the power; otherwise the node to
 /// narrate (after [`REVELATION_DELAY`]) given whether the power could be
 /// taught.
-pub fn revelation(story: bool, event: u32, has_power: bool, taught: bool) -> Option<&'static str> {
-    if !story || event != RAISE_DEAD_EVENT || has_power {
+pub fn revelation(
+    playing: bool,
+    event: u32,
+    has_power: bool,
+    taught: bool,
+) -> Option<&'static str> {
+    if !playing || event != RAISE_DEAD_EVENT || has_power {
         return None;
     }
     Some(if taught {

@@ -190,11 +190,61 @@ type EventPlayerQuery<'w, 's> = Query<
     With<PlayerBody>,
 >;
 
+/// A device of usable kind 4 was used: its record's event word goes to the
+/// revelation ([`exa_script::objects::revelation`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceRevelation {
+    pub event: u32,
+}
+
+/// The revelation a kind-4 device's use runs: while a game is being
+/// played (the session's phase is the playing one) and the event is the
+/// Raise-Dead one, a player who does not know Raise Dead is granted it by
+/// the mind tree, and the narrator speaks `RVL_RaiseDead_S` (granted) or
+/// `RVL_RaiseDead_F` after a second. A player who knows it hears nothing.
+fn run_revelation(
+    event: u32,
+    playing: bool,
+    player: Option<&mut PlayerItem<'_>>,
+    nodes: Option<&[exa_formats::power_tree::PowerNode]>,
+    out: &mut EventOutputs,
+) {
+    let Some(player) = player else {
+        return;
+    };
+    let has_power = player.2.as_ref().is_some_and(|data| {
+        data.record
+            .powers
+            .as_ref()
+            .is_some_and(|p| p.known.iter().any(|k| k.id == RAISE_DEAD_POWER))
+    });
+    // The grant runs only where the line would be spoken.
+    let mut taught = false;
+    if exa_script::objects::revelation(playing, event, has_power, false).is_some()
+        && let (Some(data), Some(nodes)) = (player.2.as_mut(), nodes)
+    {
+        taught = grant_raise_dead(&mut data.record, nodes);
+        if taught && let Some(caster) = player.5.as_mut() {
+            let insight = data.record.skills[INSIGHT];
+            caster.grant(nodes, &insight, RAISE_DEAD_POWER);
+        }
+    }
+    let Some(topic) = exa_script::objects::revelation(playing, event, has_power, taught) else {
+        return;
+    };
+    info!("device revelation {event:#x}: Raise Dead taught {taught}, narrator topic {topic:?}");
+    out.narrator.write(exa_script::Narrate {
+        topic: topic.to_string(),
+        delay: exa_script::objects::REVELATION_DELAY,
+    });
+}
+
 /// The consumer of the story scripts' `GameEvent` calls: each code runs the
 /// flow's hook ([`Flow::game_event`]) with the live player, and the effects
 /// it returns act on the player.
 #[allow(clippy::too_many_arguments)]
 pub fn run_game_events(
+    mut revelations: MessageReader<DeviceRevelation>,
     mut events: MessageReader<exa_script::ScriptEffect>,
     mut flow: ResMut<Flow>,
     mut players: EventPlayerQuery,
@@ -203,6 +253,12 @@ pub fn run_game_events(
     mut bank: Option<ResMut<exa_audio::SoundBank>>,
     mut mind: Local<MindTree>,
 ) {
+    for revelation in revelations.read() {
+        let playing = flow.phase == crate::flow::Phase::Playing;
+        let nodes = mind.nodes(game.as_deref());
+        let mut player = players.iter_mut().next();
+        run_revelation(revelation.event, playing, player.as_mut(), nodes, &mut out);
+    }
     for event in events.read() {
         let &exa_script::dialogue::Effect::GameEvent(code) = &event.0 else {
             continue;
@@ -441,6 +497,7 @@ pub struct GameEventLivePlugin;
 impl Plugin for GameEventLivePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<exa_script::ScriptEffect>()
+            .add_message::<DeviceRevelation>()
             .add_message::<exa_script::Narrate>()
             .add_message::<PainSounded>()
             .add_message::<exa_audio::PointSounded>()
@@ -508,6 +565,7 @@ mod tests {
             .init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .add_message::<exa_script::ScriptEffect>()
+            .add_message::<DeviceRevelation>()
             .add_message::<exa_script::Narrate>()
             .add_message::<PainSounded>()
             .add_message::<exa_audio::PointSounded>()
@@ -566,6 +624,80 @@ mod tests {
         assert!(app.world().resource::<FlowSteps>().steps.is_empty());
         let data = app.world().get::<CharacterData>(player).unwrap();
         assert_eq!(crate::game_event::potential(&data.record), 5.0);
+    }
+
+    /// A kind-4 device's revelation, while the game is played: a player
+    /// without Raise Dead is offered it (no mind tree here, so the grant
+    /// fails) and the narrator speaks the failed line after a second; a
+    /// player who knows it hears nothing, and outside the playing phase
+    /// nothing runs.
+    #[test]
+    fn a_device_revelation_offers_raise_dead() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .add_message::<DeviceRevelation>()
+            .add_message::<exa_script::ScriptEffect>()
+            .add_message::<DeviceRevelation>()
+            .add_message::<exa_script::Narrate>()
+            .add_message::<PainSounded>()
+            .add_message::<exa_audio::PointSounded>()
+            .add_systems(Update, run_game_events);
+        let mut record = CharacterRecord::new();
+        record.powers = Some(exa_formats::characters::Powers {
+            word: 0,
+            slots: [0; exa_formats::characters::POWER_SLOTS],
+            known: Vec::new(),
+        });
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerBody::new(0.0),
+                GlobalTransform::default(),
+                CharacterData::of_record(record),
+            ))
+            .id();
+        let reveal = |app: &mut App| -> Vec<exa_script::Narrate> {
+            app.world_mut().write_message(DeviceRevelation {
+                event: exa_script::objects::RAISE_DEAD_EVENT,
+            });
+            app.update();
+            app.world_mut()
+                .resource_mut::<Messages<exa_script::Narrate>>()
+                .drain()
+                .collect()
+        };
+        // Not playing: nothing.
+        assert!(reveal(&mut app).is_empty());
+        app.world_mut().resource_mut::<Flow>().phase = crate::flow::Phase::Playing;
+        let topics = reveal(&mut app);
+        assert_eq!(topics.len(), 1);
+        assert_eq!(
+            (topics[0].topic.as_str(), topics[0].delay),
+            ("RVL_RaiseDead_F", 1000)
+        );
+        // Another event word: nothing.
+        app.world_mut().write_message(DeviceRevelation { event: 7 });
+        app.update();
+        assert!(
+            app.world()
+                .resource::<Messages<exa_script::Narrate>>()
+                .is_empty()
+        );
+        // A player who knows Raise Dead hears nothing.
+        let mut data = app.world_mut().get_mut::<CharacterData>(player).unwrap();
+        data.record
+            .powers
+            .as_mut()
+            .unwrap()
+            .known
+            .push(exa_formats::characters::Power {
+                id: RAISE_DEAD_POWER,
+                flags: 0,
+                blob: None,
+            });
+        assert!(reveal(&mut app).is_empty());
     }
 
     /// A fragment's witness event reaches the player's contact holding
@@ -629,6 +761,7 @@ mod tests {
                 narrator: None,
             })
             .add_message::<exa_script::ScriptEffect>()
+            .add_message::<DeviceRevelation>()
             .add_message::<exa_script::Narrate>()
             .add_message::<PainSounded>()
             .add_message::<exa_audio::PointSounded>()
@@ -669,6 +802,7 @@ mod tests {
             .init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .add_message::<exa_script::ScriptEffect>()
+            .add_message::<DeviceRevelation>()
             .add_message::<exa_script::Narrate>()
             .add_message::<PainSounded>()
             .add_message::<exa_audio::PointSounded>()

@@ -591,11 +591,28 @@ pub enum LevelGeometry {
     /// None: a loose prop, a placed object without the static bits, the
     /// level's own model.
     None,
-    /// The model's root alone: a placed object whose placement carries the
-    /// static bits (the object reader does not spread the flag).
+    /// The model's root alone: a placed object whose own object flag marks
+    /// it static.
     Root,
-    /// Every node: a prop placed static (the prop reader spreads the flag).
+    /// Every node: a prop placed static (the prop reader spreads the flag)
+    /// or a placed object whose placement carries the static bit (the
+    /// create marks the whole tree).
     All,
+}
+
+/// Which of a placed object's nodes are level geometry: the placement's
+/// static bit (`0x10`) marks the object's root and, recursively, every node
+/// under it, as the original's create does after the tree is built; the
+/// object's own static flag alone marks its root.
+pub fn placement_geometry(object: &exa_formats::rfc::PlacedObject) -> LevelGeometry {
+    use exa_formats::rfc::PlacedObject;
+    if object.flags & PlacedObject::STATIC != 0 {
+        LevelGeometry::All
+    } else if object.object_flags & PlacedObject::OBJECT_STATIC != 0 {
+        LevelGeometry::Root
+    } else {
+        LevelGeometry::None
+    }
 }
 
 /// The mesh nodes of a model that carry a rigid body, as the original's grid
@@ -785,6 +802,28 @@ mod tests {
             moving_meshes(&model, LevelGeometry::All),
             [(0, true), (1, true)]
         );
+    }
+
+    /// The placement's static bit marks the whole tree; the object's own
+    /// flag its root only.
+    #[test]
+    fn a_static_placement_marks_the_whole_tree() {
+        use exa_formats::rfc::PlacedObject;
+        let mut object = PlacedObject {
+            id: 1,
+            flags: 0,
+            object_flags: 0,
+            transform: [[0.0; 3]; 4],
+            slot: 0,
+            second_word: 0,
+            word_3d22: None,
+            attachments: Vec::new(),
+        };
+        assert_eq!(placement_geometry(&object), LevelGeometry::None);
+        object.object_flags = PlacedObject::OBJECT_STATIC;
+        assert_eq!(placement_geometry(&object), LevelGeometry::Root);
+        object.flags = PlacedObject::STATIC;
+        assert_eq!(placement_geometry(&object), LevelGeometry::All);
     }
 
     /// A sack (a body with three body children), a chain hung from a wall
@@ -1156,6 +1195,119 @@ mod tests {
     /// 0 at load (their slider points on their anchors), every rail lies
     /// level, and at rest they creep up to about 2 cm in two seconds without
     /// sleeping; the test prints them.
+    /// The arena hub holds one door object within ten centimetres (x and
+    /// z) of (−2100, 900) cm, the door the arena unlatches for a physician
+    /// on the staff; its leaf registers as a door body, and the arena's
+    /// order unlatches it. Read from `EXANIMA_DIR`; skipped without it.
+    #[test]
+    fn the_arena_hub_holds_the_physicians_door() {
+        use bevy::ecs::world::CommandQueue;
+        use bevy::time::TimeUpdateStrategy;
+        use exa_physics::body::{DoorBody, SlideBody};
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::transform::TransformPlugin,
+            exa_physics::PhysicsPlugin,
+            crate::mechanisms::MechanismPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+        ));
+        let mut cache = exa_assets::ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut queue = CommandQueue::default();
+        {
+            let mut loader = exa_assets::ModelLoader {
+                game: &game,
+                cache: &mut cache,
+                meshes: &mut meshes,
+                materials: &mut materials,
+                images: &mut images,
+                bc_supported: false,
+            };
+            let mut commands = Commands::new(&mut queue, app.world());
+            let mut load =
+                crate::LevelLoad::begin(&mut commands, &mut loader, "arenahub").expect("arenahub");
+            while !matches!(
+                load.step(&mut commands, &mut loader, std::time::Duration::MAX),
+                crate::LoadProgress::Finished(..)
+            ) {}
+        }
+        queue.apply(app.world_mut());
+        app.world_mut().insert_resource(meshes);
+        for _ in 0..4 {
+            app.update();
+        }
+        let mut q = app.world_mut().query::<(
+            Entity,
+            &crate::mechanisms::MechanismRecords,
+            &GlobalTransform,
+        )>();
+        let doors: Vec<(Entity, u32, Vec3)> = q
+            .iter(app.world())
+            .filter(|(_, r, _)| r.door.is_some())
+            .map(|(e, r, at)| (e, r.id, at.translation() * 100.0))
+            .collect();
+        for (_, id, at) in &doors {
+            eprintln!(
+                "hub door object {id:#x} at ({:.1}, {:.1}, {:.1}) cm",
+                at.x, at.y, at.z
+            );
+        }
+        let at_spot: Vec<_> = doors
+            .iter()
+            .filter(|(_, _, at)| (at.x + 2100.0).abs() < 10.0 && (at.z - 900.0).abs() < 10.0)
+            .collect();
+        assert_eq!(at_spot.len(), 1, "one door object at the physician's spot");
+        let node = at_spot[0].0;
+        let mut leaves = Vec::new();
+        let mut stack = vec![node];
+        while let Some(e) = stack.pop() {
+            if app.world().get::<DoorBody>(e).is_some() || app.world().get::<SlideBody>(e).is_some()
+            {
+                leaves.push(e);
+            }
+            if let Some(kids) = app.world().get::<Children>(e) {
+                stack.extend(kids.iter());
+            }
+        }
+        let latched = |app: &App, e: Entity| {
+            app.world()
+                .get::<DoorBody>(e)
+                .map(|g| g.door.latched)
+                .or(app.world().get::<SlideBody>(e).map(|g| g.door.latched))
+                .unwrap()
+        };
+        for &e in &leaves {
+            eprintln!(
+                "leaf {e:?}: hinged {} latched {}",
+                app.world().get::<DoorBody>(e).is_some(),
+                latched(&app, e)
+            );
+        }
+        assert!(!leaves.is_empty(), "the door at the spot has a body");
+        app.world_mut()
+            .write_message(crate::mechanisms::LatchDoorsAt {
+                x_cm: -2100.0,
+                z_cm: 900.0,
+                latched: false,
+            });
+        app.update();
+        app.world_mut().run_schedule(FixedUpdate);
+        for &e in &leaves {
+            assert!(!latched(&app, e), "the leaf is unlatched");
+        }
+    }
+
     #[test]
     fn shipped_levers_and_plates_rest_and_signal() {
         use bevy::ecs::world::CommandQueue;

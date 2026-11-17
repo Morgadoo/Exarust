@@ -226,13 +226,18 @@ fn a_timed_lever_returns_and_signals_off() {
     }
     assert_eq!(sent, vec![(TARGET, 1)]);
     assert!(glue.armed);
+    // The armed return's time sits in the object word (a save carries it).
+    assert_eq!(glue.lever.word >> 16, 5);
     glue.let_go(&mut body);
+    tick(&mut body, &mut glue, n + 10);
+    assert_eq!(glue.lever.word >> 16, 3, "the word counts down");
     sent.clear();
-    for k in n..n + 300 {
+    for k in n + 11..n + 300 {
         sent.extend(tick(&mut body, &mut glue, k));
     }
     assert_eq!(sent, vec![(TARGET, 0)]);
     assert!(!glue.armed && !glue.lever.returning);
+    assert_eq!(glue.lever.word >> 16, 0, "the fired return clears its time");
     assert!((glue.lever.angle - glue.lever.detent0).abs() < 0.03);
 }
 

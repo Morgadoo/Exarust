@@ -99,9 +99,6 @@ pub struct ArenaCareer {
     /// The merchant's specialisation: the rank it sells, −1 (any) in a new
     /// career. The save's merchant chunk keeps it.
     pub merchant_rank: i32,
-    /// The hub's items as the physician's weapon query reads them, supplied
-    /// by the host that knows the scene.
-    pub venue_items: Vec<crate::arena_spawn::PlacedItem>,
     /// The hire list: ten candidates, newest first, each a generated record
     /// with the role the candidate draw gave it.
     pub hire_pool: Vec<Member>,
@@ -179,7 +176,6 @@ impl Default for ArenaCareer {
             goods_changed: false,
             merchant_kinds: 0,
             merchant_rank: -1,
-            venue_items: Vec::new(),
             hire_pool: Vec::new(),
             hire_catalog: crate::arena_outfit::ProfessionCatalog::default(),
             hire_previous: 0,
