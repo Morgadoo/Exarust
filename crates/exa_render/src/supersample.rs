@@ -42,6 +42,7 @@ impl Plugin for SupersamplePlugin {
                 start_supersampling,
                 follow_window,
                 sync_split_taps::<crate::material::ExaMaterial>,
+                trace_cameras,
             )
                 .chain()
                 .in_set(exa_physics::FramePostPhase::Prepare),
@@ -266,6 +267,11 @@ pub fn start_supersampling(
                 Transform::from_xyz(0.0, 0.0, 1.0),
                 layer,
                 DisplayCamera,
+                // One quad shaded once a pixel: multisampling adds nothing
+                // to it, and a multisampled HDR view on the window lost the
+                // quad's draw on an RTX 3090 (driver 620): only its clear
+                // reached the window, so the world showed black (F570).
+                Msaa::Off,
             ))
             .id();
         commands.entity(entity).insert(SupersampleTarget {
@@ -275,6 +281,47 @@ pub fn start_supersampling(
             display,
             resolve,
         });
+    }
+}
+
+/// `EXA_CAMERA_TRACE=1`: every 120 frames, one log line a camera (its
+/// name, order, activity, target, layers and target size), so a missing or
+/// shadowed view shows in the log. A debug aid.
+#[allow(clippy::type_complexity)]
+fn trace_cameras(
+    mut frames: Local<u32>,
+    cameras: Query<(
+        Entity,
+        Option<&Name>,
+        &Camera,
+        &RenderTarget,
+        Option<&RenderLayers>,
+        Has<Camera3d>,
+        Has<Supersample>,
+        Has<DisplayCamera>,
+    )>,
+) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("EXA_CAMERA_TRACE").is_some()) {
+        return;
+    }
+    *frames += 1;
+    if *frames % 120 != 1 {
+        return;
+    }
+    for (entity, name, camera, target, layers, is_3d, ss, shows) in &cameras {
+        info!(
+            "camera trace: {entity} {:?} order {} active {} 3d {is_3d} supersample {ss} display {shows} target {target:?} layers {layers:?} size {:?} viewport {:?} clear {:?}",
+            name.map(Name::as_str),
+            camera.order,
+            camera.is_active,
+            camera.physical_target_size(),
+            camera
+                .viewport
+                .as_ref()
+                .map(|v| (v.physical_position, v.physical_size)),
+            camera.clear_color,
+        );
     }
 }
 

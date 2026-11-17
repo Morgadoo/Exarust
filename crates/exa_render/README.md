@@ -146,7 +146,9 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   sizes the point lights' cube faces and the sun map, `MultisampleSetting`
   the scene camera's MSAA while super-sampling is off, and
   `supersample::SuperSampling` turns the supersampled scene's target off and
-  on (`EXA_SUBFRAME` shows one sub-frame of the resolve) ([`docs/UI.md`](../../docs/UI.md#what-actually-takes-effect)).
+  on (`EXA_SUBFRAME` shows one sub-frame of the resolve; the display camera
+  that resolves it draws without MSAA, F570; `EXA_CAMERA_TRACE=1` logs the
+  cameras) ([`docs/UI.md`](../../docs/UI.md#what-actually-takes-effect)).
 - `benchmark`: the GPU benchmark's workload, the original's own fragment
   program as a two-dimensional material (a texture read at the uv, the
   square roots, the reads offset by 0.2341, 0.1476, 0.3768 and 0.4276, the
