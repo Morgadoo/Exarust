@@ -197,7 +197,7 @@ fn grant_witness_roles(
 /// player or a body the AI does not run). A role list a script changed goes
 /// the other way first, and so do the relation roles a script or a stored
 /// topic memory changed ([`apply_relation_edits`]).
-pub(crate) fn mirror_cast(
+pub fn mirror_cast(
     conversations: Option<ResMut<Conversations>>,
     db: Option<Res<exa_ai::brain::RoleDatabase>>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,

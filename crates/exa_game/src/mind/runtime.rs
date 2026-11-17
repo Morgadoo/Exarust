@@ -243,8 +243,12 @@ impl Plugin for MindRuntimePlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    feed_mind_powers.before(exa_ai::BrainTick),
-                    feed_mind_status.before(exa_ai::BrainTick),
+                    feed_mind_powers
+                        .after(crate::thaum::cast::reset_entered_casts)
+                        .before(exa_ai::BrainTick),
+                    feed_mind_status
+                        .after(exa_ai::presence::check_presence)
+                        .before(exa_ai::BrainTick),
                     take_broken_holds
                         .after(exa_ai::BrainTick)
                         .before(exa_physics::body::CharacterTicks),

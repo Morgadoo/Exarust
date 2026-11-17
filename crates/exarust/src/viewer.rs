@@ -153,6 +153,7 @@ impl Plugin for ViewerPlugin {
                         .after(finish_lighting),
                     start_fight
                         .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::script_cast::mirror_cast)
                         .before(exa_game::script_cast::sync_contacts)
                         .after(finish_lighting),
                     launch_arena_match
