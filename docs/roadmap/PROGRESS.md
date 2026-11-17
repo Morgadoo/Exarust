@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r306, 11-16) | target |
+| measure | start (r186, 11-10) | now (r307, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 307 | F570: on the RTX 3090 with driver 620 the world drew black in a window: the supersample display camera kept MSAA x4 and its resolve draw was lost; the display camera now draws without multisampling (no picture change, slightly cheaper); EXA_CAMERA_TRACE debug flag added. |
 | 2026-11-16 | 306 | Script relation roles and topic-memory write-backs reach the AI relations with their invalid-role reports; placements run the AI heading store; the player footwork steps through the can-act gate (tone, support, trailing foot); Mask Mind hides its caster from AI sight; the target pass refresh runs the dialogue AI events from one contact event word; scene re-entry zeroes the seen-tick counts; sentries soft-stop and look where they face; an arrived follower drops its level relations and wakes. |
 | 2026-11-16 | 305 | Signalled door orders play their lock sounds and keep their latch word; the arena hub unlatches the physician room door (the old port removed a weapon); force effects let their one-shots play out; scripts read the world clock, the locale and the skills; kind-4 devices run the Raise Dead revelation; the Proctor Seal unlock persists; journeys release the controls; story tracks play at the story hook volume; static placements mark the whole tree; F568 matches the original. |
 | 2026-11-16 | 304 | The game camera finishes its placement as the original (zoom snapped to its stop, 1280 not 1300, matching the retail field of view 29.93 deg; pitch held at the stop's floor; fast shots clear the asked pitch); the arena's spectated start is the original's fast two-point shot and the free camera pans with the bound movement keys; every play view reframes about 1.5 percent tighter. |
