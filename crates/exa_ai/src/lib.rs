@@ -227,6 +227,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_copy::<crate::route_walk::AiRoute>()
         .bridge_move_resource::<crate::brain::BrainClock>()
         .bridge_copy::<crate::brain::CharacterId>()
+        .bridge_copy::<crate::brain::Npc>()
         .bridge_copy::<crate::brain::MindWarded>()
         .bridge_copy_in_resource::<crate::brain::RoleDatabase>()
         .bridge_copy::<crate::brain::Unseen>()
