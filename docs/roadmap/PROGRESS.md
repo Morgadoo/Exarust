@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r307, 11-16) | target |
+| measure | start (r186, 11-10) | now (r308, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **61.08%** | **100%** |
+| **Ledger: bytes in a final state** | — | **61.14%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,232 | all |
+| Tests passing | 8,489 | 9235 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,7 +99,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 141 | 159,073 |
-| Rendering & GPU | 10 | 10 | 274 | 137,926 |
+| Rendering & GPU | 10 | 10 | 272 | 136,365 |
 | UI | 12 | 12 | 318 | 122,549 |
 | Thaumaturgy & effects | 9 | 9 | 134 | 104,763 |
 | Characters, motion & animation | 8 | 8 | 213 | 99,693 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 6 | 3,223 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,890** | **976,647** |
+| **Total** | **90** | **90** | **1,888** | **975,086** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 308 | Unranged lights no longer fall off (the activation sets attenuation only for ranged lights); meshes with render flag 0x800 cull their front faces in the cube shadow pass; the exanima01 retail torch gap was mostly the comparison pose (the documented floor-torch recipe brings walls and far floor to 0.9-1.0 of retail), a near-flame excess remains; the put-out reading corrected (the original zeroes fixture glow, not light intensity). |
 | 2026-11-16 | 307 | F570: on the RTX 3090 with driver 620 the world drew black in a window: the supersample display camera kept MSAA x4 and its resolve draw was lost; the display camera now draws without multisampling (no picture change, slightly cheaper); EXA_CAMERA_TRACE debug flag added. |
 | 2026-11-16 | 306 | Script relation roles and topic-memory write-backs reach the AI relations with their invalid-role reports; placements run the AI heading store; the player footwork steps through the can-act gate (tone, support, trailing foot); Mask Mind hides its caster from AI sight; the target pass refresh runs the dialogue AI events from one contact event word; scene re-entry zeroes the seen-tick counts; sentries soft-stop and look where they face; an arrived follower drops its level relations and wakes. |
 | 2026-11-16 | 305 | Signalled door orders play their lock sounds and keep their latch word; the arena hub unlatches the physician room door (the old port removed a weapon); force effects let their one-shots play out; scripts read the world clock, the locale and the skills; kind-4 devices run the Raise Dead revelation; the Proctor Seal unlock persists; journeys release the controls; story tracks play at the story hook volume; static placements mark the whole tree; F568 matches the original. |

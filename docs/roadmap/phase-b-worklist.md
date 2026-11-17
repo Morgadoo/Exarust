@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 558 | 141,842 | B1 wire (or prove unreachable) |
-| partial | 1,296 | 826,196 | B4 complete the port |
+| partial | 1,294 | 824,635 | B4 complete the port |
 | missing | 44 | 9,519 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,7 +15,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 141,968 | 16,867 | 238 |
-| render | 113,202 | 21,704 | 3,232 |
+| render | 111,641 | 21,704 | 3,232 |
 | ui | 83,216 | 39,045 | 288 |
 | powers | 100,181 | 2,261 | 2,321 |
 | characters | 84,180 | 14,061 | 1,452 |
@@ -126,7 +126,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Intersection (unit routines) | physics | 2 / 288 | 9 / 3,188 | 0 / 0 | 3,476 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
 | RF_Terrain (unit routines) | world | 1 / 609 | 2 / 2,801 | 0 / 0 | 3,410 |
-| TShadowCubeMap | render | 8 / 3,310 | 0 / 0 | 0 / 0 | 3,310 |
 | TShadowMapDirect | render | 4 / 3,259 | 0 / 0 | 0 / 0 | 3,259 |
 | RF_DBObjects (unit routines) | data | 2 / 2,672 | 3 / 524 | 0 / 0 | 3,196 |
 | TGeometry | render | 6 / 2,254 | 0 / 0 | 1 / 804 | 3,058 |
@@ -163,6 +162,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TDivCardForm | modes | 1 / 1,863 | 0 / 0 | 0 / 0 | 1,863 |
 | TSelectionUI | ui | 5 / 1,856 | 0 / 0 | 0 / 0 | 1,856 |
 | TCharDecomp2 | characters | 5 / 1,766 | 0 / 0 | 0 / 0 | 1,766 |
+| TShadowCubeMap | render | 6 / 1,749 | 0 / 0 | 0 / 0 | 1,749 |
 | RF_Env_Effects (unit routines) | powers | 1 / 1,666 | 0 / 0 | 0 / 0 | 1,666 |
 | Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 1 / 1,662 | 0 / 0 | 0 / 0 | 1,662 |
 | XA_ExperienceSys (unit routines) | modes | 2 / 1,506 | 2 / 153 | 0 / 0 | 1,659 |

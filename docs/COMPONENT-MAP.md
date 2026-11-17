@@ -9,7 +9,7 @@ Two numbers are published while the function ledger is being completed (see `doc
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - **Estimate 82.3% + 5.1% engine; ledger 61.1% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **61.1% closed**, of which 48.7% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 32.9% partial and 6.0% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **61.1% closed**, of which 48.8% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 32.8% partial and 6.0% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -22,7 +22,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 61% | 40% | 19% | 2% | 31% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 61% | 53% | 7% | 2% | 29% | 10% |  |
-| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 60% | 42% | 15% | 2% | 33% | 7% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 60% | 43% | 15% | 2% | 33% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 60% | 52% | 5% | 3% | 31% | 9% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 36% | 33% | 1% | 2% | 57% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 51% | 42% | 4% | 4% | 42% | 8% |  |
@@ -193,7 +193,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Pixel-format converters (8-bit and float) | Rendering & GPU | 6 | 95% | 56% | 46% | 10% | 0% | 0% | 44% |
 | RF_Polyhedra | Rendering & GPU | 5 | 95% | 50% | 46% | 4% | 0% | 50% | 0% |
 | TShadowMapDirect | Rendering & GPU | 5 | 85% | 42% | 25% | 14% | 3% | 58% | 0% |
-| TShadowCubeMap | Rendering & GPU | 5 | 85% | 36% | 15% | 16% | 5% | 64% | 0% |
+| TShadowCubeMap | Rendering & GPU | 5 | 85% | 66% | 45% | 16% | 5% | 34% | 0% |
 | RF_Materials | Rendering & GPU | 5 | 66% | 21% | 19% | 2% | 0% | 79% | 0% |
 | TTexture | Rendering & GPU | 5 | 75% | 72% | 31% | 40% | 0% | 19% | 10% |
 | TLightSource | Rendering & GPU | 4 | 76% | 11% | 7% | 4% | 0% | 78% | 11% |
