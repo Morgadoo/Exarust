@@ -348,6 +348,27 @@ pub fn death_glow(npc: &Npc) -> Option<f32> {
 }
 
 impl Npc {
+    /// The AI's heading store (the behaviour's class slot 23), which the
+    /// body's placements call once they have written the facing `yaw`
+    /// along the frame's `forward`: the look, the heading and the two
+    /// words beside them (the combat look and the sway word) take the yaw,
+    /// the route stops ([`crate::route_walk::AiRoute::stop`]), and the
+    /// body's heading and look directions take the forward, so the turn
+    /// after a placement starts from where the body was put rather than
+    /// from where the AI last looked. The original also copies the frame's
+    /// origin into a goal word Exarust does not keep.
+    pub fn placed(&mut self, yaw: f32, forward: Vec3, route: Option<&mut crate::route_walk::AiRoute>) {
+        self.turn.look = yaw;
+        self.turn.heading = yaw;
+        self.turn.sway = yaw;
+        self.gaze.look = yaw;
+        if let Some(route) = route {
+            route.stop();
+        }
+        self.gaze.body_heading = forward;
+        self.gaze.body_look = forward;
+    }
+
     /// The body's facing yaw as the AI's routines read it.
     ///
     /// The original reads the body's direction vectors through the
