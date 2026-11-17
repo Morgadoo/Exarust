@@ -29,7 +29,7 @@
 //!    from before the twist;
 //! 10. the foot contacts: the feet routine's.
 
-use bevy::math::Affine3A;
+use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
 use exa_anim::{
     Animator, BodyPart, Bracket, ClipPose, Motions, Stature, hold_toward, in_place, overlay_toward,
@@ -46,6 +46,7 @@ use exa_physics::body::{
     FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, foot_pitch_target, hunch_applies,
     hunch_turn, step_hunch, world_with,
 };
+use exa_physics::engine_math;
 
 use crate::balance::ShockHeld;
 use crate::limp::{Lean, Pace, clip_pose, clip_tick, physical_turns, run_overlay};
@@ -590,11 +591,16 @@ fn foot_pitch(mut parts: Vec<Affine3A>, body: &mut Ragdoll) -> Vec<Affine3A> {
             scale,
         );
         let angle = body.step_foot_pitch(i, target);
-        let pitched = Affine3A {
-            matrix3: local.matrix3 * Mat3A::from_quat(Quat::from_rotation_x(angle)),
-            translation: local.translation,
+        // The original turns the foot by the engine's X turn of the pitch
+        // (its fast sine and cosine, no translation), then composes that
+        // with the foot's local frame and the shin's world frame, each by
+        // its 4×3 product.
+        let turn = Affine3A {
+            matrix3: engine_math::rotation_x(angle),
+            translation: Vec3A::ZERO,
         };
-        parts[foot] = parent * pitched;
+        let pitched = engine_math::frame_product(&turn, &local);
+        parts[foot] = engine_math::frame_product(&pitched, &parent);
     }
     parts
 }

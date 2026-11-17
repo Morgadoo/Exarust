@@ -27,7 +27,10 @@ functions by name only.
   AI's and the force powers' routines with a few helpers, the made item's
   condition roll), and the third lane's in `batch_e.rs` (the head look
   with its Euler routines stubbed, the light update; the barricade's place
-  score joined `batch_d.rs`). 115 ports; two of them (the sun view matrix with
+  score joined `batch_d.rs`), and the collision lane's in `batch_f.rs`
+  (the particle-matrix leaves: the widened rest points, the 4x4 inverse and
+  the rest basis times the particles in its 4x4 and 4x3 forms). 119 ports;
+  two of them (the sun view matrix with
   `RSQRTSS`, the colour decode by `powf`) are recorded differences whose
   case files are kept aside.
 - `replay()` runs every case of a file under

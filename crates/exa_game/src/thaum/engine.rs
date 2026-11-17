@@ -53,22 +53,10 @@ pub fn dot_zyx(a: Vec3, b: Vec3) -> f32 {
 pub use exa_physics::engine_math::sin_cos;
 
 /// A vector turned about a unit `axis` by `angle`, by the engine's
-/// axis-angle matrix.
+/// axis-angle routine ([`exa_physics::engine_math::rotate_about`]: its
+/// fast sine and cosine and its row sums in the original's order).
 pub fn rotate_about(v: Vec3, axis: Vec3, angle: f32) -> Vec3 {
-    let (s, c) = sin_cos(angle);
-    let t = 1.0 - c;
-    let (ax, ay, az) = (axis.x, axis.y, axis.z);
-    Vec3::new(
-        (ay * s + ax * az * t) * v.z
-            + (ax * ay * t - az * s) * v.y
-            + ((1.0 - ax * ax) * c + ax * ax) * v.x,
-        (ay * az * t - ax * s) * v.z
-            + ((1.0 - ay * ay) * c + ay * ay) * v.y
-            + (az * s + ax * ay * t) * v.x,
-        ((1.0 - az * az) * c + az * az) * v.z
-            + (ax * s + ay * az * t) * v.y
-            + (ax * az * t - ay * s) * v.x,
-    )
+    exa_physics::engine_math::rotate_about(axis, v, angle)
 }
 
 /// The runtime's random draws.

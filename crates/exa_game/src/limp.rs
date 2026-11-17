@@ -1817,7 +1817,9 @@ pub(crate) fn physical_turns(
         .as_ref()
         .and_then(|d| d.frame())
         .unwrap_or(root_world);
-    let turn = |a: Affine3A| Quat::from_mat3a(&a.matrix3).normalize();
+    // The original's matrix-to-quaternion routine (its branch rule and
+    // arithmetic), not glam's.
+    let turn = |a: Affine3A| exa_physics::engine_math::mat3_to_quaternion(&a.matrix3).normalize();
     let mut out = vec![None; bones];
     for p in &body.parts {
         let Some(slot) = p.bone.checked_sub(1).and_then(|i| out.get_mut(i)) else {
