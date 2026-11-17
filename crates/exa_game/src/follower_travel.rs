@@ -405,7 +405,10 @@ mod tests {
             ))
             .id();
         app.update();
-        let relations = app.world().get::<exa_ai::roles::Relations>(follower).unwrap();
+        let relations = app
+            .world()
+            .get::<exa_ai::roles::Relations>(follower)
+            .unwrap();
         assert!(relations.current.is_none());
         assert_eq!(relations.levels.len(), 1);
         assert!(relations.find(0x8000_0005).is_none());

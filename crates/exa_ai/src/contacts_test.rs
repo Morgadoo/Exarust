@@ -737,7 +737,10 @@ fn the_drifting_concern_raises_the_event_bits() {
     c.set_concern(3.9);
     assert_eq!(c.marks, crate::combatant::EVENT_CONCERNED);
     c.set_concern(4.0);
-    assert_eq!(c.marks, crate::combatant::EVENT_CONCERNED | crate::combatant::EVENT_ALARMED);
+    assert_eq!(
+        c.marks,
+        crate::combatant::EVENT_CONCERNED | crate::combatant::EVENT_ALARMED
+    );
     let mut state = Integration {
         active: true,
         ..Default::default()

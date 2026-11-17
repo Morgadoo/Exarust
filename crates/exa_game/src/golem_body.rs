@@ -444,7 +444,11 @@ mod tests {
         assert_eq!(w.get::<Locomotion>(golem).unwrap().flags & flags::RUN, 0);
         let npc = w.get::<Npc>(golem).unwrap();
         let facing = exa_physics::body::locomotion::forward(0.6);
-        assert!((npc.gaze.body_look - facing).length() < 1e-5, "{}", npc.gaze.body_look);
+        assert!(
+            (npc.gaze.body_look - facing).length() < 1e-5,
+            "{}",
+            npc.gaze.body_look
+        );
         assert_eq!(npc.gaze.body_smooth, npc.gaze.body_look);
     }
 

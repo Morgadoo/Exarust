@@ -357,7 +357,12 @@ impl Npc {
     /// after a placement starts from where the body was put rather than
     /// from where the AI last looked. The original also copies the frame's
     /// origin into a goal word Exarust does not keep.
-    pub fn placed(&mut self, yaw: f32, forward: Vec3, route: Option<&mut crate::route_walk::AiRoute>) {
+    pub fn placed(
+        &mut self,
+        yaw: f32,
+        forward: Vec3,
+        route: Option<&mut crate::route_walk::AiRoute>,
+    ) {
         self.turn.look = yaw;
         self.turn.heading = yaw;
         self.turn.sway = yaw;

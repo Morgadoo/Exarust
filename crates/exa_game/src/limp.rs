@@ -2738,16 +2738,23 @@ pub(crate) mod tests {
         route.mode = 3;
         world.entity_mut(root).insert((req, motor, npc, route));
         app.update();
-        app.world_mut()
-            .entity_mut(root)
-            .insert(LivingPlacement::at(Vec3::new(10.0, 0.5, 6.0), 1.0, FrameHeight::Given));
+        app.world_mut().entity_mut(root).insert(LivingPlacement::at(
+            Vec3::new(10.0, 0.5, 6.0),
+            1.0,
+            FrameHeight::Given,
+        ));
         app.update();
         let world = app.world();
         let yaw = world.get::<Locomotor>(root).unwrap().yaw;
         assert!((yaw - 1.0).abs() < 1e-3, "{yaw}");
         let npc = world.get::<exa_ai::brain::Npc>(root).unwrap();
         assert_eq!(
-            (npc.turn.look, npc.turn.heading, npc.turn.sway, npc.gaze.look),
+            (
+                npc.turn.look,
+                npc.turn.heading,
+                npc.turn.sway,
+                npc.gaze.look
+            ),
             (yaw, yaw, yaw, yaw)
         );
         let forward = Vec3::new(1.0f32.sin(), 0.0, 1.0f32.cos());

@@ -221,7 +221,8 @@ pub(crate) fn mirror_cast(
                     // the same edits land on its copy at the next step.
                     let db = db.clone();
                     let held = roles.clone();
-                    let write = move |r: &mut Relations| apply_relation_edits(&db, &held, r, &edits);
+                    let write =
+                        move |r: &mut Relations| apply_relation_edits(&db, &held, r, &edits);
                     let reports = match fixed.as_deref_mut() {
                         Some(fixed) => fixed.write(entity, &mut relations, write),
                         None => write(&mut relations),
@@ -1323,5 +1324,4 @@ mod tests {
         );
         assert_eq!(reports, ["Add Relation", "Remove Relation"]);
     }
-
 }

@@ -54,20 +54,11 @@ fn a_free_body_lays_the_goal_from_the_held_word() {
         let gate = StepGate { condition, ..OPEN };
         assert_eq!(gate.open(), open, "{condition:#x}");
     }
-    assert!(
-        StepGate {
-            tone: 0.7,
-            ..OPEN
-        }
-        .open()
-    );
+    assert!(StepGate { tone: 0.7, ..OPEN }.open());
     // The original's can-act gate: tone under 0.7, support at 0.7 or
     // below, or a trailing-foot request close it; energy is not read.
     for gate in [
-        StepGate {
-            tone: 0.69,
-            ..OPEN
-        },
+        StepGate { tone: 0.69, ..OPEN },
         StepGate {
             support: 0.7,
             ..OPEN

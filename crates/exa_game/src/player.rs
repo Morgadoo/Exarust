@@ -4113,8 +4113,14 @@ mod tests {
                 tone: f32::NAN,
                 ..free
             },
-            StepGate { support: 0.5, ..free },
-            StepGate { blocking: 1, ..free },
+            StepGate {
+                support: 0.5,
+                ..free
+            },
+            StepGate {
+                blocking: 1,
+                ..free
+            },
             StepGate {
                 swinging: true,
                 ..free
