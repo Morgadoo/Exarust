@@ -152,6 +152,7 @@ impl Part {
                 pairing
             },
             rest_inverse,
+            rest_basis: super::rest_basis(&rest),
             no_level: false,
             skips_thin: false,
             friction: RIGID_FRICTION,

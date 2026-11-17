@@ -486,8 +486,10 @@ impl Source {
         }
         let mut out = Vec::with_capacity(n);
         for angle in angles {
-            let (sin, cos) = angle.sin_cos();
-            let out_dir = Vec3::new(cos, 0.0, -sin);
+            // The original turns (1, 0, 0) about (0, 1, 0) by the engine's
+            // axis-angle routine: (cos, 0, −sin) from its fast sine and
+            // cosine.
+            let out_dir = exa_physics::engine_math::rotate_about(Vec3::Y, Vec3::X, angle);
             let r = (f64::from(radius) * (rng.unit() * 0.5 + 0.5)) as f32;
             let second = out_dir.normalize_or(Vec3::X);
             let first = second.cross(Vec3::Z).normalize_or(Vec3::Y);
@@ -1226,11 +1228,12 @@ impl Emitter {
         let mut at = self.node.position + rotation * src.offset;
         if 0.0 < p.spawn_radius {
             let angle = (f64::from(std::f32::consts::TAU) * rng.unit()) as f32;
-            let (sin, cos) = angle.sin_cos();
+            // (1, 0, 0) turned about (0, 1, 0) by the engine's routine.
+            let out_dir = exa_physics::engine_math::rotate_about(Vec3::Y, Vec3::X, angle);
             let u = rng.unit();
             let u2 = u * u;
             let r = (1.0 - u2 * u2) as f32 * p.spawn_radius;
-            at += Vec3::new(cos, 0.0, -sin) * r;
+            at += out_dir * r;
         }
         let mut direction = if p.flags & flags::VELOCITY_MASK == flags::VELOCITY_RANDOM {
             let spread = f64::from(p.spread) * 0.001;
@@ -2825,6 +2828,11 @@ mod tests {
             // The second axis points out of the ring.
             assert!((s.axes[1] - s.offset / r).length() < 1e-5);
         }
+        // The direction is the engine's turn of +X about +Y: θ = 0.4·2π.
+        let angle = (f64::from(std::f32::consts::TAU) * 0.4) as f32;
+        let out = exa_physics::engine_math::rotate_about(Vec3::Y, Vec3::X, angle);
+        assert!((sources[1].axes[1] - out).length() < 1e-6);
+        assert!((out - Vec3::new(angle.cos(), 0.0, -angle.sin())).length() < 1e-5);
     }
 
     #[test]

@@ -227,16 +227,16 @@ fn friction_sticks_slow_slips_and_lets_fast_ones_slide() {
     let up = Vec3::Y;
     // Limb on a floor: limit 1.25 cm² per tick², stick below ~1.12 cm/tick.
     let slow = Vec3::X * 0.011;
-    assert!((rub(slow, up, LIMB_FRICTION) + slow).length() < 1e-9);
+    assert!((level_rub(slow, up, LIMB_FRICTION) + slow).length() < 1e-9);
     let fast = Vec3::X * 0.012;
-    let c = rub(fast, up, LIMB_FRICTION);
+    let c = level_rub(fast, up, LIMB_FRICTION);
     assert!((c + fast * 0.0125).length() < 1e-7, "{c}");
     // On a wall (n_y = 0) the limit is 0.0125: stick below ~0.11 cm/tick.
     let side = Vec3::X;
-    assert!((rub(Vec3::Y * 0.001, side, LIMB_FRICTION) + Vec3::Y * 0.001).length() < 1e-9);
-    assert!(rub(Vec3::Y * 0.002, side, LIMB_FRICTION).length() < 0.002 * 0.001);
+    assert!((level_rub(Vec3::Y * 0.001, side, LIMB_FRICTION) + Vec3::Y * 0.001).length() < 1e-9);
+    assert!(level_rub(Vec3::Y * 0.002, side, LIMB_FRICTION).length() < 0.002 * 0.001);
     // The normal part of the slip is not friction's.
-    assert_eq!(rub(up * 0.5, up, LIMB_FRICTION), Vec3::ZERO);
+    assert_eq!(level_rub(up * 0.5, up, LIMB_FRICTION), Vec3::ZERO);
 }
 
 /// The swept test, branch by branch, on a floor triangle facing up.

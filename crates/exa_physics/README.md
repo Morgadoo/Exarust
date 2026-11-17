@@ -428,6 +428,17 @@ in-place negations of the placed pair and hit and the level rub
 (`negate3`), and the head look's angles (`head_look_angles`, with the
 original's pitch offset added after the negation).
 
+The collision lane (round 308) took further call sites from the assembly:
+the stored-contact pass reads its point by the paired weighted point and
+its friction through `level_rub` (limit and slide factor in double, as the
+level pass; the single-precision `contact::rub` is gone); the thigh's
+extra turn follows the original's compares (the engine epsilon, NaN with
+no angle) and the engine's axis-angle quaternion, its decay is the engine's
+lerp toward the identity and `normalize_quat` (no slerp), and the hinges
+are the engine's quaternions about X; a grab's re-anchor stores
+`barycentric_exact` over the struck particles; a part's drawn matrix is its
+rest basis (`widen4`, `inverse4`) times the particles (`basis_points`).
+
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
 `MINSS`/`MAXSS`/clamp compares, the floor and ceiling conversions (the
