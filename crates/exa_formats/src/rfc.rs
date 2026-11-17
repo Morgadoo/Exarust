@@ -957,7 +957,7 @@ pub struct PlacedObject {
     /// database; otherwise `objdb.rdb`. The low 30 bits are the record id.
     pub id: u32,
     /// The placement flags word: condition in bits 16–23; bit `0x10` sets
-    /// node flag `0x80000` on the object's root.
+    /// node flag `0x80000` on the object's root and every node under it.
     pub flags: u32,
     /// The object's own flags word: its bits under `0xB80000` are copied onto
     /// its root node (`0x80000` marks it level geometry; the rest are not
@@ -979,8 +979,8 @@ pub struct PlacedObject {
 
 impl PlacedObject {
     pub const ID_MASK: u32 = 0x3FFF_FFFF;
-    /// The placement flags bit that marks the object's root node as level
-    /// geometry (the flag is not spread to the nodes under it).
+    /// The placement flags bit that marks the object's tree as level
+    /// geometry (the create spreads the flag to every node under the root).
     pub const STATIC: u32 = 0x10;
     /// The object flag that marks the root node level geometry.
     pub const OBJECT_STATIC: u32 = 0x8_0000;
@@ -990,9 +990,8 @@ impl PlacedObject {
     }
 
     /// Whether the object's root node is level geometry: the placement's
-    /// static bit or the object's own static flag, either of which the
-    /// original turns into node flag `0x80000` on its root (and on no other
-    /// node).
+    /// static bit (which marks every node of the tree) or the object's own
+    /// static flag (its root).
     pub fn is_static(&self) -> bool {
         self.flags & Self::STATIC != 0 || self.object_flags & Self::OBJECT_STATIC != 0
     }

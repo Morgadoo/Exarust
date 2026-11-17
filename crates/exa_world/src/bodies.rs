@@ -591,11 +591,28 @@ pub enum LevelGeometry {
     /// None: a loose prop, a placed object without the static bits, the
     /// level's own model.
     None,
-    /// The model's root alone: a placed object whose placement carries the
-    /// static bits (the object reader does not spread the flag).
+    /// The model's root alone: a placed object whose own object flag marks
+    /// it static.
     Root,
-    /// Every node: a prop placed static (the prop reader spreads the flag).
+    /// Every node: a prop placed static (the prop reader spreads the flag)
+    /// or a placed object whose placement carries the static bit (the
+    /// create marks the whole tree).
     All,
+}
+
+/// Which of a placed object's nodes are level geometry: the placement's
+/// static bit (`0x10`) marks the object's root and, recursively, every node
+/// under it, as the original's create does after the tree is built; the
+/// object's own static flag alone marks its root.
+pub fn placement_geometry(object: &exa_formats::rfc::PlacedObject) -> LevelGeometry {
+    use exa_formats::rfc::PlacedObject;
+    if object.flags & PlacedObject::STATIC != 0 {
+        LevelGeometry::All
+    } else if object.object_flags & PlacedObject::OBJECT_STATIC != 0 {
+        LevelGeometry::Root
+    } else {
+        LevelGeometry::None
+    }
 }
 
 /// The mesh nodes of a model that carry a rigid body, as the original's grid
@@ -785,6 +802,28 @@ mod tests {
             moving_meshes(&model, LevelGeometry::All),
             [(0, true), (1, true)]
         );
+    }
+
+    /// The placement's static bit marks the whole tree; the object's own
+    /// flag its root only.
+    #[test]
+    fn a_static_placement_marks_the_whole_tree() {
+        use exa_formats::rfc::PlacedObject;
+        let mut object = PlacedObject {
+            id: 1,
+            flags: 0,
+            object_flags: 0,
+            transform: [[0.0; 3]; 4],
+            slot: 0,
+            second_word: 0,
+            word_3d22: None,
+            attachments: Vec::new(),
+        };
+        assert_eq!(placement_geometry(&object), LevelGeometry::None);
+        object.object_flags = PlacedObject::OBJECT_STATIC;
+        assert_eq!(placement_geometry(&object), LevelGeometry::Root);
+        object.flags = PlacedObject::STATIC;
+        assert_eq!(placement_geometry(&object), LevelGeometry::All);
     }
 
     /// A sack (a body with three body children), a chain hung from a wall
