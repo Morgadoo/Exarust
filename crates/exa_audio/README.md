@@ -451,3 +451,5 @@ and are 1 (a guess), and the underwater splash and the foley set are not
 in. Nothing selects voices in the running game yet.
 
 The bodies' sound pass frees a body's scrape loops once the body has left its query (no per-tick set of every body).
+
+`AudioEnvironment::finish_handle` finishes a handle's voice as the force effects' ends do: a playing one-shot plays out unbound, anything else is freed. `music_volume_for_level` gives a story level's track its own volume from the story level hook's table.

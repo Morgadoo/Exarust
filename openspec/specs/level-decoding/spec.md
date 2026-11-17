@@ -142,3 +142,10 @@ The grid's older-layout word (the header's third word) SHALL be 0 in every shipp
 #### Scenario: The installed game's grids
 - **WHEN** every grid chunk of the installed packs is read
 - **THEN** each has 0 and 600 in its third and fourth header words
+
+### Requirement: Root chunk loop
+The scene's and the database-only root loops SHALL read another chunk only while more than 8 bytes remain.
+
+#### Scenario: A trailing empty chunk
+- **WHEN** a scene ends in an 8-byte chunk header with no body
+- **THEN** the chunk is not read
