@@ -15,6 +15,7 @@ mod batch_c;
 mod batch_d;
 mod batch_e;
 mod batch_f;
+mod batch_g;
 
 /// One registered port.
 #[derive(Clone, Copy)]
@@ -246,6 +247,7 @@ pub fn ports() -> &'static [Port] {
             batch_d::PORTS,
             batch_e::PORTS,
             batch_f::PORTS,
+            batch_g::PORTS,
         ]
         .concat()
     })
