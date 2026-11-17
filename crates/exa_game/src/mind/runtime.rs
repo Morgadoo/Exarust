@@ -2062,18 +2062,18 @@ pub fn mind_break(world: &mut World, body: Entity) -> Option<u32> {
     end_power(world, spirit, SPIRIT_FORM).then_some(SPIRIT_FORM)
 }
 
+/// What the mind feed reads of a body.
+type FedMind = (
+    Entity,
+    &'static MindBody,
+    Option<&'static MindPowers>,
+    Option<&'static PowerCaster>,
+    Has<exa_ai::brain::MindWarded>,
+);
+
 /// Before the brains' tick: each body's mind list as the effects the
 /// perception reads.
-fn feed_mind_powers(
-    mut commands: Commands,
-    minds: Query<(
-        Entity,
-        &MindBody,
-        Option<&MindPowers>,
-        Option<&PowerCaster>,
-        Has<exa_ai::brain::MindWarded>,
-    )>,
-) {
+fn feed_mind_powers(mut commands: Commands, minds: Query<FedMind>) {
     let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, ..)| (m.id, e)).collect();
     let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
     for (entity, mind, current, caster, warded) in &minds {

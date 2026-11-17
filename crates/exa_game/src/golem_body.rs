@@ -407,7 +407,7 @@ mod tests {
     /// its frame's forward.
     #[test]
     fn a_sentry_stops_its_route_and_looks_where_it_faces() {
-        use exa_physics::body::locomotion::{Locomotion, Locomotor, flags};
+        use exa_physics::body::locomotion::{Locomotion, flags};
         let mut app = app();
         let character = app
             .world_mut()
@@ -419,9 +419,11 @@ mod tests {
         let (mut req, motor) = Locomotion::facing(0.6);
         req.flags = flags::RUN;
         req.moving = true;
-        let mut route = exa_ai::route_walk::AiRoute::default();
-        route.following = true;
-        route.mode = 2;
+        let route = exa_ai::route_walk::AiRoute {
+            following: true,
+            mode: 2,
+            ..Default::default()
+        };
         let mut npc = sentry(false);
         npc.gaze.body_look = Vec3::X;
         let golem = app

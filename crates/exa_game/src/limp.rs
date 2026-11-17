@@ -2733,9 +2733,11 @@ pub(crate) mod tests {
         npc.turn.look = -2.0;
         npc.turn.heading = -2.0;
         npc.gaze.body_look = Vec3::X;
-        let mut route = exa_ai::route_walk::AiRoute::default();
-        route.following = true;
-        route.mode = 3;
+        let route = exa_ai::route_walk::AiRoute {
+            following: true,
+            mode: 3,
+            ..Default::default()
+        };
         world.entity_mut(root).insert((req, motor, npc, route));
         app.update();
         app.world_mut().entity_mut(root).insert(LivingPlacement::at(

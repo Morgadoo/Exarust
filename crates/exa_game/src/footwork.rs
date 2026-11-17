@@ -10,7 +10,7 @@
 //!
 //! - **The gate.** No step is laid unless the body may act
 //!   ([`exa_physics::motile::action_allowed`], the gate the AI's duellist
-//!   reads too): none of [`NO_STEP`] (walking, down, the shocked word's
+//!   reads too): none of `0x82C1` (walking, down, the shocked word's
 //!   bits, the kick) in the condition, a muscle tone of at least 0.7, a
 //!   support above 0.7 (a double compare) and no trailing-foot request
 //!   pending. A swing under way or a zero word lays none either.
@@ -33,10 +33,6 @@ use exa_physics::body::FootworkStep;
 
 use crate::steering::{MOVE_ANALOG, MoveWord, key_goal_direction, key_step};
 
-/// The condition bits under which no step is laid: walking (1), the
-/// shocked word's two bits (0x40, 0x80), down (0x200) and the kick
-/// (0x8000).
-pub(crate) const NO_STEP: u32 = 0x82C1;
 /// A step this young (ms) re-lays or queues by the tap rules.
 pub(crate) const YOUNG_STEP_MS: u64 = 300;
 /// A balance step's target this far from the feet centre (cm, times the
