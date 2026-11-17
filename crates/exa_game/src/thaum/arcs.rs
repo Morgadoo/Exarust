@@ -1163,7 +1163,12 @@ impl ArcEmitter {
     /// `alpha` is how far the next tick is, `eye` the camera's axis in the
     /// node's frame, `fade` the node's fade, `to_world` the node's frame
     /// placed in the world (the light points are taken there). The ribbon
-    /// is in the node's frame.
+    /// is in the node's frame. `visible` is the node's drawn-this-frame
+    /// bit: off screen the frame stops after the light and the hum, so the
+    /// scroll, the ribbon and the light points are not built (the points'
+    /// weights stay zeroed and their strength unwritten, so the light is
+    /// dark) and the tendrils' origins are not put back
+    /// ([`Self::settle_origins`] is the ribbon's write).
     pub fn frame(
         &self,
         glow: &mut ArcGlow,
@@ -1172,6 +1177,21 @@ impl ArcEmitter {
         fade: f32,
         to_world: impl Fn(Vec3) -> Vec3,
         draws: &mut impl Draws,
+    ) -> ArcFrame {
+        self.frame_seen(glow, alpha, eye, fade, to_world, draws, true)
+    }
+
+    /// [`Self::frame`] with the node's drawn-this-frame bit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_seen(
+        &self,
+        glow: &mut ArcGlow,
+        alpha: f32,
+        eye: Vec3,
+        fade: f32,
+        to_world: impl Fn(Vec3) -> Vec3,
+        draws: &mut impl Draws,
+        visible: bool,
     ) -> ArcFrame {
         if self.ending && self.total == 0 {
             return ArcFrame {
@@ -1210,6 +1230,14 @@ impl ArcEmitter {
             glow.pitch_flicker = ((draws.unit() - 0.5) * 0.05 + f64::from(p)) as f32;
             glow.pitch_flicker = glow.pitch_flicker.clamp(0.8, 1.1);
             out.pitch = (EPSILON < fill).then_some(fill * glow.pitch_flicker * 0.5 + 0.5);
+        }
+        if !visible {
+            out.light = if self.light_kind == ArcLight::Points {
+                0.0
+            } else {
+                out.light
+            };
+            return out;
         }
         out.scroll = self.scroll[1] * alpha + (1.0 - alpha) * self.scroll[0];
         let (ribbon, life_sum) = self.ribbon(glow, eye, &to_world);
@@ -2095,6 +2123,63 @@ mod tests {
         assert_eq!(glow.pitch_flicker, 0.8);
         assert!((frame.gain - 0.05).abs() < 1e-7);
         assert!((frame.pitch.expect("a fill above zero") - 0.9).abs() < 1e-6);
+    }
+
+    /// Off screen (the node's drawn bit clear) the frame keeps its light
+    /// and hum but builds no ribbon, no light points and no scroll; the
+    /// voxel light's strength is still written, the points' is not.
+    #[test]
+    fn an_unseen_emitter_builds_no_ribbon_and_no_light_points() {
+        let mut arc = ArcEmitter::allocate(1, 4, 1.0);
+        arc.tendrils[0].count = 3;
+        for k in 0..3 {
+            arc.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+        }
+        arc.total = 3;
+        arc.scroll = [0.25, 0.5];
+        arc.light = 2.0;
+        arc.light_kind = ArcLight::Points;
+        let mut glow = ArcGlow::default();
+        let seen = arc.frame_seen(
+            &mut glow,
+            1.0,
+            Vec3::Z,
+            0.0,
+            |p| p,
+            &mut Fixed::new(&[0.5], &[1]),
+            true,
+        );
+        assert!(!seen.ribbon.positions.is_empty());
+        assert_eq!(seen.scroll, 0.5);
+        assert!(seen.light > 0.0);
+        let mut glow = ArcGlow::default();
+        let unseen = arc.frame_seen(
+            &mut glow,
+            1.0,
+            Vec3::Z,
+            0.0,
+            |p| p,
+            &mut Fixed::new(&[0.5], &[1]),
+            false,
+        );
+        assert!(unseen.ribbon.positions.is_empty());
+        assert_eq!(unseen.scroll, 0.0);
+        assert_eq!(unseen.light, 0.0);
+        assert!(glow.lights.iter().all(|l| l.weight == 0.0));
+        // A voxel light is written before the gate.
+        arc.light_kind = ArcLight::Voxel;
+        let mut glow = ArcGlow::default();
+        let voxel = arc.frame_seen(
+            &mut glow,
+            1.0,
+            Vec3::Z,
+            0.0,
+            |p| p,
+            &mut Fixed::new(&[0.5], &[1]),
+            false,
+        );
+        assert!(voxel.light > 0.0);
+        assert!(voxel.ribbon.positions.is_empty());
     }
 
     #[test]

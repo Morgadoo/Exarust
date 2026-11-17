@@ -31,8 +31,15 @@
 //! release `thmfrc_wav` at the pitch the throw draws
 //! ([`super::blast_sound::sound_blasts`]).
 //!
-//! Not wired: the light, the stun and the draw; and the contact's wear,
-//! which the wave's chunks do not keep.
+//! The draw and the light are the blast's (the wave's class shares the
+//! blast's frame and its creator makes the blast's emissive): the strip is
+//! built from the wave's live chunks in every state ([`draw_waves`]), and
+//! the multi-point GI light takes the life records' light points the frame
+//! writes ([`wave_lights`], kept on the frame's [`WaveLights`]); both read
+//! the wave as a blast ([`wave_as_blast`]).
+//!
+//! Not wired: the stun; and the contact's wear, which the wave's chunks do
+//! not keep.
 //!
 //! Evidence: the wave's start and tick, which share the blast's hook and
 //! contact handlers, read from `Exanima.exe`.
@@ -50,7 +57,8 @@ use super::cast::PowerCaster;
 use super::casting::{self, CastBody, spend_tick};
 use super::force::{BlastSetup, WAVE_SETUP};
 use super::live::EffectDraws;
-use crate::effects::blast::BlastChunk;
+use crate::effects::blast::{Blast, BlastChunk, ChunkLife};
+use crate::effects::force_wave::LIFE_TICKS;
 use crate::effects::force_wave::{Wave, WaveChunk, WaveEvent, WaveState};
 
 /// Centimetres a metre.
@@ -155,6 +163,154 @@ fn as_blast_chunk(chunk: &WaveChunk) -> BlastChunk {
         previous_radius: chunk.previous_radius,
         head_radius: chunk.head_radius,
         wear: 0.0,
+    }
+}
+
+/// The light points the shared frame writes on the wave's life records
+/// (world cm, one a chunk), kept by the frame only: the simulation's wave
+/// never reads them.
+#[derive(Component, Debug, Clone, Default)]
+pub struct WaveLights(pub Vec<Vec3>);
+
+/// The wave as the blast's frame and emissive read it: its chunks, their
+/// life records (ticks, draws and the frame's `lights`), its state, charge,
+/// trail step, life length and setup.
+pub fn wave_as_blast(live: &LiveWave, lights: &[Vec3]) -> Blast {
+    let wave = &live.wave;
+    Blast {
+        setup: live.setup,
+        drain: live.drain,
+        state: wave.state as i32,
+        charge: wave.charge,
+        rate: wave.rate,
+        life_ticks: LIFE_TICKS,
+        aim: wave.aim,
+        frame: crate::effects::blast::Frame {
+            rows: [Vec3::X, Vec3::Y, Vec3::Z],
+            origin: Vec3::ZERO,
+        },
+        chunks: wave.chunks.iter().map(as_blast_chunk).collect(),
+        lives: wave
+            .chunks
+            .iter()
+            .enumerate()
+            .map(|(i, chunk)| ChunkLife {
+                light_at: lights.get(i).copied().unwrap_or(Vec3::ZERO),
+                draws: chunk.draws,
+                ticks: chunk.life,
+            })
+            .collect(),
+        flags: wave.flags,
+        trail_step: wave.trail_step,
+        centre: wave.centre,
+        half: wave.half,
+        bound_radius: wave.bound_radius,
+        linked: true,
+    }
+}
+
+/// Draws every wave's strip as the blast's frame builds it
+/// ([`super::blast_live::draw_blast_ribbon`]).
+#[allow(clippy::type_complexity)]
+pub(crate) fn draw_waves(
+    mut commands: Commands,
+    waves: Query<(
+        Entity,
+        &LiveWave,
+        Option<(
+            &super::live::EffectMesh,
+            &super::effect_draw::RibbonMaterial,
+        )>,
+    )>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    time: Res<Time<Fixed>>,
+    noise: Res<super::effect_draw::ForceNoise>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::force_effects::ForceRibbonMaterial>>,
+) {
+    let Some(camera) = cameras.iter().next() else {
+        return;
+    };
+    let view = super::blast_live::camera_frame(camera);
+    let alpha = time.overstep_fraction();
+    for (entity, live, drawn) in &waves {
+        let blast = wave_as_blast(live, &[]);
+        super::blast_live::draw_blast_ribbon(
+            &mut commands,
+            entity,
+            &blast,
+            drawn,
+            alpha,
+            &view,
+            &noise,
+            &mut meshes,
+            &mut materials,
+        );
+    }
+}
+
+/// The waves' lights, as the blasts' ([`super::effect_light::blast_lights`]):
+/// each wave registers the blast's multi-point shape and refreshes it from
+/// this frame's light points; the frame that builds nothing frees it.
+#[allow(clippy::type_complexity)]
+pub(crate) fn wave_lights(
+    mut commands: Commands,
+    mut waves: Query<(
+        Entity,
+        &LiveWave,
+        Option<&mut WaveLights>,
+        Option<&super::effect_light::EffectLight>,
+        Has<super::effect_light::EffectLightFreed>,
+    )>,
+    mut shapes: Query<(
+        &mut exa_render::gi::GiShape,
+        &mut exa_render::gi::ShapeVolume,
+    )>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    time: Res<Time<Fixed>>,
+) {
+    let Some(camera) = cameras.iter().next() else {
+        return;
+    };
+    let view = super::blast_live::camera_frame(camera);
+    let alpha = time.overstep_fraction();
+    for (entity, live, lights, light, freed) in &mut waves {
+        if freed {
+            continue;
+        }
+        let kept = lights.as_deref().map_or(&[][..], |l| &l.0[..]);
+        let mut blast = wave_as_blast(live, kept);
+        if blast.builds_nothing() {
+            if let Some(light) = light {
+                commands.entity(light.0).despawn();
+                debug!("wave light freed for {entity:?}");
+            }
+            commands
+                .entity(entity)
+                .remove::<super::effect_light::EffectLight>()
+                .insert(super::effect_light::EffectLightFreed);
+            continue;
+        }
+        blast.frame_lights(alpha, &view);
+        let points: Vec<Vec3> = blast.lives.iter().map(|life| life.light_at).collect();
+        match lights {
+            Some(mut lights) => lights.0 = points,
+            None => {
+                commands.entity(entity).insert(WaveLights(points));
+            }
+        }
+        if let Some(placed) =
+            super::effect_light::blast_shape(&blast, super::effect_light::GI_LIGHT_SCALE)
+        {
+            super::effect_light::place_light(
+                &mut commands,
+                entity,
+                light,
+                &mut shapes,
+                placed,
+                "wave light",
+            );
+        }
     }
 }
 
@@ -411,5 +567,115 @@ mod tests {
         assert_eq!(body.condition, casting::CASTING);
         assert!(!casting::take_stance_return(&mut body));
         assert!(body.spent > 0.0);
+    }
+
+    /// The shared frame draws the wave as the blast's strip from its first
+    /// charged tick, in the charge's colour, and lights it with the blast's
+    /// multi-point shape; a charging blast draws its strip too.
+    #[test]
+    fn a_charging_wave_and_blast_draw_their_strips_and_the_wave_lights() {
+        use crate::effects::blast::{BlastView, CHARGING};
+        use crate::thaum::blast_live::{LiveBlast, draw_blasts};
+        use crate::thaum::effect_draw::{ForceNoise, RibbonMaterial};
+        use crate::thaum::effect_light::{EffectLight, drop_orphan_lights};
+        use crate::thaum::force::BLAST_SETUP;
+        use crate::thaum::live::EffectMesh;
+        use bevy::asset::AssetPlugin;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .add_plugins(exa_render::gi_shape::GiShapePlugin)
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
+            .init_resource::<Time<Fixed>>()
+            .add_systems(
+                Update,
+                (draw_blasts, draw_waves, wave_lights, drop_orphan_lights).chain(),
+            );
+        let image = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::default());
+        let mut noise = ForceNoise::default();
+        noise.image = Some(image);
+        app.insert_resource(noise);
+        app.world_mut().spawn((
+            Camera3d::default(),
+            GlobalTransform::from_translation(Vec3::new(0.0, 1.7, -3.0)),
+        ));
+        let mut body = CastBody {
+            focus: 1.0,
+            ..CastBody::default()
+        };
+        let mut wave = live(&mut body);
+        let mut draws = EffectDraws(Mt19937::new(2));
+        for _ in 0..3 {
+            tick_wave(&mut wave, &mut body, Vec3::ZERO, &mut draws);
+        }
+        assert_eq!(wave.wave.state, WaveState::Charging);
+        let charge = wave.wave.charge;
+        let wave = app.world_mut().spawn(wave).id();
+        let view = BlastView {
+            target: Vec3::new(0.0, 150.0, 1000.0),
+            hand_node: Vec3::new(0.0, 150.0, 0.0),
+            hand: Vec3::new(0.0, 150.0, 0.0),
+            facing: Vec3::Z,
+        };
+        let mut blast = Blast::new(BLAST_SETUP, 0.1, 12, &view, &mut Mt19937::new(5));
+        let mut caster = CastBody {
+            focus: 1.0,
+            ..CastBody::default()
+        };
+        for _ in 0..3 {
+            blast.tick(&view, &mut caster, false, &mut Mt19937::new(6));
+        }
+        assert_eq!(blast.state, CHARGING);
+        let blast = app
+            .world_mut()
+            .spawn(LiveBlast {
+                blast,
+                caster: Entity::PLACEHOLDER,
+                target: None,
+                hooked: false,
+                generation: 0,
+                contact_scale: 0.0,
+                sounds: Default::default(),
+            })
+            .id();
+        app.update();
+        app.update();
+        for effect in [wave, blast] {
+            let handle = app
+                .world()
+                .get::<EffectMesh>(effect)
+                .expect("the strip is drawn while charging")
+                .0
+                .clone();
+            assert!(app.world().get::<RibbonMaterial>(effect).is_some());
+            let meshes = app.world().resource::<Assets<Mesh>>();
+            let mesh = meshes.get(&handle).expect("a mesh");
+            assert!(mesh.count_vertices() > 0);
+        }
+        // Charging, each chunk's colour carries the charge byte.
+        let mirror = wave_as_blast(app.world().get::<LiveWave>(wave).unwrap(), &[]);
+        assert_eq!(
+            mirror.chunk_colour(0)[2],
+            (charge * 255.0).round_ties_even() as u8
+        );
+        // The wave's light is the blast's multi-point shape over its 32
+        // light points.
+        let light = app.world().get::<EffectLight>(wave).expect("lit").0;
+        let shape = app.world().get::<exa_render::gi::GiShape>(light).unwrap();
+        assert_eq!(shape.points.len(), 32);
+        assert_eq!(app.world().get::<WaveLights>(wave).unwrap().0.len(), 32);
+        assert!(
+            app.world()
+                .get::<WaveLights>(wave)
+                .unwrap()
+                .0
+                .iter()
+                .all(|p| p.is_finite())
+        );
     }
 }

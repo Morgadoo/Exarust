@@ -906,9 +906,9 @@ impl Torrent {
     /// [`RIBBON_STEP_RUNNING`] while it runs ([`walk_texture`]). Streams are
     /// separate strips.
     ///
-    /// The original crosses the differences with the eye position carried
-    /// into the effect node's frame; Exarust uses the world eye, the same
-    /// when the node is unturned.
+    /// The original crosses the differences with the eye position turned
+    /// into the effect node's rows (no translation); the torrent's node is
+    /// never turned, so that is the world eye given here.
     #[allow(clippy::needless_range_loop)]
     pub fn ribbon(&mut self, frame: &TorrentFrame, eye: Vec3) -> RibbonMesh {
         let mut mesh = RibbonMesh::default();

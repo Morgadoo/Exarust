@@ -168,6 +168,7 @@ impl Plugin for ThaumEffectsPlugin {
                             .run_if(super::effect_draw::force_effects_alive),
                         (
                             super::blast_live::draw_blasts,
+                            super::wave_live::draw_waves,
                             super::blast_sound::sound_blasts
                                 .after(crate::thaum::torrent_sound::sound_torrents),
                             super::torrent_sound::sound_torrents
@@ -217,6 +218,7 @@ impl Plugin for ThaumEffectsPlugin {
                         ),
                         (
                             super::effect_light::blast_lights.after(draw_arcs),
+                            super::wave_live::wave_lights,
                             super::effect_light::torrent_lights,
                             super::effect_light::bubble_lights,
                             super::effect_light::barrier_lights,
@@ -1783,7 +1785,10 @@ pub(crate) fn draw_arcs(
     mut voxels: Query<(&mut VoxelLight, &mut Transform, &mut GlobalTransform), Without<Camera3d>>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     parents: ArcParents,
-    time: Res<Time<Fixed>>,
+    (time, frustums): (
+        Res<Time<Fixed>>,
+        Query<&bevy::camera::primitives::Frustum, exa_render::supersample::SceneCamera>,
+    ),
     mut draws: ResMut<FrameEffectDraws>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: Option<ResMut<Assets<ArcMaterial>>>,
@@ -1830,11 +1835,31 @@ pub(crate) fn draw_arcs(
         let eye = node.matrix3.transpose() * eye_world;
         // No cut-away or other fade reaches an electricity node: its fade
         // stays 0.
-        let frame = live
-            .arcs
-            .frame(glow, alpha, eye, NODE_FADE, to_world, &mut draws.0.0);
+        // The node's drawn-this-frame bit: its bounding sphere in the scene
+        // camera's view.
+        let visible = frustums.iter().next().is_none_or(|frustum| {
+            let centre = to_world(live.arcs.centre) / CM;
+            frustum.intersects_sphere(
+                &bevy::camera::primitives::Sphere {
+                    center: centre.into(),
+                    radius: live.arcs.radius / CM,
+                },
+                true,
+            )
+        });
+        let frame = live.arcs.frame_seen(
+            glow,
+            alpha,
+            eye,
+            NODE_FADE,
+            to_world,
+            &mut draws.0.0,
+            visible,
+        );
         let removal = if frame.removed {
             Some(live.arcs.remove_from_world(glow))
+        } else if !visible {
+            None
         } else {
             let settle = |live: &mut LiveArcs| live.arcs.settle_origins();
             match fixed.as_deref_mut() {
@@ -2027,19 +2052,33 @@ fn draw_barricades(
     }
 }
 
-/// The displacement tendrils' picture (`_TDispMat01`'s emissive layer),
-/// loaded once, and the material every strip shares.
+/// The displacement tendrils' picture (`_TDispMat01`'s emissive layer,
+/// `FlameletsA3`), loaded once; every strip binds it as its `EmiTex`.
 #[derive(Resource, Clone)]
-pub(crate) struct TendrilLook(Handle<exa_render::force_effects::DispTendrilMaterial>);
+pub(crate) struct TendrilLook(Handle<Image>);
 
-#[allow(clippy::too_many_arguments)]
+/// The tendril strips' draw: each set's strip through its geometry's own
+/// program, `effectforce_v` with `effectsmoke_f`
+/// ([`exa_render::force_effects::ForceRibbonMaterial::smoke`]). The
+/// `_TDispMat01` record's draw method only runs the super-sampling passes
+/// around the geometry's program set-up, which binds `EmiTex` on unit 0
+/// (the record's emissive layer) and `TexOfs = (0, scroll, 1)`: the
+/// effect's scroll between its last two ticks and the 1 its add-to-world
+/// wrote. The strip's colour bytes, its first coordinate set (the side and
+/// the texture distance) and its second (the light share and the running
+/// distance) feed the program.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw_wisps(
     mut commands: Commands,
-    mut sets: Query<(Entity, &mut LiveWisps, Option<&EffectMesh>)>,
+    mut sets: Query<(
+        Entity,
+        &mut LiveWisps,
+        Option<(&EffectMesh, &super::effect_draw::RibbonMaterial)>,
+    )>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    materials: Option<ResMut<Assets<exa_render::force_effects::DispTendrilMaterial>>>,
+    materials: Option<ResMut<Assets<exa_render::force_effects::ForceRibbonMaterial>>>,
     mut images: ResMut<Assets<Image>>,
     game: Option<Res<exa_assets::Game>>,
     look: Option<Res<TendrilLook>>,
@@ -2050,14 +2089,12 @@ fn draw_wisps(
     if sets.is_empty() {
         return;
     }
-    let material = match look {
+    let texture = match look {
         Some(look) => look.0.clone(),
         None => {
             let texture = super::vanish_live::load_texture(game.as_deref(), &mut images);
-            let handle =
-                materials.add(exa_render::force_effects::DispTendrilMaterial::new(texture));
-            commands.insert_resource(TendrilLook(handle.clone()));
-            handle
+            commands.insert_resource(TendrilLook(texture.clone()));
+            texture
         }
     };
     let eye = camera_axis(&cameras);
@@ -2068,30 +2105,29 @@ fn draw_wisps(
             commands.entity(entity).despawn();
             continue;
         }
-        // The strip as the original uploads it: positions, the first
-        // coordinate set (the side and the texture distance along), and the
-        // colour bytes (`vCol · 1/255`). The second set (the light share and
-        // the strip's running distance) is uploaded too but the surface
-        // program `_TDispMat01` builds never reads it.
-        let positions = r.positions.iter().map(|p| (*p / CM).to_array()).collect();
-        let colours = r
-            .colours
-            .iter()
-            .map(|c| c.map(|b| f32::from(b) / 255.0))
-            .collect();
-        let mesh = mesh_of_uv(positions, r.uvs.clone(), colours, r.indices);
+        let mesh = mesh_of_wisps(&r);
+        let tex_ofs = tendril_tex_ofs(r.scroll);
         match drawn {
-            Some(EffectMesh(handle)) => {
+            Some((EffectMesh(handle), super::effect_draw::RibbonMaterial(material))) => {
                 if let Some(mut m) = meshes.get_mut(handle) {
                     *m = mesh;
+                }
+                if let Some(mut m) = materials.get_mut(material)
+                    && m.params.tex_ofs.truncate() != tex_ofs
+                {
+                    m.params.tex_ofs = tex_ofs.extend(0.0);
                 }
             }
             None => {
                 let handle = meshes.add(mesh);
+                let material = materials.add(
+                    exa_render::force_effects::ForceRibbonMaterial::smoke(texture.clone(), tex_ofs),
+                );
                 commands.entity(entity).insert((
                     EffectMesh(handle.clone()),
+                    super::effect_draw::RibbonMaterial(material.clone()),
                     Mesh3d(handle),
-                    MeshMaterial3d(material.clone()),
+                    MeshMaterial3d(material),
                     Transform::IDENTITY,
                     NoFrustumCulling,
                     bevy::light::NotShadowCaster,
@@ -2102,9 +2138,95 @@ fn draw_wisps(
     }
 }
 
+/// The tendril program's `TexOfs`: `(0, scroll, 1)`.
+pub(crate) fn tendril_tex_ofs(scroll: f32) -> Vec3 {
+    Vec3::new(0.0, scroll, 1.0)
+}
+
+/// A tendril strip as the original uploads it: positions, the first
+/// coordinate set (the side and the texture distance along), the second
+/// (the light share and the running distance) and the colour bytes
+/// (`vCol · 1/255`).
+pub(crate) fn mesh_of_wisps(r: &super::wisps::WispRibbon) -> Mesh {
+    let positions = r.positions.iter().map(|p| (*p / CM).to_array()).collect();
+    let colours = r
+        .colours
+        .iter()
+        .map(|c| c.map(|b| f32::from(b) / 255.0))
+        .collect();
+    let mut mesh = mesh_of_uv(positions, r.uvs.clone(), colours, r.indices.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, r.fade.clone());
+    mesh
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lit tendril set draws through the geometry's own smoke program:
+    /// its material is `effectsmoke_f` with `TexOfs = (0, scroll, 1)`, the
+    /// scroll following the effect's ticks, and its strip carries the light
+    /// share and running distance as the second coordinate set.
+    #[test]
+    fn a_tendril_set_draws_with_the_smoke_program_and_its_scroll() {
+        use super::super::wisps::{Strand, Wisps};
+        use crate::thaum::engine::Roll;
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
+            .init_resource::<Time<Fixed>>()
+            .add_systems(Update, draw_wisps);
+        app.world_mut().spawn((
+            Camera3d::default(),
+            GlobalTransform::from_translation(Vec3::new(0.0, 1.7, -3.0)),
+        ));
+        let at_origin = |_: &Strand| Vec3::ZERO;
+        let mut w = Wisps::new(vec![Strand::new(Vec3::ZERO, None)], 12.0, at_origin, || 0.5);
+        let mut roll = Roll(5);
+        w.place(12, at_origin, &mut roll);
+        for n in &mut w.strands[0].nodes {
+            n.light = 100;
+        }
+        w.alpha = 1.0;
+        for _ in 0..4 {
+            w.tick(at_origin, &mut roll);
+        }
+        let scroll = w.scroll[0];
+        assert!(scroll > 0.0);
+        let set = app
+            .world_mut()
+            .spawn(LiveWisps {
+                wisps: w,
+                body: Entity::PLACEHOLDER,
+                parts: Vec::new(),
+            })
+            .id();
+        app.update();
+        let material = app
+            .world()
+            .get::<super::super::effect_draw::RibbonMaterial>(set)
+            .expect("a smoke material")
+            .0
+            .clone();
+        let m = app
+            .world()
+            .resource::<Assets<exa_render::force_effects::ForceRibbonMaterial>>()
+            .get(&material)
+            .unwrap();
+        assert!(m.smoke && !m.torrent);
+        // No fixed step has run: the frame stands at the last tick, so the
+        // shown scroll lies between the last two.
+        let y = m.params.tex_ofs.y;
+        assert!(y <= scroll && y >= scroll - 0.00075 - 1e-6, "{y} {scroll}");
+        assert_eq!((m.params.tex_ofs.x, m.params.tex_ofs.z), (0.0, 1.0));
+        let mesh = app.world().get::<EffectMesh>(set).unwrap().0.clone();
+        let mesh = app.world().resource::<Assets<Mesh>>().get(&mesh).unwrap();
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_UV_1).is_some());
+        assert!(mesh.count_vertices() > 0);
+    }
 
     /// The plugin's systems run with a barricade standing on a navigation
     /// grid (their parameters resolve, the stamp goes on and comes off, and
