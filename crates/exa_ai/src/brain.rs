@@ -892,6 +892,8 @@ impl Npc {
             c.soothe = record.soothe;
             c.seen = record.seen;
             c.dead = record.dead;
+            // The live contact's new events join the event word.
+            c.marks |= record.marks;
             if lying {
                 c.concern = 0.0;
                 c.hostility = 0.0;
@@ -1414,6 +1416,9 @@ pub fn perceive_all(
                 relations.add_familiarity(sensed.character_id, drift);
             }
             let mut record = ContactRecord::of(&combatant.contacts[index], sensed.id);
+            // Its events move into the brain's event word, which the
+            // dialogue's AI events read and clear.
+            combatant.contacts[index].events = 0;
             // The integration skips the calming of a knocked-out character
             // (the out bit of its condition); the perception clears the
             // concern and hostility of a dead, asleep or removed one and

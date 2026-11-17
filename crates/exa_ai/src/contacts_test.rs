@@ -722,3 +722,32 @@ fn a_flight_asks_the_level_room_graph_for_a_way_out() {
     };
     assert_eq!(classify(&mut c, &mut m, at, |_, _| false).0, 3);
 }
+
+/// The integration's concern goes through the setter: first reaching 1.2
+/// raises event bit 4 on the brain's record, first reaching 4 bit 8.
+#[test]
+fn the_drifting_concern_raises_the_event_bits() {
+    let mut c = ContactRecord {
+        concern: 1.19,
+        concern_target: 400.0,
+        ..Default::default()
+    };
+    c.set_concern(1.2);
+    assert_eq!(c.marks, crate::combatant::EVENT_CONCERNED);
+    c.set_concern(3.9);
+    assert_eq!(c.marks, crate::combatant::EVENT_CONCERNED);
+    c.set_concern(4.0);
+    assert_eq!(c.marks, crate::combatant::EVENT_CONCERNED | crate::combatant::EVENT_ALARMED);
+    let mut state = Integration {
+        active: true,
+        ..Default::default()
+    };
+    let mut list = [ContactRecord {
+        concern: 1.19,
+        concern_target: 400.0,
+        ..Default::default()
+    }];
+    drift(&mut state, &mut list, 0);
+    assert!(list[0].concern >= 1.2);
+    assert_eq!(list[0].marks, crate::combatant::EVENT_CONCERNED);
+}
