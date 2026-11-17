@@ -984,8 +984,15 @@ pub(crate) fn drive_hosts(
             let Ok(handle) = handles.get(part) else {
                 continue;
             };
-            if let Some(mut material) = materials.get_mut(&handle.0) {
-                material.params.emissive = (Vec4::from(base).truncate() * scale).extend(base[3]);
+            // Written only when it changes, so an unchanged material is not
+            // prepared again.
+            let emissive = (Vec4::from(base).truncate() * scale).extend(base[3]);
+            if materials
+                .get(&handle.0)
+                .is_some_and(|m| m.params.emissive != emissive)
+                && let Some(mut material) = materials.get_mut(&handle.0)
+            {
+                material.params.emissive = emissive;
             }
         }
     }
