@@ -3006,6 +3006,7 @@ mod tests {
                 state: 0,
             }],
             resists_control: false,
+            mask: None,
         };
         let frenzied = app
             .world_mut()

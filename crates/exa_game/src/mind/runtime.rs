@@ -270,6 +270,7 @@ fn bridge_mind_runtime_types(app: &mut App) {
         .bridge_message::<exa_audio::PointSounded>()
         .bridge_message::<exa_combat::BlowNoticed>()
         .bridge_copy::<exa_ai::combatant::MindPowers>()
+        .bridge_copy::<exa_ai::brain::MindWarded>()
         .bridge_copy::<exa_character::record::CharacterData>()
         .bridge_copy::<exa_ai::brain::CharacterId>()
         .bridge_copy::<exa_ai::roles::Relations>()
@@ -2065,20 +2066,46 @@ pub fn mind_break(world: &mut World, body: Entity) -> Option<u32> {
 /// perception reads.
 fn feed_mind_powers(
     mut commands: Commands,
-    minds: Query<(Entity, &MindBody, Option<&MindPowers>)>,
+    minds: Query<(
+        Entity,
+        &MindBody,
+        Option<&MindPowers>,
+        Option<&PowerCaster>,
+        Has<exa_ai::brain::MindWarded>,
+    )>,
 ) {
     let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, ..)| (m.id, e)).collect();
     let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
-    for (entity, mind, current) in &minds {
+    for (entity, mind, current, caster, warded) in &minds {
         let effects = mind.sight_effects(entity_of);
         let resists_control = mind.cast.techniques & casts::RESISTS_CONTROL != 0;
-        if current.is_none_or(|c| c.effects != effects || c.resists_control != resists_control) {
+        let status = caster.map_or(mind.cast.status_bits, |c| c.body.status_bits);
+        let mask = mask_of(mind, status & MASKED != 0 || warded);
+        if current.is_none_or(|c| {
+            c.effects != effects || c.resists_control != resists_control || c.mask != mask
+        }) {
             commands.entity(entity).insert(MindPowers {
                 effects,
                 resists_control,
+                mask,
             });
         }
     }
+}
+
+/// What other characters' perception reads of a body's mask: nothing
+/// unless its masked flag is set; then the two levels of the first power
+/// whose id's low word is Mask Mind's, as the original's lookup of the
+/// body's status-effect list by the masked id finds it (the instant power
+/// writes 0.9 and 1, the persistent one 0.9 and 0.8), or none, for the
+/// perception's own 0.9 and 0.8.
+pub fn mask_of(mind: &MindBody, masked: bool) -> Option<Option<(f32, f32)>> {
+    masked.then(|| {
+        mind.powers
+            .iter()
+            .find(|p| p.id & 0xffff == casts::MASK)
+            .map(|p| (p.levels[0], p.levels[1]))
+    })
 }
 
 /// Before the brains' tick: the enraged bit of each body's status word is
@@ -2172,6 +2199,31 @@ mod tests {
         world.init_resource::<Messages<exa_audio::PointSounded>>();
         world.init_resource::<Messages<exa_audio::MusicOverlay>>();
         world
+    }
+
+    /// The perception's view of a Mask Mind: the feed copies the masked
+    /// flag and the first Mask Mind power's levels into the AI's mind
+    /// powers (the persistent one's 0.9 and 0.8); a worn ward with no power
+    /// is masked with the perception's own factors; an unmasked body has
+    /// none.
+    #[test]
+    fn the_feed_gives_the_perception_the_mask() {
+        let mut app = App::new();
+        app.add_systems(Update, feed_mind_powers);
+        let mut masked = MindBody::new(1);
+        masked.cast.slots = 2;
+        casts::mind_mask_persistent(&mut masked, 0.24);
+        let masked = app.world_mut().spawn(masked).id();
+        let warded = app
+            .world_mut()
+            .spawn((MindBody::new(2), exa_ai::brain::MindWarded))
+            .id();
+        let plain = app.world_mut().spawn(MindBody::new(3)).id();
+        app.update();
+        let mask = |e| app.world().get::<MindPowers>(e).unwrap().mask;
+        assert_eq!(mask(masked), Some(Some((0.9, 0.8))));
+        assert_eq!(mask(warded), Some(None));
+        assert_eq!(mask(plain), None);
     }
 
     /// An app that runs the power walk at a body tick.
