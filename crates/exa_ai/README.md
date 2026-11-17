@@ -164,8 +164,8 @@ every contact, and a roaming AI is put down along fresh wander paths and
 leaves combat) is `presence::reenter`; Exarust writes no level on leaving,
 so nothing calls it yet. The presence check's move back into the scene
 zeroes every contact's seen-tick count; a placement calls the AI's heading
-store (`Npc::placed`: look, heading and sway word at the placed yaw, the
-route stopped, the body's directions along the frame's forward). A
+store (`Npc::placed`: the aim snap from the frame's forward and the route
+stop). A
 contact's event word (`ContactRecord::marks`) gathers the quick swing, the
 engagement and the concern's 1.2 and 4 steps (`ContactRecord::set_concern`,
 which the integration calls); the game's dialogue refresh reads and clears

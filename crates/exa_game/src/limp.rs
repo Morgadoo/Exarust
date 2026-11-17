@@ -769,7 +769,7 @@ pub(crate) fn place_on_ground(
                 player.placed(req.desired);
             }
             if let Some(mut npc) = npc {
-                npc.placed(motor.yaw, heading, route.map(Mut::into_inner));
+                npc.placed(heading, route.map(Mut::into_inner));
             }
         }
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
@@ -998,7 +998,7 @@ fn place_living(
                 player.placed(req.desired);
             }
             if let Some(mut npc) = npc {
-                npc.placed(motor.yaw, heading, route.map(Mut::into_inner));
+                npc.placed(heading, route.map(Mut::into_inner));
             }
         }
         if !body.place_living(frame, &posed, pelvis) {
@@ -2717,9 +2717,8 @@ pub(crate) mod tests {
     }
 
     /// A living placement calls the AI's heading store after the facing:
-    /// the AI's look, heading and sway word take the placed yaw, its route
-    /// stops, and the body's heading and look directions take the frame's
-    /// forward.
+    /// the aim snap takes the frame's forward (the AI's look and heading at
+    /// its yaw, the body's directions along it) and the route stops.
     #[test]
     fn the_living_placement_snaps_the_ais_heading() {
         let mut app = placement_app();
@@ -2750,18 +2749,16 @@ pub(crate) mod tests {
         let yaw = world.get::<Locomotor>(root).unwrap().yaw;
         assert!((yaw - 1.0).abs() < 1e-3, "{yaw}");
         let npc = world.get::<exa_ai::brain::Npc>(root).unwrap();
-        assert_eq!(
-            (
-                npc.turn.look,
-                npc.turn.heading,
-                npc.turn.sway,
-                npc.gaze.look
-            ),
-            (yaw, yaw, yaw, yaw)
-        );
         let forward = Vec3::new(1.0f32.sin(), 0.0, 1.0f32.cos());
         assert!((npc.gaze.body_look - forward).length() < 1e-3);
         assert_eq!(npc.gaze.body_look, npc.gaze.body_heading);
+        assert_eq!(npc.gaze.body_look, npc.gaze.body_smooth);
+        let snapped = exa_ai::motion::yaw_of(npc.gaze.body_look);
+        assert!((snapped - yaw).abs() < 1e-3, "{snapped} {yaw}");
+        assert_eq!(
+            (npc.turn.look, npc.turn.heading, npc.gaze.look),
+            (snapped, snapped, snapped)
+        );
         let route = world.get::<exa_ai::route_walk::AiRoute>(root).unwrap();
         assert!(!route.following && route.mode == 0);
     }

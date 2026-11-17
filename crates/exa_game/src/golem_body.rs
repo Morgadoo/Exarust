@@ -69,10 +69,13 @@ impl Plugin for GolemBodyPlugin {
                 clear_fighting_poses
                     .after(exa_ai::DuelSystems)
                     .after(rest_sleepers)
+                    .after(exa_ai::brain::flee_walk)
+                    .after(crate::npc_search::carry_out_search)
                     .before(stand_sentries),
                 stand_sentries
                     .after(exa_ai::brain::idle_walk)
                     .after(crate::npc_search::follow_and_search)
+                    .after(crate::npc_search::carry_out_search)
                     .before(exa_ai::route_walk::walk_routes),
             ),
         )

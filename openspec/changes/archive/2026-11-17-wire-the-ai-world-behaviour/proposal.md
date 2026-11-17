@@ -17,9 +17,9 @@ REA (Exanima.exe 0.9.5), the assembly where order and constants matter:
   toward the partner afterwards and reports "Invalid role identifier." under
   "Add Relation" or "Remove Relation" (a remove only when it removed).
 - The run-time dialogue's memory store writes the relation record back.
-- The behaviour's heading store (class slot 23) of the AI: the look, the
-  heading and two words beside them take the frame's yaw, the route stops,
-  the body's heading, look and aim directions take the frame's forward.
+- The behaviour's heading store (class slot 23) of the AI: the aim snap
+  from the frame's forward (already ported at the attach) and the route
+  stop; the placements call it after writing the facing.
 - The player's combat movement word runs the step dispatch only while the
   body may act: condition mask 0x82C1, tone at least 0.7, support above 0.7
   in double, no trailing-foot request.

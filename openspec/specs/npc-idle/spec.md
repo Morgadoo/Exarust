@@ -278,7 +278,7 @@ The closing mode SHALL end when its walk ends, so the follow returns to its band
 - **THEN** it pursues the player again
 
 ### Requirement: Placement snaps the AI heading
-A living or ground placement SHALL, after writing the facing, set the AI's look, heading, sway word and combat look to the placed yaw, stop its route, and set the body's heading, look and aim directions to the frame's forward.
+A living or ground placement SHALL, after writing the facing, run the AI's aim snap from the frame's forward (the AI's look, heading and offsets at its yaw, the body's heading, look and aim directions along it) and stop its route.
 
 #### Scenario: A living placement of an AI body
 - **WHEN** an AI body following a route is placed at yaw 1

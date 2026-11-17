@@ -349,30 +349,18 @@ pub fn death_glow(npc: &Npc) -> Option<f32> {
 
 impl Npc {
     /// The AI's heading store (the behaviour's class slot 23), which the
-    /// body's placements call once they have written the facing `yaw`
-    /// along the frame's `forward`: the look, the heading and the two
-    /// words beside them (the combat look and the sway word) take the yaw,
-    /// the route stops ([`crate::route_walk::AiRoute::stop`]), and the
-    /// body's heading, look and aim directions take the forward, so the turn
-    /// after a placement starts from where the body was put rather than
-    /// from where the AI last looked. The original also copies the frame's
-    /// origin into a goal word Exarust does not keep.
-    pub fn placed(
-        &mut self,
-        yaw: f32,
-        forward: Vec3,
-        route: Option<&mut crate::route_walk::AiRoute>,
-    ) {
-        self.turn.look = yaw;
-        self.turn.heading = yaw;
-        self.turn.sway = yaw;
-        self.gaze.look = yaw;
+    /// body's placements call once they have written the facing along the
+    /// frame's `forward`: the aim snap ([`motion::snap_to_body`]: the look,
+    /// heading and offsets take the forward's yaw, the body's heading, look
+    /// and aim directions the forward) and the route stop
+    /// ([`crate::route_walk::AiRoute::stop`]), so the turn after a
+    /// placement starts from where the body was put. The original also
+    /// copies the frame's origin into a goal word Exarust does not keep.
+    pub fn placed(&mut self, forward: Vec3, route: Option<&mut crate::route_walk::AiRoute>) {
+        motion::snap_to_body(&mut self.gaze, &mut self.turn, forward);
         if let Some(route) = route {
             route.stop();
         }
-        self.gaze.body_heading = forward;
-        self.gaze.body_look = forward;
-        self.gaze.body_smooth = forward;
     }
 
     /// The body's facing yaw as the AI's routines read it.
