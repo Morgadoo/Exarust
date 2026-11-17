@@ -373,6 +373,8 @@ fn the_static_mode_meets_only_the_static_meshes() {
     let at = Vec3::new(0.0, 1.0, 0.0);
     let sphere = FloorAndPlate.height_below(at, 0.1, 3.0).unwrap();
     assert!((sphere - 0.5).abs() < 1e-5, "{sphere}");
-    let statics = StaticLevel(&FloorAndPlate).height_below(at, 0.1, 3.0).unwrap();
+    let statics = StaticLevel(&FloorAndPlate)
+        .height_below(at, 0.1, 3.0)
+        .unwrap();
     assert!(statics.abs() < 1e-5, "{statics}");
 }

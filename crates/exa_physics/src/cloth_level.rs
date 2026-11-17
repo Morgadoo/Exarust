@@ -35,6 +35,8 @@
 //! the vector helpers they call (REA assembly), the cloth constructor's
 //! padding (2 cm) and slide (0.1 cm) fields.
 
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::math::Vec3;
 
 use crate::cloth::{Cloth, LevelTri};
@@ -476,10 +478,7 @@ mod tests {
         assert!(push.abs_diff_eq(Vec3::new(0.0, 0.0, 10.0), 1e-5), "{push}");
         // A sweep starting behind the face, or ending 2 cm out, misses.
         assert_eq!(push_of(&face, -start, Vec3::ZERO), None);
-        assert_eq!(
-            push_of(&face, start, Vec3::new(2.0, 2.0, 2.0)),
-            None
-        );
+        assert_eq!(push_of(&face, start, Vec3::new(2.0, 2.0, 2.0)), None);
         // An end still in front is the static push with the sweep's margin.
         let push = push_of(&face, start, Vec3::new(2.0, 2.0, 1.0)).unwrap();
         assert!(push.abs_diff_eq(Vec3::new(0.0, 0.0, 1.0), 1e-6), "{push}");

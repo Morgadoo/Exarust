@@ -67,7 +67,11 @@ impl Log {
     fn out(&self) -> Out {
         let mut out = Out::default().i32(self.0.len() as i32);
         for k in 0..LOG {
-            let (face, q, p) = self.0.get(k).copied().unwrap_or((0, Vec3::ZERO, Vec3::ZERO));
+            let (face, q, p) = self
+                .0
+                .get(k)
+                .copied()
+                .unwrap_or((0, Vec3::ZERO, Vec3::ZERO));
             out = out.i32(face as i32).vec3(q).vec3(p);
         }
         out
@@ -210,7 +214,12 @@ pub(super) const PORTS: &[Port] = &[
     Port {
         name: "mesh_cloth_swept_leaf",
         run: |b| {
-            let (log, last) = swept(b, listed(b, i32_of(b, "count")), cloth_level::sweep_push, true);
+            let (log, last) = swept(
+                b,
+                listed(b, i32_of(b, "count")),
+                cloth_level::sweep_push,
+                true,
+            );
             log.out().i32(last).0
         },
     },

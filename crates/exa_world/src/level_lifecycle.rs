@@ -292,7 +292,10 @@ mod tests {
             *app.world().resource::<exa_physics::SceneGrid>(),
             exa_physics::SceneGrid::default()
         );
-        assert!(app.world().contains_resource::<exa_physics::StaticColliders>());
+        assert!(
+            app.world()
+                .contains_resource::<exa_physics::StaticColliders>()
+        );
     }
 
     /// The level's teardown empties the GI manager's shape list, as the
