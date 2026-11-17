@@ -396,6 +396,9 @@ fn step_screen_fade(
     mut posts: Query<&mut ExaPost>,
 ) {
     fade.requests.extend(sent.read().copied());
+    if !fade.requests.is_empty() {
+        info!("screen fade: {:?} at {:?}", fade.requests, time.elapsed());
+    }
     let clock = time.elapsed().as_millis() as u32;
     let busy = fade.control.fade || fade.control.desaturate || !fade.requests.is_empty();
     if !busy {

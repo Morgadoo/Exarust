@@ -1257,6 +1257,10 @@ pub fn rescale_condition_lights(
             }
             lit.glows = glows;
         }
+        info!(
+            "condition lights: placed object {} at condition {} re-scaled by {share} (was {})",
+            item.tagged_id, item.condition, lit.share
+        );
         lit.share = share;
         for &(node, base) in &lit.lights {
             if let Ok(mut light) = lights.get_mut(node) {
