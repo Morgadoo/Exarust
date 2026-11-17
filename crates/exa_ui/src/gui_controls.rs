@@ -1551,7 +1551,6 @@ mod tests {
         assert!(!pad_reaches(&c));
     }
 
-
     #[test]
     fn the_item_classes_come_after_the_shipped_ones() {
         let mut registry = ClassRegistry::shipped();

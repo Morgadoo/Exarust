@@ -2687,7 +2687,10 @@ mod tests {
         let mut icons = PanelIcons::new(4);
         let mut roll = 1u32;
         let mut p = Possessions::default();
-        let old = Hand { id: 0x77, flags: HELD };
+        let old = Hand {
+            id: 0x77,
+            flags: HELD,
+        };
         // No pack open: appended at the give-back place.
         give_back_displaced(&mut screens, &mut icons, None, &mut p, old, &mut roll);
         assert_eq!(p.carried.len(), 1);
@@ -2713,7 +2716,10 @@ mod tests {
         assert_eq!(p.carried[0].flags & HELD, 0);
         // A second give-back finds the entry and adds nothing.
         give_back_displaced(&mut screens, &mut icons, None, &mut p, old, &mut roll);
-        assert_eq!(screens.pack.entries.iter().filter(|e| e.id == 0x77).count(), 1);
+        assert_eq!(
+            screens.pack.entries.iter().filter(|e| e.id == 0x77).count(),
+            1
+        );
         assert_eq!(p.carried.len(), 1);
     }
 

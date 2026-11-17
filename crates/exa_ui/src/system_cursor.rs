@@ -387,7 +387,10 @@ mod tests {
             .init_resource::<CursorTable>()
             .init_resource::<MenuCursor>()
             .add_systems(Update, apply_pointer);
-        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
         app.update();
         let icon = app.world().get::<CursorIcon>(window).cloned();
         let Some(CursorIcon::Custom(CustomCursor::Image(empty))) = icon else {

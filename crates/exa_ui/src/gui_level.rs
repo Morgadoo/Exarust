@@ -284,7 +284,11 @@ mod tests {
         }
         let cell = symbol_cell(&square, 20).unwrap();
         assert_eq!((cell.width, cell.height, cell.channels), (20, 20, 1));
-        assert!(cell.pixels.iter().all(|&a| a.abs_diff(200) <= 1), "{:?}", &cell.pixels[..4]);
+        assert!(
+            cell.pixels.iter().all(|&a| a.abs_diff(200) <= 1),
+            "{:?}",
+            &cell.pixels[..4]
+        );
         let same = symbol_cell(&square, 48).unwrap();
         assert!(same.pixels.iter().all(|&a| a == 200));
         let mut s = GuiLevelState::at(2);

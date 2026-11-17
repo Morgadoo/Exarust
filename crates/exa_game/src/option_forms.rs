@@ -2436,13 +2436,19 @@ mod tests {
         let lift = if mark & 1 != 0 { 4 - 1 } else { 0 };
         let (list, rect) = open_drop_list(rows(3), (100, 200, 160, 24), 4, (1280, 720), 1);
         let h = 3 * 4 * exa_ui::drop_down::ROW_UNITS + 2 * list.border;
-        assert_eq!((rect.x, rect.y, rect.w, rect.h), (100, 200 - lift + 24 - 1, 160, h));
+        assert_eq!(
+            (rect.x, rect.y, rect.w, rect.h),
+            (100, 200 - lift + 24 - 1, 160, h)
+        );
         // No room below: above the owner, its bottom at the owner's top + 1.
         let (_, rect) = open_drop_list(rows(3), (100, 700, 160, 24), 4, (1280, 720), 1);
         assert_eq!(rect.y + rect.h, 700 - lift + 1);
         // Twenty rows are sixteen tall and are not cut to the room left.
         let (list, rect) = open_drop_list(rows(20), (100, 400, 160, 24), 4, (1280, 720), 1);
-        assert_eq!(rect.h, 16 * 4 * exa_ui::drop_down::ROW_UNITS + 2 * list.border);
+        assert_eq!(
+            rect.h,
+            16 * 4 * exa_ui::drop_down::ROW_UNITS + 2 * list.border
+        );
         assert_eq!(rect.y + rect.h, 400 - lift + 1);
         // Past the right edge: flush with it less two.
         let (_, rect) = open_drop_list(rows(3), (1200, 200, 160, 24), 4, (1280, 720), 1);

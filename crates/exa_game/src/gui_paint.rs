@@ -1601,7 +1601,10 @@ mod tests {
         };
         let idle = paint(0);
         assert_eq!(idle.layers.len(), 1);
-        assert_eq!(idle.layers[0].batch.vertices[0].ink, text_slot(&palette, 0xe4));
+        assert_eq!(
+            idle.layers[0].batch.vertices[0].ink,
+            text_slot(&palette, 0xe4)
+        );
         let hovered = paint(HOVERED);
         assert_eq!(hovered.layers.len(), 5);
         assert_eq!(hovered.layers[0].batch.vertices[0].ink, palette.text[7]);
@@ -1611,8 +1614,14 @@ mod tests {
         }
         // The glow sits where the plain run starts.
         assert_eq!(
-            (hovered.layers[0].batch.vertices[0].x, hovered.layers[0].batch.vertices[0].y),
-            (idle.layers[0].batch.vertices[0].x, idle.layers[0].batch.vertices[0].y)
+            (
+                hovered.layers[0].batch.vertices[0].x,
+                hovered.layers[0].batch.vertices[0].y
+            ),
+            (
+                idle.layers[0].batch.vertices[0].x,
+                idle.layers[0].batch.vertices[0].y
+            )
         );
     }
 

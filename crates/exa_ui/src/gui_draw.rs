@@ -1569,10 +1569,11 @@ mod tests {
         let format = exa_formats::pixel::id::RGBA8;
         let at4 = skin_atlas(&image, format, 0, 4).unwrap();
         assert_eq!((at4.width, at4.height), (160, 80));
-        assert!(at4.pixels.iter().all(|p| p
-            .iter()
-            .zip([90u8, 120, 150, 200])
-            .all(|(a, b)| a.abs_diff(b) <= 1)));
+        assert!(at4.pixels.iter().all(|p| {
+            p.iter()
+                .zip([90u8, 120, 150, 200])
+                .all(|(a, b)| a.abs_diff(b) <= 1)
+        }));
         let at6 = skin_atlas(&image, format, 0, 6).unwrap();
         assert_eq!((at6.width, at6.height), (240, 120));
         assert!(skin_atlas(&image, format, 0, 0).is_none());
@@ -1595,11 +1596,17 @@ mod tests {
             .add_systems(Update, follow_skin_scale);
         app.update();
         let size = |app: &App| {
-            let t = app.world().resource::<GuiTextures>().get(SKIN_TEXTURE).unwrap();
+            let t = app
+                .world()
+                .resource::<GuiTextures>()
+                .get(SKIN_TEXTURE)
+                .unwrap();
             (t.width, t.height)
         };
         assert_eq!(size(&app), (160, 80));
-        app.world_mut().resource_mut::<crate::scale::GuiScale>().scale = 6;
+        app.world_mut()
+            .resource_mut::<crate::scale::GuiScale>()
+            .scale = 6;
         app.update();
         assert_eq!(size(&app), (240, 120));
     }
