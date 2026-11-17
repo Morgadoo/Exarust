@@ -76,7 +76,13 @@ resolution on each axis, an ordered 2 × 2 grid instead of the jittered
 four. A display camera resolves each 2 × 2 block by bilinear sampling at
 its centre, then runs the post chain at window resolution. It is on in the
 viewer; `--no-supersample` turns it off. The original multisamples nothing
-(`HWMultisample = 0`), so the supersampled scene is drawn without MSAA.
+(`HWMultisample = 0`), so the supersampled scene is drawn without MSAA,
+and so is the display camera's resolve (one quad shaded once a pixel, which
+multisampling cannot change). With a multisampled HDR display view the
+resolve quad's draw was lost on an RTX 3090 (driver 620) when the view drew
+to a window: only the view's clear reached the screen, so the world showed
+black under the interface (F570). `EXA_CAMERA_TRACE=1` logs every camera's
+order, target, layers and size every 120 frames.
 
 The original draws all four sub-frames of a pass in one walk of its
 lists, each at the window's size in its own quadrant viewport with its own
