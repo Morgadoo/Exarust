@@ -211,6 +211,7 @@ impl LeverBody {
         let angle = glue.angle_of(glue.arm_at);
         glue.lever = Lever::new(shape, angle);
         glue.lever.configure(&pending.record, pending.light);
+        glue.lever.word = pending.saved;
         if glue.lever.return_ms != 0 && ((pending.saved as u32) >> 16) != 0 {
             glue.lever.restore(pending.saved, now_ms);
             glue.armed = true;

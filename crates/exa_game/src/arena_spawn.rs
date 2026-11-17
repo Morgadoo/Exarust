@@ -23,20 +23,10 @@ pub const HOSTILE_ROLE: u32 = 0x12;
 /// The opponent team.
 pub const OPPONENT_TEAM: u32 = 2;
 
-/// A placed object the hub query can see.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlacedItem {
-    /// Its position on the level, x and z in centimetres.
-    pub position: [f32; 2],
-    /// Its type bits; `0x4000` in the `0x7000` field is a weapon object.
-    pub type_bits: u32,
-    /// Its object-database kind; `0x40000` is the weapon kind the hub
-    /// clears.
-    pub template_kind: u32,
-}
-
-/// The point the physician's hub spot is cleared around, x and z.
-pub const PHYSICIAN_ITEM_POINT: [f32; 2] = [-2100.0, 0.0];
+/// The hub spot whose door a physician on the staff unlatches, x and z in
+/// centimetres: the first placed object with a door record within ten
+/// centimetres of it on each axis (the door of the physician's room).
+pub const PHYSICIAN_DOOR_SPOT: [f32; 2] = [-2100.0, 900.0];
 
 /// The shopkeeper's hub spot (cm) and the yaw it faces, degrees.
 pub const SHOPKEEPER_SPOT: [f32; 3] = [-320.0, 0.0, -110.0];
@@ -115,22 +105,6 @@ pub fn shopkeeper_plan() -> HubBodyPlan {
         condition_copied: false,
         ..specialist_plan(SHOPKEEPER_SPOT, SHOPKEEPER_YAW_DEGREES)
     }
-}
-
-/// Find the first placed item that is a weapon object of the weapon kind
-/// within ten centimetres of `point` on both axes.
-///
-/// The original scans the level's groups in order, each group's nodes in
-/// order, and returns the first node that passes. The ten-centimetre test
-/// uses the absolute difference (`fabs`), so it is symmetric.
-#[must_use]
-pub fn find_nearby_weapon(items: &[PlacedItem], point: [f32; 2]) -> Option<usize> {
-    items.iter().position(|item| {
-        item.type_bits & 0x7000 == 0x4000
-            && item.template_kind == 0x40000
-            && (item.position[0] - point[0]).abs() < 10.0
-            && (item.position[1] - point[1]).abs() < 10.0
-    })
 }
 
 /// The role a spawned manager receives.
@@ -512,35 +486,6 @@ mod tests {
         assert!(specialist_spot(crate::career::Profession::Combatant).is_none());
         assert!(specialist_spot(crate::career::Profession::Trainer).is_none());
         assert_eq!(yaw_radians(180.0).to_bits(), 3.1415927f32.to_bits());
-    }
-
-    #[test]
-    fn the_hub_weapon_query_takes_the_first_node_within_ten() {
-        let items = [
-            PlacedItem {
-                position: [-2100.0, 0.0],
-                type_bits: 0x4000,
-                template_kind: 0x40000,
-            },
-            PlacedItem {
-                position: [-2091.0, 9.99],
-                type_bits: 0x4000,
-                template_kind: 0x40001,
-            },
-        ];
-        assert_eq!(find_nearby_weapon(&items, PHYSICIAN_ITEM_POINT), Some(0));
-        let none = [PlacedItem {
-            position: [-2089.0, 0.0],
-            type_bits: 0x4000,
-            template_kind: 0x40000,
-        }];
-        assert_eq!(find_nearby_weapon(&none, PHYSICIAN_ITEM_POINT), None);
-        let wrong = [PlacedItem {
-            position: [-2100.0, 0.0],
-            type_bits: 0x5000,
-            template_kind: 0x40000,
-        }];
-        assert_eq!(find_nearby_weapon(&wrong, PHYSICIAN_ITEM_POINT), None);
     }
 
     #[test]

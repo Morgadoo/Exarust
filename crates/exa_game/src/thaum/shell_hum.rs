@@ -110,7 +110,7 @@ pub(crate) fn sound_shell_hums(
         .collect();
     for entity in gone {
         if let Some(handle) = state.voices.remove(&entity) {
-            env.free_handle(bank, handle);
+            env.finish_handle(bank, handle);
             info!("shell hum {entity:?}: its shell is gone, the voice freed");
         }
     }

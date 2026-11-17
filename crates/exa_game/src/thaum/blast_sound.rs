@@ -149,9 +149,9 @@ pub(crate) fn sound_blasts(
     for entity in gone {
         if let Some(voices) = state.voices.remove(&entity) {
             if let Some(charge) = voices.charge {
-                env.free_handle(bank, charge);
+                env.finish_handle(bank, charge);
             }
-            env.free_handle(bank, voices.release);
+            env.finish_handle(bank, voices.release);
             info!("blast {entity:?}: gone, its voices freed");
         }
     }

@@ -270,9 +270,11 @@ pub fn daylight_target(nodes: &[Node], root: usize) -> usize {
 }
 
 /// What the door operations leave for the caller to play: the sounds, in
-/// the order the doors produced them.
+/// the order the doors produced them, each with the index of the door it
+/// plays at. Both the open and the lock play the door's lock set (`LkO`)
+/// at the leaf.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Sounds(pub Vec<Sound>);
+pub struct Sounds(pub Vec<(usize, Sound)>);
 
 /// Open the doors under a node. The unlock sound plays once when there is
 /// a door, before any of them is woken. Only a latched or motorised door
@@ -282,12 +284,15 @@ pub fn open_doors(doors: &mut [Door], _now_ms: i32) -> Sounds {
     if doors.is_empty() {
         return sounds;
     }
-    sounds.0.push(Sound {
-        volume: 0.15,
-        volume_spread: 0.1,
-        pitch: 0.9,
-        pitch_spread: 0.15,
-    });
+    sounds.0.push((
+        0,
+        Sound {
+            volume: 0.15,
+            volume_spread: 0.1,
+            pitch: 0.9,
+            pitch_spread: 0.15,
+        },
+    ));
     for door in doors {
         door.wake();
     }
@@ -301,14 +306,14 @@ pub fn open_doors(doors: &mut [Door], _now_ms: i32) -> Sounds {
 pub fn close_and_lock_doors(doors: &mut [Door], word: u32) -> (Sounds, u32) {
     let mut sounds = Sounds::default();
     let mut word = word;
-    for door in doors {
+    for (k, door) in doors.iter_mut().enumerate() {
         let shut = if door.shape.sliding {
             door.slide.closed
         } else {
             door.closed
         };
         if let Some(sound) = door.close_and_lock() {
-            sounds.0.push(sound);
+            sounds.0.push((k, sound));
         }
         if shut {
             word |= 1;

@@ -1156,6 +1156,119 @@ mod tests {
     /// 0 at load (their slider points on their anchors), every rail lies
     /// level, and at rest they creep up to about 2 cm in two seconds without
     /// sleeping; the test prints them.
+    /// The arena hub holds one door object within ten centimetres (x and
+    /// z) of (−2100, 900) cm, the door the arena unlatches for a physician
+    /// on the staff; its leaf registers as a door body, and the arena's
+    /// order unlatches it. Read from `EXANIMA_DIR`; skipped without it.
+    #[test]
+    fn the_arena_hub_holds_the_physicians_door() {
+        use bevy::ecs::world::CommandQueue;
+        use bevy::time::TimeUpdateStrategy;
+        use exa_physics::body::{DoorBody, SlideBody};
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::transform::TransformPlugin,
+            exa_physics::PhysicsPlugin,
+            crate::mechanisms::MechanismPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+        ));
+        let mut cache = exa_assets::ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut queue = CommandQueue::default();
+        {
+            let mut loader = exa_assets::ModelLoader {
+                game: &game,
+                cache: &mut cache,
+                meshes: &mut meshes,
+                materials: &mut materials,
+                images: &mut images,
+                bc_supported: false,
+            };
+            let mut commands = Commands::new(&mut queue, app.world());
+            let mut load =
+                crate::LevelLoad::begin(&mut commands, &mut loader, "arenahub").expect("arenahub");
+            while !matches!(
+                load.step(&mut commands, &mut loader, std::time::Duration::MAX),
+                crate::LoadProgress::Finished(..)
+            ) {}
+        }
+        queue.apply(app.world_mut());
+        app.world_mut().insert_resource(meshes);
+        for _ in 0..4 {
+            app.update();
+        }
+        let mut q = app.world_mut().query::<(
+            Entity,
+            &crate::mechanisms::MechanismRecords,
+            &GlobalTransform,
+        )>();
+        let doors: Vec<(Entity, u32, Vec3)> = q
+            .iter(app.world())
+            .filter(|(_, r, _)| r.door.is_some())
+            .map(|(e, r, at)| (e, r.id, at.translation() * 100.0))
+            .collect();
+        for (_, id, at) in &doors {
+            eprintln!(
+                "hub door object {id:#x} at ({:.1}, {:.1}, {:.1}) cm",
+                at.x, at.y, at.z
+            );
+        }
+        let at_spot: Vec<_> = doors
+            .iter()
+            .filter(|(_, _, at)| (at.x + 2100.0).abs() < 10.0 && (at.z - 900.0).abs() < 10.0)
+            .collect();
+        assert_eq!(at_spot.len(), 1, "one door object at the physician's spot");
+        let node = at_spot[0].0;
+        let mut leaves = Vec::new();
+        let mut stack = vec![node];
+        while let Some(e) = stack.pop() {
+            if app.world().get::<DoorBody>(e).is_some() || app.world().get::<SlideBody>(e).is_some()
+            {
+                leaves.push(e);
+            }
+            if let Some(kids) = app.world().get::<Children>(e) {
+                stack.extend(kids.iter());
+            }
+        }
+        let latched = |app: &App, e: Entity| {
+            app.world()
+                .get::<DoorBody>(e)
+                .map(|g| g.door.latched)
+                .or(app.world().get::<SlideBody>(e).map(|g| g.door.latched))
+                .unwrap()
+        };
+        for &e in &leaves {
+            eprintln!(
+                "leaf {e:?}: hinged {} latched {}",
+                app.world().get::<DoorBody>(e).is_some(),
+                latched(&app, e)
+            );
+        }
+        assert!(!leaves.is_empty(), "the door at the spot has a body");
+        app.world_mut()
+            .write_message(crate::mechanisms::LatchDoorsAt {
+                x_cm: -2100.0,
+                z_cm: 900.0,
+                latched: false,
+            });
+        app.update();
+        app.world_mut().run_schedule(FixedUpdate);
+        for &e in &leaves {
+            assert!(!latched(&app, e), "the leaf is unlatched");
+        }
+    }
+
     #[test]
     fn shipped_levers_and_plates_rest_and_signal() {
         use bevy::ecs::world::CommandQueue;

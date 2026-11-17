@@ -392,8 +392,8 @@ pub fn meet_participants(count: usize, staff: &[(i32, u8)]) -> Vec<i32> {
 /// What arriving at the hub (and the after-load hook) does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubFixups {
-    /// A physician is employed: clear the weapon object at its spot.
-    pub clear_physician_weapon: bool,
+    /// A physician is employed: unlatch the door at its spot.
+    pub unlatch_physician_door: bool,
     /// The manager and fighters are numbered again.
     pub number_fighters: bool,
     /// No tournament was generated yet: generate one.
@@ -404,13 +404,13 @@ pub struct HubFixups {
     pub install_session_hook: bool,
 }
 
-/// The hub's after-load fixups. The first physician in the staff clears the
-/// weapon object at the physician's spot; the manager is restored and the
+/// The hub's after-load fixups. The first physician in the staff unlatches the
+/// door at the physician's spot; the manager is restored and the
 /// fighters renumbered; a missing tournament is generated; the unfit
 /// entrants are dropped; and the session hook is installed.
 pub fn hub_arrival(has_physician: bool, has_tournament: bool) -> HubFixups {
     HubFixups {
-        clear_physician_weapon: has_physician,
+        unlatch_physician_door: has_physician,
         number_fighters: true,
         generate_tournament: !has_tournament,
         drop_unfit: true,
@@ -945,14 +945,14 @@ mod tests {
         assert_eq!(
             hub_arrival(true, false),
             HubFixups {
-                clear_physician_weapon: true,
+                unlatch_physician_door: true,
                 number_fighters: true,
                 generate_tournament: true,
                 drop_unfit: true,
                 install_session_hook: true
             }
         );
-        assert!(!hub_arrival(false, true).clear_physician_weapon);
+        assert!(!hub_arrival(false, true).unlatch_physician_door);
         assert!(!hub_arrival(false, true).generate_tournament);
     }
 
