@@ -1281,7 +1281,8 @@ mod tests {
         ));
         assert!(close(live.ambient, scene.lighting.ambient));
         // An indoor level republishes no sun.
-        let scene = level_lighting_scene("exanima01", None, 3, 0, None, Some(PresetInput::default()));
+        let scene =
+            level_lighting_scene("exanima01", None, 3, 0, None, Some(PresetInput::default()));
         let mut runtime = SceneEnvRuntime::new(scene.env, 1);
         let frame = runtime.env.apply_frame([0.0, 0.0, 1.0]);
         assert!(republished(&runtime.env, &frame).sun.is_none());

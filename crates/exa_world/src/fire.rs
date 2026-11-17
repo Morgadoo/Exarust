@@ -961,7 +961,13 @@ pub(crate) fn drive_hosts(
         // kept as the base the fire scales.
         // The marker import turned the host's own emissive off; the
         // children keep theirs until a fire drives them.
-        take_base(host.part, &mut host.base, true, &mut handles, &mut materials);
+        take_base(
+            host.part,
+            &mut host.base,
+            true,
+            &mut handles,
+            &mut materials,
+        );
         for (part, base) in &mut host.children {
             take_base(*part, base, false, &mut handles, &mut materials);
         }
@@ -1330,7 +1336,10 @@ mod tests {
             .resource::<Assets<exa_render::material::ExaMaterial>>()
             .get(&handle)
             .expect("the child's copied material");
-        assert_eq!(material.params.emissive.truncate(), child_base.truncate() * 0.5);
+        assert_eq!(
+            material.params.emissive.truncate(),
+            child_base.truncate() * 0.5
+        );
     }
 
     #[test]

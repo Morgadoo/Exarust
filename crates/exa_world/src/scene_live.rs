@@ -1262,7 +1262,9 @@ mod tests {
         let mut app = light_app(rooms, &grid);
         // The eye in the first room, looking along -X, away from the door.
         let eye = Vec3::new(a.x + 2.0, 1.5, a.y);
-        let mut cameras = app.world_mut().query_filtered::<&mut Transform, With<Camera3d>>();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<Camera3d>>();
         for mut t in cameras.iter_mut(app.world_mut()) {
             *t = Transform::from_translation(eye).looking_to(Vec3::NEG_X, Vec3::Y);
         }
@@ -1305,7 +1307,9 @@ mod tests {
         let b = rooms.cell_centre(6 + 4);
         let mut app = light_app(rooms, &grid);
         let eye = Vec3::new(a.x + 2.0, 1.5, a.y);
-        let mut cameras = app.world_mut().query_filtered::<&mut Transform, With<Camera3d>>();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<Camera3d>>();
         for mut t in cameras.iter_mut(app.world_mut()) {
             *t = Transform::from_translation(eye).looking_to(Vec3::NEG_X, Vec3::Y);
         }

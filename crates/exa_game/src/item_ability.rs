@@ -944,7 +944,12 @@ fn flame_row_draws(
     time: Res<Time>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     rows: Query<(Entity, &Flame)>,
-    mut draws: Query<(Entity, &FlameRowDraw, &Mesh3d, &MeshMaterial3d<FlameRowMaterial>)>,
+    mut draws: Query<(
+        Entity,
+        &FlameRowDraw,
+        &Mesh3d,
+        &MeshMaterial3d<FlameRowMaterial>,
+    )>,
 ) {
     if rows.is_empty() && draws.is_empty() {
         return;
