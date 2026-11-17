@@ -467,20 +467,6 @@ pub(crate) fn evicted(all: &[[f32; 4]; 5]) -> usize {
     if nearest(a, b) < nearest(b, a) { a } else { b }
 }
 
-/// Friction against the level for a contact point that slipped `slip` this
-/// tick: below the limit the slip is cancelled, above it damped by a
-/// hundredth of the limit. The limit is in cm² per tick², as the original
-/// states it.
-pub(crate) fn rub(slip: Vec3, n: Vec3, friction: f32) -> Vec3 {
-    let tangent = slip - n * slip.dot(n);
-    let limit = 0.5 * friction * (0.01 + 0.99 * n.y * n.y);
-    if tangent.length_squared() * 1e4 < limit {
-        -tangent
-    } else {
-        -tangent * (0.01 * limit)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

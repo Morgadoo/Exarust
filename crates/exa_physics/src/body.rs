@@ -41,7 +41,7 @@ use bevy::prelude::*;
 
 use crate::Physics;
 use crate::contact::{
-    CONTACT_SLOP, Level, LevelContact, evicted, push_floor, rub, sphere_hit, swept_hit,
+    CONTACT_SLOP, Level, LevelContact, evicted, push_floor, sphere_hit, swept_hit,
 };
 use crate::part::PartState;
 
@@ -368,6 +368,11 @@ pub struct Part {
     /// How it meets other parts, of other bodies and of its own.
     pub pairing: Pairing,
     rest_inverse: Mat3,
+    /// The original's rest basis: the inverse ([`crate::engine_math::inverse4`])
+    /// of the four rest points widened to rows with `w = 1`
+    /// ([`crate::engine_math::widen4`]), which the drawn matrix is built
+    /// through ([`crate::engine_math::basis_points`]).
+    rest_basis: Mat4,
     /// Friction against the level.
     pub friction: f32,
     /// Whether the part skips level detection: a root body with world links
@@ -614,6 +619,7 @@ impl Part {
         let rest = TEMPLATE.map(|t| centre + t * half * TEMPLATE_SCALE);
         let edges = Mat3::from_cols(rest[1] - rest[0], rest[2] - rest[0], rest[3] - rest[0]);
         let rest_inverse = edges.inverse();
+        let rest_basis = rest_basis(&rest);
         let own = rest_inverse * -rest[0];
         let positions = rest.map(|r| world.transform_point3(r));
         // Spheres along the longest axis of the box.
@@ -668,6 +674,7 @@ impl Part {
             sphere_grid: None,
             pairing,
             rest_inverse,
+            rest_basis,
             no_level: false,
             skips_thin: false,
             friction: if matches!(bone, 4 | 7) {
@@ -764,18 +771,44 @@ impl Part {
     pub fn drawn(&self, alpha: f32) -> Affine3A {
         let (from, to) = self.drawn_particles;
         if from == to {
-            return affine_from_points(&self.rest, &self.rest_inverse, &to);
+            return self.basis_frame(&to);
         }
         let mut points = [Vec3::ZERO; 4];
         for i in 0..4 {
             // a + (b − a)·t, as the original sums it (not a(1 − t) + bt).
             points[i] = from[i] + (to[i] - from[i]) * alpha;
         }
-        affine_from_points(&self.rest, &self.rest_inverse, &points)
+        self.basis_frame(&points)
+    }
+
+    /// The drawn matrix of four particles as the original builds it: the
+    /// rest basis times the points ([`crate::engine_math::basis_points`]),
+    /// the first three rows the turn (not orthonormalised), the fourth the
+    /// translation.
+    fn basis_frame(&self, points: &[Vec3; 4]) -> Affine3A {
+        let [x, y, z, t] =
+            crate::engine_math::basis_points(&self.rest_basis, &points.map(|p| p.to_array()));
+        Affine3A::from_cols(
+            Vec3A::from_array(x),
+            Vec3A::from_array(y),
+            Vec3A::from_array(z),
+            Vec3A::from_array(t),
+        )
     }
 
     fn point(&self, w: &[f32; 4]) -> Vec3 {
         (0..4).map(|i| self.positions[i] * w[i]).sum()
+    }
+
+    /// The point with weights `w` by the engine's weighted-point routine:
+    /// each lane `(w₀p₀ + w₁p₁) + (w₂p₂ + w₃p₃)`
+    /// ([`crate::engine_math::vec4_mul_4x3`]), where [`Part::point`] sums
+    /// the four terms one after another.
+    fn weighted_point(&self, w: &[f32; 4]) -> Vec3 {
+        crate::engine_math::vec4_mul_4x3(
+            Vec4::from_array(*w),
+            &self.positions.map(|p| p.to_array()),
+        )
     }
 
     /// The point with weights `w` where the tick began.
@@ -983,13 +1016,15 @@ impl Part {
 
     /// Enforces the stored contacts once: a point under its plane is lifted
     /// onto it, and its slip this tick is cancelled below the friction
-    /// limit and damped above it.
+    /// limit and damped above it. The friction is the level pass's
+    /// ([`level_rub`]): the original computes the limit and the slide
+    /// factor in double here too.
     fn hold_contacts(&mut self) {
         let mut depth = 0.0;
         for k in 0..self.contacts.len() {
             let c = self.contacts[k];
-            let mut correction = rub(self.slip(&c.weights), c.normal, self.friction);
-            let below = c.plane - c.normal.dot(self.point(&c.weights));
+            let mut correction = level_rub(self.slip(&c.weights), c.normal, self.friction);
+            let below = c.plane - c.normal.dot(self.weighted_point(&c.weights));
             if below > MIN_DEPTH {
                 correction += c.normal * below;
                 depth += below;
@@ -1316,10 +1351,11 @@ fn pull_grab(weapon: &mut Part, struck: &mut Part, grab: &mut GrabPull, disabled
     }
     if grab.flags & LINK_REANCHOR != 0 {
         grab.flags &= !LINK_REANCHOR;
-        let at = weapon.point(&grab.on_weapon);
-        if let Some(weights) = struck.weights_now(at) {
-            grab.on_struck = weights;
-        }
+        // The original's exact barycentric routine over the struck part's
+        // particles, stored as it comes (a flat part's infinities too).
+        let at = weapon.weighted_point(&grab.on_weapon);
+        grab.on_struck =
+            crate::engine_math::barycentric_exact(at, &struck.positions.map(|p| p.to_array()));
         return false;
     }
     // The gap in the weapon's frame: its dot with each row of the body
@@ -6138,6 +6174,14 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
             }
         }
     }
+}
+
+/// The original's rest basis of four rest points: each widened to a row
+/// with `w = 1` ([`crate::engine_math::widen4`]) and the 4×4 inverted
+/// ([`crate::engine_math::inverse4`]).
+pub(crate) fn rest_basis(rest: &[Vec3; 4]) -> Mat4 {
+    let [w0, w1, w2, w3] = crate::engine_math::widen4(*rest);
+    crate::engine_math::inverse4(&Mat4::from_cols(w0, w1, w2, w3))
 }
 
 /// The affine map taking `rest` to `points`, from the rest edges' inverse:

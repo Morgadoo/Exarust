@@ -980,7 +980,8 @@ turned by the torso twist (the lumbar half), the head turned toward the
 look by its ramping weight (its anchors then on the physical thorax), the
 thorax hunch on its pinned part's own placement after the twist (its
 head and arms keep theirs), the foot pitched to the ground (a
-20 cm toe, eased 0.01 rad a tick from the height the IK wrote) and the leg
+20 cm toe, eased 0.01 rad a tick from the height the IK wrote; the turn is
+the engine's X turn composed by its 4×3 product) and the leg
 IK's knee, hip and thigh turns folded into the clip chain (the standing
 IK while it stands, the locomotion IK while it moves); the
 clock of a locomoting body takes the locomotion's step; a get-up's clip ending into the stance writes the condition

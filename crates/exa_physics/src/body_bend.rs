@@ -50,7 +50,7 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use crate::engine_math::acos_approx;
+use crate::engine_math::{acos_approx, quaternion_from_axis_angle};
 
 use super::balance::cm;
 use super::feet::FootState;
@@ -93,8 +93,9 @@ const THIGH_SHARE: f32 = 0.75;
 /// Not stepping, the extra turn loses this share of itself a tick.
 const TURN_DECAY: f32 = 0.1;
 /// A direction pair shorter than this (the product of the squared
-/// lengths) has no turn, and a cosine below it is a right angle.
-const TURN_TINY: f32 = 1.1920929e-7;
+/// lengths) has no turn, and a cosine below it is a right angle: the
+/// engine's float epsilon (its stored bits, a hair under `f32::EPSILON`).
+const TURN_TINY: f32 = f32::from_bits(0x33ff_ffd7);
 const RIGHT_ANGLE: f32 = 1.5707964;
 /// An unanchored lift keeps 0.8 of itself; an anchored one that is not
 /// stepping keeps 0.9.
@@ -311,32 +312,37 @@ pub(super) fn next_lift(lift: f32, anchored: bool, stepping: bool, fresh: f32) -
     }
 }
 
-/// The thigh's extra turn, 75% of the angle from `rest` to `toward`.
-/// A pair with no length, or a cosine below the tiny floor, is a right
-/// angle's 75% only in the second case; a zero vector does not turn.
+/// The thigh's extra turn, 75% of the angle from `rest` to `toward`, as
+/// the original builds it: a pair whose squared lengths' product is not
+/// over the tiny floor (or NaN) has no angle; a cosine under the floor is a
+/// right angle, one over 1 (or NaN) none, otherwise the approximate arc
+/// cosine. The turn is the engine's quaternion of that share about
+/// `rest × toward` (its fast sine and cosine of the half angle, over the
+/// axis's exact length; a zero axis keeps a zero vector part).
 pub(super) fn extra_turn(rest: Vec3, toward: Vec3) -> Quat {
     let len2 = rest.length_squared() * toward.length_squared();
-    if len2 <= TURN_TINY {
-        return Quat::IDENTITY;
-    }
-    let cos = rest.dot(toward) / len2.sqrt();
-    let angle = if cos <= TURN_TINY {
-        RIGHT_ANGLE
-    } else if cos >= 1.0 {
-        0.0
+    let angle = if len2 > TURN_TINY {
+        let cos = rest.dot(toward) / len2.sqrt();
+        if cos < TURN_TINY {
+            RIGHT_ANGLE
+        } else if cos <= 1.0 {
+            acos_approx(cos)
+        } else {
+            0.0
+        }
     } else {
-        acos_approx(cos)
+        0.0
     };
-    let axis = rest.cross(toward);
-    if axis.length_squared() <= TURN_TINY {
-        return Quat::IDENTITY;
-    }
-    Quat::from_axis_angle(axis.normalize(), angle * THIGH_SHARE)
+    quaternion_from_axis_angle(rest.cross(toward), angle * THIGH_SHARE)
 }
 
-/// Not stepping, the extra turn loses 10% of its angle.
+/// Not stepping, the extra turn moves a tenth of the way to no turn: the
+/// engine's four-lane lerp toward the identity (`a + (b − a)·0.1`), then
+/// its quaternion normaliser (about 10% of the angle, not a slerp).
 pub(super) fn decay_turn(turn: Quat) -> Quat {
-    turn.slerp(Quat::IDENTITY, TURN_DECAY).normalize()
+    let toward =
+        crate::engine_math::lerp4(Vec4::from(turn), Vec4::from(Quat::IDENTITY), TURN_DECAY);
+    crate::engine_math::normalize_quat(Quat::from_vec4(toward))
 }
 
 /// What one tick of the IK reads off the body, the same for every leg.
@@ -822,13 +828,15 @@ fn fold_pose(targets: &mut [Affine3A], thigh: usize, shin: usize, leg: &Leg) {
     if thigh >= targets.len() || shin >= targets.len() {
         return;
     }
+    // The hinges are the engine's quaternions about (1, 0, 0), as the
+    // stepping routines store them.
     let thigh_turn = if leg.hip_shown {
-        leg.turn * Quat::from_rotation_x(leg.hip)
+        leg.turn * quaternion_from_axis_angle(Vec3::X, leg.hip)
     } else {
         Quat::IDENTITY
     };
     let knee_turn = if leg.knee_shown {
-        Quat::from_rotation_x(leg.knee)
+        quaternion_from_axis_angle(Vec3::X, leg.knee)
     } else {
         Quat::IDENTITY
     };
