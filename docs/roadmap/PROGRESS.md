@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r310, 11-16) | target |
+| measure | start (r186, 11-10) | now (r311, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **61.31%** | **100%** |
+| **Ledger: bytes in a final state** | — | **61.98%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9240 | all |
+| Tests passing | 8,489 | 9,243 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -101,8 +101,8 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Physics, bodies & cloth | 7 | 7 | 139 | 158,262 |
 | Rendering & GPU | 10 | 10 | 271 | 135,551 |
 | UI | 12 | 12 | 318 | 122,549 |
-| Thaumaturgy & effects | 9 | 9 | 132 | 103,769 |
 | Characters, motion & animation | 8 | 8 | 213 | 99,693 |
+| Thaumaturgy & effects | 9 | 9 | 124 | 86,902 |
 | World, levels & terrain | 5 | 5 | 140 | 71,634 |
 | Game modes, arena & session | 7 | 7 | 154 | 70,974 |
 | AI & behaviour | 8 | 8 | 111 | 68,734 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 6 | 3,223 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,877** | **970,881** |
+| **Total** | **90** | **90** | **1,869** | **954,014** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 311 | The force effects draw through their own programs: the wave drawn and lit through the blast frame (F188), the barricade through effectfbrcd, the tendrils through effectsmoke with their scroll (F193), a charging blast strip, off-screen arc emitters build nothing, level arcs bind BeamNoise01; FPS rose in every cast scene (vanish 74 to 145); the golden vanish scene changed on purpose. |
 | 2026-11-16 | 310 | The automatic sun is made only in a scene without lights and grid rooms; a fire drives its host geometry children emissive too; each flame row draws with its own fade; the camera wall probe asks the meshes of seen sectors; plant chunks take their room view test; several terrain readings found already live since round 287. |
 | 2026-11-16 | 309 | Stored-contact friction in double with the paired weighted point; the thigh extra turn takes the original epsilon (a bug fix), compares and engine quaternion and decays by lerp plus normalise; hinges are engine quaternions; the grab re-anchor takes exact barycentrics; the drawn matrix is rest basis times particles; foot pitch, limp turns, particle rings and the tree frame colour follow the engine routines; four new oracle leaves identical over 5000 cases; bodies drift from tick 1 in the last bits. |
 | 2026-11-16 | 308 | Unranged lights no longer fall off (the activation sets attenuation only for ranged lights); meshes with render flag 0x800 cull their front faces in the cube shadow pass; the exanima01 retail torch gap was mostly the comparison pose (the documented floor-torch recipe brings walls and far floor to 0.9-1.0 of retail), a near-flame excess remains; the put-out reading corrected (the original zeroes fixture glow, not light intensity). |
