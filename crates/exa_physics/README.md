@@ -839,7 +839,11 @@ the mesh, any other is a 2 cm sphere where it is, tested against the
 piece's box and then the piece's triangles near it (a per-piece grid, as
 the mesh's own tree query hands only the triangles around the sphere) in
 order with the mesh's own sphere and sweep queries (front faces only,
-pushed out to 2 cm); a pushed particle's travel is then shortened by
+pushed out to 2 cm), each on the triangle's mesh record
+(`cloth_level::face_of`: the record builder's normal and plane, its closest
+point; a degenerate triangle skipped) and, for a sweep, the sweep record's
+direction and length, set again from the pushed end (`cloth_level::swept`);
+a pushed particle's travel is then shortened by
 0.1 cm, or cancelled when shorter. A level push (or a level plane's)
 never wakes a cloth. The cloth's countdown reads the squared length of
 its particles' summed velocity (not the tick's step, which carries
@@ -2001,7 +2005,9 @@ running game: `SectorBodies`, every body part in the 600 cm world cell of
 its mesh box's world centre, rebuilt after each body step, and the static
 grid's records with the mesh each was built from
 (`StaticColliders::mesh_of`, `in_world_cell`). `MeshLevel` is the Height
-Query's mesh mode (a grid scene's): the level's answer and those of the body
+Query's mesh mode (a grid scene's); `StaticLevel` the placement's static
+mode (the exit nudge's and the summoned demon's in the original: the static
+meshes alone, no body mesh, no rigid body stand-in). `MeshLevel` takes the level's answer and those of the body
 meshes listed in the nine cells around the query (`height_meshes`: not a
 body out of the world, not a living limb, a dead body's limbs kept), the
 highest winning; the player's ground placement uses it.

@@ -268,6 +268,33 @@ mod tests {
         );
     }
 
+    /// The scene clear asks the simulation for a grid rebuild (its only
+    /// writer of that flag): the teardown puts the scene grid back to the
+    /// default and empties the static grid, and the next level load gives
+    /// the grid its shape again.
+    #[test]
+    fn a_teardown_rebuilds_the_scene_grid() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(LevelChangePlugin)
+            .insert_resource(exa_physics::Physics::default())
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .insert_resource(exa_physics::SceneGrid::AllPairs)
+            .insert_resource(gi_volume::GiState::Off)
+            .insert_resource(nav::NavState::None)
+            .insert_resource(nav::InstalledPathfinder::default());
+        app.update();
+        app.world_mut()
+            .resource_mut::<Messages<LevelChangeRequest>>()
+            .write(LevelChangeRequest::teardown());
+        app.update();
+        assert_eq!(
+            *app.world().resource::<exa_physics::SceneGrid>(),
+            exa_physics::SceneGrid::default()
+        );
+        assert!(app.world().contains_resource::<exa_physics::StaticColliders>());
+    }
+
     /// The level's teardown empties the GI manager's shape list, as the
     /// original's scene clear sets its count to zero: a shape entity that
     /// outlives the level stays alive but is no longer listed, and its later
