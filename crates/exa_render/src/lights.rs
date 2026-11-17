@@ -71,6 +71,23 @@ pub enum LightsSystems {
     Lists,
 }
 
+/// Bevy's range for a light without the original's range flag, metres. The
+/// original's activation leaves such a light's attenuation at 0 (and its
+/// far plane unbounded), so it reaches everywhere at full strength: the
+/// surface shaders give a light at this range or beyond no falloff, and
+/// the range only bounds Bevy's clustering.
+pub const UNRANGED_RANGE: f32 = 500.0;
+
+/// The distance falloff the surface shaders give a point light of Bevy
+/// range `range` at distance `d`: `max(1 − d/range, 0)⁴`, or 1 for an
+/// unranged light (`range` at or past [`UNRANGED_RANGE`]).
+pub fn falloff(d: f32, range: f32) -> f32 {
+    if range >= UNRANGED_RANGE {
+        return 1.0;
+    }
+    (1.0 - d / range.max(1e-3)).max(0.0).powi(4)
+}
+
 /// The most lights a mesh is lit by, as in the original.
 pub const MAX_MESH_LIGHTS: usize = 6;
 
@@ -109,6 +126,13 @@ pub struct LightId(pub u32);
 /// [`MAX_MESH_LIGHTS`]). Meshes without it are lit by every light in reach.
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MeshLights(pub Vec<u32>);
+
+/// A mesh whose render flags carry `0x800`: the cube shadow pass culls its
+/// front faces (draws its back ones) instead of its back faces, as the
+/// original's per-face caster draw switches the cull face by the bit. The
+/// colour pass does not read it. No shipped mesh sets the bit.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShadowCullFront;
 
 /// A mesh's shadow-bias level (see [`crate::shadow_bias`]).
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -393,6 +417,13 @@ fn upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The surface shaders' unranged threshold is the Rust constant.
+    #[test]
+    fn the_shaders_unranged_range_is_the_crates() {
+        let src = include_str!("shading.wesl");
+        assert!(src.contains(&format!("const UNRANGED_RANGE: f32 = {UNRANGED_RANGE:.1};")));
+    }
 
     #[test]
     fn the_shadow_bias_scales_follow_the_render_flags() {

@@ -2787,11 +2787,14 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   depth bias (0.08) in its depth-bias field, in steps of 1e-5: the shader
   recovers it as round((bias − 0.08)/1e-5). The field stays a valid bias
   in case Bevy's own point shadow maps are ever sampled; they are off.
-  Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself.
+  Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself;
+  an unranged light gets Bevy range 500 m, which only bounds the clustering:
+  the shaders give it no falloff (`exa_render::lights::falloff`).
   Point lights also keep the original's 3 cm shadow-map near plane, not
   Bevy's 10 cm default: at 10 cm a torch's close-range character shadow
   smeared over the floor instead of following the body.
-- Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
+- Lights cast shadows from cube maps (a mesh with render flag `0x800` casts
+  its back faces into them, front faces culled; no shipped mesh sets it) (512² per face; the sun's map is 4096²
   at the top shadow detail). The allocator picks the class by the light's
   kind (2 directional, else cube) and the size from the shadow detail (a
   zero detail takes the user's setting, counted as 5 above 4) plus the

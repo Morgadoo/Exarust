@@ -1,0 +1,2 @@
+- [x] Unranged lights do not fall off in the surface shaders (test: an_unranged_light_does_not_fall_off, the_shaders_unranged_range_is_the_crates)
+- [x] Render flag 0x800 front-culls cube casters (test: a_front_culled_caster_draws_its_back_faces)
