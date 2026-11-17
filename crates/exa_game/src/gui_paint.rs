@@ -1113,7 +1113,9 @@ fn glyph_texture(atlas: &exa_ui::icon_atlas::IconAtlas) -> Option<exa_ui::gui_dr
 /// the edit state), then the text. The drawn run is the one the box's
 /// creation fits into its span (the edit unit's run fit from the start,
 /// [`exa_ui::text_edit::scroll_view`]); the text sits at the label origin
-/// ([`exa_ui::controls::combo_text_origin`]) and goes through the edit
+/// ([`exa_ui::controls::combo_text_origin`]). A hovered box (state bits
+/// 0xf0000 at 0x10000) draws its whole text there through the skin's
+/// glowing text ([`push_glow_text`]); any other goes through the edit
 /// unit's run draw in slot `0xe4` (the whole-run draw's `0xd8` for state
 /// bit 0x10, the selection only with state bit 0x400). The frame behind it
 /// is the skin's, which the caller draws. Without the glyph atlas the
@@ -1174,6 +1176,17 @@ pub(crate) fn paint_combo_front(
         font.ascent,
         font.glyph.1,
     );
+    if draw.editing {
+        push_glow_text(
+            &mut painted,
+            font,
+            font_texture,
+            words.text,
+            (at.x, at.y),
+            palette,
+        );
+        return painted;
+    }
     let whole = words.state & 0x10 != 0;
     let show_selection = words.state & 0x400 != 0;
     let edit = draw_edit(
@@ -1557,6 +1570,49 @@ mod tests {
         assert_eq!(
             lit.layers[1].batch.vertices[0].y,
             hovered.layers[1].batch.vertices[0].y + 1.0
+        );
+    }
+
+    /// A hovered combo box draws its whole text through the skin's
+    /// glowing text: the caption in the label group's eighth shade and
+    /// four copies in the highlight group's first under the additive
+    /// blend; idle, one run in slot 0xe4 (the label group's seventh).
+    #[test]
+    fn a_hovered_combo_box_text_glows() {
+        let font = exa_ui::gui_font::gui_level(1).main;
+        let palette = shown_palette(1.0);
+        let rect = GuiRect::new(10, 20, 160, 24);
+        let paint = |state: u32| {
+            paint_combo_front(
+                rect,
+                ComboWords {
+                    style: 0x300,
+                    state,
+                    pad: 1,
+                    text: b"Anything",
+                    view: None,
+                },
+                4,
+                &palette,
+                font,
+                Some((256, 256)),
+                None,
+            )
+        };
+        let idle = paint(0);
+        assert_eq!(idle.layers.len(), 1);
+        assert_eq!(idle.layers[0].batch.vertices[0].ink, text_slot(&palette, 0xe4));
+        let hovered = paint(HOVERED);
+        assert_eq!(hovered.layers.len(), 5);
+        assert_eq!(hovered.layers[0].batch.vertices[0].ink, palette.text[7]);
+        for glow in &hovered.layers[1..] {
+            assert_eq!(glow.batch.vertices[0].ink, palette.highlight[0]);
+            assert_eq!(glow.batch.blend, 0x201);
+        }
+        // The glow sits where the plain run starts.
+        assert_eq!(
+            (hovered.layers[0].batch.vertices[0].x, hovered.layers[0].batch.vertices[0].y),
+            (idle.layers[0].batch.vertices[0].x, idle.layers[0].batch.vertices[0].y)
         );
     }
 

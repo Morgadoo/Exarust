@@ -172,6 +172,24 @@ pub mod state {
     pub const HELD: u32 = 0x20_0000;
 }
 
+/// The style bit that lets the pad's focus reach a record (the button,
+/// check box, image button and trackbar classes carry it).
+pub const PAD_FOCUS_STYLE: u32 = 0x0040_0000;
+
+/// The classes the pad's focus can land on: the four shipped controls
+/// (button, check box, image button, trackbar) and the two classes
+/// registered later as 0x12 and 0x17.
+pub const PAD_FOCUS_CLASSES: [u16; 6] = [1, 2, 3, 4, 0x12, 0x17];
+
+/// Whether the pad can reach a record of a form that is on the focus
+/// stack, as the original's reach test answers for a record id: neither
+/// hidden nor disabled (state 0x110 clear), carrying [`PAD_FOCUS_STYLE`],
+/// and of a [`PAD_FOCUS_CLASSES`] class. The form's own codes (a record
+/// id of 0 or less) and the stack walk are the caller's.
+pub fn pad_reaches(c: &Control) -> bool {
+    c.state & 0x110 == 0 && c.style & PAD_FOCUS_STYLE != 0 && PAD_FOCUS_CLASSES.contains(&c.class)
+}
+
 /// The messages a control answers.
 pub mod message {
     pub const DRAW_BACK: u32 = 0x1;
@@ -1507,6 +1525,32 @@ pub fn clear_classes(classes: &mut Vec<ControlClass>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pad reaches a shown, enabled record of a focusable class with
+    /// the pad style bit; a label, a hidden or disabled record, or one
+    /// without the bit is skipped.
+    #[test]
+    fn the_pad_reaches_only_shown_enabled_focusable_records() {
+        let button = Control::new(1, 0, 0, 10, 10);
+        assert!(pad_reaches(&button));
+        assert!(pad_reaches(&Control::new(4, 0, 0, 10, 10)));
+        assert!(!pad_reaches(&Control::new(5, 0, 0, 10, 10)));
+        let mut c = button.clone();
+        c.state = state::DISABLED;
+        assert!(!pad_reaches(&c));
+        let mut c = button.clone();
+        c.state = 0x100;
+        assert!(!pad_reaches(&c));
+        let mut c = button.clone();
+        c.style &= !PAD_FOCUS_STYLE;
+        assert!(!pad_reaches(&c));
+        let mut c = Control::new(0x17, 0, 0, 10, 10);
+        c.style = PAD_FOCUS_STYLE;
+        assert!(pad_reaches(&c));
+        c.class = 0x13;
+        assert!(!pad_reaches(&c));
+    }
+
 
     #[test]
     fn the_item_classes_come_after_the_shipped_ones() {

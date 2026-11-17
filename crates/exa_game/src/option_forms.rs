@@ -204,16 +204,22 @@ impl OptionForms {
 
 /// A combo box's drop-down list, opened under its owner record at
 /// `owner` (screen x, y, width, height) with `selected` (1-based) chosen:
-/// the list takes its opener's form skin. The line skin's opening sets
-/// bit 1 of its mark word, and the opener then clears the list's panel
-/// frame style (0x80), so the skin draws only its wide window frame, and
-/// lifts the list by a unit less one. The list is placed below the owner,
-/// or above it when the screen has no room ([`exa_ui::controls::drop_down_place`]).
+/// the list takes its opener's form skin and the owner's width. The line
+/// skin's opening sets bit 1 of its mark word, and the opener then clears
+/// the list's panel frame style (0x80), so the skin draws only its wide
+/// window frame, and lifts the list by a unit less one. The list's layout
+/// gives its height (sixteen rows at most, a longer list scrolls), and the
+/// GUI's child placement ([`exa_ui::place_form`]) puts it on the screen:
+/// one pixel over the owner's bottom edge when it fits there, else with
+/// its bottom one pixel under the owner's top; at the owner's x unless
+/// the list would leave the screen's right edge, then flush with that
+/// edge less two (the owner's right edge is tried first). The list is not
+/// cut to the room left, as the combo box's open does not cut it.
 pub(crate) fn open_drop_list(
     items: Vec<Vec<u8>>,
     owner: (i32, i32, i32, i32),
     unit: i32,
-    screen_h: i32,
+    screen: (i32, i32),
     selected: i32,
 ) -> (DropDownList, Rect) {
     let (x, mut top, w, h) = owner;
@@ -224,30 +230,31 @@ pub(crate) fn open_drop_list(
         top -= unit - 1;
     }
     let layout = list.lay_out();
-    let place = exa_ui::controls::drop_down_place(
-        (x, top, w, h),
+    let (px, py) = exa_ui::place_form(
+        screen,
+        w,
         layout.height,
-        list.border,
-        layout.row,
-        screen_h,
+        exa_ui::PlaceRequest {
+            desired_x: x,
+            fallback_x: x + w,
+            desired_y: top + h - 1,
+            fallback_bottom: top + 1,
+        },
     );
     list.select(selected, 0);
     info!(
-        "combo list opens at ({}, {}) {}x{}, rows {} px from y {}",
-        place.x,
-        place.y,
-        place.w,
-        place.h,
+        "combo list opens at ({px}, {py}) {w}x{}, rows {} px from y {}",
+        layout.height,
         layout.row,
-        place.y + list.border
+        py + list.border
     );
     (
         list,
         Rect {
-            x: place.x,
-            y: place.y,
-            w: place.w,
-            h: place.h,
+            x: px,
+            y: py,
+            w,
+            h: layout.height,
         },
     )
 }
@@ -505,7 +512,7 @@ impl HubWindows {
     /// row selected.
     fn open_list(&mut self, window: FormWindow, record: usize) {
         let unit = self.unit_or_4();
-        let screen_h = self.task.screen.1;
+        let screen = self.task.screen;
         let Some(form) = self.forms.get(window) else {
             return;
         };
@@ -519,7 +526,7 @@ impl HubWindows {
             items.iter().map(|item| item.as_bytes().to_vec()).collect(),
             (rect.left, rect.top, c.w, c.h),
             unit,
-            screen_h,
+            screen,
             form.amounts[record] as i32,
         );
         self.forms.options.popup = Some(Popup::List {
@@ -2418,6 +2425,30 @@ mod tests {
         );
     }
 
+    /// The combo box's list is placed by the GUI's child placement: a
+    /// pixel over the owner's bottom edge, or with its bottom a pixel under
+    /// the owner's top when the screen has no room below; flush with the
+    /// right edge less two when it would leave the screen; never cut.
+    #[test]
+    fn a_combo_list_opens_over_the_owners_edge_or_above_it() {
+        let rows = |n: usize| (0..n).map(|i| format!("row {i}").into_bytes()).collect();
+        let mark = exa_ui::skin::open_skin(4, 0, true).map_or(0, |skin| skin.mark);
+        let lift = if mark & 1 != 0 { 4 - 1 } else { 0 };
+        let (list, rect) = open_drop_list(rows(3), (100, 200, 160, 24), 4, (1280, 720), 1);
+        let h = 3 * 4 * exa_ui::drop_down::ROW_UNITS + 2 * list.border;
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (100, 200 - lift + 24 - 1, 160, h));
+        // No room below: above the owner, its bottom at the owner's top + 1.
+        let (_, rect) = open_drop_list(rows(3), (100, 700, 160, 24), 4, (1280, 720), 1);
+        assert_eq!(rect.y + rect.h, 700 - lift + 1);
+        // Twenty rows are sixteen tall and are not cut to the room left.
+        let (list, rect) = open_drop_list(rows(20), (100, 400, 160, 24), 4, (1280, 720), 1);
+        assert_eq!(rect.h, 16 * 4 * exa_ui::drop_down::ROW_UNITS + 2 * list.border);
+        assert_eq!(rect.y + rect.h, 400 - lift + 1);
+        // Past the right edge: flush with it less two.
+        let (_, rect) = open_drop_list(rows(3), (1200, 200, 160, 24), 4, (1280, 720), 1);
+        assert_eq!(rect.x, 1280 - 160 - 2);
+    }
+
     #[test]
     fn the_merchant_lists_set_the_stock_type_and_rank() {
         let mut windows = windows();
@@ -2741,9 +2772,10 @@ mod tests {
             panic!("no list");
         };
         // The line skin's opener cleared the panel style and lifted the
-        // list by a unit less one.
+        // list by a unit less one; the list overlaps the owner's bottom
+        // edge by a pixel.
         assert_eq!(list.style, 0x18);
-        assert_eq!(rect.y, combo.top - 3 + combo.height());
+        assert_eq!(rect.y, combo.top - 3 + combo.height() - 1);
         let quads = drawn_quads(windows);
         // The window frame's top-left corner arm reaches two units out.
         assert!(window_corner_at(&quads, (rect.x - 8, rect.y - 8)));

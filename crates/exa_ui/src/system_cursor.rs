@@ -51,24 +51,26 @@ pub enum SlotImage {
 }
 
 impl SlotImage {
-    /// The slots as the original loads them when its executable carries no
-    /// cursor resources of its own (the shipped one carries none): arrow,
-    /// up-down, left-right, the two diagonals, hand, wait, four-way move,
-    /// text beam, cross, an empty "add" slot (only the resource set fills
-    /// it) and the not-allowed sign.
+    /// The slots as the original loads them. Its start-up sets the flag
+    /// that sends the loader to the executable's own cursor resources for
+    /// the arrow, up-down, left-right, the two diagonals, the cross and the
+    /// "add" slot (0-4, 9 and 10); the shipped executable carries none of
+    /// them, so those slots load no pointer and showing one hides it. The
+    /// hand, wait, four-way move, text beam and not-allowed sign (5-8, 11)
+    /// are the platform's. The menu cursor later fills slots 0 and 8.
     pub fn system_slots() -> [SlotImage; SLOTS] {
         use SystemCursorIcon as S;
         [
-            SlotImage::System(S::Default),
-            SlotImage::System(S::NsResize),
-            SlotImage::System(S::EwResize),
-            SlotImage::System(S::NwseResize),
-            SlotImage::System(S::NeswResize),
+            SlotImage::Empty,
+            SlotImage::Empty,
+            SlotImage::Empty,
+            SlotImage::Empty,
+            SlotImage::Empty,
             SlotImage::System(S::Pointer),
             SlotImage::System(S::Wait),
             SlotImage::System(S::Move),
             SlotImage::System(S::Text),
-            SlotImage::System(S::Crosshair),
+            SlotImage::Empty,
             SlotImage::Empty,
             SlotImage::System(S::NotAllowed),
         ]
@@ -217,6 +219,8 @@ pub fn build_menu_cursor(
 struct MenuCursor {
     built_for: Option<i32>,
     image: Option<(Handle<Image>, (u16, u16))>,
+    /// The transparent pointer an empty slot shows, made on first use.
+    empty: Option<Handle<Image>>,
 }
 
 pub(crate) fn plugin(app: &mut App) {
@@ -294,12 +298,15 @@ fn build_menu_cursor_for_screen(
 
 /// Sets the window's pointer image from the slot in force, as the
 /// original's window does when the pointer enters its client area. A slot
-/// with no image (or the menu cursor before it is built) leaves the
-/// platform's arrow.
+/// with no image (the menu cursor's slots before it is built included)
+/// sets no pointer, as the original's empty handle does: the window shows
+/// a fully transparent one-pixel image, which hides the pointer without
+/// touching the window's own visibility switch.
 fn apply_pointer(
     mut commands: Commands,
     table: Res<CursorTable>,
-    menu: Res<MenuCursor>,
+    mut menu: ResMut<MenuCursor>,
+    mut images: ResMut<Assets<Image>>,
     windows: Query<(Entity, Option<&CursorIcon>), With<PrimaryWindow>>,
 ) {
     let Ok((window, current)) = windows.single() else {
@@ -316,15 +323,37 @@ fn apply_pointer(
                 hotspot: *hotspot,
                 ..default()
             })),
-            None => CursorIcon::System(SystemCursorIcon::Default),
+            None => empty_pointer(&mut menu, &mut images),
         },
-        // Guess: winit has no empty pointer image; the slot falls back to
-        // the platform's arrow (the shipped game never shows this slot).
-        SlotImage::Empty => CursorIcon::System(SystemCursorIcon::Default),
+        SlotImage::Empty => empty_pointer(&mut menu, &mut images),
     };
     if current != Some(&icon) {
         commands.entity(window).insert(icon);
     }
+}
+
+/// The pointer of an empty slot: one transparent pixel.
+fn empty_pointer(menu: &mut MenuCursor, images: &mut Assets<Image>) -> CursorIcon {
+    let handle = menu
+        .empty
+        .get_or_insert_with(|| {
+            images.add(Image::new(
+                Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                vec![0; 4],
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::MAIN_WORLD,
+            ))
+        })
+        .clone();
+    CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
+        handle,
+        ..default()
+    }))
 }
 
 #[cfg(test)]
@@ -335,21 +364,44 @@ mod tests {
     fn the_table_holds_the_platform_pointers_in_the_original_order() {
         let table = CursorTable::default();
         assert_eq!(table.shown(), 0);
-        assert_eq!(table.slot(0), SlotImage::System(SystemCursorIcon::Default));
-        assert_eq!(table.slot(1), SlotImage::System(SystemCursorIcon::NsResize));
+        // The resource slots load nothing from the shipped executable.
+        for slot in [0, 1, 2, 3, 4, 9, 10, 12] {
+            assert_eq!(table.slot(slot), SlotImage::Empty, "slot {slot}");
+        }
         assert_eq!(table.slot(5), SlotImage::System(SystemCursorIcon::Pointer));
+        assert_eq!(table.slot(6), SlotImage::System(SystemCursorIcon::Wait));
         assert_eq!(table.slot(7), SlotImage::System(SystemCursorIcon::Move));
         assert_eq!(table.slot(8), SlotImage::System(SystemCursorIcon::Text));
-        assert_eq!(
-            table.slot(9),
-            SlotImage::System(SystemCursorIcon::Crosshair)
-        );
-        assert_eq!(table.slot(10), SlotImage::Empty);
         assert_eq!(
             table.slot(11),
             SlotImage::System(SystemCursorIcon::NotAllowed)
         );
-        assert_eq!(table.slot(12), SlotImage::Empty);
+    }
+
+    /// An empty slot shows the transparent pointer, the menu slots the
+    /// menu cursor once it is built.
+    #[test]
+    fn an_empty_slot_hides_the_pointer_image() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<CursorTable>()
+            .init_resource::<MenuCursor>()
+            .add_systems(Update, apply_pointer);
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        app.update();
+        let icon = app.world().get::<CursorIcon>(window).cloned();
+        let Some(CursorIcon::Custom(CustomCursor::Image(empty))) = icon else {
+            panic!("{icon:?}");
+        };
+        let images = app.world().resource::<Assets<Image>>();
+        let image = images.get(&empty.handle).unwrap();
+        assert_eq!(image.data.as_deref(), Some(&[0u8; 4][..]));
+        app.world_mut().resource_mut::<CursorTable>().show(5);
+        app.update();
+        assert_eq!(
+            app.world().get::<CursorIcon>(window),
+            Some(&CursorIcon::System(SystemCursorIcon::Pointer))
+        );
     }
 
     #[test]
@@ -369,7 +421,7 @@ mod tests {
         assert_eq!(
             table.show(2),
             PointerChange::Show {
-                image: SlotImage::System(SystemCursorIcon::EwResize),
+                image: SlotImage::Empty,
                 reveal: false
             }
         );
@@ -387,10 +439,7 @@ mod tests {
         table.install(40, SlotImage::Menu);
         assert_eq!(table.client_image(), Some(SlotImage::Menu));
         assert_eq!(table.slot(8), SlotImage::Menu);
-        assert_eq!(
-            table.slot(9),
-            SlotImage::System(SystemCursorIcon::Crosshair)
-        );
+        assert_eq!(table.slot(9), SlotImage::Empty);
     }
 
     /// A 2 × 2 picture, rows bottom-up, built for a 1080-pixel screen: a
