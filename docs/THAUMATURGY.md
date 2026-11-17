@@ -1429,17 +1429,20 @@ stand in for. The vanish's show and hide are still the effect
 class's own, not applied to Exarust's drawn body.
 
 The displacement tendrils (a constant displacement's wisps and a phased
-blow's strand) draw with their own record, `_TDispMat01`, which the
-executable builds in code: emissive (0.25, 0.25, 0.25), opacity 0.5, blend
-word 0x163 (ONE, ONE_MINUS_SRC_ALPHA), shading flags 0x480018 (unlit,
-emissive, two-sided), no shadows, and one emissive layer, `FlameletsA3`.
-Through the engine's surface program builder (`exa-tool shader --record
-<file> --vertex-colors` expands it) that record is `shading_f` with
-`FragColor = vrCol · EmiTex(vrTex) · MatDif.a` and `vrCol = vCol/255`, so
-the strip's first coordinate set (the side, 0 or 1, and the texture
-distance along the strand) and its colour bytes draw it; its second set
-(the light share and the running distance) is uploaded but never read
-(`exa_render::force_effects::DispTendrilMaterial`, `disp_tendril.wesl`).
+blow's strand) carry their own record, `_TDispMat01`, which the executable
+builds in code: emissive (0.25, 0.25, 0.25), opacity 0.5, blend word 0x163
+(ONE, ONE_MINUS_SRC_ALPHA), shading flags 0x480018 (unlit, emissive,
+two-sided), no shadows, and one emissive layer, `FlameletsA3`. The record's
+draw method does not use the surface program: it calls the tendril
+geometry's program set-up, which builds `effectforce_v` with
+`effectsmoke_f`, binds `EmiTex` on unit 0 (the record's `FlameletsA3`) and
+`TexOfs = (0, scroll, 1)` (the effect's scroll between its last two ticks,
+the 1 written by its add-to-world), and draws through that program. The
+smoke is black with its alpha, read from the strip's colour bytes, its
+first coordinate set (the side and the texture distance) and its second
+(the light share and the running distance)
+(`exa_render::force_effects::ForceRibbonMaterial::smoke`, drawn by
+`thaum::live::draw_wisps`).
 The original's tendril draw repeats the strip once per super-sampling
 sub-frame with that sub-frame's colour mask and its composite matrix,
 whose depth term it shifts by `((i + first) + ½)·0.002 / count − 0.001`
@@ -1451,18 +1454,22 @@ unit makes takes `_ElecMat01`, a record in the executable (emissive 1,
 opacity 1, blend word 0x161, shading flags 0x480018) whose one emissive
 layer is `BeamNoise01`; the program is bound with EleCol (0.65, 0.4, 1)
 and EdgCol (0.15, 0.2, 0.4) and each draw uploads TexOfs = (0, the
-emitter's shown scroll). The barricade's mesh comes from its own builder
-but is drawn with `exa_render::glow::GlowMaterial`, an additive stand-in:
-`effectfbrcd` is not ported. The displacement tendril's `effectforce_v` /
-`effectsmoke_f` pair is ported as `ForceRibbonMaterial::smoke` (no live
-tendril draws it yet). The blast-family and torrent ribbons and the shell
+emitter's shown scroll). An emitter whose node is off screen
+(the renderer's drawn bit clear) builds no scroll, ribbon or light points
+and puts no tendril origin back that frame; its voxel light and hum still
+follow. The barricade's mesh comes from its own builder and is drawn
+through `effectfbrcd_v`/`effectfbrcd_f`
+(`exa_render::force_effects::BarricadeMaterial`): the slab's halves slid,
+never scaled (the program shapes the height and the ends from `BExt`).
+The blast's and the wave's strip is built in every state (the classes
+share the frame), a charging chunk in the charge's colour, and the wave
+carries the blast's GI emissive. The blast-family and torrent ribbons and the shell
 aura draw with their own ported programs (`effectforce_f`,
 `effecttorrent_f`, `effectshell`; The shaped-force aura). The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to
 the grid (`exa_world::nav::stamp`); a standing barricade carries an
 `effects::danger::Hazard` for its wall, which no AI reads yet. The domes
-and the wave are not drawn yet (the materials' pass plans are computed but
-no renderer binds them). The rain is run by the scene's weather
+draw with their own programs (`effects::dome_draw`). The rain is run by the scene's weather
 (`exa_game::weather`) and drawn once over the frame through
 `exa_render::rain`; the original's per-sub-frame and reflected passes (its
 tilt scaled by `sqrt(field/70)`, placed at the drop box's centre and

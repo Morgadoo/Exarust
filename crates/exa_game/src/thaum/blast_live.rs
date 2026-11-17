@@ -43,8 +43,8 @@
 //!   [inf: a part built without a node mesh answers with its collision
 //!   spheres; the knock is a knockback step.]
 //! - **Release**: the release alerts the caster's known characters
-//!   ([`alert_amount`]); the thrown ribbon draws with `effectforce_f`
-//!   ([`draw_blasts`]); the charge loop and the release play
+//!   ([`alert_amount`]); the ribbon draws with `effectforce_f` in every
+//!   state, a charging blast's in the charge's colour ([`draw_blasts`]); the charge loop and the release play
 //!   ([`super::blast_sound`]).
 //!
 //! - **The struck body** ([`loosen_pins`]): after each part's knock, the
@@ -991,7 +991,9 @@ pub(crate) fn tick_blasts(
 
 /// Draws every blast's ribbon, built in the camera's space each frame, as
 /// the original's linked geometry draw does, with `effectforce_f` and the
-/// frame's `TexOfs` ([`super::effect_draw::show_ribbon`]).
+/// frame's `TexOfs` ([`super::effect_draw::show_ribbon`]). The frame builds
+/// the strip in every state: while the blast charges its chunks draw in the
+/// charge's colour ([`crate::effects::blast::Blast::chunk_colour`]).
 #[allow(clippy::type_complexity)]
 pub(crate) fn draw_blasts(
     mut commands: Commands,
@@ -1009,37 +1011,70 @@ pub(crate) fn draw_blasts(
     let Some(camera) = cameras.iter().next() else {
         return;
     };
-    let view = ViewFrame {
-        x: camera.right().as_vec3(),
-        y: camera.up().as_vec3(),
-        z: camera.back().as_vec3(),
-        at: camera.translation() * CM,
-    };
+    let view = camera_frame(camera);
     let alpha = time.overstep_fraction();
     for (entity, live, drawn) in &mut blasts {
-        // The ribbon draws the thrown trail; while the blast charges, the
-        // original's entity object draws the chunks and the trail has no
-        // step to sample (a zero step would divide the widths by zero).
-        if live.blast.state != THROWN {
-            continue;
-        }
-        let ribbon = live.blast.ribbon(alpha, &view);
-        if ribbon.is_empty() {
-            continue;
-        }
-        let mesh = mesh_of_ribbon(&ribbon);
-        super::effect_draw::show_ribbon(
+        draw_blast_ribbon(
             &mut commands,
             entity,
+            &live.blast,
             drawn,
-            mesh,
-            live.blast.frame(alpha).texture_offset,
-            false,
+            alpha,
+            &view,
             &noise,
             &mut meshes,
             &mut materials,
         );
     }
+}
+
+/// The camera's frame in the effects' centimetres.
+pub(crate) fn camera_frame(camera: &GlobalTransform) -> ViewFrame {
+    ViewFrame {
+        x: camera.right().as_vec3(),
+        y: camera.up().as_vec3(),
+        z: camera.back().as_vec3(),
+        at: camera.translation() * CM,
+    }
+}
+
+/// The shared frame's strip (the blast's and the wave's, which share the
+/// class's frame): built from every live chunk in whatever state the effect
+/// is in. A strip with no live chunk keeps the last one drawn, as the
+/// original's node keeps its buffers; a strip whose points are not finite
+/// (a chunk whose trail has no length yet: the original's divisor is zero
+/// and its triangles are NaN, which draw nothing) is not built this frame either.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_blast_ribbon(
+    commands: &mut Commands,
+    entity: Entity,
+    blast: &crate::effects::blast::Blast,
+    drawn: Option<(&EffectMesh, &super::effect_draw::RibbonMaterial)>,
+    alpha: f32,
+    view: &ViewFrame,
+    noise: &super::effect_draw::ForceNoise,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<exa_render::force_effects::ForceRibbonMaterial>,
+) {
+    let ribbon = blast.ribbon(alpha, view);
+    if ribbon.is_empty() {
+        return;
+    }
+    if !ribbon.positions.iter().all(|p| p.is_finite()) {
+        return;
+    }
+    let mesh = mesh_of_ribbon(&ribbon);
+    super::effect_draw::show_ribbon(
+        commands,
+        entity,
+        drawn,
+        mesh,
+        blast.frame(alpha).texture_offset,
+        false,
+        noise,
+        meshes,
+        materials,
+    );
 }
 
 /// Bodies for the strike tests: rigid bodies of a few parts scattered about.
