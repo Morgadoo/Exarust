@@ -242,6 +242,9 @@ fn setup(
             done: false,
         });
     }
+    if let Some(name) = &options.hub_emblem {
+        commands.insert_resource(exa_game::hub_forms::HubEmblem(Some(name.clone())));
+    }
     if let Some(((name, kit), more)) = options.hub_employee_kit.split_first() {
         commands.insert_resource(exa_game::hub_forms::HubEmployeeKit {
             name: name.clone(),
@@ -611,8 +614,12 @@ fn apply_level_change(
     commands.remove_resource::<PendingLighting>();
     commands.remove_resource::<exa_ui::LoadingStatus>();
     // The old level's music, ambience and reverb end with its world. The new
-    // level sets its own when it is in.
-    commands.insert_resource(exa_audio::LevelMusic(String::new()));
+    // level sets its own when it is in. A story door's music is the
+    // transition's: it stopped the track when the destination's differs,
+    // and the story hook keeps a track that plays on.
+    if !door {
+        commands.insert_resource(exa_audio::LevelMusic(String::new()));
+    }
     commands.insert_resource(exa_audio::LevelAmbience(None));
     commands.insert_resource(exa_audio::LevelAmbienceBed::default());
     commands.remove_resource::<exa_audio::LevelMusicStart>();
@@ -1100,6 +1107,13 @@ fn play_level(
             exa_audio::music_volume_for_level(name),
         )
     };
+    // A story level's track is the story hook's, which plays only a track
+    // that differs from the one playing.
+    if exa_game::arena_match::arena_index(name).is_none() && exa_audio::is_story_level(name) {
+        commands.insert_resource(exa_audio::StoryMusicHook);
+    } else {
+        commands.remove_resource::<exa_audio::StoryMusicHook>();
+    }
     commands.insert_resource(exa_audio::LevelMusic(track));
     commands.insert_resource(exa_audio::LevelMusicVolume(volume));
     // An arena match: a duel with `--opponent`, or the match the hub's
@@ -4726,6 +4740,9 @@ fn spawn_placed_characters(
                 exa_ai::brain::CharacterId(c.record.id),
                 exa_ai::combatant::Combatant::default(),
             ));
+            if let Some(former) = exa_ai::roles::FormerLevel::of_origin(c.record.origin) {
+                commands.entity(model).insert(former);
+            }
             if physical {
                 commands.entity(model).insert((
                     exa_ai::Mind::new(0.0),

@@ -167,6 +167,10 @@ pub struct Npc {
     pub routine: Routine,
     /// Its idle activity.
     pub search: Option<Search>,
+    /// The idle activity's last tick answered busy (the follow state's
+    /// busy flag): the target pass starts its notice score at the
+    /// activity's floor ([`crate::search::NOTICE_FLOOR`]).
+    pub activity_busy: bool,
     /// Its record's four traits, −100 to 100.
     pub traits: [f32; 4],
     /// What it derives from its record.
@@ -397,6 +401,8 @@ impl Npc {
     /// it forgets are the game's search state's (a new body starts with
     /// none). Returns whether there was an activity to restart.
     pub fn restart_idle_activity(&mut self) -> bool {
+        // The restart clears the busy byte before it asks the activity.
+        self.activity_busy = false;
         match self.search.as_mut() {
             Some(search) => {
                 search.restart();
@@ -457,6 +463,7 @@ impl Npc {
             applied: None,
             routine: Routine::wait(),
             search: None,
+            activity_busy: false,
             traits,
             personality: None,
             fighting_base: 0.0,
@@ -742,7 +749,10 @@ impl Npc {
                 },
                 asleep,
                 in_combat,
-                attended: None,
+                // A busy idle activity sets the notice floor the pass
+                // starts from; the goal entity under the pick replaces it.
+                attended: (self.activity_busy && self.search.is_some())
+                    .then_some(crate::search::NOTICE_FLOOR),
                 scripted: goal_sighting,
                 goal: self.goal.map(|g| g.id),
                 cursor: self.cursor,
@@ -945,6 +955,8 @@ struct Sensed {
     speed: f32,
     contacts: Vec<Contact>,
     roles: Option<Roles>,
+    /// The level it left with the player and its id there.
+    former: Option<(u32, u32)>,
     /// Its race word carries the AI bit, the ally sense's mark of a fellow
     /// AI character ([`Npc::race_ai`]).
     ai: bool,
@@ -1013,6 +1025,7 @@ pub fn perceive_all(
                 Option<&StateFlags>,
                 Option<&combatant::PlayerContacts>,
                 Option<&combatant::MindPowers>,
+                Option<&roles::FormerLevel>,
             ),
         )>,
         Query<(
@@ -1055,7 +1068,7 @@ pub fn perceive_all(
                 child,
                 npc,
                 warded,
-                (locomotor, flags, player_contacts, powers),
+                (locomotor, flags, player_contacts, powers, former),
             )| {
                 let masked = powers.and_then(|p| p.mask);
                 let phase = anim
@@ -1105,6 +1118,7 @@ pub fn perceive_all(
                         (None, None) => Vec::new(),
                     },
                     roles: roles.cloned(),
+                    former: roles::FormerLevel::pair(former),
                     ai: npc.is_some_and(|n| n.race_ai),
                 }
             },
@@ -1248,7 +1262,7 @@ pub fn perceive_all(
                     let partner = Partner {
                         id: sensed.character_id,
                         roles: theirs,
-                        former: None,
+                        former: sensed.former,
                     };
                     let rating = roles::attitude(&db.book, roles, relations, &partner, db.locale);
                     Attitude {
@@ -1273,7 +1287,7 @@ pub fn perceive_all(
                         let partner = Partner {
                             id: third.character_id,
                             roles: their_roles,
-                            former: None,
+                            former: third.former,
                         };
                         Some((
                             third.entity,
@@ -3386,6 +3400,57 @@ mod tests {
         let p = npc.personality.unwrap();
         assert!((p.skill - 0.5).abs() < 1e-6 && (p.courage - 0.7).abs() < 1e-6);
         assert_eq!(roll, 1);
+    }
+
+    /// A busy idle activity raises the notice the pass starts from to the
+    /// search's floor: a character noticed a little is not attended while
+    /// the search works, and is once it is idle.
+    #[test]
+    fn a_busy_search_ignores_a_small_notice() {
+        let sight = contacts::FoeSight {
+            foe: None,
+            sees_foe: false,
+            foe_point: bevy::math::Vec3::ZERO,
+            foe_ground_y: 0.0,
+            foe_room: 0,
+            focus: None,
+        };
+        let seen = contacts::Sighting {
+            contact: ContactRecord {
+                id: 1,
+                noticed: 2.0,
+                ..ContactRecord::default()
+            },
+            character: true,
+            position_cm: bevy::math::Vec3::ZERO,
+            room: -1,
+        };
+        let pass = |busy: bool| {
+            let mut npc = Npc::new([0.0; 4]);
+            npc.integration.active = true;
+            npc.search = Some(Search::new());
+            npc.activity_busy = busy;
+            let mut roll = 7;
+            npc.run_pass(
+                std::slice::from_ref(&seen),
+                sight,
+                &|_| 1.0e6,
+                false,
+                false,
+                (1.0, 1.0),
+                false,
+                0,
+                &mut roll,
+                &FleePlace::default(),
+            );
+            npc.pass.attention
+        };
+        assert_eq!(pass(true), None);
+        assert_eq!(pass(false), Some(1));
+        let mut npc = Npc::new([0.0; 4]);
+        npc.activity_busy = true;
+        npc.restart_idle_activity();
+        assert!(!npc.activity_busy);
     }
 
     /// The search's goal entity in the target pass: while the pick flag

@@ -1832,7 +1832,7 @@ pub(crate) struct Look<'a> {
 }
 
 impl<'a> Look<'a> {
-    fn new(
+    pub(crate) fn new(
         fade: f32,
         unit: i32,
         textures: &'a GuiTextures,
@@ -2649,6 +2649,25 @@ type HubDrawExtras<'w> = (
     Option<Res<'w, bevy::diagnostic::FrameCount>>,
 );
 
+/// The Company Status form's emblem: the company's emblem 48 units
+/// square, centred across the form's client and four units down from its
+/// top ([`exa_ui::dialogs::status_emblem_place`]), in screen pixels. `None`
+/// while its pictures are not loaded.
+pub fn status_emblem(
+    form: &exa_ui::record_form::RecordForm,
+    emblem: &exa_ui::EmblemRecord,
+    textures: &GuiTextures,
+) -> Option<exa_ui::gui_draw::GuiLayer> {
+    let unit = form.unit();
+    let client_width = form.rect().w - 2 * form.geometry.border;
+    let (centre, top, size) = exa_ui::dialogs::status_emblem_place(client_width, unit);
+    let quad = crate::emblem::emblem_quad(centre, top, size, unit);
+    let mut layer = crate::emblem::emblem_layer(emblem, textures, quad)?;
+    let (ox, oy) = form.origin();
+    gui_paint::offset_batch(&mut layer.batch, ox, oy);
+    Some(layer)
+}
+
 /// The form's caret bit: the blink turns it every fifth frame (lit
 /// without a frame count).
 fn caret_lit(frames: Option<&bevy::diagnostic::FrameCount>) -> bool {
@@ -2669,6 +2688,7 @@ pub fn draw_hub_windows(
     mut fade: Local<HubFade>,
     (kit, mut icons, scripted, glyphs, frame_count): HubDrawExtras,
     loadout_dots: Option<Res<crate::loadout_kit::LoadoutDots>>,
+    career: Option<Res<ArenaCareer>>,
 ) {
     let Some(windows) = windows else {
         return;
@@ -2790,6 +2810,14 @@ pub fn draw_hub_windows(
                 .then(|| loadout_dots.as_deref().and_then(|dots| dots.sheet.as_ref()))
                 .flatten(),
         };
+        if open.window == crate::hub_forms::FormWindow::Status
+            && let Some(career) = career.as_deref()
+            && let Some(layer) = status_emblem(&open.form, &career.company.emblem, textures)
+        {
+            // The status form's paint draws the company's emblem before
+            // its base paint.
+            painted.push(layer);
+        }
         let frame = match open.window {
             crate::hub_forms::FormWindow::Manage => None,
             // The picker keeps the draw skin's default instance: its
@@ -3617,6 +3645,36 @@ mod tests {
         assert_eq!(thumb[0].x, (x + w) as f32 - unit);
         assert_eq!(thumb[2].x, (x + w) as f32 - 3.0 * unit);
         assert_eq!(thumb[0].y, y as f32 + 2.0 * unit);
+    }
+
+    #[test]
+    fn the_status_form_draws_the_company_emblem_at_its_top_centre() {
+        let career = ArenaCareer::default();
+        let form = crate::hub_forms::status_form(&career, (1280, 720), 4);
+        let mut textures = GuiTextures::default();
+        let emblem = &career.company.emblem;
+        assert!(status_emblem(&form, emblem, &textures).is_none());
+        let solid = exa_ui::gui_draw::GuiTexture::solid([255, 255, 255, 255]);
+        for name in exa_ui::preview_textures(emblem) {
+            textures.textures.insert(name, solid.clone());
+        }
+        let layer = status_emblem(&form, emblem, &textures).expect("the emblem draws");
+        let exa_ui::gui_draw::LayerTexture::Owned(image) = &layer.texture else {
+            panic!("the emblem carries its rendered image");
+        };
+        // 48 units at unit 4.
+        assert_eq!(image.width, 192);
+        let (ox, oy) = form.origin();
+        let client = form.rect().w - 2 * form.geometry.border;
+        assert_eq!(
+            crate::emblem::emblem_quad(client / 2, 16, 48, 4),
+            [client / 2 - 96, 16, client / 2 + 96, 208]
+        );
+        let xs: Vec<f32> = layer.batch.vertices.iter().map(|v| v.x).collect();
+        let ys: Vec<f32> = layer.batch.vertices.iter().map(|v| v.y).collect();
+        let min = |v: &[f32]| v.iter().cloned().fold(f32::MAX, f32::min);
+        assert_eq!(min(&xs), (ox + client / 2 - 96) as f32);
+        assert_eq!(min(&ys), (oy + 16) as f32);
     }
 
     #[test]

@@ -1442,8 +1442,8 @@ the task's state. A control value of `i32::MIN` means none.
   company dialog's NEXT with an empty name ("Company Name", "Please name
   your company", 0xc1). The creator's "Character Name" box is the creator's;
   the recruitment's "Insufficient funds" follows the creator, which the hub
-  does not run; the first-run benchmark's "Configuration" box has no
-  counterpart.
+  does not run; the benchmark's "Configuration" box is drawn by the
+  Settings form while the benchmark runs.
 - **Factories.** The form factory table counts its registrations from one
   and clears on shutdown.
 - **Double click.** The clock and the press stamp widen to 64 bits before
@@ -4019,9 +4019,12 @@ tabs), and without Steam Input it puts the keyboard view up. The Defaults
 handler is the only one in the unit that runs the detection, copies the
 shipped key table over the page's copy, or (with the Controller tab lit)
 puts the saved aim speed back. The original also runs the detection at start
-only on a first run (when `FirstRun` is set), and saves its result then;
-Exarust does not run it at launch, since it would replace the saved quality.
-`--benchmark` runs it once, without saving.
+only on a first run (when `FirstRun` is set), and saves its result then with
+no form open; Exarust does the same (the file then holds nothing but its new
+`FirstRun = 0`, so no saved quality is replaced), except in a grid quadrant
+or a `--screenshot` run. `--benchmark` runs it once, without saving. While
+the benchmark runs the Settings form is hidden and the "Configuration" box
+("Analysing system" and the ellipsis, flags 0x60) shows.
 
 Steam Deck detection (`exa_game::hw_config::steam_deck`) reads the Steam
 runtime's `SteamDeck=1` marker or the DMI product name (`Jupiter`,

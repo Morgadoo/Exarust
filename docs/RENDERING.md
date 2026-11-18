@@ -2846,9 +2846,12 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   cached cube maps (every caster of point lights); Bevy's own shadow pass
   for the sun still cuts as the colour pass does (`exa_prepass.wesl`).
 - A light leaves its own object out of its shadow map: its siblings, its
-  parent and its grandparent. A fire's light hangs under the fire node, so a
-  torch does not shadow its own flame. Only the torch's hidden `TorchSdw`
-  disc casts, a narrow cone along the handle. A light at its object's root
+  parent and its grandparent, except a mesh whose render word has `0x1000`
+  (38 shipped meshes: the torch's `TorchSdw`, the ornate lamps' shadow
+  discs, braziers, the camp set). A fire's light hangs under the emitter
+  node that takes the fire marker's place under the host mesh, so a torch
+  does not shadow its own flame. Only the torch's hidden `TorchSdw` disc
+  casts, a narrow cone along the handle. A light at its object's root
   excludes nothing. The excluded meshes still cast into other lights.
 - **Shadow links**: a mesh casts into a light only when the two are linked,
   as the original links nodes to lights:
@@ -3357,6 +3360,18 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
   emissive scales go to zero) and becomes a fire only when the scene lets
   fires run; a re-created fire keeps the host node's draw bits
   (`0xc01f000`).
+- A fire record's load set-up puts a fixture's glow out the same way: the
+  put-out zeroes the emissive scale of a mesh node's first part and of each
+  mesh child's first part (it writes no light), on the object node when a
+  fire is lit there and, by day, on the mesh the first fire marker under the
+  object hangs from (the marker itself when its parent is not a mesh, the
+  object without a marker). The record flag `0x40`'s switch-off darkens
+  every part of the node, each mesh child's first part, and clears each
+  voxel-light child's current intensity without the colour update, so the
+  volume keeps the light's last derived colour until something re-derives
+  it (`exa_world::mechanisms::put_out_glow`, `switch_off`). Exarust also
+  zeroes the node's and its children's point lights on both paths
+  [adaptation: the original's light the fire replaces].
 - The light (all in double): x walks softly in ±1 with v ±= u past the
   bounds and else v += 2(u − ½), x += 0.3·v·u (three draws); jitter +=
   (u − ½)·0.125 in [0.87, 1.15]; density = 0.8·density +

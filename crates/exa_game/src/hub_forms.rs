@@ -2010,6 +2010,28 @@ pub struct HubEmployeeKit {
     pub done: bool,
 }
 
+/// `--hub-emblem NAME`: debug: the company's emblem is the named preset
+/// (`klean`) once the hub career stands, so the windows that draw it
+/// (Company Status) have one in a debug career (picture checks).
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HubEmblem(pub Option<String>);
+
+/// Applies `--hub-emblem` once to the career's company, as the company
+/// dialog's klean name does to its editor.
+pub fn hub_emblem_on_load(mut ask: Option<ResMut<HubEmblem>>, mut career: ResMut<ArenaCareer>) {
+    let Some(name) = ask.as_mut().and_then(|ask| ask.0.take()) else {
+        return;
+    };
+    let mut editor = exa_ui::EmblemEditor::new();
+    editor.record = career.company.emblem;
+    if crate::emblem::apply_klean(&name, &mut editor) {
+        career.company.emblem = editor.record;
+        info!("--hub-emblem: the company takes the {name} emblem");
+    } else {
+        warn!("--hub-emblem: no preset named {name:?}");
+    }
+}
+
 /// Runs `--hub-employee-kit` once, when the shelf facts are read.
 pub fn hub_employee_kit_on_load(
     ask: Option<ResMut<HubEmployeeKit>>,

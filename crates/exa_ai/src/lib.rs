@@ -234,6 +234,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_move_resource::<crate::pass_turn::PassTurn>()
         .bridge_copy::<crate::presence::Presence>()
         .bridge_copy::<crate::roles::Relations>()
+        .bridge_copy::<crate::roles::FormerLevel>()
         .bridge_copy::<crate::roles::Roles>()
         .bridge_move_resource::<crate::rooms::RoomLists>()
         .bridge_copy::<crate::sense::Mind>()

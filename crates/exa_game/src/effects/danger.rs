@@ -101,24 +101,73 @@ pub enum Hazard {
     },
 }
 
+impl Seen {
+    /// The words of a contact record an assessment starts from: the
+    /// original copies the brain's contact into a scratch record, lets the
+    /// effect assess into it and copies the whole record back, so a word
+    /// the assessment leaves keeps the contact's value. The record's
+    /// noticed level is the word an assessment only raises ([`Seen::alarm`]),
+    /// its sighting the near score, its concern target the reach word, its
+    /// soothe term the relation word, its alarm the fear, its seen word the
+    /// urge and its stamp the face word.
+    pub fn of_contact(contact: &exa_ai::contacts::ContactRecord) -> Self {
+        Self {
+            flags: contact.flags,
+            alarm: contact.noticed,
+            near: contact.sighting,
+            reach: contact.concern_target,
+            relation: contact.soothe,
+            fear: contact.alarm,
+            urge: contact.seen,
+            face: contact.stamp,
+        }
+    }
+
+    /// Writes the assessment's words back into the contact record they
+    /// came from ([`Seen::of_contact`]).
+    pub fn write_contact(&self, contact: &mut exa_ai::contacts::ContactRecord) {
+        contact.flags = self.flags;
+        contact.noticed = self.alarm;
+        contact.sighting = self.near;
+        contact.concern_target = self.reach;
+        contact.soothe = self.relation;
+        contact.alarm = self.fear;
+        contact.seen = self.urge;
+        contact.stamp = self.face;
+    }
+}
+
 impl Hazard {
     /// The record a viewing body gets of this effect, `None` when it is out
     /// of sight. A blast's own caster is ignored (the original's assessment
     /// answers it as seen without filling the record).
     pub fn assess(&self, viewer: &Viewer, relation: f32, caster: bool) -> Option<Seen> {
         let mut seen = Seen::default();
-        let noticed = match *self {
+        self.assess_into(viewer, relation, caster, &mut seen)
+            .then_some(seen)
+    }
+
+    /// The assessment into a record that already holds words (a brain's
+    /// contact, [`Seen::of_contact`]); whether the effect was in sight (or
+    /// the viewer is a blast's caster).
+    pub fn assess_into(
+        &self,
+        viewer: &Viewer,
+        relation: f32,
+        caster: bool,
+        seen: &mut Seen,
+    ) -> bool {
+        match *self {
             Hazard::Blast { at, released } => {
-                assess_blast(at, released, viewer, caster, relation, &mut seen)
+                assess_blast(at, released, viewer, caster, relation, seen)
             }
-            Hazard::Wave { at, released } => assess_wave(at, released, viewer, relation, &mut seen),
+            Hazard::Wave { at, released } => assess_wave(at, released, viewer, relation, seen),
             Hazard::Barricade {
                 wall,
                 rising,
                 strong,
-            } => assess_barricade(&wall, rising, strong, viewer, relation, &mut seen),
-        };
-        noticed.then_some(seen)
+            } => assess_barricade(&wall, rising, strong, viewer, relation, seen),
+        }
     }
 }
 
@@ -235,9 +284,10 @@ pub fn sync_hazards(
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewer {
     pub chest: Vec3,
-    /// The axis the first face term uses (the body's look).
+    /// The axis the squared face term uses: the body's look direction (for
+    /// a brain, the look its gaze last wrote into the body).
     pub look: Vec3,
-    /// The axis the second uses (the body's facing).
+    /// The axis the linear term uses: the character frame's forward.
     pub facing: Vec3,
 }
 

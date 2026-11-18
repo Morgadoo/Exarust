@@ -19,6 +19,9 @@
 //! - **The give-back** (the take-in's callback for an item it moves out of
 //!   a hand): an item that is not the shop's goes into the pack at its
 //!   centre.
+//! - **The drag start** off the preview: the locked view gives a shop
+//!   item (flag `0x80000000`) a payload no panel takes ([`drag_kind`]), so
+//!   it cannot be dropped into the pack or a basket.
 //! - **The release** of a drag off the preview: a shop item's drag
 //!   (flag `0x80000000`) is answered -1 by the lock, so it comes off
 //!   wherever it lands, even nowhere; any other comes off only when a
@@ -45,12 +48,37 @@ use crate::loadout_kit::PreviewItem;
 use crate::shop_window::KEPT_KIND;
 
 /// A drag off the preview: the item its pick found, the icon reference
-/// the drag holds and the grab (half the icon).
+/// the drag holds, the grab (half the icon) and the payload's kind the
+/// locked view's drag start gave it ([`drag_kind`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PreviewDrag {
     pub item: PreviewItem,
     pub icon: usize,
     pub grab: crate::item_container::Cell,
+    pub kind: u32,
+}
+
+/// The payload kind no panel takes: the locked view's drag of a shop item.
+pub const UNTAKEN: u32 = u32::MAX;
+
+/// The trade window's view is locked: its drag start
+/// ([`exa_ui::character_view::drag_start_plan`], not frozen and with no mind
+/// cost) gives a shop item (flag `0x80000000`) the payload kind no panel
+/// takes ([`UNTAKEN`]) and anything else the item payload (`0xFB01`).
+/// `None` when the item's icon did not resolve: no drag starts.
+pub fn drag_kind(item: PreviewItem, icon: usize, icon_size: u32) -> Option<u32> {
+    exa_ui::character_view::drag_start_plan(
+        false,
+        item.hand.map_or(0, |hand| hand + 1),
+        icon,
+        true,
+        item.flags,
+        None,
+        false,
+        icon_size,
+    )
+    .payload
+    .map(|payload| payload.kind)
 }
 
 /// The preview's number as a drag's destination (the panels use 1 to 4).
@@ -72,7 +100,13 @@ pub fn give_back(flags: u32) -> bool {
 /// locked view answers -1 for a shop item, so it always comes off; any
 /// other comes off only when a panel took it.
 pub fn release_takes_off(flags: u32, landed: bool) -> bool {
-    landed || flags & SHOP_ITEM_FLAGS != 0
+    let plan = exa_ui::character_view::release_on_figure(exa_ui::character_view::ReleaseFacts {
+        slot: if landed { 0 } else { i32::MIN },
+        locked: true,
+        payload_flags: flags,
+        ..Default::default()
+    });
+    landed || plan.answer == -1
 }
 
 /// What a drop on the preview did.
@@ -228,6 +262,24 @@ mod tests {
         assert!(!drop_back(23, SHOP_ITEM_FLAGS));
         assert!(give_back(0x100));
         assert!(!give_back(SHOP_ITEM_FLAGS | 0x100));
+    }
+
+    #[test]
+    fn the_locked_view_gives_a_shop_item_a_payload_no_panel_takes() {
+        let shop = PreviewItem {
+            id: 7,
+            flags: SHOP_ITEM_FLAGS,
+            hand: None,
+        };
+        assert_eq!(drag_kind(shop, 3, 160), Some(UNTAKEN));
+        let own = PreviewItem {
+            flags: 0,
+            hand: Some(0),
+            ..shop
+        };
+        assert_eq!(drag_kind(own, 3, 160), Some(0xFB01));
+        // An icon that did not resolve starts no drag.
+        assert_eq!(drag_kind(own, 0, 160), None);
     }
 
     #[test]
