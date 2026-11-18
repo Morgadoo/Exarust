@@ -350,6 +350,67 @@ impl<L: Level + ?Sized> Level for MeshLevel<'_, L> {
     }
 }
 
+/// The level with the Height Query in the placement's static mode: the
+/// character's own sweep through its sectors' static mesh nodes only. A
+/// 10 cm sphere is swept through every collidable static mesh of every
+/// sector (each mesh's own swept nearest query, the nearest hit winning),
+/// and no body answers: neither the bodies' meshes nor a rigid body's
+/// stand-in in the level ([`Level::movable`]). The placement's two callers
+/// that ask for it are the exit nudge and the summoned demon's arrival;
+/// every other placement takes the sphere mode ([`MeshLevel`]).
+///
+/// [inf: the original also skips a static node a character owns when that
+/// character is the one being placed; no static collider of Exarust's
+/// belongs to a character, so there is nothing to skip.]
+pub struct StaticLevel<'a, L: Level + ?Sized>(pub &'a L);
+
+impl<L: Level + ?Sized> Level for StaticLevel<'_, L> {
+    fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+        let from = out.len();
+        self.0.pieces(lo, hi, out);
+        let mut i = from;
+        while i < out.len() {
+            if self.0.movable(out[i]) {
+                out.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+        self.0.triangles(piece, lo, hi, out);
+    }
+
+    fn indexed_triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<(u32, [Vec3; 3])>) {
+        self.0.indexed_triangles(piece, lo, hi, out);
+    }
+
+    fn floor_skips_first(&self, piece: u32) -> bool {
+        self.0.floor_skips_first(piece)
+    }
+
+    fn mask(&self, piece: u32) -> u32 {
+        self.0.mask(piece)
+    }
+
+    fn movable(&self, piece: u32) -> bool {
+        self.0.movable(piece)
+    }
+
+    fn has_tree(&self, piece: u32) -> bool {
+        self.0.has_tree(piece)
+    }
+
+    fn floor_piece(&self, piece: u32) -> bool {
+        self.0.floor_piece(piece)
+    }
+
+    fn floor_below(&self, at: Vec3, depth: f32) -> Option<f32> {
+        self.0.floor_below(at, depth)
+    }
+}
+
 /// How long the item the cursor lets go of stays awake at least (ticks),
 /// when it is put back into the world with the frames the lift saved: half
 /// the full wake count, raised to only if lower. (A drop the original hands

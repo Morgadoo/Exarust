@@ -341,3 +341,40 @@ fn the_overlap_test_meets_a_face_from_behind() {
     let far = Affine3A::from_translation(Vec3::new(1.5, 0.0, 0.0));
     assert!(!overlap_touch(a, far, b, b.transform()));
 }
+
+/// Two pieces: a floor at y = 0 and, 50 cm over it, a rigid body's
+/// stand-in plate (movable).
+struct FloorAndPlate;
+
+impl Level for FloorAndPlate {
+    fn pieces(&self, _lo: Vec3, _hi: Vec3, out: &mut Vec<u32>) {
+        out.extend([0, 1]);
+    }
+
+    fn triangles(&self, piece: u32, _lo: Vec3, _hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+        let y = if piece == 0 { 0.0 } else { 0.5 };
+        out.push([
+            Vec3::new(-5.0, y, -5.0),
+            Vec3::new(0.0, y, 5.0),
+            Vec3::new(5.0, y, -5.0),
+        ]);
+    }
+
+    fn movable(&self, piece: u32) -> bool {
+        piece == 1
+    }
+}
+
+/// The placement's static mode sweeps the static meshes alone: a rigid
+/// body's stand-in over the floor is not the ground there, as it is for
+/// the sphere mode.
+#[test]
+fn the_static_mode_meets_only_the_static_meshes() {
+    let at = Vec3::new(0.0, 1.0, 0.0);
+    let sphere = FloorAndPlate.height_below(at, 0.1, 3.0).unwrap();
+    assert!((sphere - 0.5).abs() < 1e-5, "{sphere}");
+    let statics = StaticLevel(&FloorAndPlate)
+        .height_below(at, 0.1, 3.0)
+        .unwrap();
+    assert!(statics.abs() < 1e-5, "{statics}");
+}

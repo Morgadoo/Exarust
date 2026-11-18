@@ -584,6 +584,11 @@ pub struct GroundPlacement {
     /// pairs with it are dropped and it is released
     /// ([`exa_physics::body::HeldBodies`]). The AI's re-entry does not.
     pub held: bool,
+    /// The placement's static mode: the Height Query sweeps the sectors'
+    /// static meshes only ([`exa_physics::sector_lists::StaticLevel`]), as
+    /// the original's exit nudge and summoned demon ask; the others take
+    /// the sphere mode over the level and the listed body meshes.
+    pub statics: bool,
 }
 
 /// The AI's re-placement of a body the scene takes back, as the original's
@@ -663,6 +668,7 @@ pub(crate) fn place_entering(
             floor: to.y,
             yaw: Some(yaw),
             held: false,
+            statics: false,
         });
     }
 }
@@ -770,6 +776,10 @@ pub(crate) fn place_on_ground(
             }
             if let Some(mut npc) = npc {
                 npc.placed(heading, route.map(Mut::into_inner));
+                // The route stop's body side: the run bit and the free
+                // walk clear.
+                req.flags &= !exa_physics::body::locomotion::flags::RUN;
+                req.free_walk = false;
             }
         }
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
@@ -815,17 +825,26 @@ pub(crate) fn place_on_ground(
                 );
             }
         }
-        let level = exa_physics::sector_lists::MeshLevel::new(&physics.0, &meshes);
-        let placed = body.place_on_ground(&level, floor, &posed, pelvis);
+        let placed = if placement.statics {
+            // The static mode: the sectors' static meshes alone.
+            let level = exa_physics::sector_lists::StaticLevel(&physics.0);
+            let placed = body.place_on_ground(&level, floor, &posed, pelvis);
+            info!("ground placement {root:?}: height query over the static meshes only");
+            placed
+        } else {
+            let level = exa_physics::sector_lists::MeshLevel::new(&physics.0, &meshes);
+            let placed = body.place_on_ground(&level, floor, &posed, pelvis);
+            info!(
+                "ground placement {root:?}: height query over the level and {} body meshes, {} probes on a body mesh above the level, {} at the level's height",
+                meshes.len(),
+                level.body_hits.get(),
+                level.body_ties.get()
+            );
+            placed
+        };
         // The original's behaviour then puts the held items back in the
         // hands where the placement left them.
         commands.entity(root).insert(exa_physics::grip::ReplaceHeld);
-        info!(
-            "ground placement {root:?}: height query over the level and {} body meshes, {} probes on a body mesh above the level, {} at the level's height",
-            meshes.len(),
-            level.body_hits.get(),
-            level.body_ties.get()
-        );
         match placed {
             Some(height) => info!(
                 "ground placement {root:?}: pelvis {:.1} cm over the floor (was {:.1}), feet at {:.1}, character ground {:.1}",
@@ -999,6 +1018,10 @@ fn place_living(
             }
             if let Some(mut npc) = npc {
                 npc.placed(heading, route.map(Mut::into_inner));
+                // The route stop's body side: the run bit and the free
+                // walk clear.
+                req.flags &= !exa_physics::body::locomotion::flags::RUN;
+                req.free_walk = false;
             }
         }
         if !body.place_living(frame, &posed, pelvis) {
@@ -2868,6 +2891,7 @@ pub(crate) mod tests {
                     floor: 0.0,
                     yaw: None,
                     held,
+                    statics: false,
                 },
             ));
             app.update();
@@ -2926,6 +2950,7 @@ pub(crate) mod tests {
                     floor: 0.0,
                     yaw: None,
                     held: false,
+                    statics: false,
                 },
             ))
             .id();

@@ -29,7 +29,10 @@ functions by name only.
   with its Euler routines stubbed, the light update; the barricade's place
   score joined `batch_d.rs`), and the collision lane's in `batch_f.rs`
   (the particle-matrix leaves: the widened rest points, the 4x4 inverse and
-  the rest basis times the particles in its 4x4 and 4x3 forms). 119 ports;
+  the rest basis times the particles in its 4x4 and 4x3 forms), and the
+  collision2 lane's in `batch_g.rs` (the mesh's query slots over six face
+  records, brute-force and kd-tree leaf forms: two-sided, front, swept,
+  swept nearest and the cloth's sweep, each callback logged). 129 ports;
   two of them (the sun view matrix with
   `RSQRTSS`, the colour decode by `powf`) are recorded differences whose
   case files are kept aside.

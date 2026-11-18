@@ -35,10 +35,13 @@
 //! the vector helpers they call (REA assembly), the cloth constructor's
 //! padding (2 cm) and slide (0.1 cm) fields.
 
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::math::Vec3;
 
 use crate::cloth::{Cloth, LevelTri};
 use crate::intersect;
+use crate::mesh_query::{Face, Swept};
 
 /// A particle that moved more than this (cm², squared) over the tick sweeps
 /// its sphere through the mesh instead of testing it where it is.
@@ -93,11 +96,16 @@ impl LevelPiece {
     }
 }
 
-/// A triangle's face plane: its unit normal (the winding's front) and its
-/// offset, so a point's distance in front is `normal · point − offset`.
-pub fn face_plane(t: &LevelTri) -> Option<(Vec3, f32)> {
-    let n = (t.b - t.a).cross(t.c - t.a).try_normalize()?;
-    Some((n, dot(n, t.a)))
+/// A level triangle's query record ([`crate::mesh_query::face`]): the
+/// normal, the plane and the closest-point terms the mesh keeps for it.
+/// None for a degenerate triangle (a zero normal).
+///
+/// [inf: the original's mesh keeps a record for a degenerate face too and
+/// its queries visit it (a zero push that still counts as a touch); Exarust
+/// skips it, as before, so a sliver in a level mesh cannot slide a cloth.]
+pub fn face_of(t: &LevelTri) -> Option<Face> {
+    let face = crate::mesh_query::face(&[t.a, t.b, t.c]);
+    (face.normal != Vec3::ZERO).then_some(face)
 }
 
 /// `a · b`, summed `x + y`, then `z`, as the queries' scalar code does.
@@ -106,110 +114,98 @@ fn dot(a: Vec3, b: Vec3) -> f32 {
     xy + a.z * b.z
 }
 
-/// The closest point on the triangle to `x`: the mesh record's own region
-/// test ([`crate::volume::Face::nearest_exact`]), handed `x`'s distance to
-/// the record's plane.
-fn closest_point(t: &LevelTri, x: Vec3) -> Vec3 {
-    let face = crate::mesh_query::face(&[t.a, t.b, t.c]);
-    face.nearest_exact(x, dot(x, face.normal) - face.plane)
-}
-
 /// The mesh's sphere query for one triangle: a sphere at `centre` of
 /// `radius` in front of the face (its plane distance in `[0, radius)`) and
 /// nearer than `radius − 1e-10` to the triangle is pushed off it, along the
 /// closest-point direction to `radius` (along the normal when it sits on
-/// the triangle). Returns the push.
-pub fn sphere_push(t: &LevelTri, plane: (Vec3, f32), centre: Vec3, radius: f32) -> Option<Vec3> {
-    let (n, offset) = plane;
-    let s = dot(centre, n) - offset;
-    // An unordered distance goes on, as the branches do.
-    if s < 0.0 || s >= radius {
-        return None;
-    }
-    let v = centre - closest_point(t, centre);
-    let d2 = dot(v, v);
-    let reach = radius - SPHERE_MARGIN;
-    if reach * reach <= d2 {
-        return None;
-    }
-    if d2 < SPHERE_MARGIN {
-        return Some(n * radius);
-    }
-    let d = d2.sqrt();
-    Some(v * ((radius - d) / d))
+/// the triangle): the mesh's brute-force front query
+/// ([`crate::mesh_query::front_push_face`] with its 1e-10 floor). Returns
+/// the push.
+pub fn sphere_push(face: &Face, centre: Vec3, radius: f32) -> Option<Vec3> {
+    crate::mesh_query::front_push_face(face, centre, radius, SPHERE_MARGIN).map(|(_, push)| push)
 }
 
-/// The mesh's sweep query for one triangle: a sphere of `radius` moving
-/// from `start` to `end`. The start must be on the front (plane distance
-/// not negative) and the end within `radius` of the face. An end still in
-/// front is pushed off the closest point as the sphere query does (with
-/// the sweep's margin). An end that reached the face is measured from the
-/// point where the centre was one radius out (or from the start, when it
-/// began closer): the closest point there must lie within `radius` of the
-/// sweep, and the end is put `radius` out along the direction from it,
-/// unless that leaves the end further than `radius` from the plane, when
-/// the end is only taken back to `radius` in front of the plane. Returns
-/// the push on the end.
-pub fn sweep_push(
-    t: &LevelTri,
-    plane: (Vec3, f32),
-    start: Vec3,
-    end: Vec3,
-    radius: f32,
-) -> Option<Vec3> {
-    let (n, offset) = plane;
-    let s0 = dot(start, n) - offset;
+/// The mesh's cloth sweep query for one triangle: the sweep record `s` (a
+/// sphere of `s.radius` moving from `s.start` to `s.end`, its unit
+/// direction and length as the record builder sets them). The start must
+/// be on the front (plane distance not negative) and the end within the
+/// radius of the face. An end still in front is pushed off the closest
+/// point as the sphere query does (with the sweep's margin). An end that
+/// reached the face is measured from the point where the centre was one
+/// radius out (or from the start, when it began closer): the closest point
+/// there must lie within the radius of the sweep's segment, and the end is
+/// put the radius out along the direction from it, unless that leaves the
+/// end further than the radius from the plane, when the end is only taken
+/// back to the radius in front of the plane. Returns the closest point and
+/// the push on the end. The leaf and brute-force forms are one routine.
+pub fn sweep_push(face: &Face, s: &Swept) -> Option<(Vec3, Vec3)> {
+    let (n, radius) = (face.normal, s.radius);
+    let s0 = dot(s.start, n) - face.plane;
+    // "Below" and "at or above" compares: a NaN goes on.
     if s0 < 0.0 {
         return None;
     }
-    let s1 = dot(end, n) - offset;
+    let s1 = dot(s.end, n) - face.plane;
     if s1 >= radius {
         return None;
     }
     // A NaN end counts as reached, as the unordered branch goes.
-    let reached = s1 <= SWEEP_MARGIN || s1.is_nan();
-    let reference = if !reached {
-        end
+    let reached = !(s1 > SWEEP_MARGIN);
+    let (reference, at) = if !reached {
+        (s.end, s1)
     } else if s0 > radius {
-        start + (end - start) * ((s0 - radius) / (s0 - s1))
+        let t = (s0 - radius) / (s0 - s1);
+        (crate::engine_math::lerp3(s.start, s.end, t), radius)
     } else {
-        start
+        (s.start, s0)
     };
-    let q = closest_point(t, reference);
+    let q = face.nearest_exact(reference, at);
     if reached {
-        let sweep = intersect::Sweep::new(start, end);
-        let gap2 = sweep.point_distance_squared(q);
+        let gap2 = intersect::point_segment_distance_squared(q, s.start, s.direction, s.length);
         if radius * radius <= gap2 {
             return None;
         }
         let v = reference - q;
         let v2 = dot(v, v);
-        if v2 <= PUSH_FLOOR2 || v2.is_nan() {
-            return Some(n * (radius - s1));
+        if !(v2 > PUSH_FLOOR2) {
+            return Some((q, n * (radius - s1)));
         }
         let u = v * (1.0 / v2.sqrt());
-        let along = dot(end, u) - dot(u, q);
+        let along = dot(s.end, u) - dot(u, q);
         if along >= radius {
             return None;
         }
         let push = u * (radius - along);
         let out = dot(push, n) + s1;
         if out > radius {
-            return Some(n * (radius - s1));
+            return Some((q, n * (radius - s1)));
         }
-        Some(push)
+        Some((q, push))
     } else {
-        let v = end - q;
+        let v = s.end - q;
         let v2 = dot(v, v);
         let reach = radius - SWEEP_MARGIN;
         if reach * reach <= v2 {
             return None;
         }
         if v2 < PUSH_FLOOR2 {
-            return Some(n * radius);
+            return Some((q, n * radius));
         }
         let d = v2.sqrt();
-        Some(v * ((radius - d) / d))
+        Some((q, v * ((radius - d) / d)))
+    }
+}
+
+/// The sweep record the cloth hands the query: from `start` to `end` with
+/// the record builder's direction and length ([`intersect::Sweep::new`]).
+pub fn swept(start: Vec3, end: Vec3, radius: f32) -> Swept {
+    let sweep = intersect::Sweep::new(start, end);
+    Swept {
+        start,
+        end,
+        radius,
+        direction: sweep.direction,
+        length: sweep.length,
     }
 }
 
@@ -361,7 +357,7 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
     } else {
         &cloth.level_pieces[..]
     };
-    let planes: Vec<Option<(Vec3, f32)>> = cloth.level.iter().map(face_plane).collect();
+    let faces: Vec<Option<Face>> = cloth.level.iter().map(face_of).collect();
     // The record's padding and slide (the built-in record's 2 cm and
     // 0.1 cm; the hair's none).
     let radius = cloth.record.padding_cm;
@@ -411,14 +407,14 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
             tests += near.len();
             for &index in &near {
                 let index = index as usize;
-                let Some(plane) = planes[index] else {
+                let Some(face) = &faces[index] else {
                     continue;
                 };
-                let tri = &cloth.level[index];
+                // The callback re-sets the sweep record from the pushed end.
                 let push = if swept {
-                    sweep_push(tri, plane, start, end, radius)
+                    sweep_push(face, &self::swept(start, end, radius)).map(|(_, push)| push)
                 } else {
-                    sphere_push(tri, plane, end, radius)
+                    sphere_push(face, end, radius)
                 };
                 if let Some(push) = push {
                     end += push;
@@ -451,48 +447,44 @@ mod tests {
     #[test]
     fn a_resting_sphere_is_pushed_out_to_its_radius() {
         let t = floor();
-        let plane = face_plane(&t).unwrap();
-        assert_eq!(plane, (Vec3::Z, 0.0));
+        let face = face_of(&t).unwrap();
+        assert_eq!((face.normal, face.plane), (Vec3::Z, 0.0));
         // 0.5 cm over the face: pushed 1.5 cm up.
-        let push = sphere_push(&t, plane, Vec3::new(1.0, 1.0, 0.5), 2.0).unwrap();
+        let push = sphere_push(&face, Vec3::new(1.0, 1.0, 0.5), 2.0).unwrap();
         assert!(push.abs_diff_eq(Vec3::new(0.0, 0.0, 1.5), 1e-6), "{push}");
         // Behind the face, or 2 cm out, it is not touched.
-        assert_eq!(sphere_push(&t, plane, Vec3::new(1.0, 1.0, -0.5), 2.0), None);
-        assert_eq!(sphere_push(&t, plane, Vec3::new(1.0, 1.0, 2.0), 2.0), None);
+        assert_eq!(sphere_push(&face, Vec3::new(1.0, 1.0, -0.5), 2.0), None);
+        assert_eq!(sphere_push(&face, Vec3::new(1.0, 1.0, 2.0), 2.0), None);
         // On the face it goes out along the normal by the whole radius.
-        let push = sphere_push(&t, plane, Vec3::new(1.0, 1.0, 0.0), 2.0).unwrap();
+        let push = sphere_push(&face, Vec3::new(1.0, 1.0, 0.0), 2.0).unwrap();
         assert_eq!(push, Vec3::new(0.0, 0.0, 2.0));
         // Beside the triangle, past the radius from its edge.
-        assert_eq!(sphere_push(&t, plane, Vec3::new(30.0, 1.0, 0.5), 2.0), None);
+        assert_eq!(sphere_push(&face, Vec3::new(30.0, 1.0, 0.5), 2.0), None);
+    }
+
+    /// The sweep query's push on a 2 cm sphere from `start` to `end`.
+    fn push_of(face: &Face, start: Vec3, end: Vec3) -> Option<Vec3> {
+        sweep_push(face, &swept(start, end, 2.0)).map(|(_, push)| push)
     }
 
     #[test]
     fn a_sweep_through_the_face_ends_a_radius_out() {
         let t = floor();
-        let plane = face_plane(&t).unwrap();
+        let face = face_of(&t).unwrap();
         let start = Vec3::new(2.0, 2.0, 8.0);
         let end = Vec3::new(2.0, 2.0, -8.0);
         // Touches at z = 2: the end goes back up to 2 cm, a push of 10.
-        let push = sweep_push(&t, plane, start, end, 2.0).unwrap();
+        let push = push_of(&face, start, end).unwrap();
         assert!(push.abs_diff_eq(Vec3::new(0.0, 0.0, 10.0), 1e-5), "{push}");
         // A sweep starting behind the face, or ending 2 cm out, misses.
-        assert_eq!(sweep_push(&t, plane, -start, Vec3::ZERO, 2.0), None);
-        assert_eq!(
-            sweep_push(&t, plane, start, Vec3::new(2.0, 2.0, 2.0), 2.0),
-            None
-        );
+        assert_eq!(push_of(&face, -start, Vec3::ZERO), None);
+        assert_eq!(push_of(&face, start, Vec3::new(2.0, 2.0, 2.0)), None);
         // An end still in front is the static push with the sweep's margin.
-        let push = sweep_push(&t, plane, start, Vec3::new(2.0, 2.0, 1.0), 2.0).unwrap();
+        let push = push_of(&face, start, Vec3::new(2.0, 2.0, 1.0)).unwrap();
         assert!(push.abs_diff_eq(Vec3::new(0.0, 0.0, 1.0), 1e-6), "{push}");
         // A sweep that passes beside the triangle misses.
         assert_eq!(
-            sweep_push(
-                &t,
-                plane,
-                Vec3::new(40.0, 2.0, 8.0),
-                Vec3::new(40.0, 2.0, -8.0),
-                2.0
-            ),
+            push_of(&face, Vec3::new(40.0, 2.0, 8.0), Vec3::new(40.0, 2.0, -8.0)),
             None
         );
     }
