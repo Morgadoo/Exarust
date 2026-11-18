@@ -1196,7 +1196,8 @@ pub fn status_marker(entries: &[u32]) -> bool {
     !entries.is_empty() && entries.iter().all(|flags| flags & 0x2000 == 0)
 }
 
-/// The skill levels the ready alert compares with (fifteen).
+/// The skill levels the ready alert compares with as the game starts and
+/// in the story and practice (fifteen).
 pub const READY_LEVELS: i32 = 15;
 
 /// Whether any skill has more techniques chosen than its level: for each of
@@ -1223,10 +1224,12 @@ pub fn techniques_ahead(skills: &[Skill; 6]) -> bool {
 }
 
 /// Whether the skill-ready alert shows: the six skills' levels sum below
-/// fifteen and no skill has techniques chosen ahead of its level.
-pub fn ready_alert(skills: &[Skill; 6]) -> bool {
+/// `cap` (the mode's level cap: [`READY_LEVELS`] in the story and
+/// practice, 12 in the arena) and no skill has techniques chosen ahead of
+/// its level.
+pub fn ready_alert(skills: &[Skill; 6], cap: i32) -> bool {
     let levels: i32 = skills.iter().map(|s| i32::from(s.points / LEVEL_XP)).sum();
-    levels < READY_LEVELS && !techniques_ahead(skills)
+    levels < cap && !techniques_ahead(skills)
 }
 
 /// The pulse clock the status marker and the skill-ready alert share: the

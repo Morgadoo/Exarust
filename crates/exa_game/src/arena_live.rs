@@ -739,7 +739,10 @@ pub(crate) fn stand_first_round(
     clock: Option<Res<crate::effects::EffectClock>>,
     mut commands: MessageWriter<SceneCommand>,
     ((mut fixed, mut freeze), flow): (FreezeQueue<'_>, Option<Res<crate::flow::Flow>>),
-    env: Option<Res<exa_world::environment::SceneEnvRuntime>>,
+    (env, steps): (
+        Option<Res<exa_world::environment::SceneEnvRuntime>>,
+        Option<ResMut<crate::flow::FlowSteps>>,
+    ),
 ) {
     let Some(mut scene) = scene else {
         return;
@@ -793,6 +796,27 @@ pub(crate) fn stand_first_round(
         commands.write(SceneCommand::Spawn(Box::new(plan)));
     }
     scene.placed = true;
+    // The player's own entrant's start is the same fast two-point shot as
+    // the spectated start's: from the spawn spot raised by the near offset,
+    // looking at the spot (the spectated one is the spectate session's).
+    if !spectated && let Some(mut steps) = steps {
+        let spot = Vec3::from_array(scene.spawn_at);
+        let viewport = flow.as_ref().map_or(
+            crate::flow::Viewport {
+                width: 1600,
+                height: 900,
+            },
+            |f| f.viewport,
+        );
+        let frame = crate::flow::camera::frame_two_points(
+            spot,
+            spot + crate::flow::camera::NEAR_OFFSET,
+            true,
+            viewport,
+        );
+        info!("arena match: the player's start shot frames the spawn spot {spot}");
+        steps.steps.push(crate::flow::Step::Camera(frame));
+    }
     // The match start sets the staging freeze as it stages the first round:
     // the AI states wait out the transition screen's hold and fade-in, until
     // the screen the hub's Begin opened closes (counted without one, as a
@@ -1742,6 +1766,7 @@ mod tests {
             .add_message::<SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .init_resource::<exa_ai::freeze::StagingFreeze>()
+            .init_resource::<crate::flow::FlowSteps>()
             .add_systems(Update, stand_first_round);
         app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
         app.insert_resource(scene());
@@ -1758,6 +1783,24 @@ mod tests {
             .collect();
         assert_eq!(spawned.len(), 1);
         assert!(app.world().resource::<ArenaScene>().placed);
+        // The player's own entrant's start shot: the fast two-point shot
+        // from the spawn spot raised by the near offset.
+        let spot = Vec3::from_array(app.world().resource::<ArenaScene>().spawn_at);
+        let view = crate::flow::Viewport {
+            width: 1600,
+            height: 900,
+        };
+        assert_eq!(
+            app.world().resource::<crate::flow::FlowSteps>().steps,
+            vec![crate::flow::Step::Camera(
+                crate::flow::camera::frame_two_points(
+                    spot,
+                    spot + crate::flow::camera::NEAR_OFFSET,
+                    true,
+                    view,
+                )
+            )]
+        );
         // The match start's staging freeze is posted for the next fixed
         // step, which sets it.
         exa_physics::sim_app::run_fixed_commands(app.world_mut());

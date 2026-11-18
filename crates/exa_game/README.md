@@ -112,7 +112,11 @@ display's or the cap's period rounded to nearest with ties to even and
 multiplier, re-armed from the frame time, rescheduled from the interval;
 `frame_timers` runs it live once a frame with the GUI timer as record 1,
 which gates the GUI screens' tooltip, repeat and form-deletion work, and
-the arena's auto rematch as a one-shot record),
+the arena's auto rematch as a one-shot record, after the live game clock,
+`GameClock`, which holds while the simulation's pause is up, and the scene
+task's clock, `SceneClock`, started when a level is in and capped at 1/60 s
+with its scale, whose step the lights' flicker reads through
+`exa_world::scene_frame::SceneFrame`),
 the 128-slot deferred-call ring (127 calls; once wrapped only its head runs
 a tick; a call carries the procedure and data tags its cancel routines
 match and can be dropped by either), the redraw-flag idle wait
@@ -2099,6 +2103,15 @@ classifies a container's open, a card close and a use; a popup's inner
 panel and top are `open_container`'s, but no live container popup is drawn
 yet. The inventory screen still has no bound item list.
 
+The mode switch's flag words (`flow::ModeWords`: the level cap 15 in
+practice and the story and 12 in the arena, the collapse, story body and
+story health words) follow every change of the flow's mode; the skill
+screen, the HUD's ready alert and the company report compare the levels
+with the cap. A switch to no mode detaches the chase camera's controller
+(`ChaseCamera::detached`) until a mode attaches it; a shot copies the
+camera into the cursor pin's saved view; the player's own arena entrant's
+first round takes the fast two-point shot of the spawn spot.
+
 The gamepad (`gamepad`) reproduces the original's Steam Input action sets on
 Bevy's gamepad backend instead of Steam: the menu set and the interact and
 combat gameplay sets with their digital and analog actions and manifest
@@ -2108,7 +2121,8 @@ cursors, 400/150/30 ms repeats, three-millisecond set priming, the
 directional control pick at the GUI unit, the focus stack, and the gameplay
 reader's camera-relative move, aim, the look routine at the orbit rate, the
 stepped zoom, the power-bar and dialogue step modes, the 500 ms power-tree
-hold, the command word and rumble. The player reads it for exploration
+hold (it and the step repeat run on the simulation's clock, so a pause holds
+them), the command word and rumble. The player reads it for exploration
 movement (`pad_keys`), combat steps (its stick vector is the footwork's
 analog word once its squared length is over 0.01), aim, the attack on
 the emulated left mouse button (Exarust's stand-in for Steam's mouse

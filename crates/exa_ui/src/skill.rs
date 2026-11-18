@@ -1580,6 +1580,10 @@ pub struct SkillScreen {
     pub ready: bool,
     /// A locked screen never has a level ready.
     pub locked: bool,
+    /// The mode's level cap the ready flag compares the levels with
+    /// ([`MAX_TOTAL_LEVELS`] as the game starts and in the story and
+    /// practice, 12 in the arena).
+    pub level_cap: u32,
 }
 
 /// Converts experience to its worth in skill points and back (the
@@ -1625,6 +1629,7 @@ impl SkillScreen {
             leftover: 0,
             ready: false,
             locked: false,
+            level_cap: MAX_TOTAL_LEVELS,
         }
     }
 
@@ -1874,7 +1879,7 @@ impl SkillScreen {
                 break;
             }
         }
-        if total >= MAX_TOTAL_LEVELS {
+        if total >= self.level_cap {
             self.ready = false;
         }
     }
