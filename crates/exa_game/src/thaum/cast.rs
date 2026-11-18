@@ -2195,6 +2195,9 @@ fn create_force(
             let start_pitch = roll.0.unit();
             let mut aura = crate::thaum::ForceShell::new(context.now, tex_pos);
             aura.voice = true;
+            // The Shell power's aura names its break set, played when the
+            // shell is asked to close.
+            aura.break_set = Some(super::force::BUBBLE_BREAK);
             let spec = creator(
                 EffectKind::Shell,
                 &visual_input(context, ragdoll, start_pitch),
@@ -2626,6 +2629,7 @@ fn visual_input(context: &CastContext, ragdoll: Option<&Ragdoll>, roll: f32) -> 
 
 /// Steps the force-shell auras: the ripples, then the fade machine. A
 /// closed aura leaves its node.
+#[allow(clippy::type_complexity)]
 fn tick_shell_auras(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
@@ -2633,19 +2637,50 @@ fn tick_shell_auras(
         Entity,
         &mut LiveShellAura,
         Has<super::hold_live::StrikesAura>,
+        Option<&super::effect_draw::ShellAuraOf>,
     )>,
+    bodies: Query<&Ragdoll>,
+    mut draws: Option<ResMut<EffectDraws>>,
+    mut sounded: MessageWriter<super::barricade_sound::ForceSounded>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (entity, mut aura, strikes) in &mut auras {
+    for (entity, mut aura, strikes, of) in &mut auras {
         // A strikes aura's ripples are stepped by its running power.
         if !strikes {
             aura.0.step_ripples();
         }
-        if aura.0.frame(now).remove {
+        let view = aura.0.frame(now);
+        // The close request plays the shell's break set once, at the shell
+        // node's place (its body's), volume 0.4, pitch 0.4·r + 0.6 (double)
+        // with r the effect stream's draw.
+        if let Some(set) = view.breaks
+            && let Some(draws) = draws.as_deref_mut()
+        {
+            let r = draws.0.unit();
+            let (volume, pitch) = shell_break_levels(r);
+            let at = of
+                .and_then(|of| bodies.get(of.0).ok())
+                .and_then(|body| body.parts.iter().find(|p| p.parent.is_none()))
+                .map_or(Vec3::ZERO, |root| Vec3::from(root.transform().translation) * CM);
+            info!("force shell {entity:?}: closes with {set} at {at:?} cm, pitch {pitch:.4}");
+            sounded.write(super::barricade_sound::ForceSounded::at(
+                set, at, volume, pitch,
+            ));
+        }
+        if view.remove {
             commands.entity(entity).despawn();
         }
     }
 }
+
+/// The shell's break sound's levels from the effect stream's draw `r`:
+/// volume 0.4, pitch `r·0.4 + 0.6` in double, narrowed.
+pub(crate) fn shell_break_levels(r: f64) -> (f32, f32) {
+    (SHELL_BREAK_VOLUME, (r * 0.4 + 0.6) as f32)
+}
+
+/// The shell break's volume.
+const SHELL_BREAK_VOLUME: f32 = 0.4;
 
 /// Gives a live effect its material node: a child at the effect's place
 /// carrying the creator's material, sub-objects, textures and block, so a
