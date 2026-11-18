@@ -2583,8 +2583,9 @@ fn give_materials_gi(
         return;
     }
     let slots = GiSlots::new(&textures, &neighbours.blocks);
-    let debug =
-        GiDebugView::from_env().map_or(0, |view| view.flags(flags::DEBUG_GI, flags::DEBUG_SPLIT));
+    let debug = GiDebugView::from_env().map_or(0, |view| {
+        view.flags(flags::DEBUG_GI, flags::DEBUG_SPLIT) | view.model_flags()
+    });
     for id in ids {
         let Some(mut m) = materials.get_mut(id) else {
             continue;
@@ -2708,7 +2709,7 @@ pub fn encode_srgb8_from(x: f32, steps: &[f32; 255]) -> u8 {
     (c + u32::from(x >= steps[c as usize])) as u8
 }
 
-/// The `EXA_GI_DEBUG` views: the raw GI sample (any value but the two
+/// The `EXA_GI_DEBUG` views: the raw GI sample (any value but the three
 /// below), the direct lights alone (`direct`: no GI ambient or reflection)
 /// or the GI's share alone (`ambient`: no direct light). The two split views
 /// add up to the full frame in linear light (before the post pass), so a
@@ -2718,6 +2719,10 @@ pub enum GiDebugView {
     Raw,
     Direct,
     Ambient,
+    /// The direct lights' diffuse share alone (`diffuse`): the direct view
+    /// without the lights' highlights (models only; terrain shows the
+    /// direct view). `direct` less `diffuse` is the direct specular.
+    Diffuse,
 }
 
 impl GiDebugView {
@@ -2730,6 +2735,7 @@ impl GiDebugView {
         match value {
             "direct" => Self::Direct,
             "ambient" => Self::Ambient,
+            "diffuse" => Self::Diffuse,
             _ => Self::Raw,
         }
     }
@@ -2739,8 +2745,17 @@ impl GiDebugView {
     pub fn flags(self, raw: u32, split: u32) -> u32 {
         match self {
             Self::Raw => raw,
-            Self::Direct => split,
+            Self::Direct | Self::Diffuse => split,
             Self::Ambient => raw | split,
+        }
+    }
+
+    /// The model material bits the view adds besides [`Self::flags`]: the
+    /// diffuse view drops the specular sum.
+    pub fn model_flags(self) -> u32 {
+        match self {
+            Self::Diffuse => flags::NO_SPECULAR,
+            _ => 0,
         }
     }
 }
@@ -3624,6 +3639,10 @@ mod tests {
         assert_eq!(GiDebugView::Raw.flags(4, 128), 4);
         assert_eq!(GiDebugView::Direct.flags(4, 128), 128);
         assert_eq!(GiDebugView::Ambient.flags(4, 128), 132);
+        assert_eq!(GiDebugView::parse("diffuse"), GiDebugView::Diffuse);
+        assert_eq!(GiDebugView::Diffuse.flags(4, 128), 128);
+        assert_eq!(GiDebugView::Diffuse.model_flags(), flags::NO_SPECULAR);
+        assert_eq!(GiDebugView::Direct.model_flags(), 0);
     }
 
     const BLOCK: UVec3 = UVec3::new(256, 256, 64);
