@@ -1511,6 +1511,14 @@ pub fn dormant(flags: Option<&StateFlags>) -> bool {
     flags.is_some_and(|f| f.has(StateFlags::DORMANT))
 }
 
+/// The body side of the route stop a downed body takes each AI tick: the
+/// run bit and the free walk clear (the route's own side is
+/// [`crate::route_walk::AiRoute::stop`]).
+pub fn downed_route_stop(req: &mut exa_physics::body::locomotion::Locomotion) {
+    req.flags &= !exa_physics::body::locomotion::flags::RUN;
+    req.free_walk = false;
+}
+
 /// Runs the brain's AI tick: drifts its morale, integrates the contacts the
 /// perception filled and runs the target pass over every character the
 /// perception saw this tick, with the body's health, down state, sleep,
@@ -1547,7 +1555,7 @@ pub fn ai_tick(
             Option<&mut exa_physics::body::Ragdoll>,
             Option<&mut Roles>,
             Option<&CharacterId>,
-            Has<exa_physics::body::locomotion::Locomotion>,
+            Option<&mut exa_physics::body::locomotion::Locomotion>,
         ),
         Option<&GlobalTransform>,
         &Fighter,
@@ -1603,7 +1611,7 @@ pub fn ai_tick(
         mut npc,
         mut combatant,
         mut duellist,
-        (mut flags, mut body, mut roles, character_id, on_locomotion),
+        (mut flags, mut body, mut roles, character_id, mut locomotion),
         gt,
         fighter,
         mut condition,
@@ -1614,6 +1622,7 @@ pub fn ai_tick(
     ) in &mut npcs
     {
         let talking = name.map_or("character", |n| n.as_str());
+        let on_locomotion = locomotion.is_some();
         let following = route.as_ref().is_some_and(|r| r.following);
         // The sleep activity's entry (applying roles calls it, before the
         // AI tick's condition gate): the dormant flag joins the others, the
@@ -1693,11 +1702,15 @@ pub fn ai_tick(
             continue;
         }
         // A body that is down stops its route (the route stop), whichever
-        // state planned it.
-        if condition.0 & combatant::CONDITION_DOWN != 0
-            && let Some(route) = route.as_deref_mut()
-        {
-            route.stop();
+        // state planned it: the route ends, and on the body the run bit and
+        // the free walk clear.
+        if condition.0 & combatant::CONDITION_DOWN != 0 {
+            if let Some(route) = route.as_deref_mut() {
+                route.stop();
+            }
+            if let Some(req) = locomotion.as_deref_mut() {
+                downed_route_stop(req);
+            }
         }
         // The original keeps one contact record, which a hit reaction, a
         // blast's or a stamped body's concern and a script write in place.
@@ -5181,6 +5194,52 @@ mod tests {
             app.update();
         }
         assert!((yaw(&app) - first).abs() < 1e-6, "{} vs {first}", yaw(&app));
+    }
+
+    /// A downed body takes the route stop each AI tick: its route ends and
+    /// its body's run bit and free walk clear; a standing one keeps them.
+    #[test]
+    fn the_ai_tick_stops_a_downed_bodys_route_run_and_free_walk() {
+        use exa_physics::body::locomotion::{Locomotion, flags};
+        let mut app = App::new();
+        app.add_message::<PartyChange>();
+        app.add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((GlobalTransform::default(), RatedPlayer))
+            .id();
+        let spawn = |app: &mut App, condition: u32| {
+            let (mut req, motor) = Locomotion::facing(0.0);
+            req.flags = flags::RUN;
+            req.free_walk = true;
+            let mut route = crate::route_walk::AiRoute::default();
+            route.start(
+                vec![Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0)],
+                0,
+                crate::route_walk::Walker::Roam,
+            );
+            app.world_mut()
+                .spawn((
+                    Npc::new([0.0; 4]),
+                    Combatant::default(),
+                    crate::Duellist::new(player),
+                    GlobalTransform::IDENTITY,
+                    Fighter::default(),
+                    Condition(condition),
+                    (req, motor, route),
+                ))
+                .id()
+        };
+        let down = spawn(&mut app, combatant::CONDITION_DOWN);
+        let up = spawn(&mut app, Condition::NORMAL.0);
+        app.insert_resource(BodyTicks(1));
+        app.update();
+        let w = app.world();
+        let req = w.get::<Locomotion>(down).unwrap();
+        assert_eq!((req.flags & flags::RUN, req.free_walk), (0, false));
+        assert!(!w.get::<crate::route_walk::AiRoute>(down).unwrap().following);
+        let req = w.get::<Locomotion>(up).unwrap();
+        assert_eq!((req.flags & flags::RUN, req.free_walk), (flags::RUN, true));
     }
 
     /// The AI tick decays the brain's group alert a step every ten seconds,
