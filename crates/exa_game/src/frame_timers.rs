@@ -25,6 +25,15 @@
 //! ([`crate::item_container::CardTimer`]): a one-shot record of two units
 //! checked once a frame against the frame clock is the same arithmetic.
 //!
+//! The same tick keeps the game's clocks first ([`GameClock`]): the real
+//! millisecond clock, the paused-time accumulator (a frame while the game
+//! is paused adds to it) and the game clock, the real clock less the
+//! accumulator. The scene task then steps its own clock from them
+//! ([`step_scene_clock`]): its step is the game clock's since the last
+//! frame, capped at 1/60 s with a time scale for a longer frame, started
+//! when a level comes in; the scene's readers take it from
+//! [`exa_world::scene_frame::SceneFrame`].
+//!
 //! Rules: `docs/PERFORMANCE.md` (Frame pacing).
 
 use bevy::prelude::*;
@@ -156,14 +165,124 @@ pub fn run_frame_timers(
     }
 }
 
+/// The main tick's clocks ([`crate::frame::FrameClock`]), advanced once a
+/// frame: the real clock read after the frame's pacing, the paused-time
+/// accumulator and the game clock.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GameClock {
+    clock: crate::frame::FrameClock,
+    now_ms: u32,
+    step: crate::frame::FrameStep,
+}
+
+impl GameClock {
+    /// Advances to the real clock `now_ms`; `paused` is the pause counter
+    /// above zero.
+    pub fn advance(&mut self, now_ms: u32, paused: bool) -> crate::frame::FrameStep {
+        // Nothing in the shipped game sets the fixed rate.
+        self.step = self.clock.advance(now_ms, 0, paused);
+        self.now_ms = now_ms;
+        self.step
+    }
+
+    /// The real clock of this frame.
+    pub fn now_ms(&self) -> u32 {
+        self.now_ms
+    }
+
+    /// The paused-time accumulator.
+    pub fn paused_ms(&self) -> u32 {
+        self.clock.paused_ms()
+    }
+
+    /// The game clock: the real clock less the paused time.
+    pub fn game_ms(&self) -> u32 {
+        self.clock.game_ms()
+    }
+
+    /// This frame's step.
+    pub fn step(&self) -> crate::frame::FrameStep {
+        self.step
+    }
+}
+
+/// Advances the game clocks on the app's real clock. The pause counter is
+/// the simulation's hold ([`exa_physics::sim_app::SimPause`]): the screens
+/// and the teardown that pause the game raise it.
+pub fn advance_game_clock(
+    time: Res<Time<Real>>,
+    pause: Option<Res<exa_physics::sim_app::SimPause>>,
+    mut clock: ResMut<GameClock>,
+) {
+    let paused = pause.is_some_and(|p| p.paused());
+    clock.advance(time.elapsed().as_millis() as u32, paused);
+}
+
+/// The scene task's clock ([`crate::scene_editor::FrameClock`]), live.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct SceneClock {
+    pub clock: crate::scene_editor::FrameClock,
+    pub running: bool,
+}
+
+/// Steps the scene task's clock after the game clocks: started when a
+/// level is in (the loading screen gone), as the task's start stamps the
+/// game clock, then stepped once a frame on the real clock less the paused
+/// time; the step, scale and audio mark go to
+/// [`exa_world::scene_frame::SceneFrame`]. The audio mark takes half the
+/// step off while the view super-samples. While a level loads there is no
+/// scene: the step is 0 and the scale 1.
+pub fn step_scene_clock(
+    game: Res<GameClock>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    hardware: Option<Res<crate::hw_config::HardwareConfig>>,
+    mut scene: ResMut<SceneClock>,
+    mut frame: ResMut<exa_world::scene_frame::SceneFrame>,
+) {
+    if loading.is_some() {
+        scene.running = false;
+        *frame = exa_world::scene_frame::SceneFrame::default();
+        return;
+    }
+    if !scene.running {
+        scene.clock = crate::scene_editor::FrameClock::started(game.now_ms(), game.paused_ms());
+        scene.running = true;
+        *frame = exa_world::scene_frame::SceneFrame {
+            audio_mark: game.game_ms(),
+            running: true,
+            ..Default::default()
+        };
+        return;
+    }
+    let passes = hardware.map_or(0, |h| h.live.supersample);
+    let step = scene
+        .clock
+        .step(game.now_ms(), game.paused_ms(), game.game_ms(), passes);
+    *frame = exa_world::scene_frame::SceneFrame {
+        dt_ms: step.dt,
+        scale: step.scale,
+        audio_mark: step.audio_mark,
+        running: true,
+    };
+}
+
 /// Adds the timer table, with the GUI timer registered, and runs it each
-/// frame before the game's systems.
+/// frame before the game's systems, after the game clocks and the scene
+/// clock.
 pub struct FrameTimersPlugin;
 
 impl Plugin for FrameTimersPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FrameTimers>()
-            .add_systems(First, run_frame_timers.after(bevy::time::TimeSystems));
+            .init_resource::<GameClock>()
+            .init_resource::<SceneClock>()
+            .init_resource::<exa_world::scene_frame::SceneFrame>()
+            .add_systems(
+                First,
+                (advance_game_clock, step_scene_clock, run_frame_timers)
+                    .chain()
+                    .after(bevy::time::TimeSystems),
+            );
     }
 }
 
@@ -214,6 +333,60 @@ mod tests {
         assert!(!timers.fired(rematch));
         // The freed record is taken by the next registration.
         assert_eq!(timers.add(2, TimerUser::ArenaRematch), rematch);
+    }
+
+    /// The live clocks in an app: the game clock holds while the
+    /// simulation's pause is up, and the scene clock's step follows it
+    /// (0 while held, capped at 1/60 s with a scale for a long frame).
+    #[test]
+    fn the_scene_clock_steps_on_the_game_clock_and_holds_with_the_pause() {
+        use bevy::time::{TimePlugin, TimeUpdateStrategy};
+        use exa_world::scene_frame::SceneFrame;
+        use std::time::Duration;
+
+        let mut app = App::new();
+        app.add_plugins((TimePlugin, FrameTimersPlugin))
+            .init_resource::<exa_physics::sim_app::SimPause>()
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                10,
+            )));
+        app.update();
+        app.update();
+        // The first frames start the scene; then a 10 ms frame is 10 ms.
+        app.update();
+        let frame = *app.world().resource::<SceneFrame>();
+        assert!(frame.running);
+        assert_eq!(frame.dt_ms, 10.0);
+        assert_eq!(frame.scale, 1.0);
+        let game = app.world().resource::<GameClock>().game_ms();
+        // The pause holds the game clock and the scene's step.
+        app.world_mut()
+            .resource_mut::<exa_physics::sim_app::SimPause>()
+            .raise();
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<SceneFrame>().dt_ms, 0.0);
+        assert_eq!(app.world().resource::<GameClock>().game_ms(), game);
+        app.world_mut()
+            .resource_mut::<exa_physics::sim_app::SimPause>()
+            .lower();
+        // A 50 ms frame is capped: 1/60 s and a scale of the cap over 50.
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+            50,
+        )));
+        app.update();
+        let frame = *app.world().resource::<SceneFrame>();
+        assert_eq!(frame.dt_ms, crate::scene_editor::FRAME_CAPPED_MS);
+        assert_eq!(frame.scale, (16.666_666_666_666_668 / 50.0) as f32);
+        // A level load stops the scene; the next level starts it again.
+        app.insert_resource(exa_ui::LoadingStatus::default());
+        app.update();
+        assert!(!app.world().resource::<SceneFrame>().running);
+        app.world_mut().remove_resource::<exa_ui::LoadingStatus>();
+        app.update();
+        let frame = *app.world().resource::<SceneFrame>();
+        assert!(frame.running);
+        assert_eq!(frame.dt_ms, 0.0);
     }
 
     #[test]

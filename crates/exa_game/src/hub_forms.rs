@@ -1065,7 +1065,7 @@ impl HubWindows {
 
     /// Refreshes Manage Company from the career.
     pub fn refresh_manage(&mut self, career: &ArenaCareer) {
-        let refresh = career.manage();
+        let refresh = career.manage_at(self.level_cap.0);
         if let Some(form) = self.forms.get_mut(FormWindow::Manage) {
             fill_manage(form, &refresh);
         }

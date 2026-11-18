@@ -170,8 +170,21 @@ fn the_end_of_play_leaves_the_scene_in_no_mode() {
             .resource::<exa_world::room_view::ForcedRoom>()
             .active
     );
-    // The camera keeps its record through the switch to no mode.
+    // The camera keeps its record through the switch to no mode, and its
+    // controller detaches from the view: the camera holds its place.
     assert_eq!(cam(&app, camera).record_flags(), 0x0020_0300);
+    assert!(cam(&app, camera).detached);
+    let held = *app.world().get::<Transform>(camera).unwrap();
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::KeyW);
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(*app.world().get::<Transform>(camera).unwrap(), held);
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .release(KeyCode::KeyW);
     // A camera given the Spectate record by hand takes the Character one
     // at the next start of play.
     app.world_mut()
@@ -182,6 +195,8 @@ fn the_end_of_play_leaves_the_scene_in_no_mode() {
     app.update();
     assert!(app.world().resource::<GameModes>().is(GameMode::Character));
     assert_eq!(cam(&app, camera).record_flags(), 0x0020_0300);
+    // The switch into a mode attaches it again.
+    assert!(!cam(&app, camera).detached);
 }
 
 /// Behind the main menu the chase camera stands at the menu scene's fixed
@@ -251,6 +266,8 @@ fn the_spectated_arena_start_is_a_fast_two_point_shot() {
     app.update();
     let c = cam(&app, camera);
     assert!(c.is_free());
+    // The shot copied the camera into the cursor pin's saved view.
+    assert_eq!(c.shots, 1);
     assert_eq!(c.asked_pitch(), 0.0);
     assert_eq!(c.zoom(), 1280.0);
     let floor = crate::nav_camera::pitch_floor(1280.0);
@@ -304,4 +321,44 @@ fn the_free_camera_pans_with_the_bound_movement_keys() {
         app.update();
     }
     assert!(cam(&app, camera).free_focus(1.0).unwrap().distance(from) > 0.01);
+}
+
+/// A switch to no mode while the player is still there: the detached
+/// controller is not run, so the camera holds while the player walks off;
+/// the switch back into the Character mode attaches it and it follows.
+#[test]
+fn a_switch_to_no_mode_detaches_the_camera_from_the_view() {
+    let mut app = app();
+    let camera = camera(&mut app);
+    let player = app.world_mut().spawn((Player, Transform::default())).id();
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(!cam(&app, camera).detached);
+    crate::player_controls::enter_mode(
+        &mut app.world_mut().resource_mut::<GameModes>(),
+        None,
+        "test",
+    );
+    app.update();
+    assert!(cam(&app, camera).detached);
+    let held = *app.world().get::<Transform>(camera).unwrap();
+    app.world_mut()
+        .get_mut::<Transform>(player)
+        .unwrap()
+        .translation = Vec3::new(5.0, 0.0, 5.0);
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(*app.world().get::<Transform>(camera).unwrap(), held);
+    crate::player_controls::enter_mode(
+        &mut app.world_mut().resource_mut::<GameModes>(),
+        Some(GameMode::Character),
+        "test",
+    );
+    for _ in 0..5 {
+        app.update();
+    }
+    assert!(!cam(&app, camera).detached);
+    assert_ne!(*app.world().get::<Transform>(camera).unwrap(), held);
 }
