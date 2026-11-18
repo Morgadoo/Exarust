@@ -55,9 +55,11 @@
 //!   most 1 and 0.5 above. The hum's base is 0.2/0.75 standing, the
 //!   four-times-share curve under a quarter growing (its 0.2 in double), and
 //!   `(2 − |1.5 − 3.5·share|)·0.4` (the 0.4 in double), `(1 − share)·0.75`
-//!   shrinking; the glow times the phase's gain (the share growing, one
-//!   less it shrinking) adds once to the volume and 2.25 times to the
-//!   pitch. (The Barrier's own hum differs: `(1 − |0.5 − 1.5·share|)·0.4`
+//!   shrinking; ending writes no base, so the voice keeps the words the
+//!   last frame left ([`Dome::hum_words`]); the glow times the phase's gain
+//!   (the share growing, one less it shrinking, 1 otherwise) adds once to
+//!   the volume and 2.25 times to the pitch, an ending dome's again each
+//!   frame. (The Barrier's own hum differs: `(1 − |0.5 − 1.5·share|)·0.4`
 //!   shrinking and its hit glow four and nine times, ungated.) The
 //!   Barrier's `gi_dome` and the Bubble's `gi_bubble` are registered as GI
 //!   shapes while they live ([`crate::thaum::effect_light`]).
@@ -324,6 +326,10 @@ pub struct Dome {
     pub light: bool,
     /// The dome's hum voice exists (`thmfrc_bc02`, taken at the cast).
     pub hum: bool,
+    /// The hum voice's volume and pitch words as the last frame left
+    /// them: an ending dome's frame starts from them (it writes no base
+    /// hum) and adds the glow again each frame.
+    pub hum_words: [f32; 2],
 }
 
 /// The scene node a dome attaches to: its flags word, its owner back
@@ -393,6 +399,8 @@ impl Dome {
             node: DomeNode::default(),
             light: false,
             hum: false,
+            // The voice starts silent at pitch 1.
+            hum_words: [0.0, 1.0],
         };
         let sound = Sound {
             at: Vec3::new(caster.x, sound_height(caster.y, ground_y), caster.z),
@@ -486,7 +494,8 @@ impl Dome {
                     hum = [(f64::from(x) * 0.2) as f32, 1.0 - x * 0.25];
                 }
             }
-            Phase::Ending => {}
+            // Ending writes no base hum: the voice keeps its words.
+            Phase::Ending => hum = self.hum_words,
             _ => {
                 gain = 1.0 - shown;
                 hum = [
@@ -500,6 +509,7 @@ impl Dome {
         let gain = gain * self.glow.abs();
         hum[0] += gain * 1.0;
         hum[1] += gain * 2.25;
+        self.hum_words = hum;
         Some(DomeFrame {
             lod,
             fade: self.fade(),
@@ -1414,6 +1424,19 @@ mod tests {
         let x = 0.1f32 * 4.0;
         let x = x * (2.0 - x);
         assert_eq!(frame.hum, [(f64::from(x) * 0.2) as f32, 1.0 - x * 0.25]);
+        // Ending: the frame keeps the voice's words and adds the glow again
+        // each frame (gain 1), so the hum climbs while the dome ends.
+        let mut bubble =
+            Bubble::cast(120.0, Vec3::ZERO, 0, Vec3::ZERO, 0.0, &mut Mt19937::new(1)).0;
+        bubble.dome.ripples.list.push(ripple);
+        bubble.dome.phase = Phase::Standing;
+        let standing = bubble.dome.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
+        bubble.dome.phase = Phase::Ending;
+        let first = bubble.dome.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
+        let second = bubble.dome.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
+        let glow = bubble.dome.glow;
+        assert_eq!(first.hum, [standing.hum[0] + glow, standing.hum[1] + glow * 2.25]);
+        assert_eq!(second.hum, [first.hum[0] + glow, first.hum[1] + glow * 2.25]);
     }
 
     #[test]
