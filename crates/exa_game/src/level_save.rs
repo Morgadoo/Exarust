@@ -858,6 +858,7 @@ pub fn saved_section(
     story: bool,
     settings: SettingsState,
     characters: Option<SectionCharacters<'_>>,
+    shared: &[[u8; 16]],
 ) -> exa_formats::Result<(Vec<u8>, PlacementCounts, PropCounts)> {
     let mut scene = Scene::parse(source)?;
     let mut raw = LevelRaw::scan(source)?;
@@ -882,7 +883,7 @@ pub fn saved_section(
     let prop_counts = props_after(&mut scene.props, props);
     raw.object_database = Some(records);
     raw.object_strings = Some(strings);
-    let bytes = export_level_scene(&scene, &raw, story, settings)?;
+    let bytes = export_level_scene(&scene, &raw, story, settings, shared)?;
     Ok((bytes, counts, prop_counts))
 }
 
@@ -939,6 +940,10 @@ pub struct LevelSaveScene<'w, 's> {
     /// The owned nodes and mechanisms the part records and object words
     /// read.
     owned: OwnedParts<'w, 's>,
+    /// The game, whose shared material libraries a saved section leaves out
+    /// of its material list, and those names, read once.
+    game: Option<Res<'w, exa_assets::Game>>,
+    shared_materials: Local<'s, Option<Vec<[u8; 16]>>>,
 }
 
 /// A mechanism body's glue, for its live object word.
@@ -1485,6 +1490,12 @@ impl LevelSaveScene<'_, '_> {
                 counts.added
             );
         }
+        if self.shared_materials.is_none()
+            && let Some(game) = self.game.as_deref()
+        {
+            *self.shared_materials = Some(exa_assets::model::library_material_names(&game.0));
+        }
+        let shared = self.shared_materials.as_deref().unwrap_or(&[]);
         match saved_section(
             &source.bytes,
             &source.spawned,
@@ -1504,6 +1515,7 @@ impl LevelSaveScene<'_, '_> {
                     world,
                     database: database.clone(),
                 }),
+            shared,
         ) {
             Ok((bytes, counts, prop_counts)) => {
                 info!(
@@ -1619,6 +1631,74 @@ mod tests {
         assert_eq!(out[0].transform, stored.transform);
     }
 
+    /// A save's section leaves the materials the shared libraries hold out
+    /// of its list and its library: none of their records is written
+    /// (skipped without the game).
+    #[test]
+    fn a_saved_section_leaves_the_shared_library_materials_out() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let shared = exa_assets::model::library_material_names(&game);
+        assert!(!shared.is_empty());
+        let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let source = pack.get("exanima01.rfc").unwrap();
+        let scene = Scene::parse(source).unwrap();
+        let records = scene.local_database.clone().unwrap().write();
+        let strings = scene.local_strings.clone().unwrap_or_default().write();
+        let export = |shared: &[[u8; 16]]| {
+            saved_section(
+                source,
+                &[],
+                &[],
+                &[],
+                records.clone(),
+                strings.clone(),
+                true,
+                SettingsState::reset(),
+                None,
+                shared,
+            )
+            .unwrap()
+            .0
+        };
+        let plain = export(&[]);
+        let held = |bytes: &[u8], names: &[[u8; 16]]| {
+            LevelRaw::scan(bytes)
+                .unwrap()
+                .materials
+                .iter()
+                .filter(|(name, _)| exa_formats::rfc_write::library_holds(name, names))
+                .count()
+        };
+        // The shipped level's own export left the library materials its
+        // meshes use out of its list; the save's now does too.
+        let trimmed = export(&shared);
+        assert_eq!(held(&trimmed, &shared), 0);
+        // The material list's count: the shipped file's, where the plain
+        // export also counted the library names its meshes use.
+        let listed = |bytes: &[u8]| {
+            let at = bytes
+                .windows(4)
+                .position(|w| w == [0x00, 0xBA, 0x00, 0x00])
+                .unwrap();
+            u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap())
+        };
+        assert_eq!(listed(&trimmed), listed(source));
+        assert!(listed(&plain) > listed(&trimmed));
+        // A name a library held is left out of the list and the library.
+        let own = LevelRaw::scan(source).unwrap().materials[0].0;
+        let mut with_own = shared.clone();
+        with_own.push(exa_formats::rfc_write::lowercase_name(&own));
+        let trimmed = export(&with_own);
+        assert_eq!(held(&plain, &[own]), 1);
+        assert_eq!(held(&trimmed, &[own]), 0);
+        assert!(trimmed.len() < plain.len());
+        let back = Scene::parse(&trimmed).unwrap();
+        assert!(back.level_errors.is_empty(), "{:?}", back.level_errors);
+    }
+
     /// A shipped level's section written for a save reads back with the
     /// live local tier in place of its own, without the object the player
     /// took, with a moved object where it stands and a dropped one at the
@@ -1686,6 +1766,7 @@ mod tests {
             true,
             SettingsState::reset(),
             None,
+            &[],
         )
         .unwrap();
         assert_eq!(counts.added, 1);
@@ -2106,6 +2187,7 @@ mod tests {
                 world: &world,
                 database: local.section_body(),
             }),
+            &[],
         )
         .unwrap();
         let back = Scene::parse(&saved).unwrap();
@@ -2184,6 +2266,7 @@ mod tests {
                 world: &[],
                 database: local.section_body(),
             }),
+            &[],
         )
         .unwrap();
         let back = Scene::parse(&saved).unwrap();

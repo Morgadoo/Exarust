@@ -799,10 +799,11 @@ fn parent_node(number: i32, nodes: usize, props: &[usize], objects: &[usize]) ->
 /// the character database and the environment record.
 ///
 /// The scene is the game's whole scene for an export of the current level, so
-/// the environment is written; the shared material libraries are left empty,
-/// which lists every material the meshes use and writes the ones the level
-/// itself holds (the rest fall to the shared libraries by name, as the
-/// original's lookup does when the level's library lacks them).
+/// the environment is written. The shared material libraries are left empty
+/// here, which lists every material the meshes use and writes the ones the
+/// level itself holds; a save's caller fills them from the game's libraries
+/// (the material manager's), so their names leave the list and their records
+/// the library, as the original's export does.
 pub fn level_scene(level: &ReadScene, raw: &LevelRaw) -> Result<ExportScene> {
     let mut nodes = Vec::with_capacity(level.nodes.len());
     for i in 0..level.nodes.len() {
