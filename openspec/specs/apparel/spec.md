@@ -289,11 +289,15 @@ The CPU painter SHALL sample a paint job's own maps (shade, masks, item normal, 
 - **THEN** both texels read 0.5
 
 ### Requirement: Painter filters library textures linearly
-The CPU painter SHALL sample every library texture and emblem picture as the word `0x70133` loads them: the bilinear mix of the four level-0 texels around the sample point of the fragment's centre, repeating.
+The CPU painter SHALL sample every library texture and emblem picture at the fragment's centre, repeating, with the filter of the word its first loading material gave it: the bilinear mix of the four level-0 texels around the sample point for `0x70133`, the nearest texel for `0x70100` and `0x70103`.
 
 #### Scenario: A two-texel damage map
 - **WHEN** a damage-scale texture two texels wide is sampled at painted column 511
 - **THEN** it reads close to the mean of its two texels
+
+#### Scenario: A scuff map wood loaded first
+- **WHEN** a wood layer is painted before a steel layer that reads the same scuff map
+- **THEN** the steel layer reads the scuff map at its nearest texel
 
 ### Requirement: Garment paint runs
 A dressed character's merge SHALL group every `&` part of one worn garment into one run drawn with that garment's painted material, and SHALL keep two garments' `&` parts in separate runs even when their material names match; every other part SHALL be grouped by its material name.

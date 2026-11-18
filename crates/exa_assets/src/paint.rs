@@ -807,11 +807,14 @@ impl Samples<'_> {
         (sx - 0.5, sy - 0.5)
     }
 
-    /// A library texture at this texel. Every library texture loads with
-    /// the word `0x70133`: linear magnification and minification, no mip
-    /// chain, repeating on every axis. So the fragment reads the bilinear
-    /// mix of the four level-0 texels around its sample point, whether the
-    /// texture is magnified or minified there.
+    /// A library texture at this texel, repeating at level 0 (no mip chain).
+    /// A texture its first material loaded with `0x70133` (the steel, iron,
+    /// blade, cloth, silk, velvet, padded, suede, leather, wired grip,
+    /// painted steel, plate and chain setups) filters linearly: the bilinear
+    /// mix of the four texels around the sample point, magnified or
+    /// minified. One loaded first with `0x70100` (wood, painted planks) or
+    /// `0x70103` (copper alloy and satin, gemstone, resin) reads its nearest
+    /// texel.
     fn library4(&self, list: List, i: usize, family: Finish) -> Option<[f32; 4]> {
         let tex = match list {
             List::Colour => self.layer.library.get(i).copied().flatten(),
@@ -824,7 +827,10 @@ impl Samples<'_> {
             LibraryFilter::Linear => tex.bilinear(sx, sy),
             // The nearest texel: the one whose square holds the point
             // (texel centres at whole numbers).
-            LibraryFilter::Nearest => tex.at4((sx + 0.5).floor() as i64, (sy + 0.5).floor() as i64),
+            LibraryFilter::Nearest => {
+                let (x, y) = ((sx + 0.5).floor(), (sy + 0.5).floor());
+                tex.at4(x as i64, y as i64)
+            }
         })
     }
 
@@ -3447,8 +3453,8 @@ mod tests {
         assert_eq!(sample_region_map(&col, 0, 1, 1, 2, 2.0)[0], 1.0);
     }
 
-    /// Every library texture loads with `0x70133`: linear filtering at
-    /// level 0, repeating, sampled at the fragment's centre. A damage-scale
+    /// A library texture loaded with `0x70133` filters linearly at level 0,
+    /// repeating, sampled at the fragment's centre. A damage-scale
     /// texture two texels wide over a 1024-texel repeat: painted column 511
     /// samples texel coordinate 511.5 / 512 − 0.5 ≈ 0.499, nearly the mean
     /// of its two texels (the nearest texel read 0).

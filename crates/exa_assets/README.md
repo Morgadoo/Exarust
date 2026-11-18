@@ -562,8 +562,10 @@ plus the material's and damage normals, and the specular pass measures its
 creases on that painted normal map. Library textures tile by the original's
 `MatTile`/`DmgTile` rules (`paint::Tiling`). Every sample is taken at the
 painted texel's centre, as the original's samplers filter: library textures
-and emblem pictures (loaded with `0x70133`) are the bilinear mix of four
-level-0 texels, repeating; a job's own maps (shade, masks, item normal,
+and emblem pictures are the bilinear mix of four level-0 texels, repeating,
+when the first material to load the name asked for `0x70133` (the wood,
+planks, copper, gem and resin setups load nearest:
+`paint::Texels::claim_filter`); a job's own maps (shade, masks, item normal,
 loaded with `0x133`) the same mix with clamped edges, magnified or minified
 (`paint::sample_region_map`; no mip chain). A factory region
 (`model::FactoryPaint`, drawn by `paint::RegionJob` into the weapon's

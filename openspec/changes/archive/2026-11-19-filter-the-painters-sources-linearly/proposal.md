@@ -9,9 +9,13 @@ the alternate steel normal).
 
 ## Evidence
 
-- REA on the loads: every library texture of the 24 material setups loads
-  through the texture loader with `0x70133` (linear magnification and
-  minification, no mip chain, repeating, anisotropy mode 3). The factory
+- REA on the loads: the 24 material setups load their library textures
+  with `0x70133` (linear magnification and minification, no mip chain,
+  repeating, anisotropy mode 3), except the woods and painted planks
+  (`0x70100`) and copper alloy, copper satin, gemstone and resin
+  (`0x70103`), which filter nearest. The texture manager returns an already
+  loaded name with its first word, so a shared name keeps the first
+  material's filter. The factory
   region builder loads each component's `d`, `n` and `m1`..`m4` maps with
   `0x133`; the apparel layer-list builder loads its block's `d`, `n` and
   masks with `0x133` too. The emblem pictures load with `0x70133`.
@@ -31,7 +35,9 @@ the alternate steel normal).
 ## What changes
 
 - Library textures and emblem pictures: the bilinear mix of the four level-0
-  texels around the fragment-centre sample point, repeating.
+  texels around the fragment-centre sample point (fractions cut to 1/256),
+  repeating; nearest for a texture its first material loaded with a
+  nearest word.
 - A job's own maps (shade, normal, masks, and the shade scratch's inputs):
   the bilinear mix at level 0 with clamped edges, magnified or minified, for
   apparel and factory jobs alike.

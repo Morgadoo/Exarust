@@ -1053,20 +1053,27 @@ factories (Paint).
 **Sampling** (REA on the loads and `textures.flb`). Every program reads at
 the fragment's centre (`vrTex`, scaled by `MatTile`, `DmgTile`, `ShdTile`
 or `UVScale`).
-- Library textures load with the word `0x70133`: linear magnification and
-  minification, no mip chain, repeating. The painter reads the bilinear mix
-  of the four level-0 texels around the sample point, magnified or
-  minified (`paint::Samples::library4`).
-- A factory region's shade, normal and mask maps load with `0x133` and the
-  image's own wrap bits, which no shipped component map sets: linear at
-  level 0 with clamped edges, so a blade's `UVScale` past the map's end
-  reads its last row (`paint::sample_factory_map`, also for the shade
-  scratch's inputs).
+- Library textures load with the word of the material setup that loads
+  them: `0x70133` (linear magnification and minification) for steel, iron,
+  blade, the cloths, silk, velvet, suede, the leathers, wired grip, painted
+  steel, plate and chain; `0x70100` for the woods and painted planks and
+  `0x70103` for copper alloy and satin, gemstone and resin (nearest). All
+  repeat and keep no mip chain. The texture manager keeps one texture per
+  name, so a name two setups load (the scuff maps of steel and wood) keeps
+  the word of the material first used in the session
+  (`paint::Texels::claim_filter`). Linear reads the bilinear mix of the
+  four level-0 texels around the sample point, magnified or minified, its
+  fractions cut to 1/256 steps as GPUs filter [inf]
+  (`paint::Samples::library4`); nearest reads the texel whose square holds
+  the point.
+- A job's own maps load with `0x133`: a factory region's shade, normal and
+  masks with the image's own wrap bits (no shipped component map sets
+  them), an apparel block's likewise (two of 2136 apparel maps set them):
+  linear at level 0 with clamped edges, so a blade's `UVScale` past the
+  map's end reads its last row (`paint::sample_region_map`, also for the
+  shade scratch's inputs). The emblem pictures load with `0x70133`.
 - At texture detail 3 every library texture and component map uploads its
   level 0 (detail classes 0 and 2 only, `exa-tool corpus paint-maps`).
-- An apparel job takes its maps from the garment's material; their word
-  was not traced. Exarust magnifies them bilinearly, wrapping, and reads a
-  larger map's nearest texel.
 
 Never drawn on shipped data: the gemstone pattern colour program
 (`gemstone_d` with `0x20000`, the item picture times 3 in place of the
