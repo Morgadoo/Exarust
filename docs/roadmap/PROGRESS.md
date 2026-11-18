@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r324, 11-16) | target |
+| measure | start (r186, 11-10) | now (r325, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **68.63%** | **100%** |
+| **Ledger: bytes in a final state** | — | **68.67%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9293 | all |
+| Tests passing | 8,489 | 9297 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,10 +98,10 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 111 | 146,037 |
+| Physics, bodies & cloth | 7 | 7 | 110 | 145,258 |
 | Rendering & GPU | 10 | 10 | 171 | 104,953 |
 | UI | 12 | 12 | 205 | 102,262 |
-| Characters, motion & animation | 8 | 8 | 140 | 84,025 |
+| Characters, motion & animation | 8 | 8 | 139 | 83,767 |
 | Game modes, arena & session | 7 | 7 | 136 | 65,221 |
 | Thaumaturgy & effects | 9 | 9 | 83 | 64,321 |
 | World, levels & terrain | 5 | 5 | 91 | 59,211 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 3 | 2,097 |
 | Combat, weapons & damage | 1 | 1 | 3 | 1,560 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,261** | **786,962** |
+| **Total** | **90** | **90** | **1,259** | **785,925** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 325 | The story continue exit nudge takes the nearest walkable point and places the player on the static ground, and a summoned demon arrives on the static ground, as the original mode 1 placement; the Ground Query pre-tests body pieces with the original slab test (identical over 5000 cases, a flat body plate is not met); the cloth sphere push floor follows the mesh query form; traces and golden unchanged. |
 | 2026-11-16 | 324 | Meshes flagged to keep their own light (38 shipped: torch shadows, lamps, braziers) now cast in their own light cube; the put-out and switch-off darken the fixture glow as the original (emissive scale; voxel-light intensity without a colour update); the original GI injection and sample programs were decoded and match Exarust term for term; the exanima01 near-flame excess was mostly the comparison pose (torch head floating 6 cm), now documented; a 1.3-1.7x excess within 1 m below the flame needs a retail capture. |
 | 2026-11-16 | 323 | The first run measures the GPU and stores the detected settings with no form open; the benchmark hides the Settings form behind the original Configuration box; the trade preview (locked) and the loadout preview (frozen) start drags as the original character view, so tried-on shop goods cannot be dropped into the pack; Company Status draws the company emblem; the weapon-icon picture pair owed since round 303 is taken. |
 | 2026-11-16 | 322 | Force effects assess into the brain whole contact from the body look and frame forward; a follower former level reaches the relation move (answers once as the original; a masked-key bug fixed); a story track that plays on is not restarted at a door; the crystal drain runs from the story hook only; a busy search starts the target pass notice at 4.0 so a slight passer-by does not pull a searching follower away. |
