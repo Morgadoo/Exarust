@@ -22,9 +22,9 @@ struct PostSettings {
     // (the strength, faded in with the screen), the desaturation mask (how
     // far the scene gives way to its bloom) and the bloom term.
     blur: vec4<f32>,
-    // The blur kernel (`Filter`), four weights a slot: the centre, then
+    // The blur kernel (the original's `Filter`), four weights a slot: the centre, then
     // each symmetric pair's weight (`exa_render::post::bloom_kernel`).
-    filter: array<vec4<f32>, 8>,
+    kernel: array<vec4<f32>, 8>,
 }
 
 // The scene is stored in 8 bits by the original, so it clamps at 1.
@@ -39,7 +39,7 @@ fn bright(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 }
 
 fn weight(i: i32) -> f32 {
-    return settings.filter[i / 4][i % 4];
+    return settings.kernel[i / 4][i % 4];
 }
 
 // The view's kernel: the centre weight, then a symmetric pair for each

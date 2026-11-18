@@ -669,8 +669,9 @@ pub const LIST_BLOCK: f32 = (MAX_RANKS as f32 + 1.0) * RANK_SPACING;
 
 /// The lists Exarust draws on Bevy's transparent phase, in the frame walk's
 /// order. Each takes one [`LIST_BLOCK`] of sort values below zero, so Bevy's
-/// ascending sort draws them in this order, and everything without a list
-/// (particles, flames, rain: bias 0) after them.
+/// ascending sort draws them in this order; everything without a list
+/// (flames, smoke, sprays, effects: bias 0) by distance after them, and the
+/// faded pass last.
 ///
 /// - the alpha-tested and opaque entries of the sectors seen through
 ///   doorways (`sector_walk`): the original draws them clipped to their
@@ -678,9 +679,12 @@ pub const LIST_BLOCK: f32 = (MAX_RANKS as f32 + 1.0) * RANK_SPACING;
 ///   Bevy's opaque phases for these two lists;
 /// - the terrain grass hook (after the opaque lists and the terrain hook);
 /// - the decal list, then the blended list, by rank;
-/// - the late block: the cut-away faded pass (its depth half, then its
-///   colour half), which the original draws after the blended lists and
-///   their hook list, ahead of everything with no list.
+/// - the late block: everything with no list, then the cut-away faded pass
+///   (its depth half, then its colour half, [`FADED_DEPTH_BIAS`] and
+///   [`FADED_COLOUR_BIAS`] above zero), which the original draws after the
+///   blended lists and their hook list. The fire and smoke particles are
+///   blended-list records in the original (blend words `0x2123`, `0x2163`),
+///   so they come before it and show through a faded roof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PhaseList {
     ScissoredAlphaTest = 0,
@@ -724,9 +728,9 @@ impl PhaseList {
 }
 
 /// The cut-away faded pass's depth half and colour half: inside the late
-/// block, ahead of everything with no list.
-pub const FADED_DEPTH_BIAS: f32 = -0.75 * LIST_BLOCK;
-pub const FADED_COLOUR_BIAS: f32 = -0.5 * LIST_BLOCK;
+/// block, after everything with no list (whose biases are 0).
+pub const FADED_DEPTH_BIAS: f32 = 0.5 * LIST_BLOCK;
+pub const FADED_COLOUR_BIAS: f32 = 0.75 * LIST_BLOCK;
 
 /// The value Bevy's transparent phase adds to a surface's view depth before
 /// its ascending sort (`Material::depth_bias`), placing the original's

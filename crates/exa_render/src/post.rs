@@ -376,7 +376,7 @@ pub struct ExaPost {
     pub blur: Vec4,
     /// The blur kernel's weights (`Filter`), four to a slot: the centre
     /// first, then each symmetric pair's ([`bloom_kernel`]).
-    filter: [Vec4; KERNEL_SLOTS],
+    kernel: [Vec4; KERNEL_SLOTS],
 }
 
 /// The most taps a view's blur takes (the item renderer's 24), in slots
@@ -400,7 +400,7 @@ impl ExaPost {
             sharpen: SHARPEN,
             last: -1,
             blur: Vec4::new(1.0, 1.0, 0.0, 0.0),
-            filter: [Vec4::ZERO; KERNEL_SLOTS],
+            kernel: [Vec4::ZERO; KERNEL_SLOTS],
         };
         post.set_taps(taps);
         post
@@ -414,7 +414,7 @@ impl ExaPost {
         for (slot, w) in filter.iter_mut().zip(&kernel.weights) {
             *slot = *w;
         }
-        self.filter = std::array::from_fn(|i| Vec4::from_slice(&filter[i * 4..i * 4 + 4]));
+        self.kernel = std::array::from_fn(|i| Vec4::from_slice(&filter[i * 4..i * 4 + 4]));
         self.last = kernel.last;
     }
 
@@ -425,7 +425,7 @@ impl ExaPost {
 
     /// The kernel's weights as uploaded.
     pub fn weights(&self) -> Vec<f32> {
-        self.filter
+        self.kernel
             .iter()
             .flat_map(|v| v.to_array())
             .take(self.taps() as usize)
@@ -1053,6 +1053,26 @@ mod fade_tests {
         assert_eq!(fetches, 1);
         assert_eq!(programs.cached(PostVariant::Plain), None);
     }
+    /// The post program parses and validates as WGSL (with the full-screen
+    /// vertex output standing in for Bevy's import), and its settings hold
+    /// the kernel the views upload.
+    #[test]
+    fn the_post_program_validates() {
+        let source = include_str!("post.wesl").replace(
+            "import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;",
+            "struct FullscreenVertexOutput { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };",
+        );
+        let module = naga::front::wgsl::parse_str(&source).expect("post.wesl parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("post.wesl validates");
+        assert!(source.contains("kernel: array<vec4<f32>, 8>"));
+        assert_eq!(KERNEL_SLOTS, 8);
+    }
+
     #[test]
     fn a_views_post_uploads_the_filters_kernel() {
         // The game view: 16 taps, the curve the shader once carried as

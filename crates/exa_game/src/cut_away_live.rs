@@ -514,7 +514,8 @@ mod tests {
         use exa_render::passes::PhaseList;
         assert!(PhaseList::Blended.bias() + exa_render::passes::LIST_BLOCK <= depth.draw_order);
         assert!(depth.draw_order + 1000.0 < colour.draw_order);
-        assert!(colour.draw_order + 1000.0 < 0.0);
+        // After everything with no list (bias 0 plus a view depth).
+        assert!(depth.draw_order > 1000.0);
         assert_eq!(PhaseList::of_sort_value(depth.draw_order), PhaseList::Late);
         assert!(lays_depth(Look::Blend(0.4)));
         assert!(!lays_depth(Look::Blend(0.0)));

@@ -664,8 +664,12 @@ for everything the original draws after them, in blocks of sort values
 (`passes::PhaseList`, each a list's ranks plus a view depth, in walk
 order): the scissored alpha-tested and opaque meshes (Portal scissor,
 below), the grass hook, the decal list, the blended list, then the late
-block (the faded pass's depth half, its colour half) and everything with
-no list (particles, flames, rain) by distance. The clear is the camera's
+block: everything with no list (flames, smoke, sprays, effects) by
+distance, then the faded pass's depth half and its colour half (the
+original's fire and smoke particles are blended-list records, drawn
+before the faded pass, so a faded roof blends over them; with the faded
+depth laid first they would be hidden behind it). The rain draws in the
+transmissive pass, before all of these. The clear is the camera's
 clear colour; the other hook lists have no separate node. Every
 alpha-tested record (`Shd.AlphaTst`, `ExaMaterial::is_alpha_tested`)
 compiles its program's cut (`EXA_ALPHA_TEST` in `exa.wesl`): a texel of
@@ -4402,7 +4406,7 @@ Exarust (`exa_game::cut_away_live`) gives a fading part a blended copy of
 its material whose opacity replaces the diffuse alpha (`flags2` bit 4,
 `ExaParams::cut_away_opacity`), drawn as the faded pass's colour half
 (`LateDraw::FadedColour`: depth writes off, on the transparent phase's
-late block after every blended surface), and, while its opacity is above
+late block after every blended surface and effect), and, while its opacity is above
 0, a depth child (`CutAwayDepth`: the part's mesh with a copy drawn as the
 depth half, `LateDraw::FadedDepth`, colour writes off and depth writes
 on, ahead of every faded colour). So every fading part's depth is laid
