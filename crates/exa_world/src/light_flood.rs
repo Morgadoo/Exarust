@@ -235,12 +235,27 @@ fn opening(cell: (i64, i64), side: usize, ends: [End; 2], l: (f32, f32)) -> [f32
     })
 }
 
+/// Rounds up to an `i32` as the engine's rounding helper does (the
+/// conversion under round-up mode): a value that does not fit, or NaN, gives
+/// the integer minimum.
+fn ceil_to_i32(x: f32) -> i32 {
+    let c = x.ceil();
+    if c.is_nan() || c < i32::MIN as f32 || c >= 2_147_483_648.0 {
+        i32::MIN
+    } else {
+        c as i32
+    }
+}
+
 /// The lights every cell records: (light key, window).
 #[derive(Clone, Debug, Default)]
 pub struct CellLights {
     cells: Vec<Vec<(u32, f32, f32)>>,
-    /// The cells each light entered.
+    /// The cells that may hold each light (stale entries included).
     touched: HashMap<u32, Vec<usize>>,
+    /// The cells each light's last flood recorded it in (the cell hook's
+    /// calls, first call per cell), in the order of those calls.
+    flooded: HashMap<u32, Vec<usize>>,
 }
 
 impl CellLights {
@@ -248,6 +263,7 @@ impl CellLights {
         Self {
             cells: vec![Vec::new(); grid.w * grid.h],
             touched: HashMap::default(),
+            flooded: HashMap::default(),
         }
     }
 
@@ -256,6 +272,7 @@ impl CellLights {
     /// original scans every cell the same way), so the order of the other
     /// lights in a cell can change.
     pub fn remove(&mut self, key: u32) {
+        self.flooded.remove(&key);
         for cell in self.touched.remove(&key).unwrap_or_default() {
             let list = &mut self.cells[cell];
             if let Some(at) = list.iter().position(|e| e.0 == key) {
@@ -280,20 +297,17 @@ impl CellLights {
             }
             list.push((key, 0.0, 0.0));
             self.touched.entry(key).or_default().push(cell);
+            self.flooded.entry(key).or_default().push(cell);
         }
     }
 
     fn insert(&mut self, cell: usize, key: u32, a0: f32, a1: f32) {
         let list = &mut self.cells[cell];
         if let Some(e) = list.iter_mut().find(|e| e.0 == key) {
-            if e.1 > WHOLE_FROM {
-                return;
-            }
-            if a0 > WHOLE_FROM {
-                (e.1, e.2) = (a0, a1);
-                return;
-            }
             // Each end widens on its own: the union of overlapping arcs.
+            // The whole-cell marker gets no special case (the original
+            // folds it like any angle), which matters only for a stale
+            // entry the box clear left behind.
             if fold(a0 - e.1) < 0.0 {
                 e.1 = a0;
             }
@@ -303,6 +317,13 @@ impl CellLights {
         } else if list.len() < MAX_CELL_LIGHTS {
             list.push((key, a0, a1));
             self.touched.entry(key).or_default().push(cell);
+        } else {
+            return;
+        }
+        // The cell hook runs for a widened entry and a new one alike.
+        let flooded = self.flooded.entry(key).or_default();
+        if !flooded.contains(&cell) {
+            flooded.push(cell);
         }
     }
 
@@ -313,11 +334,11 @@ impl CellLights {
             .map(|e| (e.1, e.2))
     }
 
-    /// The cells light `key` was recorded in, in the order the flood
-    /// recorded them (a cell already full when the light reached it is not
-    /// among them).
+    /// The cells light `key`'s last flood recorded it in, in the order the
+    /// flood recorded them (a cell already full when the light reached it
+    /// is not among them; a stale entry outside the flood is not either).
     pub fn cells_of(&self, key: u32) -> &[usize] {
-        self.touched.get(&key).map_or(&[], |cells| &cells[..])
+        self.flooded.get(&key).map_or(&[], |cells| &cells[..])
     }
 
     /// The lights a cell records.
@@ -325,9 +346,50 @@ impl CellLights {
         self.cells[cell].iter().map(|e| e.0)
     }
 
-    /// Floods light `key` through `grid`, replacing what it left before.
+    /// Takes light `key` out of the cells in a box around `light`'s
+    /// current position, as the original's flood does before it starts: the
+    /// light's cell (grid half plus metres over 6, truncated), out to
+    /// `ceil(radius / 6) + 1` cells each way, clamped to the grid, rows
+    /// outer and columns inner, each cell dropping its first entry for the
+    /// light by a swap with its last. A cell outside the box keeps a stale
+    /// entry (a light that moved far keeps its old cells). The arithmetic
+    /// is the original's 32-bit one: an unranged light's radius does not
+    /// fit, its rounding gives the integer minimum and the box comes out
+    /// empty, so such a light clears nothing.
+    fn clear_box(&mut self, grid: &WallGrid, key: u32, light: &FloodLight) {
+        let cx = ((grid.w >> 1) as f32 + light.position.x / CELL) as i64 as i32;
+        let cz = ((grid.h >> 1) as f32 + light.position.z / CELL) as i64 as i32;
+        let r = ceil_to_i32(light.radius / CELL).wrapping_add(1);
+        let span = |c: i32, n: usize| {
+            let hi = c.wrapping_add(r);
+            (c.wrapping_sub(r).max(0), if hi >= n as i32 { n as i32 - 1 } else { hi })
+        };
+        let ((x0, x1), (z0, z1)) = (span(cx, grid.w), span(cz, grid.h));
+        let inside = |cell: usize| {
+            let (x, z) = ((cell % grid.w) as i32, (cell / grid.w) as i32);
+            (x0..=x1).contains(&x) && (z0..=z1).contains(&z)
+        };
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                let list = &mut self.cells[z as usize * grid.w + x as usize];
+                if let Some(at) = list.iter().position(|e| e.0 == key) {
+                    list.swap_remove(at);
+                }
+            }
+        }
+        if let Some(cells) = self.touched.get_mut(&key) {
+            cells.retain(|&c| !inside(c));
+            if cells.is_empty() {
+                self.touched.remove(&key);
+            }
+        }
+    }
+
+    /// Floods light `key` through `grid`. What it left before is cleared
+    /// only in the box around its new position ([`Self::clear_box`]).
     pub fn flood(&mut self, grid: &WallGrid, key: u32, light: &FloodLight) {
-        self.remove(key);
+        self.clear_box(grid, key, light);
+        self.flooded.remove(&key);
         let l = grid.to_cells(light.position.x, light.position.z);
         let reach = light.radius / CELL;
         let start = (
@@ -677,6 +739,54 @@ mod tests {
         assert_eq!(cells.window(0, 1), Some((0.0, 1.0)));
         cells.insert(0, 1, -0.4, 0.2);
         assert_eq!(cells.window(0, 1), Some((-0.4, 1.0)));
+    }
+
+    #[test]
+    fn a_moved_light_clears_only_the_box_round_its_new_cell() {
+        // An open 14 x 5 grid; a light of one cell's radius clears
+        // ceil(1) + 1 = 2 cells each way of its new cell.
+        let (w, h) = (14usize, 5usize);
+        let g = WallGrid::new(w, h, vec![OPEN; w * h], vec![0; w * h]).unwrap();
+        let mut cells = CellLights::new(&g);
+        let small = |at: Vec3| FloodLight {
+            position: at,
+            radius: CELL,
+            shaped: None,
+        };
+        cells.flood(&g, 1, &small(centre(&g, 3, 2)));
+        assert!(cells.window(cell(&g, 3, 2), 1).unwrap().0 > WHOLE_FROM);
+        // Four cells along: the old cell is outside the new box.
+        cells.flood(&g, 1, &small(centre(&g, 7, 2)));
+        assert!(cells.window(cell(&g, 7, 2), 1).unwrap().0 > WHOLE_FROM);
+        assert!(
+            cells.window(cell(&g, 3, 2), 1).is_some(),
+            "the old cell keeps its stale entry"
+        );
+        assert!(cells.touched[&1].contains(&cell(&g, 3, 2)));
+        // The last flood's cells (the room aliases' source) leave it out.
+        assert!(!cells.cells_of(1).contains(&cell(&g, 3, 2)));
+        // Two cells along: the old cell is inside the box and is cleared
+        // before the new flood, which does not reach that far.
+        let mut near = CellLights::new(&g);
+        near.flood(&g, 1, &small(centre(&g, 3, 2)));
+        near.flood(&g, 1, &small(centre(&g, 5, 2)));
+        assert!(near.window(cell(&g, 3, 2), 1).is_none());
+    }
+
+    #[test]
+    fn an_unranged_light_clears_no_box() {
+        let (w, h) = (14usize, 5usize);
+        let g = WallGrid::new(w, h, vec![OPEN; w * h], vec![0; w * h]).unwrap();
+        let mut cells = CellLights::new(&g);
+        cells.insert(cell(&g, 3, 2), 1, 0.0, 0.5);
+        let far = FloodLight {
+            position: centre(&g, 3, 2),
+            radius: 3.4e36,
+            shaped: None,
+        };
+        assert_eq!(ceil_to_i32(far.radius / CELL), i32::MIN);
+        cells.clear_box(&g, 1, &far);
+        assert_eq!(cells.window(cell(&g, 3, 2), 1), Some((0.0, 0.5)));
     }
 
     #[test]
