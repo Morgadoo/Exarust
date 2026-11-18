@@ -82,7 +82,9 @@ impl Plugin for MechanismPlugin {
     }
 }
 
-/// `EXA_MECHANISM_LIST=1` (debug): once the level's sliding leaves stand,
+/// `EXA_MECHANISM_LIST=1` (debug): once the level's sliding leaves stand
+/// (with the hinged leaves' angles and words, which a save's load check
+/// compares),
 /// logs each one (its placed object's id, where its leaf is, its fraction
 /// and state bits) and each lever (its id, where it is, its two targets),
 /// so a scene can be framed on a lever and the gate it drives; then, every
@@ -92,6 +94,7 @@ fn list_mechanisms(
     mut frame: Local<u32>,
     slides: Query<(Entity, &SlideBody, &Ragdoll)>,
     levers: Query<(Entity, &exa_physics::body::LeverBody)>,
+    doors: Query<(Entity, &exa_physics::body::DoorBody, &Ragdoll)>,
     parents: Query<&ChildOf>,
     records: Query<&MechanismRecords>,
 ) {
@@ -137,8 +140,29 @@ fn list_mechanisms(
         for (e, lever) in &levers {
             let at = lever.origin();
             info!(
-                "mechanism list: lever {e:?} {:#x} at ({:.2}, {:.2}, {:.2}) m signals {:#x} and {:#x}",
-                lever.id, at.x, at.y, at.z, lever.record.target, lever.record.second
+                "mechanism list: lever {e:?} {:#x} at ({:.2}, {:.2}, {:.2}) m signals {:#x} and {:#x}, word {:#x}",
+                lever.id,
+                at.x,
+                at.y,
+                at.z,
+                lever.record.target,
+                lever.record.second,
+                lever.lever.word
+            );
+        }
+        for (e, glue, body) in &doors {
+            let at = Vec3::from(body.parts[0].transform().translation);
+            info!(
+                "mechanism list: hinged leaf {e:?} of {} at ({:.2}, {:.2}, {:.2}) m, angle {:.3} (shut at {:.3}), closed {}, latched {}, word {:#x}",
+                placed_id(e),
+                at.x,
+                at.y,
+                at.z,
+                glue.door.angle,
+                glue.door.shape.closed(),
+                glue.door.closed,
+                glue.door.latched,
+                glue.door.stored()
             );
         }
         return;

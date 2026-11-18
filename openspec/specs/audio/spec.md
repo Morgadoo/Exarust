@@ -420,3 +420,10 @@ A story level's track SHALL play at the volume the story level hook's table give
 #### Scenario: The first and the sixth level
 - **WHEN** exanima01 and exanima06 load
 - **THEN** their tracks play at 0.1 and 0.25
+
+### Requirement: Menu music crossfade
+The main menu's music code SHALL crossfade the main track to the menu theme it selects (the drum-and-bass theme at 0.2, the plain one at 0.1) through the audio environment's crossfader.
+
+#### Scenario: The music code typed
+- **WHEN** the music code is typed on the main menu with the plain theme playing
+- **THEN** a crossfade to the drum-and-bass theme at 0.2 is asked for

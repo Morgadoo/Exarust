@@ -1298,6 +1298,12 @@ pub enum Step {
         volume: f32,
         restart: bool,
     },
+    /// Crossfade the main track to another at a volume, through the audio
+    /// environment's crossfader (the main menu's music code).
+    MusicCrossfade {
+        name: &'static str,
+        volume: f32,
+    },
     /// Tick the dialogue engine.
     Dialogue,
     /// End every conversation: live ones end with their topic recorded,
@@ -4990,6 +4996,12 @@ pub(crate) fn apply_steps(
                         });
                     }
                 }
+            }
+            Step::MusicCrossfade { name, volume } => {
+                commands.write_message(exa_audio::MusicCrossfade {
+                    name: name.to_ascii_lowercase(),
+                    volume,
+                });
             }
             Step::Music {
                 name,

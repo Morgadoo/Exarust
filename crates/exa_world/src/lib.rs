@@ -35,6 +35,7 @@ pub mod prop_skin;
 pub mod published_light;
 pub mod room_view;
 pub mod rooms;
+pub mod saved_parts;
 pub mod scene_env;
 pub mod scene_live;
 pub mod scene_nodes;
@@ -1003,6 +1004,9 @@ fn spawn_placed_object(
     };
     let (e, nodes) = spawn_model_nodes_at(commands, model, Some(placement), daylight);
     mark_cloth_starts(commands, model, &nodes, &object.attachments);
+    if let Some(tree) = saved_parts::PartTree::of(model, &nodes) {
+        commands.entity(e).insert(tree);
+    }
     commands.entity(e).insert((
         Name::new(item.name.clone()),
         room_view::PendingRoom::default(),
@@ -2448,6 +2452,9 @@ impl LevelLoad {
                                 self.daylight,
                             );
                             mark_cloth_starts(commands, model, &nodes, &prop.attachments);
+                            if let Some(tree) = saved_parts::PartTree::of(model, &nodes) {
+                                commands.entity(e).insert(tree);
+                            }
                             // A prop placed static is level geometry.
                             let (placement, geometry) = if prop.is_static() {
                                 (bodies::Placement::Static, bodies::LevelGeometry::All)

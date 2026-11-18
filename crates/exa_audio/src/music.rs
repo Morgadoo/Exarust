@@ -640,6 +640,43 @@ pub enum MusicOverlay {
     Out,
 }
 
+/// A request to crossfade the main track to a named one at a volume
+/// ([`AudioEnvironment::music_crossfade`]): the main menu's music code
+/// switches its theme this way.
+#[derive(Message, Debug, Clone, PartialEq)]
+pub struct MusicCrossfade {
+    pub name: String,
+    pub volume: f32,
+}
+
+/// Runs the crossfade requests on the real clock the fades measure.
+pub(crate) fn crossfade_music(
+    mut env: ResMut<AudioEnvironment>,
+    mut requests: MessageReader<MusicCrossfade>,
+    real: Res<Time<Real>>,
+    game: Option<Res<Game>>,
+    mut bank: ResMut<SoundBank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+) {
+    let now = real.elapsed().as_millis() as u32;
+    for request in requests.read() {
+        let Some(game) = game.as_deref() else {
+            continue;
+        };
+        env.music_crossfade(
+            &mut bank,
+            &request.name,
+            request.volume,
+            now,
+            |bank, name| bank.load_buffer(game, &mut sources, name).unwrap_or(0),
+        );
+        info!(
+            "music: crossfades to {} at {}",
+            request.name, request.volume
+        );
+    }
+}
+
 /// Runs the overlay requests on the real clock the fades measure.
 pub(crate) fn overlay_music(
     mut env: ResMut<AudioEnvironment>,
