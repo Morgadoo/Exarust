@@ -264,7 +264,9 @@ pub(crate) fn assign_light_ids(
     mut lights: Query<(Entity, &mut PointLight, Option<&LightShaping>), Without<LightId>>,
     mut shaped: Query<(&LightId, &LightShaping), Changed<LightShaping>>,
 ) {
-    for (entity, mut light, shaping) in &mut lights {
+    // In entity (spawn) order: a light's id does not follow the query's
+    // table order.
+    for (entity, mut light, shaping) in lights.iter_mut().sort_unstable::<Entity>() {
         let id = table.records.len() as u32;
         table.records.push(Record {
             shaping: shaping.map_or(Vec2::ONE, |s| s.0),

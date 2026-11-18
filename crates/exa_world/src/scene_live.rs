@@ -550,11 +550,15 @@ pub fn run_scene(
     } else {
         register.extend(added.iter());
     }
-    let new_lights: Vec<Entity> = if fresh {
+    let mut new_lights: Vec<Entity> = if fresh {
         lights.iter().map(|l| l.0).collect()
     } else {
         added_lights.iter().collect()
     };
+    // Registered in entity (spawn) order, not the queries' table order, so
+    // the sectors' light and mesh lists do not move with a build's types.
+    new_lights.sort_unstable();
+    register.sort_unstable();
     let rooms = level.rooms.clone();
     let room_sector = |room: Option<u16>| room.map_or(SCENE_SECTOR, |r| usize::from(r) + 1);
 

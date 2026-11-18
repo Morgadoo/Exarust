@@ -145,7 +145,7 @@ pub(crate) fn arrive_demons(
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     let effect_now = clock.as_deref().map_or(0, |c| c.now_ms);
     let now_ms = u64::from(now);
-    for (demon, summoned, body) in &demons {
+    for (demon, summoned, body) in demons.iter().sort_unstable::<Entity>() {
         let Ok((caster_entity, mut caster)) = casters.get_mut(summoned.caster) else {
             continue;
         };

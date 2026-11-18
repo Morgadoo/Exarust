@@ -973,7 +973,7 @@ pub fn level_impacts(
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
     let story = story.is_some_and(|s| s.0);
     for (entity, mut f, mut book, mut condition, mut flags, mut anim, attacking, mut body) in
-        &mut fighters
+        fighters.iter_mut().sort_unstable::<Entity>()
     {
         let Some(root) = body.parts.iter().position(|p| p.parent.is_none()) else {
             continue;

@@ -569,18 +569,45 @@ pub struct LightFixture {
     pub base: Vec4,
 }
 
-/// One flicker step for every animating light, at the frame's time.
+/// `EXA_FLICKER_TRACE=1`: [`flicker_lights`] logs, every 30th frame, the
+/// order it walked the animating lights in (entity, position) and the
+/// generator's state before the walk, to compare two builds' draw orders.
+fn flicker_trace() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("EXA_FLICKER_TRACE").is_ok_and(|v| v == "1"))
+}
+
+/// One flicker step for every animating light, at the frame's time, in
+/// entity (spawn) order: the shared generator's draws then go to the same
+/// lights whatever tables the query walks (the original steps its lights
+/// in the scene's order, each sector's list as registered).
 fn flicker_lights(
     time: Res<Time>,
     mut rng: ResMut<FlickerRng>,
-    mut lights: Query<&mut LightSource>,
+    mut lights: Query<(Entity, &mut LightSource, Option<&GlobalTransform>)>,
+    mut frame: Local<u64>,
 ) {
     let ms = frame_ms(time.delta().as_millis());
-    for mut source in &mut lights {
+    let trace = flicker_trace() && frame.is_multiple_of(30);
+    *frame += 1;
+    let state = rng.0;
+    let mut walked = Vec::new();
+    for (entity, mut source, at) in lights.iter_mut().sort_unstable::<Entity>() {
         if !source.animates() {
             continue;
         }
+        if trace {
+            let p = at.map_or(Vec3::ZERO, |t| t.translation());
+            walked.push(format!("{entity}@{:.2},{:.2},{:.2}", p.x, p.y, p.z));
+        }
         source.flicker_step(&mut || rng.draw(), ms);
+    }
+    if trace {
+        info!(
+            "flicker order: frame {} rng {state:#010x} ms {ms}: {}",
+            *frame - 1,
+            walked.join(" ")
+        );
     }
 }
 

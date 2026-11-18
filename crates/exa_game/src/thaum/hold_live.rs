@@ -219,7 +219,7 @@ pub(crate) fn grab_thrown(
     mut roll: ResMut<EffectRoll>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for mut caster in &mut casters {
+    for mut caster in casters.iter_mut().sort_unstable::<Entity>() {
         for entry in caster.active.iter_mut() {
             let ActiveClass::Throw(power) = &mut entry.class else {
                 continue;
@@ -284,7 +284,7 @@ pub(super) fn dress_strikes(
     mut roll: ResMut<EffectRoll>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (caster_entity, mut caster, ragdoll) in &mut casters {
+    for (caster_entity, mut caster, ragdoll) in casters.iter_mut().sort_unstable::<Entity>() {
         let Some(key) = ragdoll.parts.first().map(|p| p.entity) else {
             continue;
         };

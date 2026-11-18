@@ -894,7 +894,7 @@ pub(crate) fn tick_blasts(
         Local<Vec<[Vec3; 3]>>,
     ),
 ) {
-    for (entity, mut live) in &mut blasts {
+    for (entity, mut live) in blasts.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         let target = live
             .target
@@ -977,7 +977,7 @@ pub(crate) fn tick_blasts(
                 }
                 live.contact_scale = STATIC_SCALE;
             }
-            for mut cloth in &mut cloths {
+            for mut cloth in cloths.iter_mut().sort_unstable::<Entity>() {
                 if stir_cloth(&set, live.contact_scale, &mut cloth) {
                     debug!("blast {entity:?} stirs a cloth");
                 }

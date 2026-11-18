@@ -550,7 +550,7 @@ pub(crate) fn tick_arcs(
     mut draws: ResMut<EffectDraws>,
     mut shocked: MessageWriter<ArcShocked>,
 ) {
-    for mut live in &mut arcs {
+    for mut live in arcs.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         if let Some((body, bone)) = live.hand {
             // The tests and the bounds take the hand part's place; the frame
@@ -602,7 +602,7 @@ pub(crate) fn tick_arcs(
         if live.arcs.tests & TESTS_BODIES == 0 {
             continue;
         }
-        for (entity, body) in &bodies {
+        for (entity, body) in bodies.iter().sort_unstable::<Entity>() {
             if Some(entity) == live.caster || body.drive.is_none() {
                 continue;
             }
@@ -1268,7 +1268,7 @@ pub(crate) fn tick_barricades(
     mut sounded: MessageWriter<super::barricade_sound::ForceSounded>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
-    for (wall_entity, mut live, stamped) in &mut walls {
+    for (wall_entity, mut live, stamped) in walls.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         if let Some(caster) = live.caster
             && let Ok(body) = bodies.get(caster)
@@ -1304,7 +1304,7 @@ pub(crate) fn tick_barricades(
         let mut holders = Vec::new();
         // Characters whose front limb played the impact sound this tick.
         let mut noticed = Vec::new();
-        for (who, mut body, mut swing) in &mut bodies {
+        for (who, mut body, mut swing) in bodies.iter_mut().sort_unstable::<Entity>() {
             let character = body.drive.as_ref().map(|d| {
                 let chest = bone_part(&body, CHEST)
                     .and_then(|k| part_point(&body, k, Vec3::ZERO))
@@ -1444,7 +1444,7 @@ pub(crate) fn tick_wisps(
     bodies: Query<&Ragdoll>,
     mut roll: ResMut<EffectRoll>,
 ) {
-    for (entity, mut live) in &mut sets {
+    for (entity, mut live) in sets.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         let Ok(body) = bodies.get(live.body) else {
             commands.entity(entity).despawn();
@@ -1776,7 +1776,9 @@ pub(crate) fn draw_arcs(
     }
     let eye_world = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
-    for (entity, mut live, glow, drawn, material, light, riding) in &mut arcs {
+    for (entity, mut live, glow, drawn, material, light, riding) in
+        arcs.iter_mut().sort_unstable::<Entity>()
+    {
         let voxel = held_voxels.get(entity).ok();
         // The frame's flickers and light points are its own
         // ([`super::arcs::ArcGlow`]); the draw writes nothing of the
