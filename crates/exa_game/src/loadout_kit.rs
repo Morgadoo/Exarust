@@ -1332,7 +1332,8 @@ pub fn kit_input(
                 ..loadout_hands(loadout)
             };
             if let Some(item) = pick.item_at(rects.preview, at, &p, &items)
-                && let Some(icon) = frozen_drag_icon(item, icons.as_deref_mut(), catalogue, open.list.icon_size)
+                && let Some(icon) =
+                    frozen_drag_icon(item, icons.as_deref_mut(), catalogue, open.list.icon_size)
             {
                 open.drag = Some(KitDrag {
                     from_stock: false,

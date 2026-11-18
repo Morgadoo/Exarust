@@ -279,10 +279,7 @@ pub fn emblem_layer(
 ) -> Option<exa_ui::gui_draw::GuiLayer> {
     let preview = exa_ui::emblem_form::EmblemPreview {
         textures: exa_ui::emblem_form::preview_textures(record),
-        colours: exa_ui::emblem_form::preview_colours(
-            record,
-            exa_ui::emblem_form::preview_palette,
-        ),
+        colours: exa_ui::emblem_form::preview_colours(record, exa_ui::emblem_form::preview_palette),
         mirror: record.mirror(),
         alpha: exa_ui::emblem_form::PREVIEW_ALPHA,
     };
