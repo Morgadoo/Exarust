@@ -60,6 +60,8 @@ pilot packages (A3) cost about 1 million tokens and correct this estimate.
 **Blocks:** A3 onward.
 
 ### DEC-5. Kept deviations
+**Taken 2026-11-19 as recommended** (see the Taken table).
+
 **Question:** confirm each difference kept on purpose.
 
 | item | why it was kept |
@@ -86,6 +88,8 @@ confirm the picture.
 **Blocks:** part of B4 (world), two terrain components' last gaps.
 
 ### DEC-7. Approximate float instructions
+**Taken 2026-11-19 as recommended** (see the Taken table).
+
 **Question:** reproduce the original's approximate reciprocal and
 reciprocal-square-root instructions (`rcpss`, `rcpps`, `rsqrtss`), or keep
 Exarust's exact results as a deviation?
@@ -161,6 +165,8 @@ entry at packaging, adaptive vsync as the nearest wgpu present mode.
 **Blocks:** six `missing` rows of RF_OS_Functions and RF_Main.
 
 ### DEC-11. The tendrils' reads past their data
+**Taken 2026-11-19 as recommended** (see the Taken table).
+
 **Question:** reproduce two reads of the tendril effects that run past the
 data they mean, or keep Exarust's stand-ins as deviations?
 
@@ -268,6 +274,7 @@ a Phase D performance item, not a ledger blocker.
 
 | date | decision |
 |---|---|
+| 2026-11-19 | DEC-5, DEC-7 and DEC-11 taken as recommended: the five kept differences of DEC-5 are `deviation` rows; the original's approximate float instructions are reproduced by one fixed software approximation equal to a common Intel result (the double constants, summation orders and NaN branches matched), recorded as a deviation; the tendrils' two reads past their data stay deviations. Also taken: the hit resolver's stab draw reads a stack value the original never writes on that path (its result depends on leftover memory); Exarust uses 0 there, recorded as a deviation. |
 | 2026-11-16 | Batch rulings B1, B2, B3 (with its step/frame condition), B4 and B5a taken as recommended by the triage of the open ledger; B5b waits on its data scans and a decision entry for the random streams. DEC-12 taken as recommended (generated textures on the CPU engine-replaced, on the condition that every program a job draws has its arithmetic matched; a program not yet matched keeps its row open). Recorded 2026-11-18 at the owner's request. |
 | 2026-11-15 | DEC-8 taken as recommended (shader templates engine-replaced where the WESL paths cover every variant). |
 | 2026-11-12 | DEC-1 to DEC-4 taken as recommended when the owner set the goal "complete the plan": the ledger definition of 100%; Steam kept as a deviation for now; the character creator audited read-only, ports left to the other session; Phase A starts with the three-package pilot, the rest sized from its numbers. |
