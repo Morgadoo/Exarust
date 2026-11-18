@@ -1435,8 +1435,14 @@ mod tests {
         let first = bubble.dome.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
         let second = bubble.dome.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
         let glow = bubble.dome.glow;
-        assert_eq!(first.hum, [standing.hum[0] + glow, standing.hum[1] + glow * 2.25]);
-        assert_eq!(second.hum, [first.hum[0] + glow, first.hum[1] + glow * 2.25]);
+        assert_eq!(
+            first.hum,
+            [standing.hum[0] + glow, standing.hum[1] + glow * 2.25]
+        );
+        assert_eq!(
+            second.hum,
+            [first.hum[0] + glow, first.hum[1] + glow * 2.25]
+        );
     }
 
     #[test]

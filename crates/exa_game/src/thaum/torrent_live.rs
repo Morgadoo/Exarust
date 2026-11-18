@@ -109,7 +109,10 @@ pub struct LiveTorrent {
 /// heading and takes one step, and the frame looks along the spring's
 /// flat direction (`(sin yaw, 0, cos yaw)`), as the torrent's tick sets it
 /// up before the streams.
-pub(crate) fn turned_view(turn: &mut crate::steering::CursorFollower, view: &TorrentView) -> TorrentView {
+pub(crate) fn turned_view(
+    turn: &mut crate::steering::CursorFollower,
+    view: &TorrentView,
+) -> TorrentView {
     use exa_physics::engine_math::{direction_from_yaw, heading};
     turn.follow(heading(view.turned_aim));
     turn.tick();
@@ -767,7 +770,10 @@ mod tests {
             tick_torrent(&mut torrent, &mut body, &side, &mut draws, &mut roll);
         }
         let settled = torrent.turn.yaw();
-        assert!((settled - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "{settled}");
+        assert!(
+            (settled - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "{settled}"
+        );
     }
 
     #[test]

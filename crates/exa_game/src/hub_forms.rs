@@ -2401,7 +2401,8 @@ mod tests {
     fn a_box_without_the_modal_bit_lets_the_pointer_reach_the_form_under_it() {
         for (word, reaches) in [(crate::staff::REFUSAL_BOX_WORD, true), (0xc1, false)] {
             let mut forms = HubForms::default();
-            let mut under = exa_ui::modal_screens::open_message_box("Under", "Text", 1, (1280, 720), 4);
+            let mut under =
+                exa_ui::modal_screens::open_message_box("Under", "Text", 1, (1280, 720), 4);
             under.place_at(0, 0);
             forms.push(FormWindow::Dismiss, under);
             forms.open_message("Hire", "No room.", word, (1280, 720), 4);

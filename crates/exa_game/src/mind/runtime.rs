@@ -1222,7 +1222,9 @@ pub(crate) fn repick_voice(
     record: &exa_formats::characters::CharacterRecord,
     game: Option<&exa_assets::Game>,
 ) {
-    let races = game.map(crate::scene_bodies::game_races).unwrap_or_default();
+    let races = game
+        .map(crate::scene_bodies::game_races)
+        .unwrap_or_default();
     let builtin = exa_formats::races::builtin_human();
     let race = exa_formats::races::of_character(&races, record.race).unwrap_or(&builtin);
     let sounds = game.and_then(|g| g.0.pack(exa_assets::PackKind::Sound));
