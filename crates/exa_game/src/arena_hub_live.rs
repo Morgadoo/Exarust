@@ -192,7 +192,11 @@ impl Plugin for ArenaHubPlugin {
                     crate::arsenal::load_shelf_kinds,
                     (leave_arena, enter_loaded_hub).chain(),
                     auto_rematch.before(crate::save_live::SaveLiveSystems::Steps),
-                    crate::hub_forms::open_hub_window_on_load,
+                    (
+                        crate::hub_forms::hub_emblem_on_load,
+                        crate::hub_forms::open_hub_window_on_load,
+                    )
+                        .chain(),
                     crate::hub_forms::hub_employee_kit_on_load,
                     crate::hub_forms::hub_arsenal_on_load.after(hub_enter_on_load),
                     crate::hub_forms::hub_stash_on_load,

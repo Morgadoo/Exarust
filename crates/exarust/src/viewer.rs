@@ -242,6 +242,9 @@ fn setup(
             done: false,
         });
     }
+    if let Some(name) = &options.hub_emblem {
+        commands.insert_resource(exa_game::hub_forms::HubEmblem(Some(name.clone())));
+    }
     if let Some(((name, kit), more)) = options.hub_employee_kit.split_first() {
         commands.insert_resource(exa_game::hub_forms::HubEmployeeKit {
             name: name.clone(),
