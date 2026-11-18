@@ -524,7 +524,7 @@ pub(crate) fn tick_torrents(
         Query<&mut exa_world::cloth::ClothInstance>,
     ),
 ) {
-    for (entity, mut live) in &mut torrents {
+    for (entity, mut live) in torrents.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         let target = live
             .target
@@ -583,12 +583,12 @@ pub(crate) fn tick_torrents(
                 }
                 live.contact_scale = STATIC_CONTACT.scale;
             }
-            for mut cloth in &mut cloths {
+            for mut cloth in cloths.iter_mut().sort_unstable::<Entity>() {
                 if stir_torrent_cloth(&live.torrent, live.contact_scale, &mut cloth) {
                     debug!("torrent {entity:?} stirs a cloth");
                 }
             }
-            for (other, mut body) in &mut bodies {
+            for (other, mut body) in bodies.iter_mut().sort_unstable::<Entity>() {
                 if other == live.caster {
                     continue;
                 }

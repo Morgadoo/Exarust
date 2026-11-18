@@ -211,7 +211,7 @@ pub(crate) fn tick_bubbles(
     (mut limbs, mut parts): (Local<Vec<LimbSphere>>, Local<Vec<usize>>),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (entity, mut live) in &mut bubbles {
+    for (entity, mut live) in bubbles.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         if casters.get(live.caster).is_err() {
             end_bubble(live);
@@ -237,7 +237,7 @@ pub(crate) fn tick_bubbles(
             continue;
         }
         let centre = live.bubble.dome.at;
-        for (other, mut body, at) in &mut bodies {
+        for (other, mut body, at) in bodies.iter_mut().sort_unstable::<Entity>() {
             let own = other == live.caster;
             if !keep_out(&mut live.bubble, own, &mut body, &mut limbs, &mut parts) {
                 continue;
