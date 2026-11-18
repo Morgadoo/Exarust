@@ -178,6 +178,19 @@ pub(super) const PORTS: &[Port] = &[
             u32::from(hit).to_le_bytes().to_vec()
         },
     },
+    Port {
+        name: "segment_box_slabs",
+        run: |b| {
+            let hit = intersect::segment_box_slabs(
+                Vec3::new(b.f32("seg.sx"), b.f32("seg.sy"), b.f32("seg.sz")),
+                Vec3::new(b.f32("seg.dx"), b.f32("seg.dy"), b.f32("seg.dz")),
+                b.f32("seg.length"),
+                Vec3::new(b.f32("box.cx"), b.f32("box.cy"), b.f32("box.cz")),
+                Vec3::new(b.f32("box.hx"), b.f32("box.hy"), b.f32("box.hz")),
+            );
+            vec![u8::from(hit)]
+        },
+    },
     // The engine's form (the original's sum order); glam's
     // `transform_point3` differs in 1973 of 5000 cases (last bit).
     Port {

@@ -72,6 +72,11 @@ pub struct LevelPiece {
     pub half: Vec3,
     /// One past the piece's last triangle in the cloth's level list.
     pub end: usize,
+    /// The piece's node mesh answers through its kd-tree: its sphere
+    /// query is the tree leaf's, whose push floor is
+    /// [`crate::mesh_query::PUSH_FLOOR`] (the brute-force query's is
+    /// [`SPHERE_MARGIN`]).
+    pub tree: bool,
 }
 
 impl LevelPiece {
@@ -92,6 +97,7 @@ impl LevelPiece {
             centre: (lo + hi) * 0.5,
             half: (hi - lo) * 0.5,
             end,
+            tree: false,
         }
     }
 }
@@ -118,11 +124,13 @@ fn dot(a: Vec3, b: Vec3) -> f32 {
 /// `radius` in front of the face (its plane distance in `[0, radius)`) and
 /// nearer than `radius − 1e-10` to the triangle is pushed off it, along the
 /// closest-point direction to `radius` (along the normal when it sits on
-/// the triangle): the mesh's brute-force front query
-/// ([`crate::mesh_query::front_push_face`] with its 1e-10 floor). Returns
-/// the push.
-pub fn sphere_push(face: &Face, centre: Vec3, radius: f32) -> Option<Vec3> {
-    crate::mesh_query::front_push_face(face, centre, radius, SPHERE_MARGIN).map(|(_, push)| push)
+/// the triangle): the mesh's front query
+/// ([`crate::mesh_query::front_push_face`]) with the floor of the form
+/// that runs it, `floor`: the brute-force query's 1e-10
+/// ([`SPHERE_MARGIN`]) or the kd-tree leaf's 1e-6
+/// ([`crate::mesh_query::PUSH_FLOOR`]). Returns the push.
+pub fn sphere_push(face: &Face, centre: Vec3, radius: f32, floor: f32) -> Option<Vec3> {
+    crate::mesh_query::front_push_face(face, centre, radius, floor).map(|(_, push)| push)
 }
 
 /// The mesh's cloth sweep query for one triangle: the sweep record `s` (a
@@ -351,6 +359,7 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
         centre: Vec3::ZERO,
         half: Vec3::splat(f32::INFINITY),
         end: cloth.level.len(),
+        tree: false,
     }];
     let pieces = if cloth.level_pieces.is_empty() {
         &whole[..]
@@ -372,6 +381,11 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
         if range.is_empty() {
             continue;
         }
+        let floor = if piece.tree {
+            crate::mesh_query::PUSH_FLOOR
+        } else {
+            SPHERE_MARGIN
+        };
         let grid = (range.len() > GRID_MIN_TRIANGLES)
             .then(|| TriangleGrid::new(&cloth.level[range.clone()], range.start));
         for particle in &mut cloth.particles {
@@ -414,7 +428,7 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
                 let push = if swept {
                     sweep_push(face, &self::swept(start, end, radius)).map(|(_, push)| push)
                 } else {
-                    sphere_push(face, end, radius)
+                    sphere_push(face, end, radius, floor)
                 };
                 if let Some(push) = push {
                     end += push;
@@ -450,16 +464,25 @@ mod tests {
         let face = face_of(&t).unwrap();
         assert_eq!((face.normal, face.plane), (Vec3::Z, 0.0));
         // 0.5 cm over the face: pushed 1.5 cm up.
-        let push = sphere_push(&face, Vec3::new(1.0, 1.0, 0.5), 2.0).unwrap();
+        let push = sphere_push(&face, Vec3::new(1.0, 1.0, 0.5), 2.0, SPHERE_MARGIN).unwrap();
         assert!(push.abs_diff_eq(Vec3::new(0.0, 0.0, 1.5), 1e-6), "{push}");
         // Behind the face, or 2 cm out, it is not touched.
-        assert_eq!(sphere_push(&face, Vec3::new(1.0, 1.0, -0.5), 2.0), None);
-        assert_eq!(sphere_push(&face, Vec3::new(1.0, 1.0, 2.0), 2.0), None);
+        assert_eq!(
+            sphere_push(&face, Vec3::new(1.0, 1.0, -0.5), 2.0, SPHERE_MARGIN),
+            None
+        );
+        assert_eq!(
+            sphere_push(&face, Vec3::new(1.0, 1.0, 2.0), 2.0, SPHERE_MARGIN),
+            None
+        );
         // On the face it goes out along the normal by the whole radius.
-        let push = sphere_push(&face, Vec3::new(1.0, 1.0, 0.0), 2.0).unwrap();
+        let push = sphere_push(&face, Vec3::new(1.0, 1.0, 0.0), 2.0, SPHERE_MARGIN).unwrap();
         assert_eq!(push, Vec3::new(0.0, 0.0, 2.0));
         // Beside the triangle, past the radius from its edge.
-        assert_eq!(sphere_push(&face, Vec3::new(30.0, 1.0, 0.5), 2.0), None);
+        assert_eq!(
+            sphere_push(&face, Vec3::new(30.0, 1.0, 0.5), 2.0, SPHERE_MARGIN),
+            None
+        );
     }
 
     /// The sweep query's push on a 2 cm sphere from `start` to `end`.
@@ -497,6 +520,27 @@ mod tests {
         // 0.1 cm or less is cancelled.
         assert_eq!(slide(previous, Vec3::new(0.0, 0.0, 7.95)), previous);
         assert_eq!(slide(previous, Vec3::new(0.1, 0.0, 8.0)), previous);
+    }
+
+    /// A resting particle a hair inside its padding of a face is pushed by
+    /// a mesh without a kd-tree (the brute-force query's 1e-10 floor) but
+    /// not by one with a tree (the leaf's 1e-6 floor cuts its reach).
+    #[test]
+    fn the_sphere_floor_is_the_pieces_query_form() {
+        let z = 2.0 - 4.0e-7;
+        let run = |tree: bool| {
+            let mut cloth = Cloth::new(vec![Particle {
+                previous: Vec3::new(4.0, 4.0, z),
+                position: Vec3::new(4.0, 4.0, z),
+            }]);
+            cloth.level.push(floor());
+            let mut piece = LevelPiece::around(&cloth.level, 1);
+            piece.tree = tree;
+            cloth.level_pieces.push(piece);
+            touch_level(&mut cloth)
+        };
+        assert!(run(false));
+        assert!(!run(true));
     }
 
     #[test]
