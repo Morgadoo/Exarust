@@ -217,7 +217,7 @@ fn pick_compass(
 /// a new pick ([`exa_ui::game_gui::status_marker`] over the known pairs'
 /// flags). The alert reads the player's record as the original's status
 /// routine reads its player record: it shows while the six skills' levels
-/// sum below fifteen and none holds a technique ahead of its level
+/// sum below the mode's level cap ([`crate::flow::ModeWords`]) and none holds a technique ahead of its level
 /// ([`exa_ui::game_gui::ready_alert`]). A player body without a record
 /// (a viewer scene) has no alert.
 fn pick_status(
@@ -225,8 +225,10 @@ fn pick_status(
     casters: Query<&PowerCaster, With<PlayerBody>>,
     records: Query<&exa_character::record::CharacterData, With<PlayerBody>>,
     hud: Res<HudBars>,
+    words: Option<Res<crate::flow::ModeWords>>,
     mut status: ResMut<StatusView>,
 ) {
+    let cap = words.map_or(exa_ui::game_gui::READY_LEVELS, |w| w.level_cap as i32);
     let flags: Vec<u32> = players
         .iter()
         .flat_map(|children| children.iter())
@@ -241,7 +243,7 @@ fn pick_status(
             .iter()
             .flat_map(|children| children.iter())
             .find_map(|child| records.get(child).ok())
-            .is_some_and(|data| exa_ui::game_gui::ready_alert(&data.record.skills)),
+            .is_some_and(|data| exa_ui::game_gui::ready_alert(&data.record.skills, cap)),
     };
     if *status != next {
         *status = next;

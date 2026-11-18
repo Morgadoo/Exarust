@@ -88,8 +88,13 @@ pub struct CursorLook {
     /// point, or `saved`.
     pointer: Option<Vec2>,
     /// The view and the reference point (the player's feet, or the
-    /// spectating camera's look-at point) at the end of the last frame.
+    /// spectating camera's look-at point) at the end of the last frame:
+    /// the cursor pin's saved view.
     last: Option<(GlobalTransform, Vec3)>,
+    /// The camera's shot count the saved view was last taken at: a shot
+    /// copies the camera into the saved view, so the pin does not carry
+    /// the pointer across it.
+    shots_seen: u32,
 }
 
 impl CursorLook {
@@ -938,9 +943,10 @@ pub(crate) fn reselect_on_mode_switch(
 /// The camera switch's camera half: a camera that has not seen the last
 /// mode switch takes the entered mode's record
 /// ([`ChaseCamera::take_record`]). A camera built from that mode's record
-/// that has had none since takes the switch as its construction; a switch
-/// to no mode leaves the camera its record (the original detaches the
-/// controller from the view, which Exarust's camera has no part for).
+/// that has had none since takes the switch as its construction. A switch
+/// to no mode that the camera saw happen detaches the controller from the
+/// view ([`ChaseCamera::detached`]: its tick stops) and leaves it its
+/// record; a switch into a mode attaches it again before the record.
 pub(crate) fn take_mode_records(
     modes: Res<crate::player_controls::GameModes>,
     config: Option<Res<crate::hw_config::HardwareConfig>>,
@@ -951,10 +957,18 @@ pub(crate) fn take_mode_records(
         if cam.switches_seen == Some(modes.switches) {
             continue;
         }
+        let saw_switch = cam.switches_seen.is_some();
         cam.switches_seen = Some(modes.switches);
         let Some(mode) = modes.current() else {
+            if saw_switch && !cam.detached {
+                cam.detached = true;
+                info!("camera: the controller detaches from the view (no mode)");
+            }
             continue;
         };
+        if std::mem::take(&mut cam.detached) {
+            info!("camera: the controller attaches to the view again");
+        }
         let record = mode.camera_record(on_deck);
         // A new camera is built from the shipped Character record.
         if std::mem::take(&mut cam.fresh)
@@ -1322,7 +1336,9 @@ pub(crate) fn cursor_look(
                 });
             }
         }
-    } else if cam.as_ref().is_some_and(|c| c.aligning)
+    } else if cam
+        .as_ref()
+        .is_some_and(|c| c.aligning && c.shots == look.shots_seen)
         && !wayland()
         && let (Some((last_view, last_reference)), Some(reference)) = (look.last, reference)
         && let (Some(camera), Some(view)) = (view_camera, view.as_ref())
@@ -1343,6 +1359,9 @@ pub(crate) fn cursor_look(
         took = true;
     }
     look.last = view.zip(reference);
+    if let Some(cam) = cam.as_ref() {
+        look.shots_seen = cam.shots;
+    }
     capture.0 = look.active;
     sim_capture.set_if_neq(LookCapture(look.capture()));
     if let Some(answer) = answer.as_deref_mut()
@@ -2778,6 +2797,12 @@ pub struct ChaseCamera {
     /// [`take_mode_records`].
     pub(crate) mode: Option<crate::player_controls::GameMode>,
     switches_seen: Option<u32>,
+    /// The controller is detached from the view: a switch to no mode
+    /// detaches it, and the view no longer runs its tick (the camera holds
+    /// where it was) until a switch into a mode attaches it again.
+    pub(crate) detached: bool,
+    /// Shots taken ([`ChaseCamera::take_shot`]), for the cursor pin.
+    pub(crate) shots: u32,
     /// The camera was built from its mode's record and no switch has given
     /// it one since: the first switch into that mode is its construction.
     fresh: bool,
@@ -2855,6 +2880,8 @@ impl Default for ChaseCamera {
             controller,
             mode: Some(crate::player_controls::GameMode::Character),
             switches_seen: None,
+            detached: false,
+            shots: 0,
             fresh: true,
             free: None,
         };
@@ -3000,6 +3027,9 @@ impl ChaseCamera {
     /// eye to its target ([`Self::face_shot`]) at the shot's distance, or at
     /// the camera's current distance without one.
     pub fn take_shot(&mut self, frame: &crate::flow::CameraFrame) {
+        // The shot's copy of the camera into the cursor pin's saved view
+        // ([`CursorLook`]).
+        self.shots = self.shots.wrapping_add(1);
         if frame.clears_pitch {
             self.user_pitch = 0.0;
         }
@@ -3522,6 +3552,10 @@ pub fn chase_camera(
         _ => Vec3::ZERO,
     };
     for (mut cam, mut t, mut projection) in &mut cameras {
+        // A detached controller is not run by the view.
+        if cam.detached {
+            continue;
+        }
         // The controls' capture drags while it is the orbit's, from the
         // frame after it began (`cursor_look`); a drag ends an alignment.
         if look.orbits() && !look.began {

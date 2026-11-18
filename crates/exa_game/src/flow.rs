@@ -213,6 +213,95 @@ impl Mode {
     }
 }
 
+/// The flag words the mode switch sets for the incoming mode, read by
+/// the rules that differ between the story, practice and the arena. A
+/// switch to a mode clears the story's revive word first; then practice
+/// (the word 2 itself) sets the level cap to 15 and clears the collapse and
+/// health words, the story sets the cap to 15 and all three words, and the
+/// arena sets the cap to 12 and clears the health word (its collapse word
+/// stays). Any other word leaves the rest as they were. The item cards'
+/// rank and points gates are the same switch's
+/// ([`exa_items::card::card_gates`]); the story's checkpoint word has no
+/// reader.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeWords {
+    /// The total skill levels a character trains below (the skill
+    /// screen's, the HUD alert's and the company report's ready test).
+    pub level_cap: u32,
+    /// A collapse lets go of the loose weapons' record entries.
+    pub collapse_forgets: bool,
+    /// A body's revive and build mark it as the story's (state bit 0x10).
+    pub story_bodies: bool,
+    /// A killing blow also costs red health
+    /// ([`exa_combat::StoryMode`]).
+    pub story_health: bool,
+}
+
+impl Default for ModeWords {
+    /// The words as the executable starts: cap 15, the collapse and revive
+    /// words set, the health word clear.
+    fn default() -> Self {
+        Self {
+            level_cap: 15,
+            collapse_forgets: true,
+            story_bodies: true,
+            story_health: false,
+        }
+    }
+}
+
+impl ModeWords {
+    /// The words after a switch from `current` to `next` (a switch to the
+    /// same word changes nothing).
+    pub fn switch(mut self, current: u32, next: u32) -> Self {
+        if next == current {
+            return self;
+        }
+        self.story_bodies = false;
+        match next {
+            PRACTICE_MODE => {
+                self.level_cap = 15;
+                self.collapse_forgets = false;
+                self.story_health = false;
+            }
+            STORY_MODE => {
+                self.level_cap = 15;
+                self.collapse_forgets = true;
+                self.story_health = true;
+                self.story_bodies = true;
+            }
+            ARENA_MODE => {
+                self.level_cap = 12;
+                self.story_health = false;
+            }
+            _ => {}
+        }
+        self
+    }
+}
+
+/// Keeps [`ModeWords`] from [`Flow::mode`]: each change of the mode word,
+/// through the switch or a start that sets it, applies the switch's words
+/// (once a frame, before the frame's systems read them).
+pub fn sync_mode_words(
+    flow: Option<Res<Flow>>,
+    mut words: ResMut<ModeWords>,
+    mut last: Local<Option<u32>>,
+) {
+    let Some(flow) = flow else {
+        return;
+    };
+    let now = flow.mode.word();
+    let was = last.unwrap_or(MENU_MODE);
+    if was != now {
+        let next = words.switch(was, now);
+        if *words != next {
+            *words = next;
+        }
+    }
+    *last = Some(now);
+}
+
 /// A session-phase word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -2278,10 +2367,9 @@ impl Flow {
     /// installs its own). Entering practice from outside the practice family
     /// also restarts the round clock and forgets the save slot.
     ///
-    /// The original's per-mode flag words are kept as the mode properties
-    /// they describe: story mode uses checkpoints, arena mode overrides the
-    /// inventory and writes its own tables. That reading is a guess from the
-    /// notes; the mode words, the player slots and the order are exact.
+    /// The switch's per-mode flag words are [`ModeWords`], kept by
+    /// [`sync_mode_words`] from every change of [`Flow::mode`] (the starts
+    /// set the mode directly and reach the same words).
     pub fn switch_mode(&mut self, mode: Mode, now: u32) -> Vec<Step> {
         if mode == self.mode {
             return Vec::new();
@@ -3907,6 +3995,11 @@ impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
         exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<Flow>()
+            .init_resource::<ModeWords>()
+            .add_systems(
+                First,
+                (sync_mode_words, crate::hub_windows::sync_level_cap).chain(),
+            )
             .init_resource::<FlowSteps>()
             .init_resource::<AfterLoad>()
             .init_resource::<crate::save_kit::KitScratch>()
@@ -8287,6 +8380,75 @@ mod tests {
         // The launch's two settings words reach the boot.
         assert!(flow.unlocks.expert);
         assert_eq!(flow.unlocks.backgrounds, 5);
+    }
+
+    /// The switch's words per incoming mode, as the executable writes them:
+    /// the arena's cap is 12 and keeps the collapse word; any other word
+    /// only clears the story's revive word.
+    #[test]
+    fn the_mode_words_follow_the_switch() {
+        let start = ModeWords::default();
+        assert_eq!(start.level_cap, 15);
+        assert!(start.collapse_forgets && start.story_bodies && !start.story_health);
+        let story = start.switch(MENU_MODE, STORY_MODE);
+        assert_eq!(
+            story,
+            ModeWords {
+                level_cap: 15,
+                collapse_forgets: true,
+                story_bodies: true,
+                story_health: true,
+            }
+        );
+        let arena = story.switch(STORY_MODE, ARENA_MODE);
+        assert_eq!(
+            arena,
+            ModeWords {
+                level_cap: 12,
+                collapse_forgets: true,
+                story_bodies: false,
+                story_health: false,
+            }
+        );
+        let practice = arena.switch(ARENA_MODE, PRACTICE_MODE);
+        assert_eq!(practice.level_cap, 15);
+        assert!(!practice.collapse_forgets && !practice.story_health);
+        let versus = story.switch(STORY_MODE, VERSUS_MODE);
+        assert_eq!(versus.level_cap, 15);
+        assert!(versus.story_health && !versus.story_bodies);
+        assert_eq!(story.switch(STORY_MODE, STORY_MODE), story);
+    }
+
+    /// In the app the words follow the flow's mode however it was set: a
+    /// start that sets the mode directly reaches the arena's level cap, and
+    /// the hub windows take it.
+    #[test]
+    fn the_live_mode_words_follow_a_start_that_sets_the_mode() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .init_resource::<crate::hub_windows::HubWindows>()
+            .insert_resource(BootToMenu(false))
+            .add_plugins((crate::menu_screen::MenuScreenPlugin, FlowPlugin));
+        app.update();
+        assert_eq!(app.world().resource::<ModeWords>().level_cap, 15);
+        app.world_mut().resource_mut::<Flow>().mode = Mode::Arena;
+        app.update();
+        assert_eq!(app.world().resource::<ModeWords>().level_cap, 12);
+        assert_eq!(
+            app.world()
+                .resource::<crate::hub_windows::HubWindows>()
+                .level_cap
+                .0,
+            12
+        );
+        app.world_mut().resource_mut::<Flow>().mode = Mode::Story;
+        app.update();
+        let words = *app.world().resource::<ModeWords>();
+        assert_eq!(words.level_cap, 15);
+        assert!(words.story_health && words.story_bodies);
     }
 
     #[test]

@@ -560,8 +560,14 @@ impl ArenaCareer {
         )
     }
 
-    /// The manage window's refresh from this career.
+    /// The manage window's refresh from this career, at the arena's level
+    /// cap (the hub runs in the arena's mode).
     pub fn manage(&self) -> ManageRefresh {
+        self.manage_at(crate::report::TRAINING_CAP)
+    }
+
+    /// The manage window's refresh at the mode's level cap `level_cap`.
+    pub fn manage_at(&self, level_cap: u32) -> ManageRefresh {
         let manager = record_of(&self.player, 0, false);
         let employees: Vec<ManageRecord> = self
             .company
@@ -582,6 +588,7 @@ impl ArenaCareer {
                 self.matches_today,
             ),
             alpha: 255,
+            level_cap,
         };
         // The report's hire lines count the hire list's professions; a log
         // line names its fighter by id: 0 is the manager, an employee its
@@ -1141,6 +1148,30 @@ pub struct HubWindows {
     /// The board's two fighter tables' pointer state
     /// ([`HubWindows::board_table_input`]).
     pub board_tables: BoardTables,
+    /// The mode's level cap the manage window's ready tests use, kept from
+    /// [`crate::flow::ModeWords`] once a frame.
+    pub level_cap: LevelCap,
+}
+
+/// The mode's level cap as the hub windows last read it (the starting
+/// word, 15, until the first frame).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelCap(pub u32);
+
+impl Default for LevelCap {
+    fn default() -> Self {
+        Self(crate::flow::ModeWords::default().level_cap)
+    }
+}
+
+/// Copies the mode's level cap into the hub windows (in `First`, before
+/// the frame's forms refresh).
+pub fn sync_level_cap(words: Res<crate::flow::ModeWords>, windows: Option<ResMut<HubWindows>>) {
+    if let Some(mut windows) = windows
+        && windows.level_cap.0 != words.level_cap
+    {
+        windows.level_cap = LevelCap(words.level_cap);
+    }
 }
 
 /// The flags the trade window's stock panel loads its items with: the
@@ -1715,7 +1746,7 @@ impl HubWindows {
             self.task.screen,
             unit,
         );
-        let refresh = career.manage();
+        let refresh = career.manage_at(self.level_cap.0);
         crate::hub_forms::fill_manage(&mut form, &refresh);
         let r = form.rect();
         self.manage = Some(refresh);

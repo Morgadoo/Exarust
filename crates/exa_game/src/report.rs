@@ -28,8 +28,10 @@ pub const LINE_PHYSICIANS: u32 = 0x120000;
 pub const LINE_TRAINERS: u32 = 0x130000;
 pub const LINE_TRAINED: u32 = 0x140000;
 pub const LINE_RANK: u32 = 0x150000;
-/// A fighter whose six levels sum to this is no longer ready to train.
-pub const TRAINING_CAP: u32 = 15;
+/// A fighter whose six levels sum to this is no longer ready to train in
+/// the arena, whose mode switch sets the level cap to it (the story and
+/// practice set 15: [`crate::flow::ModeWords`]).
+pub const TRAINING_CAP: u32 = 12;
 /// The rank names, one for every two levels.
 pub const RANKS: [&str; 7] = [
     "Inept", "Aspirant", "Novice", "Adept", "Expert", "Master", "-",
@@ -129,19 +131,20 @@ pub fn level_sum(skill_xp: &[u16; 6]) -> u32 {
 }
 
 /// Ready to train a new technique: no skill below level 5 has the
-/// technique at its level set, and the levels sum to less than 15.
-pub fn ready_to_train(skill_xp: &[u16; 6], techniques: &[[u8; 6]; 6]) -> bool {
+/// technique at its level set, and the levels sum to less than `cap` (the
+/// mode's level cap).
+pub fn ready_to_train(skill_xp: &[u16; 6], techniques: &[[u8; 6]; 6], cap: u32) -> bool {
     for (xp, slots) in skill_xp.iter().zip(techniques) {
         let level = usize::from(*xp / 5000);
         if level < 5 && slots[level] != 0 {
             return false;
         }
     }
-    level_sum(skill_xp) < TRAINING_CAP
+    level_sum(skill_xp) < cap
 }
 
-fn fighter_lines(fighter: &ReportFighter, lines: &mut Vec<ReportLine>) {
-    if !ready_to_train(&fighter.skill_xp, &fighter.techniques) {
+fn fighter_lines(fighter: &ReportFighter, cap: u32, lines: &mut Vec<ReportLine>) {
+    if !ready_to_train(&fighter.skill_xp, &fighter.techniques, cap) {
         return;
     }
     let name = name_text(&fighter.name);
@@ -180,6 +183,7 @@ pub fn report_lines(
     manager: &ReportFighter,
     listed: &[Profession],
     day: u32,
+    cap: u32,
     name_of: impl Fn(u8) -> Option<[u8; 16]>,
 ) -> Vec<ReportLine> {
     let mut lines = Vec::new();
@@ -195,9 +199,9 @@ pub fn report_lines(
         }
     }
     for fighter in fighters.iter().rev() {
-        fighter_lines(fighter, &mut lines);
+        fighter_lines(fighter, cap, &mut lines);
     }
-    fighter_lines(manager, &mut lines);
+    fighter_lines(manager, cap, &mut lines);
     let count = |role| listed.iter().filter(|p| **p == role).count();
     hire_line(
         count(Profession::Merchant),
@@ -291,14 +295,18 @@ mod tests {
     fn a_fighter_is_ready_below_the_cap_with_nothing_pending() {
         let mut xp = [10_000, 0, 0, 0, 0, 0];
         let mut techniques = [[0u8; 6]; 6];
-        assert!(ready_to_train(&xp, &techniques));
+        assert!(ready_to_train(&xp, &techniques, 15));
         techniques[0][2] = 4;
-        assert!(!ready_to_train(&xp, &techniques));
+        assert!(!ready_to_train(&xp, &techniques, 15));
         techniques[0][2] = 0;
         xp = [25_000, 25_000, 25_000, 0, 0, 0];
-        assert!(!ready_to_train(&xp, &techniques));
+        assert!(!ready_to_train(&xp, &techniques, 15));
         xp = [25_000, 25_000, 20_000, 0, 0, 0];
-        assert!(ready_to_train(&xp, &techniques));
+        assert!(ready_to_train(&xp, &techniques, 15));
+        // The arena's cap is 12: fourteen levels are past it.
+        assert!(!ready_to_train(&xp, &techniques, TRAINING_CAP));
+        xp = [25_000, 25_000, 5_000, 0, 0, 0];
+        assert!(ready_to_train(&xp, &techniques, TRAINING_CAP));
     }
 
     #[test]
@@ -324,7 +332,15 @@ mod tests {
             Profession::Combatant,
             Profession::Trainer,
         ];
-        let lines = report_lines(&log.records, &[fighter], &manager, &listed, 3, |_| None);
+        let lines = report_lines(
+            &log.records,
+            &[fighter],
+            &manager,
+            &listed,
+            3,
+            TRAINING_CAP,
+            |_| None,
+        );
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
             texts,
@@ -342,12 +358,12 @@ mod tests {
         assert_eq!(lines[2].code, 0x0214_0000);
         assert_eq!(lines[3].code, 0x0215_0000);
         assert_eq!(lines[6].code, LINE_TRAINERS);
-        let today = report_lines(&[], &[], &manager, &[], 7, |_| None);
+        let today = report_lines(&[], &[], &manager, &[], 7, TRAINING_CAP, |_| None);
         assert_eq!(
             today.last().unwrap().text,
             "The tournament takes place today."
         );
-        let tomorrow = report_lines(&[], &[], &manager, &[], 6, |_| None);
+        let tomorrow = report_lines(&[], &[], &manager, &[], 6, TRAINING_CAP, |_| None);
         assert_eq!(
             tomorrow.last().unwrap().text,
             "The tournament begins tomorrow."

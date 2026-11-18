@@ -307,21 +307,21 @@ fn the_status_marker_and_ready_alert() {
     assert!(status_marker(&[0x1000]));
     assert!(!status_marker(&[0, 0x2000]));
     let mut skills = [Skill::default(); 6];
-    assert!(ready_alert(&skills));
+    assert!(ready_alert(&skills, READY_LEVELS));
     skills[0] = Skill {
         points: 5000,
         techniques: [3, 4, 0, 0, 0, 0],
     };
     // Level 1 reads two bytes: two chosen is ahead.
     assert!(techniques_ahead(&skills));
-    assert!(!ready_alert(&skills));
+    assert!(!ready_alert(&skills, READY_LEVELS));
     skills[0].techniques = [3, 0, 0, 0, 0, 0];
     assert!(!techniques_ahead(&skills));
     for skill in skills.iter_mut().take(3) {
         skill.points = 25_000;
         skill.techniques = [0; 6];
     }
-    assert!(!ready_alert(&skills));
+    assert!(!ready_alert(&skills, READY_LEVELS));
 }
 
 #[test]
