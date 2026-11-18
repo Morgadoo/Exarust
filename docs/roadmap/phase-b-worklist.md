@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 372 | 107,473 | B1 wire (or prove unreachable) |
-| partial | 965 | 706,825 | B4 complete the port |
+| partial | 957 | 704,705 | B4 complete the port |
 | missing | 42 | 9,112 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -17,13 +17,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | physics | 130,150 | 16,556 | 238 |
 | render | 97,456 | 12,993 | 3,232 |
 | ui | 71,319 | 33,988 | 167 |
-| characters | 72,838 | 11,619 | 1,452 |
-| modes | 61,957 | 7,005 | 363 |
+| characters | 72,770 | 11,619 | 1,452 |
+| modes | 60,440 | 7,005 | 363 |
 | powers | 63,675 | 1,714 | 2,321 |
 | ai | 61,009 | 1,061 | 11 |
 | world | 51,687 | 9,448 | 563 |
 | items | 39,698 | 4,117 | 525 |
-| data | 22,076 | 3,427 | 0 |
+| data | 21,541 | 3,427 | 0 |
 | runtime | 17,689 | 1,927 | 181 |
 | core | 9,818 | 2,740 | 59 |
 | script | 3,796 | 878 | 0 |
@@ -38,16 +38,16 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_CharacterGen (unit routines) | characters | 38 / 28,359 | 23 / 5,324 | 0 / 0 | 33,683 |
 | TSimSector | physics | 23 / 20,137 | 0 / 0 | 0 / 0 | 20,137 |
 | TMotilePart | characters | 31 / 15,455 | 4 / 1,296 | 2 / 1,370 | 18,121 |
-| XA_Arena (unit routines) | modes | 24 / 15,711 | 3 / 1,321 | 4 / 363 | 17,395 |
+| XA_Arena (unit routines) | modes | 23 / 15,343 | 3 / 1,321 | 4 / 363 | 17,027 |
 | TVXGIManager | render | 11 / 16,981 | 0 / 0 | 0 / 0 | 16,981 |
 | SG_PlayerControls (unit routines) | ai | 27 / 15,796 | 0 / 0 | 0 / 0 | 15,796 |
 | TPathFinder | ai | 4 / 14,517 | 0 / 0 | 0 / 0 | 14,517 |
 | TGUIDrawSkin | ui | 2 / 3,550 | 19 / 9,231 | 0 / 0 | 12,781 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
-| XA_SaveGames (unit routines) | modes | 19 / 11,691 | 1 / 128 | 0 / 0 | 11,819 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | RF_Skinning (unit routines) | characters | 4 / 10,882 | 1 / 189 | 0 / 0 | 11,071 |
 | TGUIForm | ui | 19 / 8,872 | 11 / 1,942 | 0 / 0 | 10,814 |
+| XA_SaveGames (unit routines) | modes | 16 / 10,542 | 1 / 128 | 0 / 0 | 10,670 |
 | TMotileAI | ai | 15 / 10,312 | 1 / 142 | 1 / 11 | 10,465 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
@@ -65,9 +65,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Steam Input action bindings | runtime | 11 / 6,523 | 2 / 166 | 2 / 107 | 6,796 |
 | RFE_GridEnvs (unit routines) | world | 7 / 6,790 | 0 / 0 | 0 / 0 | 6,790 |
 | RF_GUI_Controls (unit routines) | ui | 8 / 5,654 | 3 / 1,003 | 0 / 0 | 6,657 |
-| RFE_Export_RFC2 (unit routines) | data | 10 / 6,403 | 2 / 240 | 0 / 0 | 6,643 |
 | TLoadoutForm | modes | 5 / 6,248 | 1 / 80 | 0 / 0 | 6,328 |
 | SG_GameMain (unit routines) | modes | 16 / 6,134 | 0 / 0 | 0 / 0 | 6,134 |
+| RFE_Export_RFC2 (unit routines) | data | 7 / 5,868 | 2 / 240 | 0 / 0 | 6,108 |
 | TMatchBoard | modes | 3 / 6,102 | 0 / 0 | 0 / 0 | 6,102 |
 | TRenderer | render | 14 / 5,993 | 0 / 0 | 1 / 10 | 6,003 |
 | RF_Navigation (unit routines) | render | 6 / 4,181 | 7 / 1,804 | 0 / 0 | 5,985 |
@@ -83,9 +83,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
 | TTendrilEffect | powers | 1 / 4,804 | 0 / 0 | 0 / 0 | 4,804 |
 | RF_Morphing (unit routines) | characters | 2 / 4,764 | 0 / 0 | 0 / 0 | 4,764 |
-| SG_Character_Data (unit routines) | characters | 8 / 2,218 | 9 / 2,436 | 0 / 0 | 4,654 |
 | FLX_System (unit routines) | core | 20 / 1,840 | 19 / 2,740 | 1 / 59 | 4,639 |
 | RF_HW_Config (unit routines) | ui | 7 / 4,439 | 3 / 198 | 0 / 0 | 4,637 |
+| SG_Character_Data (unit routines) | characters | 7 / 2,150 | 9 / 2,436 | 0 / 0 | 4,586 |
 | TSkinController2 | characters | 3 / 3,363 | 2 / 1,193 | 0 / 0 | 4,556 |
 | TNavCameraControl | render | 1 / 4,401 | 0 / 0 | 0 / 0 | 4,401 |
 | TSkillUI | ui | 4 / 3,673 | 2 / 716 | 0 / 0 | 4,389 |
