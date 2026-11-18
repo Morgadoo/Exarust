@@ -192,7 +192,8 @@ search, 0-based):
   appended), and the replacement starts **one byte before** the name, so
   the line feed before it is lost and the line joins the one above (which
   then reads a value running into the next name). The game uses it on a
-  first run only: `FirstRun = 0`, and on some systems `CursorSize = 150`,
+  first run only: `FirstRun = 0`, and on a Steam Deck (the start-up entry
+  asks Steam's utilities whether it runs on one) first `CursorSize = 150`,
   `GUISize = 1`, `GILowPrecision = 1`. A fresh file therefore reads
   `\r\nFirstRun = 0`.
 

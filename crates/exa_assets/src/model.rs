@@ -3645,6 +3645,32 @@ fn material_providers(project: &[String]) -> impl Iterator<Item = &str> {
         .chain(["humanbase.rml"])
 }
 
+/// Every name the shared material libraries hold (the manager's providers,
+/// [`material_providers`]), as the sixteen-byte names a level's material
+/// list carries, each once. A save's level export leaves these out of the
+/// list it writes, and so writes no record for them.
+pub fn library_material_names(game: &GameData) -> Vec<[u8; 16]> {
+    let mut names: Vec<[u8; 16]> = Vec::new();
+    for lib in material_providers(&game.project().material_libraries) {
+        let Some(bytes) = game.resource_file(lib) else {
+            continue;
+        };
+        let Ok(archive) = Archive::parse(bytes) else {
+            continue;
+        };
+        for entry in archive.entries() {
+            let mut name = [0u8; 16];
+            for (slot, byte) in name.iter_mut().zip(entry.name.bytes()) {
+                *slot = byte.to_ascii_lowercase();
+            }
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 fn library_material(game: &GameData, name: &str) -> Option<Material> {
     for lib in material_providers(&game.project().material_libraries) {
         if let Some(bytes) = game.resource_file(lib)
