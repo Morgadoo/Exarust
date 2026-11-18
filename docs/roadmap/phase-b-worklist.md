@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 327 | 99,377 | B1 wire (or prove unreachable) |
-| partial | 906 | 682,797 | B4 complete the port |
+| partial | 904 | 682,261 | B4 complete the port |
 | missing | 37 | 6,211 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -20,7 +20,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | characters | 71,329 | 11,244 | 1,452 |
 | modes | 57,853 | 7,005 | 363 |
 | powers | 62,833 | 1,307 | 181 |
-| world | 50,788 | 8,635 | 324 |
+| world | 50,252 | 8,635 | 324 |
 | ai | 57,842 | 776 | 11 |
 | items | 38,648 | 4,077 | 525 |
 | data | 18,368 | 3,068 | 0 |
@@ -155,7 +155,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TShadowCubeMap | render | 4 / 1,439 | 0 / 0 | 0 / 0 | 1,439 |
 | RF_MeshVoxels (unit routines) | render | 1 / 1,434 | 0 / 0 | 0 / 0 | 1,434 |
 | RF_Dynamics_Animation (unit routines) | characters | 3 / 1,343 | 0 / 0 | 1 / 82 | 1,425 |
-| RF_Dynamics_Game (unit routines) | world | 4 / 1,111 | 2 / 312 | 0 / 0 | 1,423 |
 | TTerrainMesh | render | 3 / 1,408 | 0 / 0 | 0 / 0 | 1,408 |
 | RF_Polyhedra (unit routines) | render | 1 / 1,395 | 0 / 0 | 0 / 0 | 1,395 |
 | Equipment effects and focus-item slot (RFE_Effects_Electricity (unit routines) by address) | characters | 5 / 1,151 | 1 / 167 | 0 / 0 | 1,318 |
@@ -185,6 +184,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
 | TForceBlastGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
 | FG_AIFunctions (unit routines) | script | 6 / 888 | 0 / 0 | 0 / 0 | 888 |
+| RF_Dynamics_Game (unit routines) | world | 2 / 575 | 2 / 312 | 0 / 0 | 887 |
 | FLX_EffectRender (unit routines) | powers | 1 / 887 | 0 / 0 | 0 / 0 | 887 |
 | RF_Import_RFC2 (unit routines) | data | 3 / 490 | 1 / 386 | 0 / 0 | 876 |
 | TForceTorrentEffect | powers | 1 / 811 | 0 / 0 | 0 / 0 | 811 |
