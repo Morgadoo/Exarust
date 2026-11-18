@@ -1031,7 +1031,7 @@ moveset its hands pick; a dropped request releases the swing, a released
 main-side attack returns to the stance once its stall is over, and the
 body turns at the swing's rate while it attacks; `--trace` shows each
 tick's locomotion),
-the characters' footprints on the navigation grid, kept each fixed tick where their feet stand (an NPC unless it walks a planned route at 1 cm a tick or more, the AI tick's gate; the player unless it walks; `footprints`), every new fighter's voice as the character init builds it (the race's first template and the record's voice number, or the second and the undead voice when feral, the sex picking the name, the wound set by race; a fighter without a record speaks as a new human record; `character_voice`),
+the characters' footprints on the navigation grid, kept each fixed tick where their feet stand (an NPC unless it walks a planned route at 1 cm a tick or more, the AI tick's gate; the player unless it walks; an NPC whose stamp overflows the grid's inner cells is removed from the scene, `footprints::overflows`), every new fighter's voice as the character init builds it (the race's first template and the record's voice number, or the second and the undead voice when feral, the sex picking the name, the wound set by race; a fighter without a record speaks as a new human record; `character_voice`),
 falls to death and the kill plane (`fall`: the fall check of a living
 body in the falls branch, in its posture stage, its scream through the
 character's own voice request (line 2, its heavy groan, the request's waits

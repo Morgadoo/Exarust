@@ -147,6 +147,8 @@ pub mod flags {
     pub const CLEAVING: u32 = 0x4;
     /// The swing was released (its request dropped).
     pub const RELEASED: u32 = 0x10;
+    /// The weapon-in-hand gate opened this attack ([`super::weapon_gate`]).
+    pub const WEAPON_IN_HAND: u32 = 0x8;
     /// The striker recoiled from a block.
     pub const RECOILED: u32 = 0x20;
     /// Past 70 % of the clip in the window region.
@@ -876,11 +878,12 @@ pub fn run_swings(
     ticked: Res<TickedCharacter>,
     ticks: Res<BodyTicks>,
     motions: Option<Res<Motions>>,
-    (blades, blade_frames, mut item_bodies, grips): (
+    (blades, blade_frames, mut item_bodies, grips, rests): (
         Query<&Blade>,
         Query<(Entity, &Blade, Option<&GlobalTransform>)>,
         Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
         Query<&exa_physics::grip::HeldGrip>,
+        Query<&exa_physics::grip::HeldRest>,
     ),
     mut fighters: Query<(
         &mut Animator,
@@ -965,6 +968,49 @@ pub fn run_swings(
         return;
     };
     attacker.last_tick_ms = Some(now);
+    // The weapon-in-hand gate, once an attack, after the lead-in: an armed
+    // primary weapon must sit where its hand holds it; until it does the
+    // rate loses a tenth each tick and the routine stops here.
+    if !state.has(flags::WEAPON_IN_HAND) && !anim.leading {
+        let unarmed = attacking.weapon_class & 0x30 == 0;
+        let placed = if unarmed {
+            None
+        } else {
+            attacker.primary.and_then(|slot| {
+                let (item, ..) = blade_frames
+                    .iter()
+                    .find(|(_, b, _)| b.wielder == entity && b.slot == slot)?;
+                let held = item_in_hand(
+                    body.as_deref()?,
+                    item_bodies.get(item).ok()?,
+                    grips.get(item).ok()?,
+                    rests.get(item).ok()?,
+                )?;
+                Some(held)
+            })
+        };
+        // [Exarust: an armed primary with no held body of its own (a
+        // weapon drawn on its hand bone) is always in its hand.]
+        let (distance2, weapon_axis, hand_axis) = placed.unwrap_or((0.0, Vec3::Y, Vec3::Y));
+        let gate = weapon_gate(
+            unarmed,
+            distance2,
+            weapon_axis,
+            hand_axis,
+            fighter.stats.size,
+            state.rate,
+        );
+        if !gate.open {
+            state.rate = gate.rate;
+            debug!(
+                "{entity:?}: the weapon is out of its hand ({:.1} cm): rate {:.2}",
+                distance2.sqrt(),
+                state.rate
+            );
+            return;
+        }
+        state.flags |= flags::WEAPON_IN_HAND;
+    }
     let swing = swing.copied().unwrap_or(Swing::FISTS);
     let mut strikers = [None; 2];
     for blade in blades.iter().filter(|b| b.wielder == entity) {
@@ -1828,6 +1874,37 @@ pub struct WeaponGate {
     pub open: bool,
     /// The rate after this tick's loss.
     pub rate: f32,
+}
+
+/// How far a held weapon is from where its hand holds it: the squared
+/// distance (cm²) of its body's root from the place its attach measured
+/// under the holding hand ([`exa_physics::grip::HeldRest`]), its body's
+/// long axis (local Y) and that place's. The original compares the hand's
+/// node frame times the weapon's grip offset with the weapon body's frame,
+/// both in the character's root frame; Exarust's hand frame is its part's.
+/// None for a released grip or a missing part.
+pub fn item_in_hand(
+    holder: &Ragdoll,
+    item: &Ragdoll,
+    grip: &exa_physics::grip::HeldGrip,
+    rest: &exa_physics::grip::HeldRest,
+) -> Option<(f32, Vec3, Vec3)> {
+    if grip.released {
+        return None;
+    }
+    let hand = holder.parts.get(rest.hand)?.transform();
+    let root = item
+        .parts
+        .get(exa_physics::grip::HeldGrip::ITEM_PART)?
+        .transform();
+    let flipped = grip.links.as_ref().map_or(grip.flip, |l| l.flipped);
+    let wanted = rest.placement(hand, flipped);
+    let d = Vec3::from(root.translation - wanted.translation) * CM;
+    Some((
+        d.length_squared(),
+        Vec3::from(root.y_axis),
+        Vec3::from(wanted.y_axis),
+    ))
 }
 
 /// The weapon-in-hand gate at `scale`. `distance2` is the squared distance

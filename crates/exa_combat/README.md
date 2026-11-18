@@ -30,7 +30,10 @@ halving the wound after 3 s in Cmbt - Idle or while parrying; rules in
 A fighter's swing (`swing`) is run every attack tick by the original's
 swing routine (`SwingState`, `run_swings`: in the character's attack
 stage, after its posture stage and before its health bookkeeping and its
-clip's advance): the clip clock runs at its primary striker's swing speed (the
+clip's advance; once an attack, past the lead-in, the weapon-in-hand gate
+waits for an armed primary's held body to sit within 50·scale cm and 60° of
+its grip under the hand, `weapon_gate`/`item_in_hand`, each failed tick
+taking 0.1 off the rate): the clip clock runs at its primary striker's swing speed (the
 record's W15, slower at the ends of the swing by its shaping W18, ramped
 by the feral level), tired (E/Emax)², and the attack ends into the stance
 with twice its stance blend W19; a swing strength P scales it while the
