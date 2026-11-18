@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 556 | 141,790 | B1 wire (or prove unreachable) |
-| partial | 1,273 | 801,759 | B4 complete the port |
+| uncalled | 555 | 141,592 | B1 wire (or prove unreachable) |
+| partial | 1,270 | 800,713 | B4 complete the port |
 | missing | 44 | 9,519 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -16,18 +16,18 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 141,157 | 16,867 | 238 |
 | render | 109,916 | 21,652 | 3,232 |
-| ui | 83,216 | 39,045 | 288 |
+| ui | 83,136 | 39,045 | 288 |
 | characters | 84,180 | 14,061 | 1,452 |
 | powers | 81,427 | 2,261 | 2,321 |
 | world | 55,355 | 15,716 | 563 |
-| modes | 63,606 | 7,005 | 363 |
+| modes | 63,036 | 7,005 | 363 |
 | ai | 67,452 | 1,271 | 11 |
 | items | 51,394 | 7,741 | 525 |
-| data | 26,520 | 9,435 | 0 |
+| data | 26,124 | 9,435 | 0 |
 | runtime | 18,365 | 2,355 | 467 |
 | core | 10,149 | 3,305 | 59 |
 | script | 3,796 | 878 | 0 |
-| audio | 3,025 | 198 | 0 |
+| audio | 3,025 | 0 | 0 |
 | combat | 2,201 | 0 | 0 |
 
 ## By component, largest first
@@ -64,13 +64,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TTetraRBD | physics | 13 / 6,912 | 2 / 661 | 0 / 0 | 7,573 |
 | RF_SceneNodes (unit routines) | world | 5 / 6,798 | 2 / 333 | 0 / 0 | 7,131 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
-| RFE_Export_RFC2 (unit routines) | data | 11 / 6,799 | 2 / 240 | 0 / 0 | 7,039 |
 | SG_GameGUI (unit routines) | ui | 13 / 6,927 | 0 / 0 | 0 / 0 | 6,927 |
 | TRenderer | render | 15 / 6,335 | 1 / 526 | 1 / 10 | 6,871 |
 | TMesh | render | 10 / 6,133 | 2 / 703 | 0 / 0 | 6,836 |
 | Steam Input action bindings | runtime | 10 / 6,237 | 2 / 166 | 3 / 393 | 6,796 |
 | RFE_GridEnvs (unit routines) | world | 7 / 6,790 | 0 / 0 | 0 / 0 | 6,790 |
 | RF_Dynamics (unit routines) | physics | 5 / 2,122 | 12 / 4,579 | 0 / 0 | 6,701 |
+| RFE_Export_RFC2 (unit routines) | data | 10 / 6,403 | 2 / 240 | 0 / 0 | 6,643 |
 | RF_Textures (unit routines) | render | 17 / 5,574 | 9 / 1,051 | 0 / 0 | 6,625 |
 | FLX_Materials_Procedural (unit routines) | items | 4 / 3,720 | 11 / 2,821 | 0 / 0 | 6,541 |
 | TMatchBoard | modes | 4 / 6,481 | 0 / 0 | 0 / 0 | 6,481 |
@@ -141,9 +141,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TProjectManager | data | 3 / 2,370 | 0 / 0 | 0 / 0 | 2,370 |
 | RF_kdTrees (unit routines) | world | 10 / 2,369 | 0 / 0 | 0 / 0 | 2,369 |
 | TInventory | items | 8 / 2,297 | 1 / 41 | 0 / 0 | 2,338 |
-| TAudioEnvironment | audio | 3 / 2,097 | 1 / 198 | 0 / 0 | 2,295 |
 | TGridEnvManager | world | 3 / 2,199 | 0 / 0 | 0 / 0 | 2,199 |
 | TForceBarricadeEffect | powers | 2 / 2,119 | 0 / 0 | 0 / 0 | 2,119 |
+| TAudioEnvironment | audio | 3 / 2,097 | 0 / 0 | 0 / 0 | 2,097 |
 | TScene | world | 1 / 740 | 8 / 1,355 | 0 / 0 | 2,095 |
 | SG_ObjectDB2 (unit routines) | data | 6 / 1,848 | 2 / 228 | 0 / 0 | 2,076 |
 | TTextRenderer | ui | 1 / 2,043 | 0 / 0 | 0 / 0 | 2,043 |
@@ -163,7 +163,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TShadowCubeMap | render | 6 / 1,749 | 0 / 0 | 0 / 0 | 1,749 |
 | RF_Env_Effects (unit routines) | powers | 1 / 1,666 | 0 / 0 | 0 / 0 | 1,666 |
 | Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 1 / 1,662 | 0 / 0 | 0 / 0 | 1,662 |
-| XA_ExperienceSys (unit routines) | modes | 2 / 1,506 | 2 / 153 | 0 / 0 | 1,659 |
 | TPwrDispLongDoor_I | powers | 2 / 1,649 | 0 / 0 | 0 / 0 | 1,649 |
 | TTransitionScreen | ui | 3 / 1,605 | 0 / 0 | 0 / 0 | 1,605 |
 | TTErrainkdTree | world | 0 / 0 | 5 / 1,513 | 0 / 0 | 1,513 |
@@ -198,6 +197,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Golem guardians and alarm zones (RFE_Effects_Electricity (unit routines) by address) | characters | 3 / 1,111 | 0 / 0 | 0 / 0 | 1,111 |
 | TSector | world | 2 / 326 | 1 / 776 | 0 / 0 | 1,102 |
 | SG_TradeSystem (unit routines) | modes | 4 / 1,029 | 1 / 69 | 0 / 0 | 1,098 |
+| XA_ExperienceSys (unit routines) | modes | 1 / 936 | 2 / 153 | 0 / 0 | 1,089 |
 | RFE_Effects_Electricity (unit routines) | powers | 2 / 1,050 | 0 / 0 | 0 / 0 | 1,050 |
 | T3DView | render | 2 / 977 | 1 / 69 | 0 / 0 | 1,046 |
 | SG_Teleporters (unit routines) | world | 2 / 1,042 | 0 / 0 | 0 / 0 | 1,042 |
@@ -209,8 +209,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceBlastGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
 | FG_AIFunctions (unit routines) | script | 6 / 888 | 0 / 0 | 0 / 0 | 888 |
 | FLX_EffectRender (unit routines) | powers | 1 / 887 | 0 / 0 | 0 / 0 | 887 |
-| TMainMenu | ui | 3 / 879 | 0 / 0 | 0 / 0 | 879 |
 | TPwrSpiritForm | powers | 2 / 803 | 0 / 0 | 0 / 0 | 803 |
+| TMainMenu | ui | 2 / 799 | 0 / 0 | 0 / 0 | 799 |
 | TBarricadeEntity | powers | 1 / 787 | 0 / 0 | 0 / 0 | 787 |
 | OpenAL loader | audio | 1 / 781 | 0 / 0 | 0 / 0 | 781 |
 | TCopperSatin | items | 1 / 776 | 0 / 0 | 0 / 0 | 776 |
