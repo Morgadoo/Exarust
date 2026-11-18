@@ -34,7 +34,8 @@ use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_formats::rfc::Node;
 use exa_physics::intersect::segment_sphere;
-use exa_render::material::{ExaMaterial, flags2};
+use exa_render::material::{ExaMaterial, LateDraw, flags2};
+use exa_render::passes::{FADED_COLOUR_BIAS, FADED_DEPTH_BIAS};
 use exa_world::cut_away::{CAST_RADIUS, CutAway, ray_cast, sphere_cast};
 use exa_world::scene_nodes::{CUT_AWAY_OVERHEAD_HEIGHT, DITHERED, MAIN, PARTIAL, SEEN, fade_step};
 
@@ -103,7 +104,14 @@ pub struct CutAwayPart {
     original: Handle<ExaMaterial>,
     faded: Option<Handle<ExaMaterial>>,
     look: Look,
+    /// The depth half of the faded pass: a child drawing the part's mesh
+    /// with colour writes off, and its material.
+    depth: Option<(Entity, Handle<ExaMaterial>)>,
 }
+
+/// The child that lays a fading part's depth before any faded colour.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CutAwayDepth;
 
 /// The parts' view visibility, and whether the fade hid them.
 type Views<'w, 's> = Query<'w, 's, (&'static ViewVisibility, Option<&'static CutAwayPart>)>;
@@ -276,19 +284,41 @@ fn look_of(mask: u32, fade: f32, supersampled: bool) -> Option<Look> {
     }
 }
 
-/// The cut-away copy of `original` for `look`.
+/// The cut-away copy of `original` for `look`. A blended one draws in the
+/// original's faded pass: after the blended lists, as its colour half
+/// (blended at the opacity, depth writes off), keeping the record's alpha
+/// test.
 fn faded_copy(original: &ExaMaterial, look: Look) -> ExaMaterial {
     let mut m = original.clone();
     match look {
         Look::Blend(opacity) => {
+            m.alpha_tested = original.is_alpha_tested();
             m.alpha_mode = AlphaMode::Blend;
             m.params.flags2 |= flags2::CUT_AWAY_BLEND;
             m.params.cut_away_opacity = opacity;
+            m.late = LateDraw::FadedColour;
+            m.draw_order = FADED_COLOUR_BIAS;
         }
         Look::Half => m.params.flags2 |= flags2::CUT_AWAY_HALF,
         Look::Hidden => {}
     }
     m
+}
+
+/// The faded pass's depth half of a blended cut-away copy: the same
+/// surface with colour writes off and depth writes on, ahead of every
+/// faded colour.
+fn depth_copy(faded: &ExaMaterial) -> ExaMaterial {
+    let mut m = faded.clone();
+    m.late = LateDraw::FadedDepth;
+    m.draw_order = FADED_DEPTH_BIAS;
+    m
+}
+
+/// Whether `look` draws the faded pass's depth half: a blended look the
+/// faded pass draws (opacity above zero).
+fn lays_depth(look: Look) -> bool {
+    matches!(look, Look::Blend(opacity) if opacity > 0.0)
 }
 
 /// Whether the surface is one of the original's blended ones.
@@ -301,7 +331,9 @@ fn is_blended(m: &ExaMaterial) -> bool {
 }
 
 /// Gives each cut-away part the material its mesh's draw asks, and gives
-/// it back its own once the mesh is solid again.
+/// it back its own once the mesh is solid again. A part the faded pass
+/// draws also gets a depth child ([`CutAwayDepth`]) that lays its depth,
+/// with every other faded part's, before any faded colour.
 #[allow(clippy::type_complexity)]
 pub fn draw_cut_away(
     mut commands: Commands,
@@ -310,6 +342,7 @@ pub fn draw_cut_away(
         &mut MeshMaterial3d<ExaMaterial>,
         Option<&mut CutAwayPart>,
         &mut Visibility,
+        Option<&Mesh3d>,
     )>,
     mut materials: ResMut<Assets<ExaMaterial>>,
     supersampling: Option<Res<exa_render::supersample::SuperSampling>>,
@@ -322,7 +355,7 @@ pub fn draw_cut_away(
         }
         let wanted = look_of(c.mask, c.fade, supersampled);
         for &part in &c.parts {
-            let Ok((mut handle, record, mut visibility)) = parts.get_mut(part) else {
+            let Ok((mut handle, record, mut visibility, mesh)) = parts.get_mut(part) else {
                 continue;
             };
             match (wanted, record) {
@@ -334,6 +367,7 @@ pub fn draw_cut_away(
                     if let Some(faded) = &record.faded {
                         materials.remove(faded);
                     }
+                    drop_depth(&mut commands, &mut materials, record.depth.as_ref());
                     if record.look == Look::Hidden {
                         *visibility = Visibility::Inherited;
                     }
@@ -355,6 +389,7 @@ pub fn draw_cut_away(
                     if record.as_ref().is_some_and(|r| r.look == look) {
                         continue;
                     }
+                    let old_depth = record.as_ref().and_then(|r| r.depth.clone());
                     if look == Look::Hidden {
                         *visibility = Visibility::Hidden;
                         if let Some(r) = &record
@@ -362,14 +397,41 @@ pub fn draw_cut_away(
                         {
                             materials.remove(faded);
                         }
+                        drop_depth(&mut commands, &mut materials, old_depth.as_ref());
                         commands.entity(part).insert(CutAwayPart {
                             original,
                             faded: None,
                             look,
+                            depth: None,
                         });
                         continue;
                     }
                     let copy = faded_copy(source, look);
+                    // The depth half: made once while the part draws in the
+                    // faded pass (its opacity plays no part in it).
+                    let depth = match (lays_depth(look), old_depth, mesh) {
+                        (true, Some(depth), _) => Some(depth),
+                        (true, None, Some(mesh)) => {
+                            let material = materials.add(depth_copy(&copy));
+                            let child = commands
+                                .spawn((
+                                    Name::new("cut-away depth"),
+                                    CutAwayDepth,
+                                    Mesh3d(mesh.0.clone()),
+                                    MeshMaterial3d(material.clone()),
+                                    bevy::light::NotShadowCaster,
+                                    Transform::IDENTITY,
+                                    Visibility::Inherited,
+                                    ChildOf(part),
+                                ))
+                                .id();
+                            Some((child, material))
+                        }
+                        (_, old, _) => {
+                            drop_depth(&mut commands, &mut materials, old.as_ref());
+                            None
+                        }
+                    };
                     let faded = match record.as_ref().and_then(|r| r.faded.clone()) {
                         Some(faded) => {
                             if let Some(mut slot) = materials.get_mut(&faded) {
@@ -384,10 +446,23 @@ pub fn draw_cut_away(
                         original,
                         faded: Some(faded),
                         look,
+                        depth,
                     });
                 }
             }
         }
+    }
+}
+
+/// Takes a part's depth child and its material away.
+fn drop_depth(
+    commands: &mut Commands,
+    materials: &mut Assets<ExaMaterial>,
+    depth: Option<&(Entity, Handle<ExaMaterial>)>,
+) {
+    if let Some((child, material)) = depth {
+        commands.entity(*child).try_despawn();
+        materials.remove(material);
     }
 }
 
@@ -419,6 +494,93 @@ mod tests {
         let half = faded_copy(&source, Look::Half);
         assert_eq!(half.alpha_mode, source.alpha_mode);
         assert_ne!(half.params.flags2 & flags2::CUT_AWAY_HALF, 0);
+    }
+
+    /// The faded pass: the blended copy draws as its colour half after the
+    /// blended lists, its depth half ahead of it; an alpha-tested record
+    /// keeps its test in both; a settled part (opacity 0) lays no depth.
+    #[test]
+    fn the_faded_pass_lays_depth_before_colour() {
+        let source = ExaMaterial {
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        };
+        let colour = faded_copy(&source, Look::Blend(0.4));
+        assert_eq!(colour.late, LateDraw::FadedColour);
+        assert!(colour.is_alpha_tested());
+        let depth = depth_copy(&colour);
+        assert_eq!(depth.late, LateDraw::FadedDepth);
+        assert!(depth.is_alpha_tested());
+        use exa_render::passes::PhaseList;
+        assert!(PhaseList::Blended.bias() + exa_render::passes::LIST_BLOCK <= depth.draw_order);
+        assert!(depth.draw_order + 1000.0 < colour.draw_order);
+        assert!(colour.draw_order + 1000.0 < 0.0);
+        assert_eq!(PhaseList::of_sort_value(depth.draw_order), PhaseList::Late);
+        assert!(lays_depth(Look::Blend(0.4)));
+        assert!(!lays_depth(Look::Blend(0.0)));
+        assert!(!lays_depth(Look::Half));
+    }
+
+    /// The live draw: a fading part takes its blended copy (the faded
+    /// pass's colour half) and a depth child drawing its mesh as the depth
+    /// half; once the mesh is solid again both go and its own material is
+    /// back.
+    #[test]
+    fn a_fading_part_gets_a_depth_child_until_it_is_solid() {
+        let mut app = App::new();
+        app.init_resource::<Assets<ExaMaterial>>()
+            .add_systems(Update, draw_cut_away);
+        let own = app
+            .world_mut()
+            .resource_mut::<Assets<ExaMaterial>>()
+            .add(ExaMaterial::default());
+        let part = app
+            .world_mut()
+            .spawn((
+                Mesh3d(Handle::default()),
+                MeshMaterial3d(own.clone()),
+                Visibility::default(),
+            ))
+            .id();
+        let mut record = CutAway::new(0x6000_0000, None, Vec3::ZERO, Vec3::ONE);
+        record.parts = vec![part];
+        record.mask = SEEN | DITHERED;
+        record.fade = 0.25;
+        let roof = app.world_mut().spawn(record).id();
+        app.update();
+        let children = |app: &mut App| {
+            app.world_mut()
+                .query_filtered::<(&ChildOf, &MeshMaterial3d<ExaMaterial>), With<CutAwayDepth>>()
+                .iter(app.world())
+                .map(|(c, m)| (c.parent(), m.0.clone()))
+                .collect::<Vec<_>>()
+        };
+        let depth = children(&mut app);
+        assert_eq!(depth.len(), 1);
+        assert_eq!(depth[0].0, part);
+        let materials = app.world().resource::<Assets<ExaMaterial>>();
+        assert_eq!(
+            materials.get(&depth[0].1).unwrap().late,
+            LateDraw::FadedDepth
+        );
+        let drawn = app
+            .world()
+            .get::<MeshMaterial3d<ExaMaterial>>(part)
+            .unwrap();
+        let colour = materials.get(&drawn.0).unwrap();
+        assert_eq!(colour.late, LateDraw::FadedColour);
+        assert_eq!(colour.params.cut_away_opacity, 0.75);
+        // Solid again: the child and the copies go.
+        app.world_mut().get_mut::<CutAway>(roof).unwrap().mask = MAIN | SEEN;
+        app.update();
+        assert!(children(&mut app).is_empty());
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<ExaMaterial>>(part)
+                .unwrap()
+                .0,
+            own
+        );
     }
 
     /// An app with a candidate roof over the origin and a camera probe

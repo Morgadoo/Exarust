@@ -48,7 +48,7 @@ The final pass's sharpen is 1.5 × (0.075·level + 0.4) in double precision.
 Each pass carries its own state: the first pass of a level of two to four
 sub-views draws in state 3, the first of a wider level in state 1 (the
 slider never reaches one), later passes in state 2 and a single view in
-state 0; the low bit raises a renderer flag and the particle pass swaps in
+state 0; the low bit raises a renderer flag and the cut-away faded pass swaps in
 the visibility mask `0x6000_0000` for state 0 and `0x2000_0000` otherwise.
 Every pass draws `min(count, 4)` sub-views; the pass's shared jitter is the
 level's entry `first jitter + pass` (not `+ 4·pass`). The resolve reads the
@@ -500,9 +500,10 @@ branches (`vrCol × EmiTex × MatDif.a`, and `vrCol × OpcTex.a`), its
 emissive branches (no shipped translucent record has either; only
 chunk-tree records select `shadetrl_f`, no library record), and the
 `Shd.DispSdwF` pre-pass. The legacy lit program never samples an opacity
-map, so the original's alpha-tested cobweb cutout is unresolved; Exarust
-keeps the opacity map in the alpha for Bevy's alpha test (both shipped
-alpha-tested records have opacity 1).
+map, so the original's alpha-tested cobweb cutout is unresolved; the
+alpha-tested programs cut only on the diffuse map (Pass order), so a
+cobweb without one is not cut (both shipped alpha-tested records have
+opacity 1).
 
 **Shipped variants.** `exa-tool shader --variants` walks every material
 record a draw reaches (the material libraries, then each chunk tree's own
@@ -575,10 +576,18 @@ orderings, pinned by tests):
    itself does not copy);
 7. the blended class, one list for a sectorless scene or one per scene
    sector, still biased; the bias is removed after them;
-8. a hook list, then the particles: a depth-only pre-pass (colour writes
-   off, depth writes on) and their colour (depth writes off);
+8. a hook list, then the cut-away faded pass: a depth-only half (colour
+   writes off, depth writes on) over the fading entries of the opaque and
+   alpha-tested lists, then their colour (depth writes off, blended at
+   one less the fade);
 9. the environment's weather effects, the closing hook list, then depth
    writes back on.
+
+The grass hook (`exa_world::terrain` plants) is the first of step 4's two
+hook lists: after the opaque lists and the terrain (whose lit draw is in
+the after-opaque hook list), it turns depth writes off, draws every plant
+chunk (each texel below 0.1 alpha cut, no blending) and turns them back
+on.
 
 A render state's blend layer is bits 4–7 of its blend word
 (`passes::blend_layer`); the low four bits are blend factors and play no
@@ -598,17 +607,23 @@ for itself, with the group's alpha at `1 − opacity` and the blend word
 `0x203`, then puts back the saved alpha and `0x100`
 (`passes::entry_alpha`, `passes::ENTRY_BLEND_WORD`).
 
-The particles own two lists (`passes::ParticleList`; the second's groups
-bind a texture in the depth pass, so it is called the textured one). Their
-pass swaps the renderer's visibility mask for `0x6000_0000` (single view)
-or `0x2000_0000` (super-sampled) and walks the scene's particle sectors
+The faded pass walks the renderer's own opaque and alpha-tested lists
+(`passes::FadedList`; earlier notes read it as the particles' pass, but
+its two lists are the ones the frame drew first, and the alpha-tested
+one's groups bind their texture in the depth half for the alpha test). It
+swaps the renderer's visibility mask for `0x6000_0000` (single view: the
+fading and the settled partial meshes) or `0x2000_0000` (super-sampled:
+the fading ones; a settled partial mesh draws in the opaque lists into
+half of its sub-frames) and walks the scene's sectors the main view saw
 (flag word bit 0) twice over: first depth-only with the colour writes
-masked, the first list for all sectors untextured and then the second for
-all sectors with each group's texture bound at its first visible entry;
-then, with the colour writes back on and depth writes off, per sector the
-first list and the second (with one shared program-state bit, `0x80`,
-cleared) with the per-entry `1 − opacity` alpha. The old mask is restored
-after the pass (`passes::particle_pass`).
+masked, the opaque list for all sectors and then the alpha-tested one;
+then, with the colour writes back on and depth writes off, per sector
+both lists (with one shared program-state bit, `0x80`, cleared for the
+second) with the per-entry `1 − fade` alpha. The old mask is restored
+after the pass (`passes::faded_pass`). Exarust draws it on the
+transparent phase's late block (`passes::FADED_DEPTH_BIAS`,
+`FADED_COLOUR_BIAS`): each fading part's depth child first, then its
+blended copy (`exa_game::cut_away_live`, Cut-away fade).
 
 The opaque list is grouped by material program key: the first state stays
 first, each next slot takes the first unused state with the current key,
@@ -641,9 +656,20 @@ and a flush remembers its last entry's bucket for the lights.
 
 Exarust lets Bevy's phases take the place of the fixed walk: `Opaque3d` for
 the opaque class, `AlphaMask3d` for the alpha-tested one and `Transparent3d`
-for the depth-write-free classes and the particles. The clear is the
-camera's clear colour; the particles' depth pre-pass and the hook lists
-have no separate node yet. The decal and blended lists' depth bias is in
+for everything the original draws after them, in blocks of sort values
+(`passes::PhaseList`, each a list's ranks plus a view depth, in walk
+order): the scissored alpha-tested and opaque meshes (Portal scissor,
+below), the grass hook, the decal list, the blended list, then the late
+block (the faded pass's depth half, its colour half) and everything with
+no list (particles, flames, rain) by distance. The clear is the camera's
+clear colour; the other hook lists have no separate node. Every
+alpha-tested record (`Shd.AlphaTst`, `ExaMaterial::is_alpha_tested`)
+compiles its program's cut (`EXA_ALPHA_TEST` in `exa.wesl`): a texel of
+the diffuse map below ½ alpha is dropped (the skin program's
+`MatDif.a·a`, the hair program's `(a − 1 + MatEmi.a)/MatEmi.a` without a
+specular map; the grass program's below 0.1); the opacity-map branches
+never cut. Other surfaces have no discard, so they keep the early depth
+test. The decal and blended lists' depth bias is in
 the surface material's vertex stage (`exa_vertex.wesl`, Bevy's mesh vertex
 stage plus the bias): the original widens the first view's projection
 `[2][2]` term to double, adds 2·10⁻⁵, stores the sum in single for every
@@ -675,7 +701,7 @@ sector, the list's states in that order and each state's objects in the
 order the sector registered them (through the deferred draw queue, or
 directly with the sector's scissor when the scene keeps sector
 rectangles). The decal list is drawn for every sector before any blended
-list; the hook lists, the particle pass and the weather come after the
+list; the hook lists, the faded pass and the weather come after the
 blended lists. Exarust gives every blended record a render state
 (`passes::BlendState`: the class word's decal bit, its layer, its opacity
 and its build order); `exa_render::material` ranks them with
@@ -759,11 +785,19 @@ across it). `exa_world::scene_live` projects the rectangles and lists the
 meshes with the bit every frame (`SectorScissors`); `--no-sector-scissor`
 turns it off, to compare. Bevy draws the opaque and alpha-tested phases
 as batched multi-draws in which one draw cannot carry its own scissor, so
-there the portal frusta cull only (what lies outside the rectangle there
-is under the adjacent room's lid from the gameplay camera). Not
-reproduced: the scissor on the opaque and alpha-tested phases, the light
-aliases' links on this scene (lights stay global), and levels without a
-grid (a sectorless scene, one list in the original as here).
+each visible scissored opaque or alpha-tested mesh of the scene view
+leaves its phase (`sector_walk::move_scissored_opaque`, after Bevy's
+queue) and is drawn with its own pipeline (depth writes on, no blending)
+on the transparent phase, in the two list blocks ahead of everything else
+there (`passes::PhaseList`: the alpha-tested list, then the opaque one,
+each walked by sector), where the same scissor items clip it. Depth
+writes make the later draw invisible but for the clip. A mesh that stops
+being scissored is marked for Bevy to specialize and queue again
+(`DirtySpecializations`), which puts it back in its own phase. The
+scissor goes on the four lists the original walks by sector only, not on
+the grass hook, the faded pass or the particles. Not reproduced: the
+light aliases' links on this scene (lights stay global), and levels
+without a grid (a sectorless scene, one list in the original as here).
 
 ## Light nodes
 
@@ -1551,9 +1585,14 @@ plants) draw with the original's grass program, `shading_v` + `shadegrs_f`
   three quarters of the specular sum is added to `(lights + ambient) ×
   MatDif × map`.
 
-The original has no wind: the vertex program is the ordinary one. Not
-ported: the hook draws without depth writes, and the diffuse colour's wet
-mix (`Wetness`).
+The original has no wind: the vertex program is the ordinary one. The
+grass hook draws after every opaque and alpha-tested mesh and the terrain,
+with depth writes off and no blending, cutting the diffuse map's texels
+below 0.1 alpha: Exarust's plant material is on the transparent phase's
+grass block (`LateDraw::GrassHook`: blending dropped, depth writes off,
+ahead of the decals), chunks by distance. Not ported: the hook's chunk
+order (tiles in the terrain's list, chunks in the tile's), and the
+diffuse colour's wet mix (`Wetness`).
 
 ### Character assembly
 
@@ -4339,8 +4378,9 @@ fading in between, settled once it reaches the target (½: settled below
 the blended surfaces, and then the faded pass: depth only for the faded
 meshes (colour masked off), then their colour with depth writes off, the
 material's `MatDif.a` set to one less the fade amount and its blend to
-source alpha, one minus source alpha (restored after the draw; the value
-comes from the first faded mesh of each material). It is a blend, not a
+source alpha, one minus source alpha, for each faded mesh's own draw
+(the group's state is bound with the entry's value and restored after
+it). It is a blend, not a
 dither; the shadow passes do not read the fade, so a faded roof keeps its
 shadow. A settled mesh joins the faded pass when the game is not
 supersampled; supersampled (2 to 4 sub-frames), it is drawn in the opaque
@@ -4350,18 +4390,23 @@ settled mesh are not drawn.
 
 Exarust (`exa_game::cut_away_live`) gives a fading part a blended copy of
 its material whose opacity replaces the diffuse alpha (`flags2` bit 4,
-`ExaParams::cut_away_opacity`) and writes depth while its opacity is above
-0, standing in for the depth pass; a settled part under supersampling keeps
-its opaque material and draws only one diagonal of each 2 × 2 block of the
-supersampled scene (`flags2` bit 8); a part at opacity 0 is still drawn so
-that it casts. The shadow casters ignore both bits. `EXA_CUT_AWAY=0` turns
-the fade off. Not reproduced: the depth-first pass itself (the copy writes
-its depth while it blends, so a layer drawn before a nearer one of the same
-mesh still shows), the per-material opacity of the first mesh, the
-alpha test of an alpha-tested surface while it fades, the drawn-sector test
-(a mesh counts as in a drawn sector when one of its parts is in view, a
-partless one when its node is not hidden) and the carries of grid set
-pieces.
+`ExaParams::cut_away_opacity`), drawn as the faded pass's colour half
+(`LateDraw::FadedColour`: depth writes off, on the transparent phase's
+late block after every blended surface), and, while its opacity is above
+0, a depth child (`CutAwayDepth`: the part's mesh with a copy drawn as the
+depth half, `LateDraw::FadedDepth`, colour writes off and depth writes
+on, ahead of every faded colour). So every fading part's depth is laid
+before any faded colour, and only the nearest layer of the fading meshes
+shows through Bevy's greater-or-equal depth test. An alpha-tested part
+keeps its cut in both halves (`ExaMaterial::alpha_tested`). A settled
+part under supersampling keeps its opaque material and draws only one
+diagonal of each 2 × 2 block of the supersampled scene (`flags2` bit 8); a
+part at opacity 0 is still drawn (no depth child) so that it casts. The
+shadow casters ignore both bits. `EXA_CUT_AWAY=0` turns the fade off. Not
+reproduced: the drawn-sector
+test (a mesh counts as in a drawn sector when one of its parts is in
+view, a partless one when its node is not hidden) and the carries of grid
+set pieces.
 
 ## Not done yet
 

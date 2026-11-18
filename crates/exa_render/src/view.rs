@@ -306,7 +306,7 @@ impl SupersampleLevel {
 }
 
 /// The render state a super-sampled pass draws with (the original's per-pass
-/// word). Its low bit decides a renderer flag; the particle pass picks its
+/// word). Its low bit decides a renderer flag; the cut-away faded pass picks its
 /// visibility mask by whether it is zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassState {
@@ -337,13 +337,13 @@ impl PassState {
         self.word() & 1 != 0
     }
 
-    /// The visibility mask the particle pass swaps in while it draws: one
+    /// The visibility mask the cut-away faded pass swaps in while it draws: one
     /// for a single view, another for any super-sampled pass.
-    pub fn particle_mask(self) -> u32 {
+    pub fn faded_mask(self) -> u32 {
         if self == Self::Single {
-            crate::passes::PARTICLE_MASK_SINGLE
+            crate::passes::FADED_MASK_SINGLE
         } else {
-            crate::passes::PARTICLE_MASK_SUPERSAMPLED
+            crate::passes::FADED_MASK_SUPERSAMPLED
         }
     }
 }
@@ -1148,7 +1148,7 @@ mod tests {
         assert_eq!(schedule[0].tap_fraction, 1.0);
         assert_eq!(schedule[0].depth_dither, 0.0);
         assert_eq!(schedule[0].state, PassState::Single);
-        assert_eq!(schedule[0].state.particle_mask(), 0x6000_0000);
+        assert_eq!(schedule[0].state.faded_mask(), 0x6000_0000);
         assert_eq!(schedule[0].animation_offset, 0.0);
 
         // Two and three sub-views keep the narrow first-pass state.
@@ -1157,7 +1157,7 @@ mod tests {
             let schedule = level.schedule(300.0);
             assert_eq!(schedule.len(), 1);
             assert_eq!(schedule[0].state, PassState::NarrowFirst);
-            assert_eq!(schedule[0].state.particle_mask(), 0x2000_0000);
+            assert_eq!(schedule[0].state.faded_mask(), 0x2000_0000);
             assert!(schedule[0].state.raises_flag());
         }
         // Level 2's thirds: the tap window divides in double precision, the

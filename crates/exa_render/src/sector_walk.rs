@@ -42,25 +42,49 @@
 //! each window pixel a 2 × 2 block of sub-frame samples, so the rectangle
 //! in window pixels, doubled, is the same set of samples; it is set with
 //! the render pass's scissor ([`SectorScissors`], [`sub_frame_scissor`]).
-//! Bevy batches the opaque and alpha-tested phases into multi-draws, where
-//! one draw cannot carry its own scissor, so the scissor reaches the decal
-//! and blended surfaces (the transparent phase) only.
+//! The original clips the alpha-tested and opaque lists the same way. Bevy
+//! batches its opaque and alpha-mask phases into multi-draws, where one
+//! draw cannot carry its own scissor, so each visible scissored opaque or
+//! alpha-tested mesh of the scene view leaves its phase and draws, with its
+//! own pipeline, on the transparent phase in the list blocks ahead of
+//! everything else there ([`crate::passes::PhaseList`]); depth writes make
+//! the later draw invisible but for the clip. The scissor goes only on the
+//! lists the original walks by sector (the alpha-tested, opaque, decal and
+//! blended ones), not on the grass hook, the faded pass or the particles.
 
-use bevy::core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d};
+use bevy::core_pipeline::core_3d::{
+    AlphaMask3d, Opaque3d, Transparent3d, TransparentSortingInfo3d,
+};
 use bevy::ecs::entity::EntityHashMap;
+use bevy::pbr::{
+    MainPassTransparentDrawFunction, MeshInputUniform, MeshUniform, PreparedMaterial,
+    RenderMaterialInstances, RenderMeshInstances, SpecializedMaterialPipelineCache,
+    get_mesh_instance_world_from_local,
+};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::Extract;
+use bevy::render::batching::gpu_preprocessing::BatchedInstanceBuffers;
+use bevy::render::camera::{DirtySpecializationSystems, DirtySpecializations};
+use bevy::render::erased_render_asset::ErasedRenderAssets;
+use bevy::render::mesh::RenderMesh;
+use bevy::render::mesh::allocator::MeshAllocator;
+use bevy::render::render_asset::RenderAssets;
+use bevy::render::render_phase::ViewBinnedRenderPhases;
 use bevy::render::render_phase::{
     Draw, DrawError, DrawFunctionId, DrawFunctions, PhaseItem, PhaseItemExtraIndex,
     TrackedRenderPass, ViewSortedRenderPhases, sort_phase_system,
 };
 use bevy::render::render_resource::CachedRenderPipelineId;
 use bevy::render::sync_world::MainEntity;
+use bevy::render::sync_world::MainEntityHashSet;
 use bevy::render::view::ExtractedView;
+use bevy::render::view::RenderVisibleEntities;
 use bevy::render::{ExtractSchedule, Render, RenderApp, RenderSystems};
 
-use crate::passes::{MAX_RANKS, RANK_SPACING, order_bias};
+#[cfg(test)]
+use crate::passes::order_bias;
+use crate::passes::{MAX_RANKS, PhaseList, RANK_SPACING};
 
 /// A registered mesh's place in the walk: the position of its sector in the
 /// scene's sector list (0 for the scene's own sector) and its position in
@@ -173,7 +197,20 @@ impl Plugin for SectorWalkPlugin {
             .init_resource::<RenderSectorScissors>()
             .init_resource::<ScissorRects>()
             .init_resource::<ScissorKeys>()
-            .add_systems(ExtractSchedule, (extract_sectors, extract_scissors))
+            .init_resource::<MovedOpaque>()
+            .add_systems(
+                ExtractSchedule,
+                (
+                    extract_sectors,
+                    extract_scissors.in_set(DirtySpecializationSystems::CheckForChanges),
+                ),
+            )
+            .add_systems(
+                Render,
+                move_scissored_opaque
+                    .in_set(RenderSystems::QueueMeshes)
+                    .after(bevy::pbr::queue_material_meshes),
+            )
             .add_systems(
                 Render,
                 (walk_sectors, insert_scissors)
@@ -206,9 +243,16 @@ fn extract_sectors(main: Extract<Option<Res<DrawSectors>>>, mut render: ResMut<R
     }
 }
 
+/// Copies the scissor of this frame. The scissored opaque and alpha-tested
+/// meshes leave Bevy's opaque phases for the transparent one
+/// ([`move_scissored_opaque`]); a mesh that stops being scissored is marked
+/// for Bevy to specialize and queue again, which takes its moved item away
+/// and puts it back in its own phase.
 fn extract_scissors(
     main: Extract<Option<Res<SectorScissors>>>,
     mut render: ResMut<RenderSectorScissors>,
+    mut moved: ResMut<MovedOpaque>,
+    mut dirty: ResMut<DirtySpecializations>,
 ) {
     let Some(main) = main.as_deref() else {
         render.active = false;
@@ -221,40 +265,168 @@ fn extract_scissors(
         render.entries.clone_from(&main.entries);
         render.generation = main.generation;
     }
+    let active = render.active;
+    let entries = &render.entries;
+    moved.0.retain(|entity| {
+        let keep = active && entries.contains_key(&entity.id());
+        if !keep {
+            dirty.changed_renderables.insert(*entity);
+        }
+        keep
+    });
 }
 
-/// Which of the walk's lists a transparent-phase sort value belongs to:
-/// 0 the decal list, 1 the blended list, 2 everything drawn after them
-/// (no render state). The values are [`crate::passes::order_bias`]'s blocks
-/// plus a view depth below one rank's spacing. A NaN goes last.
-pub fn list_of_sort_value(value: f32) -> u8 {
-    let block = (MAX_RANKS as f32 + 1.0) * RANK_SPACING;
-    if value < -2.0 * block {
-        0
-    } else if value < -block {
-        1
-    } else {
-        2
+/// The meshes [`move_scissored_opaque`] took out of Bevy's opaque phases.
+#[derive(Resource, Clone, Debug, Default)]
+struct MovedOpaque(MainEntityHashSet);
+
+/// The original walks its alpha-tested and opaque lists sector by sector
+/// too, and clips a sector seen through doorways to its doorway rectangle
+/// for them as for the blended ones. Bevy's opaque phases are batched into
+/// multi-draws, which cannot carry a scissor per mesh, so each visible
+/// scissored mesh of the scene view leaves its opaque or alpha-mask phase
+/// and is drawn, with the same pipeline (depth writes on, no blending), on
+/// the transparent phase in the list block ahead of the grass hook
+/// ([`PhaseList::ScissoredAlphaTest`], [`PhaseList::ScissoredOpaque`]),
+/// where [`insert_scissors`] clips it. Depth writes make the later draw
+/// invisible except for the clip. Bevy takes the moved item away whenever
+/// it dequeues the mesh (hidden, or marked by [`extract_scissors`]).
+#[allow(clippy::too_many_arguments)]
+fn move_scissored_opaque(
+    scissors: Res<RenderSectorScissors>,
+    views: Query<(&ExtractedView, &RenderVisibleEntities)>,
+    mut opaque_phases: ResMut<ViewBinnedRenderPhases<Opaque3d>>,
+    mut alpha_mask_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3d>>,
+    mut transparent_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
+    pipelines: Res<SpecializedMaterialPipelineCache>,
+    material_instances: Res<RenderMaterialInstances>,
+    materials: Res<ErasedRenderAssets<PreparedMaterial>>,
+    mesh_instances: Res<RenderMeshInstances>,
+    meshes: Res<RenderAssets<RenderMesh>>,
+    allocator: Res<MeshAllocator>,
+    instance_buffers: Option<Res<BatchedInstanceBuffers<MeshUniform, MeshInputUniform>>>,
+    mut moved: ResMut<MovedOpaque>,
+) {
+    let Some(camera) = scissors.camera else {
+        return;
+    };
+    if !scissors.active || scissors.entries.is_empty() {
+        return;
+    }
+    let Some((view, visible)) = views.iter().find(|(v, _)| {
+        let retained = v.retained_view_entity;
+        retained.main_entity.id() == camera
+            && retained.auxiliary_entity.is_none()
+            && retained.subview_index == 0
+    }) else {
+        return;
+    };
+    let key = view.retained_view_entity;
+    let (Some(opaque), Some(alpha_mask), Some(transparent), Some(view_pipelines)) = (
+        opaque_phases.get_mut(&key),
+        alpha_mask_phases.get_mut(&key),
+        transparent_phases.get_mut(&key),
+        pipelines.get(&key),
+    ) else {
+        return;
+    };
+    let Some(visible) = visible.get::<Mesh3d>() else {
+        return;
+    };
+    for (_, &main) in visible.iter_visible() {
+        if !scissors.entries.contains_key(&main.id()) {
+            continue;
+        }
+        let item_key = (Entity::PLACEHOLDER, main);
+        if transparent.items.contains_key(&item_key) {
+            if moved.0.contains(&main) {
+                // Bevy may have queued it again in its own phase.
+                opaque.remove(main);
+                alpha_mask.remove(main);
+            }
+            continue;
+        }
+        let Some(&pipeline) = view_pipelines.get(&main) else {
+            continue;
+        };
+        let Some(material) = material_instances
+            .instances
+            .get(&main)
+            .and_then(|instance| materials.get(instance.asset_id))
+        else {
+            continue;
+        };
+        let properties = &material.properties;
+        let list = match properties.alpha_mode {
+            AlphaMode::Opaque => PhaseList::ScissoredOpaque,
+            AlphaMode::Mask(_) => PhaseList::ScissoredAlphaTest,
+            _ => continue,
+        };
+        let Some(draw_function) = properties.get_draw_function(MainPassTransparentDrawFunction)
+        else {
+            continue;
+        };
+        let Some(mesh) = mesh_instances.render_mesh_queue_data(main) else {
+            continue;
+        };
+        let Some(slabs) = allocator.mesh_slabs(&mesh.mesh_asset_id()) else {
+            continue;
+        };
+        let centre = meshes
+            .get(mesh.mesh_asset_id())
+            .map_or(Vec3::ZERO, |m| m.aabb_center);
+        let mesh_center = get_mesh_instance_world_from_local(
+            main,
+            mesh.current_uniform_index,
+            &mesh_instances,
+            instance_buffers.as_deref(),
+        )
+        .transform_point3(centre);
+        opaque.remove(main);
+        alpha_mask.remove(main);
+        transparent.add_retained(Transparent3d {
+            sorting_info: TransparentSortingInfo3d::Sorted {
+                mesh_center,
+                depth_bias: list.bias(),
+            },
+            distance: 0.0,
+            pipeline,
+            entity: item_key,
+            draw_function,
+            batch_range: 0..1,
+            extra_index: PhaseItemExtraIndex::None,
+            indexed: slabs.index_slab_id.is_some(),
+        });
+        moved.0.insert(main);
     }
 }
 
-/// The state rank a decal or blended sort value carries: its offset from
-/// the list's base in whole rank spacings, the view depth (well inside half
-/// a spacing either way) rounded off.
-pub fn rank_of_sort_value(value: f32, list: u8) -> u32 {
-    let base = order_bias(list == 0, 0);
-    let rank = ((value - base) / RANK_SPACING + 0.5).floor();
+/// Which of the walk's lists a transparent-phase sort value belongs to
+/// ([`PhaseList::of_sort_value`]).
+pub fn list_of_sort_value(value: f32) -> PhaseList {
+    PhaseList::of_sort_value(value)
+}
+
+/// The state rank a sort value carries in its list: its offset from the
+/// list's base in whole rank spacings, the view depth (well inside half a
+/// spacing either way) rounded off. Only the decal and blended lists have
+/// ranks; every other list's entries are rank 0.
+pub fn rank_of_sort_value(value: f32, list: PhaseList) -> u32 {
+    if !matches!(list, PhaseList::Decal | PhaseList::Blended) {
+        return 0;
+    }
+    let rank = ((value - list.bias()) / RANK_SPACING + 0.5).floor();
     rank.clamp(0.0, MAX_RANKS as f32) as u32
 }
 
-/// The walk's key for one phase item: its list, and for the decal and
-/// blended lists its sector, its state rank and its registration position
-/// in the sector (later lists are not walked by sector). A surface the
-/// scene does not hold is in the scene's own sector after the registered
-/// ones of its rank.
-pub fn walk_key(value: f32, slot: Option<DrawSlot>) -> (u8, u32, u32, u32) {
+/// The walk's key for one phase item: its list, and for the lists walked by
+/// sector its sector, its state rank and its registration position in the
+/// sector (the hooks and the late passes are not walked by sector). A
+/// surface the scene does not hold is in the scene's own sector after the
+/// registered ones of its rank.
+pub fn walk_key(value: f32, slot: Option<DrawSlot>) -> (PhaseList, u32, u32, u32) {
     let list = list_of_sort_value(value);
-    if list >= 2 {
+    if !list.sector_walked() {
         return (list, 0, 0, 0);
     }
     let rank = rank_of_sort_value(value, list);
@@ -276,10 +448,9 @@ fn walk_sectors(
     }
     for phase in phases.values_mut() {
         let slot_of = |item: &Transparent3d| sectors.map.get(&item.entity.1.id()).copied();
-        let any = phase
-            .items
-            .values()
-            .any(|item| list_of_sort_value(item.distance) < 2 && slot_of(item).is_some());
+        let any = phase.items.values().any(|item| {
+            list_of_sort_value(item.distance).sector_walked() && slot_of(item).is_some()
+        });
         if !any {
             continue;
         }
@@ -381,6 +552,10 @@ fn insert_scissors(
         .items
         .values()
         .map(|item| {
+            // The hooks, the faded pass and the particles draw unclipped.
+            if !list_of_sort_value(item.distance).sector_walked() {
+                return None;
+            }
             scissors
                 .entries
                 .get(&item.entity.1.id())
@@ -481,13 +656,37 @@ mod tests {
 
     #[test]
     fn the_lists_read_back_from_the_bias() {
-        assert_eq!(list_of_sort_value(order_bias(true, 0) + 3.0), 0);
-        assert_eq!(list_of_sort_value(order_bias(true, MAX_RANKS) + 1000.0), 0);
-        assert_eq!(list_of_sort_value(order_bias(false, 0)), 1);
-        assert_eq!(list_of_sort_value(order_bias(false, MAX_RANKS) + 1000.0), 1);
-        assert_eq!(list_of_sort_value(0.5), 2);
-        assert_eq!(list_of_sort_value(-0.5), 2);
-        assert_eq!(list_of_sort_value(f32::NAN), 2);
+        use PhaseList as L;
+        assert_eq!(list_of_sort_value(order_bias(true, 0) + 3.0), L::Decal);
+        assert_eq!(
+            list_of_sort_value(order_bias(true, MAX_RANKS) + 1000.0),
+            L::Decal
+        );
+        assert_eq!(list_of_sort_value(order_bias(false, 0)), L::Blended);
+        assert_eq!(
+            list_of_sort_value(order_bias(false, MAX_RANKS) + 1000.0),
+            L::Blended
+        );
+        assert_eq!(list_of_sort_value(0.5), L::Late);
+        assert_eq!(list_of_sort_value(-0.5), L::Late);
+        assert_eq!(list_of_sort_value(f32::NAN), L::Late);
+        for list in [
+            L::ScissoredAlphaTest,
+            L::ScissoredOpaque,
+            L::GrassHook,
+            L::Decal,
+            L::Blended,
+        ] {
+            for depth in [0.0, 0.5, 999.0] {
+                assert_eq!(list_of_sort_value(list.bias() + depth), list);
+            }
+        }
+        for late in [
+            crate::passes::FADED_DEPTH_BIAS,
+            crate::passes::FADED_COLOUR_BIAS,
+        ] {
+            assert_eq!(list_of_sort_value(late + 999.0), L::Late);
+        }
     }
 
     #[test]
@@ -495,11 +694,11 @@ mod tests {
         for rank in [0, 1, 7, 300, MAX_RANKS] {
             for depth in [-5.0, 0.0, 0.3, 999.0] {
                 assert_eq!(
-                    rank_of_sort_value(order_bias(true, rank) + depth, 0),
+                    rank_of_sort_value(order_bias(true, rank) + depth, PhaseList::Decal),
                     rank as u32
                 );
                 assert_eq!(
-                    rank_of_sort_value(order_bias(false, rank) + depth, 1),
+                    rank_of_sort_value(order_bias(false, rank) + depth, PhaseList::Blended),
                     rank as u32
                 );
             }
@@ -523,6 +722,26 @@ mod tests {
         // Decals: sector 1 then 2; blended: sector 0, 1, 2; the rest by
         // distance, sectors ignored.
         assert_eq!(order, vec![1, 0, 3, 4, 2, 5, 6]);
+    }
+
+    /// The scissored alpha-tested meshes, then the scissored opaque ones,
+    /// each walked by sector; then the grass hook (not by sector), the
+    /// decals, and the faded pass last.
+    #[test]
+    fn the_scissored_lists_walk_by_sector_ahead_of_the_hooks() {
+        let items = [
+            (PhaseList::Decal.bias() + 1.0, slot(1, 0)),
+            (PhaseList::GrassHook.bias() + 5.0, slot(2, 0)),
+            (PhaseList::ScissoredOpaque.bias() + 3.0, slot(2, 1)),
+            (PhaseList::ScissoredOpaque.bias() + 9.0, slot(1, 4)),
+            (PhaseList::ScissoredAlphaTest.bias() + 1.0, slot(2, 0)),
+            (crate::passes::FADED_DEPTH_BIAS + 1.0, None),
+            (PhaseList::GrassHook.bias() + 2.0, slot(1, 0)),
+        ];
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by_key(|&i| walk_key(items[i].0, items[i].1));
+        // The grass keeps Bevy's order (here, the input's).
+        assert_eq!(order, vec![4, 3, 2, 1, 6, 0, 5]);
     }
 
     #[test]
