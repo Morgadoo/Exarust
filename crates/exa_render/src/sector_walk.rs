@@ -572,7 +572,7 @@ fn insert_scissors(
     }
     if stats.frames.is_multiple_of(240) {
         info!(
-            "sector scissor: {} of the last 240 frames clipped transparent surfaces to a doorway rectangle (at most {} surfaces and {} switches in a frame); now {} of {} surfaces, {} rectangles, the first {:?} (x, y, width, height) in the viewport {:?}",
+            "sector scissor: {} of the last 240 frames clipped surfaces (opaque, alpha-tested, decal and blended) to a doorway rectangle (at most {} surfaces and {} switches in a frame); now {} of {} surfaces, {} rectangles, the first {:?} (x, y, width, height) in the viewport {:?}",
             stats.clipping,
             stats.most,
             stats.switches,

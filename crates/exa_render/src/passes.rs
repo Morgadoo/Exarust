@@ -710,7 +710,7 @@ impl PhaseList {
     /// The list a sort value belongs to (a NaN goes last).
     pub fn of_sort_value(value: f32) -> Self {
         let block = (value / LIST_BLOCK).floor();
-        if !(block < -1.0) {
+        if block.is_nan() || block >= -1.0 {
             return Self::Late;
         }
         match block as i32 {
