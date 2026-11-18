@@ -93,6 +93,10 @@ pub struct ArenaCareer {
     /// Set when a confirmed trade changed [`Self::goods`], so the player's
     /// carried list can be written back.
     pub goods_changed: bool,
+    /// The manager's body takes its health from [`Member::health`] (the
+    /// word) at the next hub frame: set by the hub's entry and End Day's
+    /// rest ([`crate::arena_hub_live::apply_manager_health`]).
+    pub manager_health_due: bool,
     /// The merchant's stock type: the kinds it sells, 0 (the default kinds)
     /// in a new career. The save's merchant chunk keeps it.
     pub merchant_kinds: u32,
@@ -174,6 +178,7 @@ impl Default for ArenaCareer {
             merchant_stock: Vec::new(),
             goods: Vec::new(),
             goods_changed: false,
+            manager_health_due: false,
             merchant_kinds: 0,
             merchant_rank: -1,
             hire_pool: Vec::new(),

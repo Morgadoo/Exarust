@@ -896,7 +896,16 @@ pub fn detect_hits(
                     blade.tip_speed, attack.motion
                 );
                 attack.struck.insert(target);
-                let strike = blade_strike(blade, &frame, point, &attack, progress, wielder, powers);
+                let strike = blade_strike(
+                    blade,
+                    &frame,
+                    point,
+                    &attack,
+                    progress,
+                    wielder,
+                    powers,
+                    Some(&swing.tracker[blade.slot.index()]),
+                );
                 hits.write(Hit {
                     attacker: blade.wielder,
                     striker,
@@ -915,8 +924,16 @@ pub fn detect_hits(
 
 /// The strike a blade's contact at `point` (world) deals: where along the
 /// weapon it landed (cm from the grip; a fist's contact is measured
-/// [`KNUCKLES_INSIDE`] inside its far face), how fast that point moved (the
-/// weapon turns about the grip), and the swing it belongs to.
+/// [`KNUCKLES_INSIDE`] inside its far face), how fast it struck, and the
+/// swing it belongs to.
+///
+/// The speed is the original's: the swing tracker of the striker's slot
+/// (`tracker`), its smoothed speed √speed² when that is over the epsilon
+/// (the squared value as it is otherwise), and for a stab twice the
+/// tracked velocity along the striking body's long axis (no root; it may be
+/// negative). A striker with no tracker (a striker outside a fighter's
+/// swing) takes the blade point's own speed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn blade_strike(
     blade: &Blade,
     frame: &Affine3A,
@@ -925,23 +942,46 @@ pub(crate) fn blade_strike(
     progress: f32,
     wielder: Option<&Fighter>,
     powers: Option<&PowerFactors>,
+    tracker: Option<&swing::Tracker>,
 ) -> Strike {
     let mut along = frame.inverse().transform_point3(point).y * CM_PER_M;
     if !blade.record.armed() {
         along = along.min(blade.length * CM_PER_M - KNUCKLES_INSIDE);
     }
-    let share = (along / (blade.length * CM_PER_M)).clamp(0.0, 1.0);
     // A quadruped's stab is resolved as a swing.
     let quadruped = wielder.is_some_and(|f| f.stats.quadruped);
+    let stab = attack.motion == AttackMotion::Stab && !quadruped;
+    let speed = match tracker {
+        Some(t) => tracked_strike_speed(t, Vec3::from(frame.matrix3.y_axis), stab),
+        None => {
+            let share = (along / (blade.length * CM_PER_M)).clamp(0.0, 1.0);
+            blade.tip_speed * share * CM_PER_M / BODY_HZ
+        }
+    };
     Strike {
-        speed: blade.tip_speed * share * CM_PER_M / BODY_HZ,
-        stab: attack.motion == AttackMotion::Stab && !quadruped,
+        speed,
+        stab,
         overhead: attack.motion == AttackMotion::Overhead,
         clock: progress,
         along,
         unarmed: attack.weapon_class & HANDS == 0,
         strikes: powers.map_or(0.0, |p| p.strikes),
         ..Strike::default()
+    }
+}
+
+/// The damage routine's strike speed from the striker slot's swing tracker
+/// (cm a tick): for a stab 2 × the tracked velocity · the striking body's
+/// long axis (`axis`, normalised here; the original's frame row is a unit
+/// vector), else √speed² when speed² is over the epsilon, else speed² as it
+/// is.
+pub(crate) fn tracked_strike_speed(tracker: &swing::Tracker, axis: Vec3, stab: bool) -> f32 {
+    if stab {
+        tracker.velocity.dot(axis.normalize_or_zero()) * 2.0
+    } else if tracker.speed2 > damage::EPSILON {
+        tracker.speed2.sqrt()
+    } else {
+        tracker.speed2
     }
 }
 
@@ -2034,6 +2074,23 @@ mod tests {
         assert_eq!(p, Vec3::new(0.0, 0.5, 0.0));
         let end = closest_on_segment(Vec3::ZERO, Vec3::Y, Vec3::new(0.0, 3.0, 0.0));
         assert_eq!(end, Vec3::Y);
+    }
+
+    /// The strike speed is the swing tracker's: √speed² for a swing (the
+    /// squared value under the epsilon), twice the tracked velocity along
+    /// the striking body's axis for a stab, signed and unrooted.
+    #[test]
+    fn the_strike_speed_comes_from_the_swing_tracker() {
+        let t = swing::Tracker {
+            velocity: Vec3::new(3.0, 4.0, 0.0),
+            speed2: 16.0,
+            best: 25.0,
+        };
+        assert_eq!(tracked_strike_speed(&t, Vec3::Y, false), 4.0);
+        assert_eq!(tracked_strike_speed(&t, Vec3::Y * 2.0, true), 8.0);
+        assert_eq!(tracked_strike_speed(&t, -Vec3::X, true), -6.0);
+        let still = swing::Tracker { speed2: 1e-8, ..t };
+        assert_eq!(tracked_strike_speed(&still, Vec3::Y, false), 1e-8);
     }
 
     /// An app running only the blow reactions.

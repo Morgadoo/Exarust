@@ -2653,3 +2653,17 @@ A summon whose held phase ends SHALL bring its demon's body back as a vanished b
 #### Scenario: The fade starts and ends
 - **WHEN** a summon's shell starts to open and later its fade ends
 - **THEN** the demon's body settles for 1000 ticks, and at the release its settling is 0 and its AI is no longer held
+
+### Requirement: Refused AI cast
+An AI cast the power system does not start (any answer but 1) SHALL clear the duellist's casting flag at once.
+
+#### Scenario: A refused cast
+- **WHEN** a duellist's chosen power is refused
+- **THEN** its casting flag is clear before its next combat tick
+
+### Requirement: Shell break sound
+A force shell that names a break set SHALL play it once when it is asked to close, at its body, volume 0.4 and pitch 0.4r + 0.6 with r the effect stream's draw; the Shell power's aura names `thmfrc_brf`.
+
+#### Scenario: The Shell power ends
+- **WHEN** the Shell power's aura is asked to close
+- **THEN** `thmfrc_brf` plays once

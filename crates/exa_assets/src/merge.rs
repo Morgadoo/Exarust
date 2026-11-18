@@ -61,6 +61,12 @@ pub struct MergePart<'a> {
     /// argument into the merged mesh's per-face table: the worn item's id
     /// for a garment's parts, 0 for the body's.
     pub tag: u32,
+    /// The painted garment a `&` part belongs to. The original matches
+    /// groups by material, and a worn item's `&` groups all take that
+    /// item's one painted material: every `&` part of one garment folds
+    /// into one run, and two garments never share a run even when their `&`
+    /// names match. `None` groups the part by its material name.
+    pub group: Option<u32>,
 }
 
 impl<'a> MergePart<'a> {
@@ -84,6 +90,7 @@ impl<'a> MergePart<'a> {
             occlude: false,
             index_range: None,
             tag: 0,
+            group: None,
         }
     }
 }
@@ -91,7 +98,11 @@ impl<'a> MergePart<'a> {
 /// One material run of the merged mesh.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubObject {
+    /// The first material name met in the run.
     pub material: String,
+    /// The painted garment whose `&` parts form the run
+    /// ([`MergePart::group`]); `None` for a run grouped by name.
+    pub group: Option<u32>,
     /// The run's first vertex in the merged mesh.
     pub first_vertex: usize,
     pub vertex_count: usize,
@@ -136,6 +147,15 @@ impl ClampTo for (usize, usize) {
         let from = self.0.min(len);
         (from, self.1.clamp(from, len))
     }
+}
+
+/// What a material run is grouped by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunKey<'a> {
+    /// A painted garment's `&` parts.
+    Garment(u32),
+    /// Every other part, by its material name.
+    Name(&'a str),
 }
 
 /// A part's appended vertices and its triangle list per material.
@@ -189,7 +209,10 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         has_flags: false,
         has_edges: false,
     };
-    // Material names in first-seen order, and the appended vertices of each.
+    // Run keys (a garment's painted material, else the material name) in
+    // first-seen order, the first name met in each, and the appended
+    // vertices of each.
+    let mut keys: Vec<RunKey> = Vec::new();
     let mut materials: Vec<&str> = Vec::new();
     let mut assigned: Vec<Vec<u32>> = Vec::new();
     let mut position_count = 0u32;
@@ -241,10 +264,15 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
             uv_base = uv_count;
             last_mesh = Some(source);
         }
-        let at = materials.iter().position(|m| *m == part.material);
+        let key = match part.group {
+            Some(garment) => RunKey::Garment(garment),
+            None => RunKey::Name(part.material),
+        };
+        let at = keys.iter().position(|k| *k == key);
         let group = match at {
             Some(g) => g,
             None => {
+                keys.push(key);
                 materials.push(part.material);
                 assigned.push(Vec::new());
                 materials.len() - 1
@@ -362,6 +390,10 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         }
         subobjects.push(SubObject {
             material: (*material).to_string(),
+            group: match keys[index] {
+                RunKey::Garment(garment) => Some(garment),
+                RunKey::Name(_) => None,
+            },
             first_vertex: first,
             vertex_count: ordered.len(),
             first_index: 0,
@@ -1053,6 +1085,7 @@ mod tests {
             [
                 SubObject {
                     material: "skinhuman".into(),
+                    group: None,
                     first_vertex: 0,
                     vertex_count: 3,
                     first_index: 0,
@@ -1060,6 +1093,7 @@ mod tests {
                 },
                 SubObject {
                     material: "trouser".into(),
+                    group: None,
                     first_vertex: 3,
                     vertex_count: 3,
                     first_index: 3,
@@ -1589,5 +1623,52 @@ mod tests {
             ..part(&shirt, None, 1, "shirt")
         }];
         assert_eq!(merge(&parts).unwrap().triangle_tags, [7]);
+    }
+
+    /// A painted garment's `&` parts fold into one run keyed by the garment,
+    /// whatever their names, and two garments with the same `&` name keep
+    /// two runs (the original matches groups by the painted material).
+    #[test]
+    fn painted_parts_group_by_garment_not_by_name() {
+        let tri = |x: f32| {
+            mesh(
+                &[[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]],
+                &[0, 1, 2],
+            )
+        };
+        let (a, b, c, d) = (tri(0.0), tri(2.0), tri(4.0), tri(6.0));
+        let parts = [
+            MergePart {
+                tag: 1,
+                group: Some(1),
+                ..part(&a, None, 1, "&cloth")
+            },
+            MergePart {
+                tag: 2,
+                group: Some(2),
+                ..part(&b, None, 1, "&cloth")
+            },
+            MergePart {
+                tag: 1,
+                group: Some(1),
+                ..part(&c, None, 1, "&trim")
+            },
+            part(&d, None, 1, "skin"),
+        ];
+        let merged = merge(&parts).unwrap();
+        let runs: Vec<(&str, Option<u32>, usize)> = merged
+            .subobjects
+            .iter()
+            .map(|r| (r.material.as_str(), r.group, r.index_count))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("&cloth", Some(1), 6),
+                ("&cloth", Some(2), 3),
+                ("skin", None, 3)
+            ]
+        );
+        assert_eq!(merged.triangle_tags, [1, 1, 2, 0]);
     }
 }

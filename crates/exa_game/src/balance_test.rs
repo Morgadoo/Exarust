@@ -544,6 +544,31 @@ fn lying_still_it_gets_up_by_its_pelvis() {
     assert_eq!(world.get::<Animator>(id).unwrap().action, "Get up");
 }
 
+/// A get-up's start resets the torso twist (its followed yaw 0, its
+/// rotation the identity), even while it still waits for support.
+#[test]
+fn a_get_up_resets_the_torso_twist() {
+    let mut body = pelvis(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+    body.fall();
+    let (mut world, id) = posed(body, "Fall Backward", Branch::LyingStill, Condition::DOWN);
+    let twisted = Quat::from_rotation_y(0.4);
+    let locomotor = Locomotor {
+        twist_yaw: 0.7,
+        twist: twisted,
+        twist_before: twisted,
+        ..Locomotor::default()
+    };
+    world
+        .entity_mut(id)
+        .insert((Locomotion::default(), locomotor));
+    world.run_system_once(take_posture).unwrap();
+    let locomotor = world.get::<Locomotor>(id).unwrap();
+    assert_eq!(locomotor.twist_yaw, 0.0);
+    assert_eq!(locomotor.twist, Quat::IDENTITY);
+    assert_eq!(locomotor.twist_before, twisted);
+    assert_eq!(world.get::<Animator>(id).unwrap().action, "Get Up 2");
+}
+
 /// Lying still and dormant, a body does not get up: it lies limp (no tone,
 /// no energy) and its whole pose is captured from where it lies.
 #[test]

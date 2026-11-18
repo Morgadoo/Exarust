@@ -1134,6 +1134,9 @@ impl HubWindows {
                         .iter()
                         .any(|m| m.profession == Profession::Physician);
                     career.player.health = crate::career::rested(career.player.health, physician);
+                    // The day's end sets the manager's body from the rested
+                    // word.
+                    career.manager_health_due = true;
                     if let Some(trainer) = career
                         .company
                         .roster

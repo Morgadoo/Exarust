@@ -800,7 +800,10 @@ the timer gains 0.03 of the strength (cap 20) or loses 0.1; yellow loses
 timer × 0.00004 and red (timer × 0.002)², yellow is scaled by red's new share
 of the red the tick began with (all of it is lost when that was near 0); a
 timer over 1 crackles once the clock is 800 ms past the last draw; yellow
-under 0 after the scaling collapses. Every fighter carries its `Burn`; a
+under 0 after the scaling collapses. A crackle at timer 19 or under asks the
+body's voice for its groan (line 2, `pain::PainSounded`); the loud crackle
+folds in the voice's gains but no voice holds a burn sample yet, so it is
+silent. Every fighter carries its `Burn`; a
 fire particle's dose reaches it through the part's dose slot after the
 solver (`take_particle_doses`: a part whose skin bone index, the bone less
 one, is above zero adds the dose to the strength; another body keeps
@@ -811,3 +814,14 @@ motion, the clinch end, condition 0x20).
 The swing's cursor nudge (`strike_body::striking_fist`) pushes a striker only while the character's weapon class word is 0, as the original tests it: the fists (0x80), the claws (0xC0) and two weapons (0x90) are never pushed.
 
 The limb-impact pass (`impact::strike_limbs`) keeps the part states of the non-fighter bodies only for the keys a touch names.
+
+## Strike speed
+
+`blade_strike` takes the damage routine's speed from the striker slot's
+swing tracker (`tracked_strike_speed`): the root of its smoothed speed
+squared over the epsilon (the squared value under it), and for a stab twice
+the tracked velocity along the striking body's long axis, unrooted. A
+striker with no tracker keeps the blade point's own speed. A fist's striker
+frame turns +Y onto its hand's −x for the right hand and +x for the left
+(`exa_character`'s `fist_transform`), the axis the routine measures an
+unarmed contact along.

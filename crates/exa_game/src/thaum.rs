@@ -1090,6 +1090,10 @@ pub struct ForceShell {
     pub lit: bool,
     /// The shell's render step is registered with the scene.
     pub drawn: bool,
+    /// The set the shell plays once when it is asked to close (state 2):
+    /// the Shell power's names its break, `thmfrc_brf`; no other shell
+    /// names one.
+    pub break_set: Option<&'static str>,
 }
 
 /// A ripple on the force shell: its place, its shown amount and its
@@ -1131,6 +1135,7 @@ impl ForceShell {
             voice: false,
             lit: true,
             drawn: true,
+            break_set: None,
         }
     }
 
@@ -1188,6 +1193,7 @@ impl ForceShell {
         if self.state == 5 {
             return self.view(0.0, true);
         }
+        let asked_to_close = self.state == 2;
         let fade = step_shell_fade(
             ShellFade {
                 state: self.state,
@@ -1213,7 +1219,9 @@ impl ForceShell {
         if self.voice {
             self.hum = shell_pair(self.state, self.shown, self.hum);
         }
-        self.view(level, false)
+        let mut view = self.view(level, false);
+        view.breaks = asked_to_close.then_some(self.break_set).flatten();
+        view
     }
 
     fn view(&self, light: f32, remove: bool) -> ShellView {
@@ -1225,6 +1233,7 @@ impl ForceShell {
             hum: self.hum,
             faded: 1.0 - self.shown,
             remove,
+            breaks: None,
         }
     }
 
@@ -1328,6 +1337,8 @@ pub struct ShellView {
     pub faded: f32,
     /// The shell has left the scene.
     pub remove: bool,
+    /// The close request's step played this set ([`ForceShell::break_set`]).
+    pub breaks: Option<&'static str>,
 }
 
 /// The shell shader's programs, texture unit and uniform names, as the
@@ -2306,6 +2317,27 @@ mod tests {
             gain: 1.0,
         };
         assert_eq!(step_shell_fade(resting, 50, size, true), resting);
+    }
+
+    /// A shell asked to close plays its break set once, on the step that
+    /// takes it from the request (state 2) into closing; a shell naming
+    /// none plays nothing. The levels are 0.4 and 0.4·r + 0.6.
+    #[test]
+    fn a_shell_asked_to_close_plays_its_break_once() {
+        let mut shell = ForceShell::new(0, [0.0, 0.0]);
+        shell.break_set = Some("thmfrc_brf");
+        shell.state = 2;
+        shell.shown = 1.0;
+        let view = shell.frame(100);
+        assert_eq!((view.state, view.breaks), (3, Some("thmfrc_brf")));
+        assert_eq!(shell.frame(120).breaks, None);
+        let mut quiet = ForceShell::new(0, [0.0, 0.0]);
+        quiet.state = 2;
+        assert_eq!(quiet.frame(100).breaks, None);
+        assert_eq!(
+            crate::thaum::cast::shell_break_levels(0.5),
+            (0.4, (0.5f64 * 0.4 + 0.6) as f32)
+        );
     }
 
     #[test]

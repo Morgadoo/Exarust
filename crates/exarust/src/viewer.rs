@@ -1272,7 +1272,19 @@ fn play_level(
             && options.arena_match.is_none()
     });
     if let Some((arrival, _)) = arriving {
-        match exa_game::level_change::arrival_placement(&info.player_markers, arrival) {
+        // A teleporter journey arrives at the operative the stream adopted
+        // as the player's object; any other level change at its marker.
+        let journey = exa_game::level_change::journey_placement(arrival, info.player_frame);
+        if let Some(at) = journey {
+            info!(
+                "level {name}: the journey stands the player at the adopted operative {} (yaw {:.1} deg)",
+                at.position,
+                at.yaw.to_degrees()
+            );
+        }
+        match journey
+            .or_else(|| exa_game::level_change::arrival_placement(&info.player_markers, arrival))
+        {
             Some(at) => {
                 info!(
                     "level {name}: the arrival marker for entrance {} from level {} stands the player at {} (yaw {:.1} deg)",

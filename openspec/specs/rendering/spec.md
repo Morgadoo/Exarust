@@ -2023,6 +2023,12 @@ The story start SHALL start the screen fade after its camera shot, once its leve
 - **WHEN** a story starts and its level loads
 - **THEN** the screen fades in from black over five seconds from the first frame the level is in
 
+### Requirement: Hair cloth passes
+A cloth whose record carries the hair bit (4) SHALL be drawn as two culled passes, front faces culled first and back faces culled after, at the hair's place in the blended walk; a level cloth SHALL keep its single draw.
+
+#### Scenario: A hair cloth
+- **WHEN** a hair cloth is built
+- **THEN** its entity draws the front-culled copy of its material and a child draws the back-culled one just after it
 ### Requirement: Own-object casters keep the keep-own-light meshes
 A light's cube shadow map SHALL leave out the meshes of its parent's children, its parent and its grandparent, except a mesh whose render word carries the keep-own-light bit `0x1000`, which casts into its own light.
 

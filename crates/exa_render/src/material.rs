@@ -64,6 +64,7 @@ fn order_blended_states(
     }
     let (ids, states): (Vec<AssetId<ExaMaterial>>, Vec<crate::passes::BlendState>) = materials
         .iter()
+        .filter(|(_, m)| !m.second_pass)
         .filter_map(|(id, m)| m.blend_state.map(|state| (id, state)))
         .unzip();
     let ranks = crate::passes::blended_ranks(&states);
@@ -694,6 +695,10 @@ pub struct ExaMaterial {
     /// ([`crate::passes::order_bias`]), kept by [`order_blended_states`];
     /// 0 sorts by view depth alone.
     pub draw_order: f32,
+    /// A second draw of another material's surface (a hair cloth's
+    /// back-culled pass): kept out of the blended walk, its draw order is
+    /// set from its first pass's by the one who made it.
+    pub second_pass: bool,
 }
 
 impl Default for ExaMaterial {
@@ -727,6 +732,7 @@ impl Default for ExaMaterial {
             cloth_cull: None,
             blend_state: None,
             draw_order: 0.0,
+            second_pass: false,
         }
     }
 }
