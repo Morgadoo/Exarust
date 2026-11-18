@@ -1200,8 +1200,13 @@ impl TerrainBuild {
             built: None,
             blocks,
             grounds: vec![None; tile_count],
+            // The pools' detail side follows the game's texture-detail
+            // setting, as the terrain config record's word does.
             composite: composite::CompositePools::new(
-                composite::detail_size(manager::ManagerSettings::DEFAULT.texture_detail),
+                composite::detail_size(
+                    i32::try_from(loader.cache.textures.settings().texture_detail)
+                        .unwrap_or(i32::MAX),
+                ),
                 composite::CompositeFeatures::default(),
             ),
             detail_texture,
