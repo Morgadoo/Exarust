@@ -663,6 +663,41 @@ pub fn release_freed_grips(
     }
 }
 
+/// The placement's recursion into the bodies linked to the placed holder
+/// ([`grip::CarryHeld`]): every item the body holds (its grip not
+/// released) is moved by its holding hand's move, `hand_after ·
+/// hand_before⁻¹`, every particle set so it moves at rest. The items are
+/// not woken (the recursion only places them).
+pub fn carry_held(
+    mut commands: Commands,
+    asked: Query<(Entity, &grip::CarryHeld, &Ragdoll)>,
+    mut held: Query<(&HeldGrip, &HeldRest, &mut Ragdoll), Without<grip::CarryHeld>>,
+) {
+    for (entity, carry, holder) in &asked {
+        commands.entity(entity).remove::<grip::CarryHeld>();
+        let Some(key) = holder.parts.first().map(|p| p.entity) else {
+            continue;
+        };
+        for (grip, rest, mut item) in &mut held {
+            if grip.holder_key != key || grip.released {
+                continue;
+            }
+            let (Some(hand), Some(before)) = (holder.parts.get(rest.hand), carry.before.get(rest.hand))
+            else {
+                continue;
+            };
+            let moved = hand.transform() * before.inverse();
+            let worlds: Vec<Affine3A> = item.parts.iter().map(|p| moved * p.transform()).collect();
+            item.place_at(&worlds);
+            debug!(
+                "held carry: {key:?} item {:?} moved with its hand by {:.1} cm",
+                item.parts.first().map(|p| p.entity),
+                Vec3::from(moved.translation).length() * CM
+            );
+        }
+    }
+}
+
 /// The held-item re-place, as the original runs it after it moves a
 /// character ([`ReplaceHeld`]): for every item the body holds, its body is
 /// put at rest at its grip under the holding hand where that hand now is
@@ -883,7 +918,13 @@ pub fn plugin(app: &mut App) {
         )
         .add_systems(
             FixedUpdate,
-            (build_grips, release_freed_grips, mark_held, replace_held)
+            (
+                build_grips,
+                release_freed_grips,
+                mark_held,
+                carry_held,
+                replace_held,
+            )
                 .chain()
                 .in_set(GripSolveSet::Build),
         )

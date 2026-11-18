@@ -3018,6 +3018,7 @@ pub fn bridge_body_types(app: &mut App) {
     app.bridge_copy::<crate::StaticNode>()
         .bridge_copy::<GoLimp>()
         .bridge_copy::<crate::grip::ReplaceHeld>()
+        .bridge_copy::<crate::grip::CarryHeld>()
         .bridge_snapshot::<Ragdoll>()
         .bridge_copy::<OutOfScene>()
         .bridge_copy::<InView>()

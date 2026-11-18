@@ -801,6 +801,123 @@ fn a_moved_holder_takes_its_held_item_along() {
     assert!(link.slack > 0.1);
 }
 
+/// The placement's recursion: a holder placed a metre away and turned a
+/// quarter turn carries its held item with its hand (the item keeps its
+/// pose in the hand's frame), at rest and without a re-place; a released
+/// grip's item stays.
+#[test]
+fn a_placed_holder_carries_its_held_item_with_its_hand() {
+    use crate::body::PartSetup;
+    use crate::grip::{CarryHeld, GripPoint, GripSpec, HeldGrip, HeldKind};
+
+    let owner = Entity::from_raw_u32(10).unwrap();
+    let hand = Entity::from_raw_u32(11).unwrap();
+    let item = Entity::from_raw_u32(20).unwrap();
+    let loose = Entity::from_raw_u32(21).unwrap();
+    let setup = |bone, entity, parent, at| PartSetup {
+        bone,
+        entity,
+        parent,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let holder = Ragdoll::new(&[
+        setup(1, owner, None, Vec3::ZERO),
+        setup(17, hand, Some(0), Vec3::new(0.2, 0.0, 0.0)),
+    ])
+    .with_drive();
+    let grip = |released| HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: vec![GripPoint {
+                point: Vec3::new(0.0, 20.0, 0.0),
+                slack: 0.0,
+            }],
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0x30,
+        soft_weld: false,
+        kind: HeldKind::Weapon,
+        holder_key: owner,
+        hands: [Some(hand), None],
+        arms: [Some(hand), None],
+        links: None,
+        released,
+        head_extra: 0.0,
+    };
+    let mut app = App::new();
+    app.add_systems(
+        Update,
+        (
+            crate::grip_solve::build_grips,
+            crate::grip_solve::carry_held,
+        )
+            .chain(),
+    );
+    let holder_e = app.world_mut().spawn(holder).id();
+    let item_e = app
+        .world_mut()
+        .spawn((rigid(item, Vec3::new(0.2, 0.4, 0.0), 1.0), grip(false)))
+        .id();
+    let loose_e = app
+        .world_mut()
+        .spawn((rigid(loose, Vec3::new(0.2, 0.4, 0.0), 1.0), grip(false)))
+        .id();
+    app.update();
+    app.world_mut().get_mut::<HeldGrip>(loose_e).unwrap().released = true;
+    let hand_before = app.world().get::<Ragdoll>(holder_e).unwrap().parts[1].transform();
+    let item_before = app.world().get::<Ragdoll>(item_e).unwrap().parts[0].transform();
+    let loose_before = app.world().get::<Ragdoll>(loose_e).unwrap().parts[0].transform();
+    let before: Vec<Affine3A> = app
+        .world()
+        .get::<Ragdoll>(holder_e)
+        .unwrap()
+        .parts
+        .iter()
+        .map(|p| p.transform())
+        .collect();
+    let turn = Affine3A::from_rotation_translation(
+        bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        Vec3::new(1.0, 0.0, 0.5),
+    );
+    {
+        let mut body = app.world_mut().get_mut::<Ragdoll>(holder_e).unwrap();
+        let worlds: Vec<Affine3A> = body.parts.iter().map(|p| turn * p.transform()).collect();
+        body.place_at(&worlds);
+    }
+    app.world_mut().entity_mut(holder_e).insert(CarryHeld { before });
+    app.update();
+    assert!(app.world().get::<CarryHeld>(holder_e).is_none());
+    let hand_after = app.world().get::<Ragdoll>(holder_e).unwrap().parts[1].transform();
+    let body = app.world().get::<Ragdoll>(item_e).unwrap();
+    let in_hand_before = hand_before.inverse() * item_before;
+    let in_hand_after = hand_after.inverse() * body.parts[0].transform();
+    assert!(
+        Vec3::from(in_hand_after.translation - in_hand_before.translation).length() < 1e-5,
+        "{in_hand_after:?} vs {in_hand_before:?}"
+    );
+    assert!(
+        (in_hand_after.transform_vector3(Vec3::X) - in_hand_before.transform_vector3(Vec3::X))
+            .length()
+            < 1e-5
+    );
+    assert_eq!(body.parts[0].positions, body.parts[0].previous);
+    let loose_after = app.world().get::<Ragdoll>(loose_e).unwrap().parts[0].transform();
+    assert_eq!(loose_after, loose_before);
+}
+
 /// A flip since the attach turns the re-placed item half a turn about its
 /// own Y axis.
 #[test]

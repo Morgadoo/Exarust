@@ -825,6 +825,7 @@ pub(crate) fn place_on_ground(
                 );
             }
         }
+        let carried: Vec<bevy::math::Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
         let placed = if placement.statics {
             // The static mode: the sectors' static meshes alone.
             let level = exa_physics::sector_lists::StaticLevel(&physics.0);
@@ -842,9 +843,12 @@ pub(crate) fn place_on_ground(
             );
             placed
         };
-        // The original's behaviour then puts the held items back in the
-        // hands where the placement left them.
-        commands.entity(root).insert(exa_physics::grip::ReplaceHeld);
+        // The placement's recursion carries the held items with their
+        // hands; the original's behaviour then puts them back in the hands
+        // where the placement left them.
+        commands
+            .entity(root)
+            .insert((exa_physics::grip::CarryHeld { before: carried }, exa_physics::grip::ReplaceHeld));
         match placed {
             Some(height) => info!(
                 "ground placement {root:?}: pelvis {:.1} cm over the floor (was {:.1}), feet at {:.1}, character ground {:.1}",
@@ -1024,9 +1028,15 @@ fn place_living(
                 req.free_walk = false;
             }
         }
+        let carried: Vec<bevy::math::Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
         if !body.place_living(frame, &posed, pelvis) {
             continue;
         }
+        // The placement's recursion carries the held items with their
+        // hands.
+        commands
+            .entity(root)
+            .insert(exa_physics::grip::CarryHeld { before: carried });
         if placement.replace_held {
             commands.entity(root).insert(exa_physics::grip::ReplaceHeld);
         }
