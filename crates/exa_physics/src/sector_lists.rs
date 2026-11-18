@@ -323,6 +323,10 @@ impl<L: Level + ?Sized> Level for MeshLevel<'_, L> {
         self.level.floor_piece(piece)
     }
 
+    fn floor_box(&self, piece: u32) -> Option<(bevy::math::Affine3A, Vec3, Vec3)> {
+        self.level.floor_box(piece)
+    }
+
     fn floor_below(&self, at: Vec3, depth: f32) -> Option<f32> {
         self.level.floor_below(at, depth)
     }
@@ -404,6 +408,10 @@ impl<L: Level + ?Sized> Level for StaticLevel<'_, L> {
 
     fn floor_piece(&self, piece: u32) -> bool {
         self.0.floor_piece(piece)
+    }
+
+    fn floor_box(&self, piece: u32) -> Option<(bevy::math::Affine3A, Vec3, Vec3)> {
+        self.0.floor_box(piece)
     }
 
     fn floor_below(&self, at: Vec3, depth: f32) -> Option<f32> {
