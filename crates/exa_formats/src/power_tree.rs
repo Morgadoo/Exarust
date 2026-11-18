@@ -444,19 +444,10 @@ fn hermite(p0: [f32; 2], p1: [f32; 2], t0: [f32; 2], t1: [f32; 2], t: f32) -> [f
     ]
 }
 
+/// The approximate reciprocal square root the line uses for its unit
+/// (`RSQRTSS`): the fixed Intel answer (DEC-7).
 fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // The same approximate reciprocal square root the line uses for its unit.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
+    crate::approx_recip::reciprocal_sqrt(value)
 }
 
 /// The square drawn for one icon. No columns means the sheet is not ready.

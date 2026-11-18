@@ -1369,7 +1369,8 @@ mod tests {
         let _ = t.ribbon(&frame, Vec3::new(1000.0, 0.0, 0.0));
         let stored = t.records[0].normals[1];
         assert!((stored.x).abs() < 1e-6);
-        assert!((stored.y - 0.1).abs() < 1e-5, "{stored:?}");
+        // (The y is the approximate reciprocal root's unit up, 12 bits.)
+        assert!((stored.y - 0.1).abs() < 5e-5, "{stored:?}");
         assert!((stored.z - 3.6).abs() < 1e-5, "{stored:?}");
         // The mean starts at zero, so it becomes the frame's mean direction
         // (this frame's samples run back along z, so the sign is the

@@ -323,3 +323,8 @@ re-flood clears it from a box around its new place
 rooms a flood aliases come from the cells that flood recorded
 (`cells_of`). The terrain's composite pools take their detail side from
 the texture-detail setting.
+
+The terrain tiles' vertex normals are `terrain::manager::window_normal` (the
+original's Sobel sums in its order, the factor one eighth over the cell
+side, the engine normalise with the fixed approximate reciprocal square
+root of DEC-7) over the heights in metres.

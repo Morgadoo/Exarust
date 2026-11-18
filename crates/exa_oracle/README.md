@@ -32,10 +32,10 @@ functions by name only.
   the rest basis times the particles in its 4x4 and 4x3 forms), and the
   collision2 lane's in `batch_g.rs` (the mesh's query slots over six face
   records, brute-force and kd-tree leaf forms: two-sided, front, swept,
-  swept nearest and the cloth's sweep, each callback logged). 129 ports;
-  two of them (the sun view matrix with
-  `RSQRTSS`, the colour decode by `powf`) are recorded differences whose
-  case files are kept aside.
+  swept nearest and the cloth's sweep, each callback logged). 129 ports.
+  The cases are made with the approximate reciprocals answered by the
+  same fixed Intel table Exarust uses (DEC-7), so a case replays the same
+  on every machine.
 - `replay()` runs every case of a file under
   `exa_physics::float_mode::enter` and reports the function identical, or
   its first differing case with the inputs and each differing output's bits.

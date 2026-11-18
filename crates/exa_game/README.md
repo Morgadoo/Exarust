@@ -3270,3 +3270,8 @@ view tabs while a pad is connected; icons render with
   (`arena_hub_live::apply_manager_health`).
 - The Shell power's aura plays `thmfrc_brf` when asked to close
   (`ForceShell::break_set`, `thaum::cast::tick_shell_auras`).
+
+The wisps' strip (`thaum::wisps`) adds one point past its last drawn point
+only when the strand goes on past its visible end; at the end itself the
+last drawn side is the tip's (three quarters toward its own raw side), as
+the original's strip builder does.

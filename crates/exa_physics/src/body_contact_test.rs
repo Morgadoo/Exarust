@@ -330,7 +330,10 @@ fn a_level_hit_takes_the_originals_plane_and_spread() {
     let far = Vec3::new(3.0, 0.0, 0.0);
     assert!(crate::sector::largest_abs(p.weights_exact(far - delta).unwrap()) > 1.0);
     assert!(p.hit(centre, far, delta));
-    assert_eq!(p.contacts[1].weights, weights(p, centre));
+    assert_eq!(
+        p.contacts[1].weights,
+        crate::engine_math::barycentric_fast(centre, &p.rest.map(|r| r.to_array()))
+    );
     // A push under the original's 1e-5 cm² records nothing.
     assert!(!p.hit(centre, q, Vec3::splat(1e-5)));
     assert_eq!(p.contacts.len(), 2);

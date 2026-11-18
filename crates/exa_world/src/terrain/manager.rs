@@ -6,17 +6,17 @@
 //! heights are stored with an apron, 244 samples a side, one before the tile
 //! and two after. The running terrain builder (`terrain::TerrainBuild`) owns
 //! the mesh and texture work in Bevy and shares the detail displacement
-//! ([`detail_offset`]) with this module. Its own Sobel normal still uses an
-//! exact square root over metre heights: the original's [`window_normal`]
-//! normalises with an approximate reciprocal square root over raw heights,
-//! which moves one floor cell of the shipped nav golden, so it is kept apart
-//! until that golden can be checked against the retail grid. Lengths are
+//! ([`detail_offset`]) with this module. Its Sobel normal is
+//! [`window_normal`] over the heights in metres (the factor one eighth over
+//! the cell side in metres), with the engine's approximate reciprocal
+//! square root (DEC-7). Lengths are
 //! centimetres where the original keeps them; the block trees, which
 //! `exa_physics` builds in metres, take the same placement divided by 100.
 //!
 //! Floating-point order follows the instructions, not the decompiler: the
-//! normal is normalised with the processor's approximate reciprocal square
-//! root (`RSQRTSS`, [`exa_physics::engine_math::reciprocal_sqrt`]), the byte
+//! normal is normalised with the approximate reciprocal square root
+//! (`RSQRTSS`'s fixed Intel answer,
+//! [`exa_physics::engine_math::reciprocal_sqrt`]), the byte
 //! conversions round to nearest even, and the running bounds keep the
 //! original's NaN-safe compares.
 

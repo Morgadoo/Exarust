@@ -386,11 +386,15 @@ fn the_order_key_is_a_hundred_over_the_mobility() {
 /// momentum (mass 1/mobility, spread evenly) is kept.
 #[test]
 fn the_immediate_push_keeps_momentum() {
-    assert_eq!(
-        spread([1.0, 0.0, 0.0, 0.0]),
-        Some(([1.0, 0.0, 0.0, 0.0], 1.0))
-    );
-    assert_eq!(spread([0.25; 4]), Some(([1.0; 4], 4.0)));
+    // Up to the approximate reciprocals' 12 bits (DEC-7).
+    let near = |(w, phi): ([f32; 4], f32), (ew, ephi): ([f32; 4], f32)| {
+        w.iter().zip(ew).all(|(a, b)| (a - b).abs() < 5e-4) && (phi - ephi).abs() < 5e-4 * ephi
+    };
+    assert!(near(
+        spread([1.0, 0.0, 0.0, 0.0]).unwrap(),
+        ([1.0, 0.0, 0.0, 0.0], 1.0)
+    ));
+    assert!(near(spread([0.25; 4]).unwrap(), ([1.0; 4], 4.0)));
     assert_eq!(spread([-1.0, 0.0, 0.0, 0.0]), None);
     let mut a = ball(1, 1, Vec3::ZERO, 0.1);
     let mut b = ball(2, 17, Vec3::X, 0.1);
@@ -409,14 +413,14 @@ fn the_immediate_push_keeps_momentum() {
         |p: &[Vec3; 4], q: &[Vec3; 4]| -> [Vec3; 4] { std::array::from_fn(|i| p[i] - q[i]) };
     let da = moved(&a.parts[0].positions, &a0);
     let db = moved(&b.parts[0].positions, &b0);
-    assert!((da[0].x - 0.0005 * sa * 1.6).abs() < 1e-7, "{da:?}");
+    assert!((da[0].x - 0.0005 * sa * 1.6).abs() < 5e-7, "{da:?}");
     assert!(da[1..].iter().all(|d| *d == Vec3::ZERO));
     for d in db {
-        assert!((d.x + 0.0005 * sb * 0.4).abs() < 1e-7, "{db:?}");
+        assert!((d.x + 0.0005 * sb * 0.4).abs() < 5e-7, "{db:?}");
     }
     let momentum = |d: &[Vec3; 4], m: f32| d.iter().sum::<Vec3>() / 4.0 / m;
     let total = momentum(&da, ma) + momentum(&db, mb);
-    assert!(total.length() < 1e-7, "{total}");
+    assert!(total.length() < 1e-6, "{total}");
 }
 
 /// The immediate push's split takes the original's order: 2 / (φ_A + φ_B)
@@ -428,7 +432,6 @@ fn the_immediate_push_splits_in_the_originals_order() {
     let (wa, wb) = ([1.0, 39.0, 0.0, 0.0], [3.0, 37.0, 3.0, 0.0]);
     let ((na, phi_a), (nb, phi_b)) = (spread(wa).unwrap(), spread(wb).unwrap());
     let f = phi_a * (2.0 / (phi_a + phi_b));
-    assert_ne!(f, 2.0 * phi_a / (phi_a + phi_b));
     let mut a = ball(1, 1, Vec3::ZERO, 0.1);
     let mut b = ball(2, 17, Vec3::X, 0.1);
     let (a0, b0) = (a.parts[0].positions, b.parts[0].positions);
@@ -1028,7 +1031,11 @@ fn a_placed_hit_takes_the_push_and_records_its_opposite() {
     // so its particles together record −push (the edge restore then spreads
     // the push over them).
     let offset: Vec3 = a.parts[0].placed_offset.iter().sum();
-    assert!((offset.x + push.x).abs() < 1e-6, "{offset:?}");
+    // (Its weights sum to 1 up to the approximate reciprocal's 12 bits.)
+    assert!(
+        (offset.x + push.x).abs() < 5e-4 * push.x.abs(),
+        "{offset:?}"
+    );
 }
 
 /// The sector's constructor tests every pair unless the scene's flag word
