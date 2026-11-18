@@ -32,6 +32,8 @@ const STACK_LIMIT: usize = 31;
 const SHAPED_CUTOFF: f32 = f32::from_bits(0x33ff_ffd7);
 /// Cell size, metres.
 const CELL: f32 = 6.0;
+/// The clear's cells per centimetre, the original's single 1/600.
+const PER_CELL_CM: f32 = 0.001_666_666_7;
 /// Plane A's bit for a built cell.
 const OPEN: u32 = 0x8_0000;
 
@@ -239,8 +241,11 @@ fn opening(cell: (i64, i64), side: usize, ends: [End; 2], l: (f32, f32)) -> [f32
 #[derive(Clone, Debug, Default)]
 pub struct CellLights {
     cells: Vec<Vec<(u32, f32, f32)>>,
-    /// The cells each light entered.
+    /// The cells each light holds an entry in.
     touched: HashMap<u32, Vec<usize>>,
+    /// The cells each light's last flood recorded it in (the cell hook's
+    /// order), which a stale entry outside the re-flood's clear is not.
+    recorded: HashMap<u32, Vec<usize>>,
 }
 
 impl CellLights {
@@ -248,6 +253,7 @@ impl CellLights {
         Self {
             cells: vec![Vec::new(); grid.w * grid.h],
             touched: HashMap::default(),
+            recorded: HashMap::default(),
         }
     }
 
@@ -256,6 +262,7 @@ impl CellLights {
     /// original scans every cell the same way), so the order of the other
     /// lights in a cell can change.
     pub fn remove(&mut self, key: u32) {
+        self.recorded.remove(&key);
         for cell in self.touched.remove(&key).unwrap_or_default() {
             let list = &mut self.cells[cell];
             if let Some(at) = list.iter().position(|e| e.0 == key) {
@@ -280,6 +287,7 @@ impl CellLights {
             }
             list.push((key, 0.0, 0.0));
             self.touched.entry(key).or_default().push(cell);
+            self.recorded.entry(key).or_default().push(cell);
         }
     }
 
@@ -303,6 +311,7 @@ impl CellLights {
         } else if list.len() < MAX_CELL_LIGHTS {
             list.push((key, a0, a1));
             self.touched.entry(key).or_default().push(cell);
+            self.recorded.entry(key).or_default().push(cell);
         }
     }
 
@@ -313,11 +322,12 @@ impl CellLights {
             .map(|e| (e.1, e.2))
     }
 
-    /// The cells light `key` was recorded in, in the order the flood
+    /// The cells light `key`'s last flood recorded it in, in the order it
     /// recorded them (a cell already full when the light reached it is not
-    /// among them).
+    /// among them, nor one still holding a stale entry the re-flood's clear
+    /// left).
     pub fn cells_of(&self, key: u32) -> &[usize] {
-        self.touched.get(&key).map_or(&[], |cells| &cells[..])
+        self.recorded.get(&key).map_or(&[], |cells| &cells[..])
     }
 
     /// The lights a cell records.
@@ -325,9 +335,50 @@ impl CellLights {
         self.cells[cell].iter().map(|e| e.0)
     }
 
-    /// Floods light `key` through `grid`, replacing what it left before.
+    /// The re-flood's clear, as the original's: light `key` is taken out of
+    /// the cells of a box around its new position (`position`, metres) and
+    /// radius (`radius`, metres), not out of the cells it entered before.
+    /// The box spans the cell holding the position (the grid's centre plus
+    /// the position over 600 cm, truncated) and ⌈radius/600 cm⌉ + 1 cells
+    /// each way, clamped to the grid; each cell drops its entry for the
+    /// light by swapping its last entry in. A light that moved or shrank
+    /// keeps its entries in old cells outside the box.
+    pub fn clear_box(&mut self, grid: &WallGrid, key: u32, position: Vec3, radius: f32) {
+        let per_cell = PER_CELL_CM;
+        let cx = (grid.w >> 1) as f32 + position.x * 100.0 * per_cell;
+        let cz = (grid.h >> 1) as f32 + position.z * 100.0 * per_cell;
+        let n = i64::from(exa_physics::engine_math::ceil_to_i32(radius * 100.0 * per_cell)) + 1;
+        let (tx, tz) = (i64::from(cx as i32), i64::from(cz as i32));
+        let (x0, x1) = ((tx - n).max(0), (tx + n).min(grid.w as i64 - 1));
+        let (z0, z1) = ((tz - n).max(0), (tz + n).min(grid.h as i64 - 1));
+        let inside = |cell: usize| {
+            let (x, z) = ((cell % grid.w) as i64, (cell / grid.w) as i64);
+            (x0..=x1).contains(&x) && (z0..=z1).contains(&z)
+        };
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                let Some(cell) = grid.index(x, z) else {
+                    continue;
+                };
+                let list = &mut self.cells[cell];
+                if let Some(at) = list.iter().position(|e| e.0 == key) {
+                    list.swap_remove(at);
+                }
+            }
+        }
+        if let Some(cells) = self.touched.get_mut(&key) {
+            cells.retain(|&cell| !inside(cell));
+            if cells.is_empty() {
+                self.touched.remove(&key);
+            }
+        }
+    }
+
+    /// Floods light `key` through `grid`, after the re-flood's box clear
+    /// ([`Self::clear_box`]).
     pub fn flood(&mut self, grid: &WallGrid, key: u32, light: &FloodLight) {
-        self.remove(key);
+        self.clear_box(grid, key, light.position, light.radius);
+        self.recorded.remove(&key);
         let l = grid.to_cells(light.position.x, light.position.z);
         let reach = light.radius / CELL;
         let start = (
@@ -627,6 +678,34 @@ mod tests {
         // Moving a light out frees its place.
         cells.remove(0);
         assert_eq!(cells.lights(cell(&g, 1, 1)).count(), MAX_CELL_LIGHTS - 1);
+    }
+
+    /// A re-flood clears only a box around the light's new place: a light
+    /// moved six cells with a one-cell reach keeps its entry in its old
+    /// cell, which the box (the cell and two more each way) does not reach.
+    #[test]
+    fn a_moved_light_keeps_its_old_cells_outside_the_clear() {
+        let g = WallGrid::new(12, 3, vec![0; 36], vec![0; 36]).unwrap();
+        let mut cells = CellLights::new(&g);
+        let near = |at| FloodLight {
+            position: at,
+            radius: CELL,
+            shaped: None,
+        };
+        cells.flood(&g, 1, &near(centre(&g, 2, 1)));
+        assert!(cells.window(cell(&g, 2, 1), 1).is_some());
+        cells.flood(&g, 1, &near(centre(&g, 8, 1)));
+        assert!(cells.window(cell(&g, 8, 1), 1).is_some());
+        assert!(cells.window(cell(&g, 2, 1), 1).is_some(), "the stale entry stays");
+        // This flood did not record it there.
+        assert!(!cells.cells_of(1).contains(&cell(&g, 2, 1)));
+        assert!(cells.cells_of(1).contains(&cell(&g, 8, 1)));
+        // Flooded again where it is, the box covers its cells: no doubles.
+        cells.flood(&g, 1, &near(centre(&g, 8, 1)));
+        assert_eq!(cells.lights(cell(&g, 8, 1)).count(), 1);
+        // The light's removal still clears every cell it entered.
+        cells.remove(1);
+        assert!(cells.window(cell(&g, 2, 1), 1).is_none());
     }
 
     #[test]
