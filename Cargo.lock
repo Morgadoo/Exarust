@@ -2540,6 +2540,7 @@ dependencies = [
  "exa_combat",
  "exa_formats",
  "exa_game",
+ "exa_items",
  "exa_physics",
  "exa_render",
  "exa_ui",
