@@ -72,7 +72,7 @@ use exa_ui::skill_gui::{
 };
 
 use crate::experience::{global_xp_for_worth, global_xp_worth, technique_bits};
-use crate::experience_live::{StoryExperience, TechniqueWord};
+use crate::experience_live::{ArmourRefresh, StoryExperience, TechniqueWord};
 use crate::player::PlayerBody;
 use crate::player_controls::PlayerControl;
 
@@ -370,7 +370,11 @@ fn close(
         if let Some(story) = story {
             story.technique_word = word;
         }
-        commands.entity(entity).insert(TechniqueWord(word));
+        // The technique word, then the armour pass over the worn outfit
+        // (a technique learnt here can be Deflection).
+        commands
+            .entity(entity)
+            .insert((TechniqueWord(word), ArmourRefresh));
         info!("skills: the skill screen closes (technique word {word:#010x})");
     }
 }
@@ -1456,6 +1460,8 @@ mod tests {
         assert!(app.world().resource::<SkillUi>().screen.is_none());
         assert!(!app.world().resource::<PlayerControl>().off);
         assert!(app.world().get::<TechniqueWord>(player).is_some());
+        // The close runs the armour pass on the player's body.
+        assert!(app.world().get::<ArmourRefresh>(player).is_some());
     }
 
     /// Every key the window procedure sends reaches the screen's key slot:
