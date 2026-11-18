@@ -15,6 +15,15 @@
 //! ([`exa_ai::brain::stamps_footprint`]). A character that leaves takes its
 //! footprint with it, and a new level's grid starts with none. Exarust's
 //! standing point is the feet.
+//!
+//! An NPC whose stamp falls within five cells of the grid's edge
+//! ([`exa_ai::combatant::foot_cell`]) overflows: the original flags the body
+//! once, unlinks it from its room's list and queues its scene node for
+//! deletion, logging "Character position overflow." the first time in the
+//! run. Exarust despawns the body's root (its room lists forget it through
+//! the brains' removal broadcast). [Exarust: the player's tick takes the
+//! same branch in the original; the player is left in the scene here, as
+//! Exarust has no game without its player body.]
 
 use std::collections::HashSet;
 
@@ -56,11 +65,25 @@ pub fn npc_stamps(following: bool, desired: Vec3, walked_m: Vec3, facing: Vec3) 
     brain::stamps_footprint(following, moving, speed_cm)
 }
 
+/// Whether a stamp at `feet` (metres) overflows the grid: its cell lies
+/// within five cells of the edge on either axis (the original's stamp,
+/// [`exa_ai::combatant::foot_cell`]).
+pub fn overflows(grid: &NavGrid, feet: Vec3) -> bool {
+    let (width, depth) = grid.size();
+    let cell = exa_ai::combatant::foot_cell(
+        feet * 100.0,
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(depth).unwrap_or(i32::MAX),
+    );
+    !cell.in_grid
+}
+
 /// Every character under its controller moves its footprint to where its
 /// feet are, or takes it off; the footprints of characters gone (or off
 /// their controller) come off too.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn keep_footprints(
+    mut commands: Commands,
     grid: Option<ResMut<NavGrid>>,
     mut prints: ResMut<NavFootprints>,
     characters: Query<
@@ -78,6 +101,7 @@ pub fn keep_footprints(
     roots: Query<(&CharacterBody, &Transform)>,
     mut seen: Local<HashSet<Entity>>,
     mut walking: Local<HashSet<Entity>>,
+    mut overflowed: Local<HashSet<Entity>>,
 ) {
     let Some(mut grid) = grid else { return };
     if grid.is_added() {
@@ -114,13 +138,23 @@ pub fn keep_footprints(
             }
             on
         };
-        if on {
+        if on && !player && overflows(&grid, capsule.feet(at)) {
+            prints.lift(&mut grid, who);
+            if overflowed.insert(who) {
+                if exa_ai::combatant::take_overflow_log() {
+                    error!("Character position overflow. ({who:?})");
+                }
+                info!("npc {who:?} stands off the navigation grid: removed from the scene");
+                commands.entity(parent.parent()).despawn();
+            }
+        } else if on {
             prints.stamp(&mut grid, who, capsule.feet(at));
         } else {
             prints.lift(&mut grid, who);
         }
     }
     walking.retain(|e| seen.contains(e));
+    overflowed.retain(|e| seen.contains(e));
     prints.retain(&mut grid, |e| seen.contains(&e));
 }
 
@@ -249,6 +283,54 @@ mod tests {
         assert_eq!(total(&app), 63 + 8 * 32 + 12 * 16);
         let at = app.world().resource::<NavFootprints>().of(npc);
         assert!(at.is_some_and(|p| (p - Vec3::new(-0.45, 0.0, 0.15)).length() < 1e-6));
+    }
+
+    /// An NPC standing within five cells of the grid's edge overflows: it
+    /// stamps nothing and its body is removed from the scene; the player
+    /// there stays; one standing inside keeps its footprint.
+    #[test]
+    fn an_npc_off_the_grid_is_removed_from_the_scene() {
+        let mut app = App::new();
+        app.insert_resource(grid())
+            .init_resource::<NavFootprints>()
+            .add_systems(Update, keep_footprints);
+        // Cell = 20 + (x/0.3 - 0.5) rounded (ties to even): x = 4.8 m is
+        // cell 35.5 -> 36, past 40 - 5: it overflows; x = 4.2 m is 33.5 ->
+        // 34 and x = 3.9 m is 32.5 -> 32, inside.
+        let spawn = |app: &mut App, x: f32, player: bool| {
+            let root = app
+                .world_mut()
+                .spawn((CharacterBody::default(), Transform::from_xyz(x, 0.0, 0.15)))
+                .id();
+            let mut body =
+                app.world_mut()
+                    .spawn((Fighter::default(), Condition::NORMAL, ChildOf(root)));
+            if player {
+                body.insert(PlayerBody::new(0.0));
+            }
+            (root, body.id())
+        };
+        let (edge_root, edge) = spawn(&mut app, 4.8, false);
+        let (inside_root, inside) = spawn(&mut app, 3.9, false);
+        let (player_root, _) = spawn(&mut app, 4.8, true);
+        app.update();
+        assert!(app.world().get_entity(edge_root).is_err());
+        assert!(app.world().get_entity(edge).is_err());
+        assert!(app.world().get_entity(inside_root).is_ok());
+        assert!(app.world().get_entity(player_root).is_ok());
+        assert!(app.world().resource::<NavFootprints>().of(inside).is_some());
+        assert!(overflows(
+            app.world().resource::<NavGrid>(),
+            Vec3::new(4.8, 0.0, 0.15)
+        ));
+        assert!(!overflows(
+            app.world().resource::<NavGrid>(),
+            Vec3::new(4.2, 0.0, 0.15)
+        ));
+        assert!(overflows(
+            app.world().resource::<NavGrid>(),
+            Vec3::new(0.0, 0.0, -4.7)
+        ));
     }
 
     /// A standing player stamps; once vanished its footprint stays where

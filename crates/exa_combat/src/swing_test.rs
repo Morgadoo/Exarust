@@ -1351,3 +1351,111 @@ fn the_attack_arms_read_the_strength_before_the_stall() {
     let (_, floored) = run(0.25, 0.5);
     assert_eq!(floored, 0.0);
 }
+
+/// The weapon-in-hand gate: past the lead-in, an armed fighter whose held
+/// weapon body is a metre from where its hand holds it loses a tenth of
+/// its rate and opens no window; once the weapon is back in the hand the
+/// gate opens for the rest of the attack and the swing runs.
+#[test]
+fn the_weapon_in_hand_gate_waits_for_the_weapon() {
+    use bevy::math::Affine3A;
+    use exa_physics::body::PartSetup;
+    use exa_physics::grip::{GripPoint, GripSpec, HeldGrip, HeldKind, HeldRest};
+    let part = |bone, entity, parent, at: Vec3| PartSetup {
+        bone,
+        entity,
+        parent,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let state = SwingState {
+        rate: 1.0,
+        ..SwingState::default()
+    };
+    let (mut app, fighter) = attacking(50.0, state);
+    let (pelvis, hand) = (
+        app.world_mut().spawn_empty().id(),
+        app.world_mut().spawn_empty().id(),
+    );
+    app.world_mut().entity_mut(fighter).insert(Ragdoll::new(&[
+        part(1, pelvis, None, Vec3::ZERO),
+        part(17, hand, Some(0), Vec3::new(0.2, 1.0, 0.0)),
+    ]));
+    {
+        let mut anim = app.world_mut().get_mut::<Animator>(fighter).unwrap();
+        anim.leading = false;
+    }
+    app.world_mut()
+        .get_mut::<Attacking>(fighter)
+        .unwrap()
+        .weapon_class = 0x10;
+    app.world_mut()
+        .get_mut::<Attacker>(fighter)
+        .unwrap()
+        .primary = Some(Slot::First);
+    let item_root = app.world_mut().spawn_empty().id();
+    let item_body = Ragdoll::new(&[part(1, item_root, None, Vec3::new(1.2, 1.0, 0.0))]);
+    let grip = HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: vec![GripPoint {
+                point: Vec3::ZERO,
+                slack: 0.0,
+            }],
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0x10,
+        soft_weld: false,
+        kind: HeldKind::Weapon,
+        holder_key: pelvis,
+        hands: [Some(hand), None],
+        arms: [Some(hand), None],
+        links: None,
+        released: false,
+        head_extra: 0.0,
+    };
+    let rest = HeldRest {
+        hand: 1,
+        item_in_hand: Affine3A::IDENTITY,
+        flipped: false,
+    };
+    let item = app
+        .world_mut()
+        .spawn((Blade::new(fighter, 0.9, sword()), item_body, grip, rest))
+        .id();
+    app.update();
+    let got = *app.world().get::<SwingState>(fighter).unwrap();
+    assert!(close(got.rate, 0.9), "{}", got.rate);
+    assert!(!got.has(flags::WEAPON_IN_HAND));
+    assert!(!got.open[0]);
+    // Back in its hand: the gate opens and the swing paces the clip.
+    {
+        let mut body = app.world_mut().get_mut::<Ragdoll>(item).unwrap();
+        body.place_at(&[Affine3A::from_translation(Vec3::new(0.2, 1.0, 0.0))]);
+    }
+    app.world_mut().resource_mut::<BodyTicks>().0 = 1001;
+    app.update();
+    let got = *app.world().get::<SwingState>(fighter).unwrap();
+    assert!(got.has(flags::WEAPON_IN_HAND));
+    assert!(got.rate > 1.0, "{}", got.rate);
+    // Once open it stays open, wherever the weapon goes.
+    {
+        let mut body = app.world_mut().get_mut::<Ragdoll>(item).unwrap();
+        body.place_at(&[Affine3A::from_translation(Vec3::new(3.0, 1.0, 0.0))]);
+    }
+    app.world_mut().resource_mut::<BodyTicks>().0 = 1002;
+    app.update();
+    assert!(app.world().get::<SwingState>(fighter).unwrap().rate > 1.0);
+}

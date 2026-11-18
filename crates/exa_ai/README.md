@@ -158,7 +158,7 @@ the hurried 100 cm soft stop, the blocked line's plan request; then the
 walk's aim (the goal 150 cm out past the 0.7/0.007 gate, the run and
 sprint flags), the head look at the AI's look target, the contact the
 target pass attends (`motion::look_at`), or its offset eased back, and the body in the way's soft stop. A body
-that is down stops its route. The original's reset when the level is
+that is down stops its route, and its run bit and free walk clear (`downed_route_stop`). The original's reset when the level is
 written out on leaving it (the body heals to its lasting health, forgets
 every contact, and a roaming AI is put down along fresh wander paths and
 leaves combat) is `presence::reenter`; Exarust writes no level on leaving,

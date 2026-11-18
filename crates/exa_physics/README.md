@@ -1309,8 +1309,10 @@ countdown, and a wake does not unpark it; the AI manager's frame
 unmark walk the character's node tree, where its held items hang: before the solver each linked
 held item takes its holder's mark (`grip_solve::share_holder_park`) and shares its holder's
 sleep (`grip_solve::share_holder_sleep`, `Ragdoll::follow_holder`): the two take the larger of
-their countdowns, an item whose holder sleeps falls asleep, and a touched item wakes its
-holder, as the original's body tree shares its root's countdown (a living holder keeps it at
+their countdowns, an item whose holder sleeps falls asleep, a touched item wakes its
+holder and a touch that reset a sleeping holder resets its sleeping items' contacts too
+(`Ragdoll::touch`), and a placement carries the held items with their hands before the
+re-place (`grip::CarryHeld`, `grip_solve::carry_held`), as the original's body tree shares its root's countdown (a living holder keeps it at
 the full count, a dormant one counts it down). A body a level placed from its saved
 pose is built limp and registered at rest
 (`body::Ragdoll::register_placed`, the `body::PlacedCorpse` request): every

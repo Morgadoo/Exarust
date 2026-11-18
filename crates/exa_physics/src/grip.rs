@@ -326,6 +326,19 @@ pub struct CameLoose {
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReplaceHeld;
 
+/// A placement moved this holder's body: the parts' worlds before it, in
+/// part order. The original's body placement recurses into the bodies
+/// linked to the placed one (the held items hang in the holder's tree), so
+/// each item it holds moves with its holding hand, keeping its pose in the
+/// hand's frame, at rest ([`crate::grip_solve::carry_held`]). It runs
+/// before the re-place ([`ReplaceHeld`]), which then puts the item back at
+/// its grip; a placement without the re-place (the story respawn's and
+/// the save load's portal placement) keeps the carried pose.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct CarryHeld {
+    pub before: Vec<Affine3A>,
+}
+
 /// Where a held item sits under its holding hand, measured when its grip
 /// links are built (the attach's placement): the item body's root part in
 /// the holding hand part's frame, and whether the item was then held
