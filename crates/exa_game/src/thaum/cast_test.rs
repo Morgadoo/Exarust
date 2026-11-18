@@ -1145,6 +1145,25 @@ fn a_duellists_chosen_power_is_cast() {
     assert!(powers.casting);
 }
 
+/// A chosen power its domain refuses (a mind power: Exarust's duellists
+/// cast none) clears the combat state's casting flag at once; a started
+/// cast keeps it.
+#[test]
+fn a_refused_duellist_cast_clears_its_casting_flag() {
+    let mut app = new_app();
+    let npc = duellist(&mut app);
+    app.world_mut().get_mut::<Duellist>(npc).unwrap().mind.casting = true;
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(0x0800);
+    duel_tick(&mut app);
+    assert_ne!(app.world().get::<PowerCaster>(npc).unwrap().last_result, code::STARTED);
+    assert!(!app.world().get::<Duellist>(npc).unwrap().mind.casting);
+    app.world_mut().get_mut::<Duellist>(npc).unwrap().mind.casting = true;
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(SHOCK);
+    duel_tick(&mut app);
+    assert_eq!(app.world().get::<PowerCaster>(npc).unwrap().last_result, code::STARTED);
+    assert!(app.world().get::<Duellist>(npc).unwrap().mind.casting);
+}
+
 /// The combat state's stop: with the body's power answering nothing from
 /// its evaluator, the hook is asked with 0x10 and a negative answer ends
 /// the cast; while the evaluator answers, the hook is not asked.

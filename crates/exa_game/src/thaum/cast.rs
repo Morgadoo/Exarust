@@ -1692,7 +1692,7 @@ pub(crate) fn cast_for_duellists(
         Entity,
         &mut DuelPowers,
         &mut PowerCaster,
-        &Duellist,
+        &mut Duellist,
         &GlobalTransform,
         Option<&Condition>,
         Option<&SwingState>,
@@ -1725,7 +1725,7 @@ pub(crate) fn cast_for_duellists(
         entity,
         mut powers,
         mut caster,
-        duellist,
+        mut duellist,
         at,
         condition,
         swing,
@@ -1786,6 +1786,12 @@ pub(crate) fn cast_for_duellists(
             dispatch_domain(domain_of(asked), asked, &mut caster.body, &world, &aim);
         caster.last_result = result;
         debug!("duellist {entity:?} casts {asked:#x}: {result}");
+        // A cast the domain does not start (any answer but 1, an unknown
+        // domain's refusal too) clears the combat state's casting flag at
+        // once, so the duellist may choose again on its next combat tick.
+        if result != 1 && duellist.mind.casting {
+            duellist.mind.casting = false;
+        }
         let facing = at.rotation() * Vec3::Z;
         // The AI aims at its target's chest, as its first blast or torrent
         // view must too.
