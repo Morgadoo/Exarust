@@ -16,11 +16,15 @@ struct PostSettings {
     bloom_strength: f32,
     desaturate: f32,
     sharpen: f32,
-    pad1: f32,
+    // The blur's last tap index (taps - 1).
+    last: i32,
     // The original's `Blur`: the screen fade's weight, the bloom's scale
     // (the strength, faded in with the screen), the desaturation mask (how
     // far the scene gives way to its bloom) and the bloom term.
     blur: vec4<f32>,
+    // The blur kernel (the original's `Filter`), four weights a slot: the centre, then
+    // each symmetric pair's weight (`exa_render::post::bloom_kernel`).
+    kernel: array<vec4<f32>, 8>,
 }
 
 // The scene is stored in 8 bits by the original, so it clamps at 1.
@@ -34,18 +38,18 @@ fn bright(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return vec4(clamp((c + c * c) * 0.8, vec3(0.0), vec3(1.0)), 1.0);
 }
 
-// Centre weight, then 15 symmetric pairs two half-resolution texels apart.
-const WEIGHTS = array<f32, 16>(
-    0.0711, 0.0662, 0.0615, 0.0570, 0.0526, 0.0485, 0.0445, 0.0406,
-    0.0370, 0.0335, 0.0302, 0.0270, 0.0240, 0.0213, 0.0186, 0.0162,
-);
+fn weight(i: i32) -> f32 {
+    return settings.kernel[i / 4][i % 4];
+}
 
+// The view's kernel: the centre weight, then a symmetric pair for each
+// further tap, two half-resolution texels apart.
 fn blur(uv: vec2<f32>, step: vec2<f32>) -> vec4<f32> {
-    var sum = textureSampleLevel(source, source_sampler, uv, 0.0).rgb * WEIGHTS[0];
-    for (var i = 1; i < 16; i++) {
+    var sum = textureSampleLevel(source, source_sampler, uv, 0.0).rgb * weight(0);
+    for (var i = 1; i <= settings.last; i++) {
         let offset = step * f32(2 * i);
-        sum += textureSampleLevel(source, source_sampler, uv + offset, 0.0).rgb * WEIGHTS[i];
-        sum += textureSampleLevel(source, source_sampler, uv - offset, 0.0).rgb * WEIGHTS[i];
+        sum += textureSampleLevel(source, source_sampler, uv + offset, 0.0).rgb * weight(i);
+        sum += textureSampleLevel(source, source_sampler, uv - offset, 0.0).rgb * weight(i);
     }
     return vec4(sum, 1.0);
 }

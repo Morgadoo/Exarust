@@ -113,6 +113,9 @@ pub struct WeatherEffects {
     random: Mt19937,
     /// The streaks' entity, mesh and material.
     streaks: Option<(Entity, Handle<Mesh>, Handle<RainMaterial>)>,
+    /// The reflected set's entity (the same drops and material, the
+    /// reflected turn), above shading quality three.
+    reflected: Option<Entity>,
     /// The rain loop's voice, taken with the first rain request.
     pub rain_voice: Option<u32>,
     /// The `rainfall` buffer; `Some(None)` once a load failed. The original
@@ -136,6 +139,7 @@ impl Default for WeatherEffects {
             rain: None,
             random: Mt19937::new(RAIN_RANDOM_SEED),
             streaks: None,
+            reflected: None,
             rain_voice: None,
             rain_buffer: None,
             thunder_set: None,
@@ -291,6 +295,7 @@ fn rain_effect(
     mut materials: ResMut<Assets<RainMaterial>>,
     mut streaks: Query<(&mut Transform, &mut Visibility), With<RainStreaks>>,
     time: Res<Time<Virtual>>,
+    shading: Option<Res<exa_render::quality::ShadingQuality>>,
 ) {
     let effects = &mut *effects;
     let exists = runtime
@@ -306,6 +311,9 @@ fn rain_effect(
             }
         }
         if let Some((entity, _, _)) = effects.streaks.take() {
+            commands.entity(entity).despawn();
+        }
+        if let Some(entity) = effects.reflected.take() {
             commands.entity(entity).despawn();
         }
         return;
@@ -344,6 +352,9 @@ fn rain_effect(
         }
         return;
     }
+    let reflect = crate::effects::rain::draws_reflection(
+        shading.map_or(exa_render::quality::ShadingQuality::default().0, |q| q.0),
+    );
     let Some((at, projection, supersampled)) = camera else {
         return;
     };
@@ -393,7 +404,12 @@ fn rain_effect(
         );
     }
     effects.frames = effects.frames.wrapping_add(1);
-    match &effects.streaks {
+    let shown = if effects.hidden {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    let (mesh, material) = match &effects.streaks {
         Some((entity, mesh, material)) => {
             if let Some(mut m) = meshes.get_mut(mesh) {
                 streaks_out.fill(&mut m);
@@ -405,12 +421,9 @@ fn rain_effect(
             }
             if let Ok((mut t, mut visibility)) = streaks.get_mut(*entity) {
                 *t = transform;
-                *visibility = if effects.hidden {
-                    Visibility::Hidden
-                } else {
-                    Visibility::Inherited
-                };
+                *visibility = shown;
             }
+            (mesh.clone(), material.clone())
         }
         None => {
             let mut mesh = rain_mesh();
@@ -418,32 +431,78 @@ fn rain_effect(
             let mesh = meshes.add(mesh);
             let debug = Vec4::new(effects.debug, 0.0, 0.0, 0.0);
             let material = materials.add(RainMaterial { colour, debug });
-            let entity = commands
-                .spawn((
-                    Name::new("RainEffect"),
-                    RainStreaks,
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    transform,
-                    if effects.hidden {
-                        Visibility::Hidden
-                    } else {
-                        Visibility::Inherited
-                    },
-                    NoFrustumCulling,
-                    bevy::light::NotShadowCaster,
-                    bevy::light::NotShadowReceiver,
-                ))
-                .id();
+            let entity = spawn_streaks(
+                &mut commands,
+                "RainEffect",
+                &mesh,
+                &material,
+                transform,
+                shown,
+            );
             info!(
                 "weather: rain drawn, {} drops at intensity {:.3}, colour {:?}",
                 rain.drawn / 2,
                 rain.intensity,
                 colour
             );
-            effects.streaks = Some((entity, mesh, material));
+            effects.streaks = Some((entity, mesh.clone(), material.clone()));
+            (mesh, material)
         }
+    };
+    // The reflected set: the same drops drawn again with the reflected turn
+    // at the same place and scale, as each of the original's sub-frame
+    // passes draws it after the drop set.
+    let reflected = Transform {
+        rotation: crate::effects::rain::reflected_rotation(),
+        ..transform
+    };
+    match (reflect, effects.reflected) {
+        (true, Some(entity)) => {
+            if let Ok((mut t, mut visibility)) = streaks.get_mut(entity) {
+                *t = reflected;
+                *visibility = shown;
+            }
+        }
+        (true, None) => {
+            effects.reflected = Some(spawn_streaks(
+                &mut commands,
+                "RainEffect reflected",
+                &mesh,
+                &material,
+                reflected,
+                shown,
+            ));
+        }
+        (false, Some(entity)) => {
+            commands.entity(entity).despawn();
+            effects.reflected = None;
+        }
+        (false, None) => {}
     }
+}
+
+/// Spawns one drawn set of the rain's streaks.
+fn spawn_streaks(
+    commands: &mut Commands,
+    name: &'static str,
+    mesh: &Handle<Mesh>,
+    material: &Handle<RainMaterial>,
+    transform: Transform,
+    shown: Visibility,
+) -> Entity {
+    commands
+        .spawn((
+            Name::new(name),
+            RainStreaks,
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(material.clone()),
+            transform,
+            shown,
+            NoFrustumCulling,
+            bevy::light::NotShadowCaster,
+            bevy::light::NotShadowReceiver,
+        ))
+        .id()
 }
 
 /// The rain loop and thunder.

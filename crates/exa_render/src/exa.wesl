@@ -444,6 +444,32 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             dif_tex = vec4(dif_tex.rrr, dif_tex.a);
         }
     }
+    // The programs' cuts on the diffuse map, compiled in only for the
+    // alpha-tested records (the terrain plants among them), so that every
+    // other surface keeps its early depth test. The grass program always
+    // drops a texel whose alpha is below 0.1 (`shadegrs_f`); an alpha-tested
+    // record (`Shd.AlphaTst`) drops one below 1/2: of the map's alpha in the
+    // PBR and translucent programs, of MatDif.a times it in the skin
+    // program, of (a - 1 + MatEmi.a)/MatEmi.a in the hair program without a
+    // specular map. Only with a diffuse map; the opacity-map branches never
+    // cut.
+@if(EXA_ALPHA_TEST) {
+    if has(DIFFUSE_MAP) {
+        var cut = dif_tex.a;
+        var edge = 0.5;
+        if (material.flags2 & GRASS) != 0u {
+            edge = 0.1;
+        } else if has(SUBSURFACE) {
+            cut = material.diffuse.a * dif_tex.a;
+        } else if has(HAIR) && !has(SPECULAR_MAP) {
+            let e = material.emissive.a;
+            cut = (dif_tex.a - 1.0 + e) / e;
+        }
+        if cut < edge {
+            discard;
+        }
+    }
+}
     var alpha = material_alpha() * dif_tex.a;
     var opacity = 1.0;
     if has(OPACITY_MAP) {

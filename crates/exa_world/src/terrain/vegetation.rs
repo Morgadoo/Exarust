@@ -269,9 +269,9 @@ pub struct Growth {
 ///
 /// The original sorts each chunk's growing points before it bakes them:
 /// small plants first (−1), grass next (0), large plants last by their
-/// average height times the instance's scale plus one. The order does not
-/// change the drawn image (the plants are alpha-tested and depth-written)
-/// but the buffer's order is the original's.
+/// average height times the instance's scale plus one. The grass hook
+/// draws with depth writes off, so the buffer's order (the original's) is
+/// the order the plants of a chunk cover one another in.
 pub fn grow(
     seed: u32,
     variants: &[Variant],
