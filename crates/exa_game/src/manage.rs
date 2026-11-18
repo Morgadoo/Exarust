@@ -1023,7 +1023,11 @@ pub fn manage_refresh(
 ) -> ManageRefresh {
     let mut roster = Vec::with_capacity(employees.len() + 1);
     roster.push(manager.row(true, day.alpha, day.level_cap));
-    roster.extend(employees.iter().map(|e| e.row(false, day.alpha, day.level_cap)));
+    roster.extend(
+        employees
+            .iter()
+            .map(|e| e.row(false, day.alpha, day.level_cap)),
+    );
     let upkeep = employees.iter().map(ManageRecord::upkeep).sum();
     let fighters: Vec<ReportFighter> = employees
         .iter()
@@ -1821,7 +1825,10 @@ mod tests {
             }
         );
         assert_eq!(fighter.name_kind(false), NameKind::Recruit);
-        assert_eq!(fighter.row(false, 255, report::TRAINING_CAP).rank.text, "Master");
+        assert_eq!(
+            fighter.row(false, 255, report::TRAINING_CAP).rank.text,
+            "Master"
+        );
         assert_eq!(fighter.row(false, 255, report::TRAINING_CAP).health, 0.0);
     }
 

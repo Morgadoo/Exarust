@@ -243,9 +243,7 @@ fn pick_status(
             .iter()
             .flat_map(|children| children.iter())
             .find_map(|child| records.get(child).ok())
-            .is_some_and(|data| {
-                exa_ui::game_gui::ready_alert(&data.record.skills, cap)
-            }),
+            .is_some_and(|data| exa_ui::game_gui::ready_alert(&data.record.skills, cap)),
     };
     if *status != next {
         *status = next;

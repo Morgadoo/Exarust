@@ -332,7 +332,15 @@ mod tests {
             Profession::Combatant,
             Profession::Trainer,
         ];
-        let lines = report_lines(&log.records, &[fighter], &manager, &listed, 3, TRAINING_CAP, |_| None);
+        let lines = report_lines(
+            &log.records,
+            &[fighter],
+            &manager,
+            &listed,
+            3,
+            TRAINING_CAP,
+            |_| None,
+        );
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
             texts,

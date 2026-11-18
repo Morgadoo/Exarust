@@ -1792,12 +1792,14 @@ mod tests {
         };
         assert_eq!(
             app.world().resource::<crate::flow::FlowSteps>().steps,
-            vec![crate::flow::Step::Camera(crate::flow::camera::frame_two_points(
-                spot,
-                spot + crate::flow::camera::NEAR_OFFSET,
-                true,
-                view,
-            ))]
+            vec![crate::flow::Step::Camera(
+                crate::flow::camera::frame_two_points(
+                    spot,
+                    spot + crate::flow::camera::NEAR_OFFSET,
+                    true,
+                    view,
+                )
+            )]
         );
         // The match start's staging freeze is posted for the next fixed
         // step, which sets it.

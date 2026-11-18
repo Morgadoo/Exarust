@@ -347,7 +347,9 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((TimePlugin, FrameTimersPlugin))
             .init_resource::<exa_physics::sim_app::SimPause>()
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(10)));
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                10,
+            )));
         app.update();
         app.update();
         // The first frames start the scene; then a 10 ms frame is 10 ms.
@@ -369,7 +371,9 @@ mod tests {
             .resource_mut::<exa_physics::sim_app::SimPause>()
             .lower();
         // A 50 ms frame is capped: 1/60 s and a scale of the cap over 50.
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(50)));
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+            50,
+        )));
         app.update();
         let frame = *app.world().resource::<SceneFrame>();
         assert_eq!(frame.dt_ms, crate::scene_editor::FRAME_CAPPED_MS);

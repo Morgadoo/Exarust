@@ -1037,10 +1037,16 @@ fn the_step_repeat_runs_on_the_simulation_clock() {
     };
     let mut play = primed_play();
     let right = pad().with_analog(Id::Move, Vec2::new(0.5, 0.0));
-    assert_eq!(play.update_at(4, 10, &right, ctx).pressed, command::STEP_RIGHT);
+    assert_eq!(
+        play.update_at(4, 10, &right, ctx).pressed,
+        command::STEP_RIGHT
+    );
     // The real clock runs a second; the simulation's stays: no repeat.
     for now in (100..1100).step_by(100) {
         assert_eq!(play.update_at(now, 10, &right, ctx).pressed, 0);
     }
-    assert_eq!(play.update_at(1200, 311, &right, ctx).pressed, command::STEP_RIGHT);
+    assert_eq!(
+        play.update_at(1200, 311, &right, ctx).pressed,
+        command::STEP_RIGHT
+    );
 }

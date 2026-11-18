@@ -343,7 +343,10 @@ fn a_switch_to_no_mode_detaches_the_camera_from_the_view() {
     app.update();
     assert!(cam(&app, camera).detached);
     let held = *app.world().get::<Transform>(camera).unwrap();
-    app.world_mut().get_mut::<Transform>(player).unwrap().translation = Vec3::new(5.0, 0.0, 5.0);
+    app.world_mut()
+        .get_mut::<Transform>(player)
+        .unwrap()
+        .translation = Vec3::new(5.0, 0.0, 5.0);
     for _ in 0..5 {
         app.update();
     }
