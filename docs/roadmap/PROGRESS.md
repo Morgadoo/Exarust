@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r321, 11-16) | target |
+| measure | start (r186, 11-10) | now (r322, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **68.44%** | **100%** |
+| **Ledger: bytes in a final state** | — | **68.58%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9280 | all |
+| Tests passing | 8,489 | 9286 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -103,18 +103,18 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | UI | 12 | 12 | 208 | 103,034 |
 | Characters, motion & animation | 8 | 8 | 140 | 84,025 |
 | Game modes, arena & session | 7 | 7 | 136 | 65,221 |
-| Thaumaturgy & effects | 9 | 9 | 84 | 64,621 |
-| AI & behaviour | 8 | 8 | 84 | 61,726 |
+| Thaumaturgy & effects | 9 | 9 | 83 | 64,321 |
 | World, levels & terrain | 5 | 5 | 93 | 59,747 |
+| AI & behaviour | 8 | 8 | 81 | 58,629 |
 | Items, materials & crafting | 5 | 5 | 73 | 43,250 |
 | Data, assets & I/O | 6 | 6 | 48 | 21,436 |
 | Runtime & platform | 5 | 5 | 48 | 17,268 |
 | Core, math & threading | 3 | 3 | 52 | 12,196 |
-| Script, dialogue & story | 2 | 2 | 17 | 4,674 |
+| Script, dialogue & story | 2 | 2 | 16 | 4,496 |
 | Audio | 1 | 1 | 3 | 2,097 |
 | Combat, weapons & damage | 1 | 1 | 3 | 1,560 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,271** | **791,845** |
+| **Total** | **90** | **90** | **1,266** | **788,270** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 322 | Force effects assess into the brain whole contact from the body look and frame forward; a follower former level reaches the relation move (answers once as the original; a masked-key bug fixed); a story track that plays on is not restarted at a door; the crystal drain runs from the story hook only; a busy search starts the target pass notice at 4.0 so a slight passer-by does not pull a searching follower away. |
 | 2026-11-16 | 321 | The 286 UNCLEAR rows were re-read against the assembly: 110 closings proposed, 93 confirmed by an independent adversarial verification (already done in Exarust, covered by a taken ruling, or unreachable in the original), 17 refuted with their reasons; 63 rows resolved to concrete port items for the next lanes; 105 still unclear, each with what would settle it. |
 | 2026-11-16 | 320 | A save level section leaves the shared library materials out of its list and library (exanima01 saved list 13 as the shipped file, was 22); the arena load keeps the live board row for an unknown tournament event and draws an empty rival field from the career roll; a converted old arena save compacts its stash before the lists are regenerated; a first run on a Steam Deck writes the original hand-held settings in Exarust own settings folder; load times match main. |
 | 2026-11-16 | 319 | A downed body route stop clears its run bit and free walk; an NPC whose footprint overflows the grid leaves the scene with the overflow logged once; a placement carries the holder held items with its hands (story respawn and save load no longer leave them behind); a touch on a sleeping holder resets its items contacts; the swing weapon-in-hand gate is live (an armed primary must sit within 50 cm times scale and 60 degrees of its grip); traces match main per body. |

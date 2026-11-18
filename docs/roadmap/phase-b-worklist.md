@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 329 | 99,840 | B1 wire (or prove unreachable) |
-| partial | 912 | 686,681 | B4 complete the port |
+| uncalled | 327 | 99,377 | B1 wire (or prove unreachable) |
+| partial | 909 | 683,569 | B4 complete the port |
 | missing | 37 | 6,211 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -19,14 +19,14 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | ui | 70,273 | 32,594 | 167 |
 | characters | 71,329 | 11,244 | 1,452 |
 | modes | 57,853 | 7,005 | 363 |
-| powers | 63,133 | 1,307 | 181 |
-| ai | 60,654 | 1,061 | 11 |
+| powers | 62,833 | 1,307 | 181 |
 | world | 50,788 | 8,635 | 324 |
+| ai | 57,842 | 776 | 11 |
 | items | 38,648 | 4,077 | 525 |
 | data | 18,368 | 3,068 | 0 |
 | runtime | 16,733 | 1,029 | 181 |
 | core | 9,818 | 2,319 | 59 |
-| script | 3,796 | 878 | 0 |
+| script | 3,796 | 700 | 0 |
 | audio | 2,097 | 0 | 0 |
 | combat | 1,560 | 0 | 0 |
 
@@ -47,10 +47,10 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | RF_Skinning (unit routines) | characters | 3 / 10,728 | 1 / 189 | 0 / 0 | 10,917 |
 | TGUIForm | ui | 19 / 8,872 | 10 / 1,715 | 0 / 0 | 10,587 |
-| TMotileAI | ai | 15 / 10,312 | 1 / 142 | 1 / 11 | 10,465 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
 | XA_SaveGames (unit routines) | modes | 14 / 8,988 | 1 / 128 | 0 / 0 | 9,116 |
+| TMotileAI | ai | 14 / 7,782 | 1 / 142 | 1 / 11 | 7,935 |
 | RF_3DView (unit routines) | render | 11 / 6,665 | 0 / 0 | 6 / 1,097 | 7,762 |
 | FLX_GPUPrograms (unit routines) | render | 4 / 7,413 | 2 / 266 | 0 / 0 | 7,679 |
 | TRBDDoor | world | 3 / 7,666 | 0 / 0 | 0 / 0 | 7,666 |
@@ -158,7 +158,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Dynamics_Game (unit routines) | world | 4 / 1,111 | 2 / 312 | 0 / 0 | 1,423 |
 | TTerrainMesh | render | 3 / 1,408 | 0 / 0 | 0 / 0 | 1,408 |
 | RF_Polyhedra (unit routines) | render | 1 / 1,395 | 0 / 0 | 0 / 0 | 1,395 |
-| Character roles & relations (script functions) | ai | 3 / 746 | 2 / 603 | 0 / 0 | 1,349 |
 | Equipment effects and focus-item slot (RFE_Effects_Electricity (unit routines) by address) | characters | 5 / 1,151 | 1 / 167 | 0 / 0 | 1,318 |
 | RFE_MeshSubdivide (unit routines) | render | 4 / 1,186 | 0 / 0 | 1 / 96 | 1,282 |
 | TScene | world | 1 / 740 | 4 / 535 | 0 / 0 | 1,275 |
@@ -180,7 +179,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TBubbleEffect | powers | 1 / 1,031 | 0 / 0 | 0 / 0 | 1,031 |
 | TForceBlastEffect | powers | 1 / 948 | 0 / 0 | 0 / 0 | 948 |
 | THairEditForm | ui | 1 / 828 | 1 / 117 | 0 / 0 | 945 |
-| SG_GameFunctions (unit routines) | script | 3 / 445 | 2 / 495 | 0 / 0 | 940 |
 | RF_DataIO (unit routines) | data | 0 / 0 | 3 / 936 | 0 / 0 | 936 |
 | TPostProcessor | render | 3 / 929 | 0 / 0 | 0 / 0 | 929 |
 | TSceneTaskInt | world | 0 / 0 | 2 / 903 | 0 / 0 | 903 |
@@ -193,7 +191,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPwrSpiritForm | powers | 2 / 803 | 0 / 0 | 0 / 0 | 803 |
 | TMainMenu | ui | 2 / 799 | 0 / 0 | 0 / 0 | 799 |
 | TBarricadeEntity | powers | 1 / 787 | 0 / 0 | 0 / 0 | 787 |
+| Character roles & relations (script functions) | ai | 2 / 464 | 1 / 318 | 0 / 0 | 782 |
 | TRendererShaderFactory | render | 1 / 684 | 1 / 85 | 0 / 0 | 769 |
+| SG_GameFunctions (unit routines) | script | 3 / 445 | 1 / 317 | 0 / 0 | 762 |
 | TGemstone | items | 1 / 760 | 0 / 0 | 0 / 0 | 760 |
 | TResin | items | 1 / 752 | 0 / 0 | 0 / 0 | 752 |
 | TPwrDispSummonDemon_I | powers | 1 / 752 | 0 / 0 | 0 / 0 | 752 |
@@ -252,7 +252,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TCharLoot | items | 1 / 311 | 0 / 0 | 0 / 0 | 311 |
 | Fire particle presets | powers | 2 / 309 | 0 / 0 | 0 / 0 | 309 |
 | TReadKeyScreen | ui | 1 / 303 | 0 / 0 | 0 / 0 | 303 |
-| FLX_FX_Fire (unit routines) | powers | 1 / 300 | 0 / 0 | 0 / 0 | 300 |
 | RF_GLGeometry (unit routines) | render | 0 / 0 | 0 / 0 | 1 / 290 | 290 |
 | FLX_GUI_Graphics (unit routines) | ui | 2 / 289 | 0 / 0 | 0 / 0 | 289 |
 | TGUIColSwatch | ui | 0 / 0 | 1 / 272 | 0 / 0 | 272 |
