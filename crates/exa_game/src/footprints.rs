@@ -81,7 +81,7 @@ pub fn overflows(grid: &NavGrid, feet: Vec3) -> bool {
 /// Every character under its controller moves its footprint to where its
 /// feet are, or takes it off; the footprints of characters gone (or off
 /// their controller) come off too.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn keep_footprints(
     mut commands: Commands,
     grid: Option<ResMut<NavGrid>>,
