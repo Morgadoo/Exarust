@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 327 | 99,377 | B1 wire (or prove unreachable) |
-| partial | 909 | 683,569 | B4 complete the port |
+| partial | 906 | 682,797 | B4 complete the port |
 | missing | 37 | 6,211 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -16,7 +16,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 130,060 | 15,739 | 238 |
 | render | 91,571 | 10,884 | 2,710 |
-| ui | 70,273 | 32,594 | 167 |
+| ui | 69,501 | 32,594 | 167 |
 | characters | 71,329 | 11,244 | 1,452 |
 | modes | 57,853 | 7,005 | 363 |
 | powers | 62,833 | 1,307 | 181 |
@@ -76,15 +76,15 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TAISearchActivity | ai | 5 / 5,505 | 0 / 0 | 0 / 0 | 5,505 |
 | SG_GameGUI (unit routines) | ui | 9 / 5,498 | 0 / 0 | 0 / 0 | 5,498 |
 | SG_GameMain (unit routines) | modes | 14 / 5,443 | 0 / 0 | 0 / 0 | 5,443 |
-| TCharacterView | ui | 6 / 4,466 | 1 / 866 | 0 / 0 | 5,332 |
 | TIconManager | ui | 0 / 0 | 5 / 5,304 | 0 / 0 | 5,304 |
 | TParticleSystem | powers | 2 / 4,676 | 1 / 210 | 0 / 0 | 4,886 |
+| TCharacterView | ui | 5 / 4,016 | 1 / 866 | 0 / 0 | 4,882 |
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
 | TTendrilEffect | powers | 1 / 4,804 | 0 / 0 | 0 / 0 | 4,804 |
 | RF_Morphing (unit routines) | characters | 2 / 4,764 | 0 / 0 | 0 / 0 | 4,764 |
 | RF_Dynamics (unit routines) | physics | 4 / 1,692 | 7 / 2,973 | 0 / 0 | 4,665 |
-| RF_HW_Config (unit routines) | ui | 7 / 4,439 | 3 / 198 | 0 / 0 | 4,637 |
 | TNavCameraControl | render | 1 / 4,401 | 0 / 0 | 0 / 0 | 4,401 |
+| RF_HW_Config (unit routines) | ui | 6 / 4,195 | 3 / 198 | 0 / 0 | 4,393 |
 | TSkillUI | ui | 4 / 3,673 | 2 / 716 | 0 / 0 | 4,389 |
 | FLX_Character_Textures (unit routines) | characters | 2 / 4,094 | 1 / 187 | 0 / 0 | 4,281 |
 | TTerrainManager | world | 6 / 3,351 | 2 / 923 | 0 / 0 | 4,274 |
@@ -278,7 +278,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | .rfi image codec | render | 0 / 0 | 1 / 94 | 0 / 0 | 94 |
 | SG_EmblemGen (unit routines) | modes | 1 / 90 | 0 / 0 | 0 / 0 | 90 |
 | TCharEditForm | ui | 1 / 84 | 0 / 0 | 0 / 0 | 84 |
-| TStatusForm | ui | 1 / 78 | 0 / 0 | 0 / 0 | 78 |
 | TEntity | ai | 1 / 21 | 1 / 48 | 0 / 0 | 69 |
 | RFE_Effects_Blood (unit routines) | combat | 1 / 66 | 0 / 0 | 0 / 0 | 66 |
 | TScriptActor | script | 1 / 61 | 0 / 0 | 0 / 0 | 61 |
