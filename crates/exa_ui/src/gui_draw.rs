@@ -588,10 +588,10 @@ pub fn skin_atlas(
 /// there and again whenever the unit changes.
 fn follow_skin_scale(
     game: Option<Res<Game>>,
-    gui: Res<crate::scale::GuiScale>,
+    gui: Option<Res<crate::scale::GuiScale>>,
     mut textures: ResMut<GuiTextures>,
 ) {
-    let Some(game) = game else {
+    let (Some(game), Some(gui)) = (game, gui) else {
         return;
     };
     let unit = gui.scale as i32;
