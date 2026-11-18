@@ -699,6 +699,31 @@ pub struct ExaMaterial {
     /// back-culled pass): kept out of the blended walk, its draw order is
     /// set from its first pass's by the one who made it.
     pub second_pass: bool,
+    /// The record is alpha-tested (its blend word's `0x4000`, or a cut-out
+    /// map) whatever it is drawn as: a cut-away copy blends but keeps the
+    /// test, as the original's faded pass binds the group's texture for it.
+    /// [`AlphaMode::Mask`] implies it.
+    pub alpha_tested: bool,
+    /// Where in the frame walk the surface draws when that is not where
+    /// its blend mode puts it ([`LateDraw`]).
+    pub late: LateDraw,
+}
+
+/// A surface the original draws outside its blend mode's list: a renderer
+/// hook or the cut-away faded pass. Each draws on Bevy's transparent phase
+/// at its block of the walk ([`crate::passes::PhaseList`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LateDraw {
+    /// Where the blend mode puts it.
+    #[default]
+    None,
+    /// The terrain grass hook (after the opaque lists and the terrain):
+    /// alpha-tested, depth test on, depth writes off, no blending.
+    GrassHook,
+    /// The faded pass's depth half: colour writes off, depth writes on.
+    FadedDepth,
+    /// The faded pass's colour half: blended, depth writes off.
+    FadedColour,
 }
 
 impl Default for ExaMaterial {
@@ -733,6 +758,8 @@ impl Default for ExaMaterial {
             blend_state: None,
             draw_order: 0.0,
             second_pass: false,
+            alpha_tested: false,
+            late: LateDraw::None,
         }
     }
 }
@@ -763,7 +790,13 @@ impl ExaMaterial {
     /// map, else the diffuse map) has an alpha below ½. Alpha-tested
     /// surfaces and those marked [`ExaMaterial::cut_shadow`] (cobwebs).
     pub fn cuts_shadow(&self) -> bool {
-        self.cut_shadow || matches!(self.alpha_mode, AlphaMode::Mask(_))
+        self.cut_shadow || self.is_alpha_tested()
+    }
+
+    /// Whether the record is alpha-tested ([`ExaMaterial::alpha_tested`] or
+    /// an [`AlphaMode::Mask`]).
+    pub fn is_alpha_tested(&self) -> bool {
+        self.alpha_tested || matches!(self.alpha_mode, AlphaMode::Mask(_))
     }
 
     /// One material per cloth draw. Each pass culls the face the pass names,
@@ -893,6 +926,10 @@ pub struct ExaMaterialKey {
     /// The surface sits in the decal or blended list, which the original
     /// draws under its projection depth bias ([`LIST_DEPTH_BIAS`]).
     list_depth_bias: bool,
+    /// The program's alpha test (`Shd.AlphaTst`) is compiled in.
+    alpha_test: bool,
+    /// The walk's draw outside the blend mode's list.
+    late: LateDraw,
 }
 
 /// Whether the decal and blended lists draw with the original's projection
@@ -911,6 +948,8 @@ impl From<&ExaMaterial> for ExaMaterialKey {
                 && m.params.cut_away_opacity > 0.0,
             list_depth_bias: m.blend_state.is_some()
                 && LIST_DEPTH_BIAS.load(std::sync::atomic::Ordering::Relaxed),
+            alpha_test: m.is_alpha_tested(),
+            late: m.late,
         }
     }
 }
@@ -976,17 +1015,51 @@ impl Material for ExaMaterial {
                 .shader_defs
                 .push("EXA_LIST_DEPTH_BIAS".into());
         }
+        if data.alpha_test
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("EXA_ALPHA_TEST".into());
+        }
         if data.cut_away_depth
             && let Some(depth) = descriptor.depth_stencil.as_mut()
         {
             depth.depth_write_enabled = Some(true);
         }
+        specialize_late(descriptor, data.late);
         if let Some(face) = key.bind_group_data.cloth_cull {
             descriptor.primitive.cull_mode = Some(face);
         } else if key.bind_group_data.two_sided {
             descriptor.primitive.cull_mode = None;
         }
         Ok(())
+    }
+}
+
+/// The pipeline state of a [`LateDraw`]: the grass hook draws unblended
+/// with depth writes off, the faded pass's depth half writes depth only and
+/// its colour half blends without writing depth (the depth half laid it, so
+/// only each faded mesh's nearest layer passes Bevy's greater-or-equal
+/// test).
+fn specialize_late(descriptor: &mut RenderPipelineDescriptor, late: LateDraw) {
+    use bevy::render::render_resource::ColorWrites;
+    let (blend_off, colour, depth_write) = match late {
+        LateDraw::None => return,
+        LateDraw::GrassHook => (true, true, false),
+        LateDraw::FadedDepth => (true, false, true),
+        LateDraw::FadedColour => (false, true, false),
+    };
+    if let Some(fragment) = descriptor.fragment.as_mut() {
+        for target in fragment.targets.iter_mut().flatten() {
+            if blend_off {
+                target.blend = None;
+            }
+            if !colour {
+                target.write_mask = ColorWrites::empty();
+            }
+        }
+    }
+    if let Some(depth) = descriptor.depth_stencil.as_mut() {
+        depth.depth_write_enabled = Some(depth_write);
     }
 }
 

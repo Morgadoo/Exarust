@@ -702,7 +702,14 @@ impl Plants {
                 },
                 diffuse_map: base_color_texture,
                 normal_map: normal_map_texture,
-                alpha_mode: AlphaMode::Mask(0.1),
+                // The original draws its plants in its grass hook, after
+                // every opaque and alpha-tested mesh and the terrain, with
+                // its texels below 0.1 alpha cut and depth writes off: on
+                // Bevy's transparent phase, unblended, ahead of the decals.
+                alpha_mode: AlphaMode::Blend,
+                alpha_tested: true,
+                late: exa_render::material::LateDraw::GrassHook,
+                draw_order: exa_render::passes::PhaseList::GrassHook.bias(),
                 ..default()
             }
             .with_map_flags(),

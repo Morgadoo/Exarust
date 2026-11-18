@@ -3,8 +3,8 @@
 //! The original walks per-material render-state lists in one fixed order a
 //! frame: a clear to the environment's background colour, the alpha-tested
 //! and opaque lists with depth writes, hook lists, the depth-biased decal
-//! list with depth writes off, the blended lists and the particles, each
-//! group followed by its hook list. Its two list orderings are modelled
+//! list with depth writes off, the blended lists and the cut-away faded
+//! pass, each group followed by its hook list. Its two list orderings are modelled
 //! here, and the pass order is the contract Exarust's render graph follows:
 //! Bevy's opaque, alpha-mask and transparent phases take the place of the
 //! fixed list walk, and the custom nodes (`exa_cube_shadows`, `exa_gi`,
@@ -103,12 +103,15 @@ pub enum Pass {
     Blended,
     /// The hook list after the blended lists (the projection bias is gone).
     AfterBlendedHooks,
-    /// The particles' depth-only pre-pass (colour writes off, depth writes
-    /// on).
-    ParticleDepth,
-    /// The particles' colour, with depth writes off.
-    ParticleColour,
-    /// The environment's weather effects after the particles.
+    /// The cut-away faded pass's depth half (colour writes off, depth
+    /// writes on) over the opaque and alpha-tested lists' fading entries.
+    FadedDepth,
+    /// The faded pass's colour half, blended at one less the fade, with
+    /// depth writes off.
+    FadedColour,
+    /// The environment's weather effects after the faded pass (an array
+    /// buffer unbind between them; the particle systems draw through the
+    /// hook lists).
     EnvironmentEffects,
     /// The closing hook list, then depth writes back on.
     EndHooks,
@@ -125,8 +128,8 @@ pub const PASS_ORDER: [Pass; 13] = [
     Pass::AfterDecalHooks,
     Pass::Blended,
     Pass::AfterBlendedHooks,
-    Pass::ParticleDepth,
-    Pass::ParticleColour,
+    Pass::FadedDepth,
+    Pass::FadedColour,
     Pass::EnvironmentEffects,
     Pass::EndHooks,
 ];
@@ -173,7 +176,7 @@ pub fn list_depth_shift() -> f64 {
 impl Pass {
     /// Whether the pass draws with depth writes on. The original draws both
     /// opaque classes and the first hook lists with them on, switches them
-    /// off before the decals, and switches them on only for the particles'
+    /// off before the decals, and switches them on only for the faded pass's
     /// depth pre-pass until the end of the frame.
     pub fn writes_depth(self) -> bool {
         matches!(
@@ -182,7 +185,7 @@ impl Pass {
                 | Self::Opaque
                 | Self::AfterOpaqueHooks
                 | Self::DepthHooks
-                | Self::ParticleDepth
+                | Self::FadedDepth
         )
     }
 
@@ -193,12 +196,13 @@ impl Pass {
             Self::Clear => Some("the camera's clear colour"),
             Self::AlphaTest => Some("AlphaMask3d"),
             Self::Opaque => Some("Opaque3d"),
-            Self::AfterOpaqueHooks | Self::DepthHooks => None,
+            Self::AfterOpaqueHooks => None,
+            // The grass hook: the transparent phase's grass block.
+            Self::DepthHooks => Some("Transparent3d"),
             Self::Decals => Some("Transparent3d"),
             Self::AfterDecalHooks | Self::AfterBlendedHooks => None,
             Self::Blended => Some("Transparent3d"),
-            Self::ParticleDepth => None,
-            Self::ParticleColour => Some("Transparent3d"),
+            Self::FadedDepth | Self::FadedColour => Some("Transparent3d"),
             Self::EnvironmentEffects => None,
             Self::EndHooks => None,
         }
@@ -507,8 +511,9 @@ pub fn scissor_switches(entries: &[u32], mask: u32) -> Vec<Option<bool>> {
         .collect()
 }
 
-/// The bit of a sector's flag word that draws the particles' lists.
-pub const SECTOR_PARTICLE_BIT: u32 = 1;
+/// The bit of a sector's flag word the faded pass walks it by: the main
+/// view saw it in the last classification.
+pub const SECTOR_SEEN_BIT: u32 = 1;
 
 /// The blend word a list's state carries by default (blended, depth writes
 /// off).
@@ -524,33 +529,38 @@ pub fn entry_alpha(opacity: f32) -> f32 {
     1.0 - opacity
 }
 
-/// The particle pass's visibility mask with super-sampling on: entries are
-/// drawn when their flag word shares a bit with it. The pass swaps the
-/// renderer's mask for it and restores the old mask at the end.
-pub const PARTICLE_MASK_SUPERSAMPLED: u32 = 0x2000_0000;
-/// The particle pass's visibility mask for a single view.
-pub const PARTICLE_MASK_SINGLE: u32 = 0x6000_0000;
+/// The faded pass's visibility mask with super-sampling on (the fading
+/// bit only; a settled partial mesh draws in the opaque lists, half of its
+/// sub-frames): entries are drawn when their flag word shares a bit with
+/// it. The pass swaps the renderer's mask for it and restores the old mask
+/// at the end.
+pub const FADED_MASK_SUPERSAMPLED: u32 = 0x2000_0000;
+/// The faded pass's visibility mask for a single view (fading and settled
+/// partial meshes).
+pub const FADED_MASK_SINGLE: u32 = 0x6000_0000;
 
-/// The two particle lists, in the order the pass draws them. The names are
-/// a guess from the draws: only the second list's groups bind a texture in
-/// the depth pre-pass (alpha-tested sprites), the first draws untextured.
+/// The faded pass's two lists, in the order it draws them: the renderer's
+/// opaque list and its alpha-tested list (whose groups bind their texture
+/// in the depth half, for the alpha test). Earlier notes read this pass as
+/// the particles'; the lists it walks are the renderer's own opaque and
+/// alpha-tested ones, and its mask the cut-away fade's bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParticleList {
-    /// The vertex-coloured particles (the pass's first list).
-    VertexColour,
-    /// The textured particles (its second list).
-    Textured,
+pub enum FadedList {
+    /// The opaque list (the pass's first).
+    Opaque,
+    /// The alpha-tested list (its second).
+    AlphaTested,
 }
 
-/// Which of the particles' stages a draw belongs to.
+/// Which of the faded pass's stages a draw belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParticleStage {
+pub enum FadedStage {
     /// Depth only, untextured: colour writes masked off, depth writes on,
     /// no state bind per group.
     Depth,
     /// Depth only, with each group's texture bound once, at its first
-    /// visible entry.
-    TexturedDepth,
+    /// visible entry (the alpha test).
+    AlphaTestedDepth,
     /// Colour: colour writes on, depth writes off, the full state bound per
     /// visible entry with the group's alpha at `1 − opacity` under
     /// [`ENTRY_BLEND_WORD`] ([`entry_alpha`]). The textured list's colour
@@ -559,46 +569,46 @@ pub enum ParticleStage {
     Colour,
 }
 
-/// One draw of the particle pass: a stage, a list and the sector it belongs
-/// to (an index into the scene's particle sectors).
+/// One draw of the faded pass: a stage, a list and the sector it belongs
+/// to (an index into the scene's seen sectors).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ParticleDraw {
+pub struct FadedDraw {
     /// The stage the draw belongs to.
-    pub stage: ParticleStage,
+    pub stage: FadedStage,
     /// The list drawn.
-    pub list: ParticleList,
-    /// The particle sector's index.
+    pub list: FadedList,
+    /// The seen sector's index.
     pub sector: usize,
 }
 
-/// The particle pass's draw order for `sectors` particle sectors.
+/// The faded pass's draw order for `sectors` seen sectors.
 ///
 /// The pass masks the colour writes, draws the first list of every
-/// particle sector depth-only in sector order, then the second list of
+/// seen sector depth-only in sector order, then the second list of
 /// every sector depth-only with its groups' textures, restores the colour
 /// mask with depth writes off, and then draws, per sector, the first list
 /// and the second in colour. The sectors walked are the scene's sectors
-/// whose flag word has bit 0 ([`SECTOR_PARTICLE_BIT`]).
-pub fn particle_pass(sectors: usize) -> Vec<ParticleDraw> {
+/// whose flag word has bit 0 ([`SECTOR_SEEN_BIT`]).
+pub fn faded_pass(sectors: usize) -> Vec<FadedDraw> {
     let mut out = Vec::with_capacity(sectors * 4);
     for sector in 0..sectors {
-        out.push(ParticleDraw {
-            stage: ParticleStage::Depth,
-            list: ParticleList::VertexColour,
+        out.push(FadedDraw {
+            stage: FadedStage::Depth,
+            list: FadedList::Opaque,
             sector,
         });
     }
     for sector in 0..sectors {
-        out.push(ParticleDraw {
-            stage: ParticleStage::TexturedDepth,
-            list: ParticleList::Textured,
+        out.push(FadedDraw {
+            stage: FadedStage::AlphaTestedDepth,
+            list: FadedList::AlphaTested,
             sector,
         });
     }
     for sector in 0..sectors {
-        for list in [ParticleList::VertexColour, ParticleList::Textured] {
-            out.push(ParticleDraw {
-                stage: ParticleStage::Colour,
+        for list in [FadedList::Opaque, FadedList::AlphaTested] {
+            out.push(FadedDraw {
+                stage: FadedStage::Colour,
                 list,
                 sector,
             });
@@ -607,7 +617,7 @@ pub fn particle_pass(sectors: usize) -> Vec<ParticleDraw> {
     out
 }
 
-impl ParticleStage {
+impl FadedStage {
     /// Whether the stage writes colour.
     pub fn writes_colour(self) -> bool {
         matches!(self, Self::Colour)
@@ -652,6 +662,76 @@ pub const RANK_SPACING: f32 = 2048.0;
 /// The most ranks a list keeps apart; later ones share the last.
 pub const MAX_RANKS: usize = 512;
 
+/// The span of the transparent phase's sort values one of
+/// [`PhaseList`]'s lists takes: its ranks, each `RANK_SPACING` apart, plus
+/// a view depth.
+pub const LIST_BLOCK: f32 = (MAX_RANKS as f32 + 1.0) * RANK_SPACING;
+
+/// The lists Exarust draws on Bevy's transparent phase, in the frame walk's
+/// order. Each takes one [`LIST_BLOCK`] of sort values below zero, so Bevy's
+/// ascending sort draws them in this order; everything without a list
+/// (flames, smoke, sprays, effects: bias 0) by distance after them, and the
+/// faded pass last.
+///
+/// - the alpha-tested and opaque entries of the sectors seen through
+///   doorways (`sector_walk`): the original draws them clipped to their
+///   doorway rectangle, which a batched phase cannot do, so they leave
+///   Bevy's opaque phases for these two lists;
+/// - the terrain grass hook (after the opaque lists and the terrain hook);
+/// - the decal list, then the blended list, by rank;
+/// - the late block: everything with no list, then the cut-away faded pass
+///   (its depth half, then its colour half, [`FADED_DEPTH_BIAS`] and
+///   [`FADED_COLOUR_BIAS`] above zero), which the original draws after the
+///   blended lists and their hook list. The fire and smoke particles are
+///   blended-list records in the original (blend words `0x2123`, `0x2163`),
+///   so they come before it and show through a faded roof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PhaseList {
+    ScissoredAlphaTest = 0,
+    ScissoredOpaque = 1,
+    GrassHook = 2,
+    Decal = 3,
+    Blended = 4,
+    Late = 5,
+}
+
+impl PhaseList {
+    /// The list's base sort value.
+    pub fn bias(self) -> f32 {
+        (self as i32 - 6) as f32 * LIST_BLOCK
+    }
+
+    /// Whether the original walks the list sector by sector (with each
+    /// sector's doorway rectangle): every list but the hooks and the late
+    /// passes.
+    pub fn sector_walked(self) -> bool {
+        matches!(
+            self,
+            Self::ScissoredAlphaTest | Self::ScissoredOpaque | Self::Decal | Self::Blended
+        )
+    }
+
+    /// The list a sort value belongs to (a NaN goes last).
+    pub fn of_sort_value(value: f32) -> Self {
+        let block = (value / LIST_BLOCK).floor();
+        if block.is_nan() || block >= -1.0 {
+            return Self::Late;
+        }
+        match block as i32 {
+            i32::MIN..=-6 => Self::ScissoredAlphaTest,
+            -5 => Self::ScissoredOpaque,
+            -4 => Self::GrassHook,
+            -3 => Self::Decal,
+            _ => Self::Blended,
+        }
+    }
+}
+
+/// The cut-away faded pass's depth half and colour half: inside the late
+/// block, after everything with no list (whose biases are 0).
+pub const FADED_DEPTH_BIAS: f32 = 0.5 * LIST_BLOCK;
+pub const FADED_COLOUR_BIAS: f32 = 0.75 * LIST_BLOCK;
+
 /// The value Bevy's transparent phase adds to a surface's view depth before
 /// its ascending sort (`Material::depth_bias`), placing the original's
 /// walk in front of everything else on that phase: the decal list first,
@@ -659,9 +739,12 @@ pub const MAX_RANKS: usize = 512;
 /// passes the original draws after the blended lists (hooks, particles,
 /// weather; bias 0) last. Within one rank Bevy's distance order stays.
 pub fn order_bias(decal: bool, rank: usize) -> f32 {
-    let block = (MAX_RANKS as f32 + 1.0) * RANK_SPACING;
-    let base = if decal { -3.0 * block } else { -2.0 * block };
-    base + rank.min(MAX_RANKS) as f32 * RANK_SPACING
+    let list = if decal {
+        PhaseList::Decal
+    } else {
+        PhaseList::Blended
+    };
+    list.bias() + rank.min(MAX_RANKS) as f32 * RANK_SPACING
 }
 
 /// Ranks registered blended states in the original's list order: the decal
@@ -750,7 +833,7 @@ mod tests {
         assert_eq!(PASS_ORDER[0], Pass::Clear);
         assert_eq!(PASS_ORDER[PASS_ORDER.len() - 1], Pass::EndHooks);
         // Depth writes are on from the alpha-tested class through the depth
-        // hooks, off from the decals on, except for the particle pre-pass.
+        // hooks, off from the decals on, except for the faded depth half.
         let writes: Vec<bool> = PASS_ORDER.iter().map(|p| p.writes_depth()).collect();
         assert_eq!(
             writes,
@@ -760,12 +843,12 @@ mod tests {
             ]
         );
         // The alpha-tested class comes before the opaque one, the decals
-        // before the blended lists, the blended lists before the particles.
+        // before the blended lists, the blended lists before the faded pass.
         let at = |pass| PASS_ORDER.iter().position(|p| *p == pass).unwrap();
         assert!(at(Pass::AlphaTest) < at(Pass::Opaque));
         assert!(at(Pass::Decals) < at(Pass::Blended));
-        assert!(at(Pass::Blended) < at(Pass::ParticleDepth));
-        assert!(at(Pass::ParticleDepth) < at(Pass::ParticleColour));
+        assert!(at(Pass::Blended) < at(Pass::FadedDepth));
+        assert!(at(Pass::FadedDepth) < at(Pass::FadedColour));
     }
 
     #[test]
@@ -971,9 +1054,9 @@ mod tests {
         assert_eq!(visible_sectors(&words, 0x1), [0]);
         assert_eq!(visible_sectors(&words, 0x6), [1, 2]);
         assert!(visible_sectors(&words, 0).is_empty());
-        // The scissor and particle bits are ordinary visibility bits too.
+        // The scissor and seen bits are ordinary visibility bits too.
         assert!(visible(0x1000_0000, ENTRY_SCISSOR_BIT));
-        assert!(visible(1, SECTOR_PARTICLE_BIT));
+        assert!(visible(1, SECTOR_SEEN_BIT));
         assert!(!visible(1, 2));
     }
 
@@ -995,8 +1078,8 @@ mod tests {
             scissor_switches(&[ENTRY_SCISSOR_BIT], ENTRY_SCISSOR_BIT),
             [Some(true)]
         );
-        assert_eq!(PARTICLE_MASK_SUPERSAMPLED, 0x2000_0000);
-        assert_eq!(PARTICLE_MASK_SINGLE, 0x6000_0000);
+        assert_eq!(FADED_MASK_SUPERSAMPLED, 0x2000_0000);
+        assert_eq!(FADED_MASK_SINGLE, 0x6000_0000);
     }
 
     #[test]
@@ -1012,32 +1095,32 @@ mod tests {
     }
 
     #[test]
-    fn the_particle_pass_draws_depth_first_then_colour() {
-        let plan = particle_pass(2);
+    fn the_faded_pass_draws_depth_first_then_colour() {
+        let plan = faded_pass(2);
         assert_eq!(plan.len(), 8);
         // Both lists are drawn depth-only for every sector first: the first
         // list for all sectors, then the second with its textures.
         assert_eq!(
             plan[..4],
             [
-                ParticleDraw {
-                    stage: ParticleStage::Depth,
-                    list: ParticleList::VertexColour,
+                FadedDraw {
+                    stage: FadedStage::Depth,
+                    list: FadedList::Opaque,
                     sector: 0
                 },
-                ParticleDraw {
-                    stage: ParticleStage::Depth,
-                    list: ParticleList::VertexColour,
+                FadedDraw {
+                    stage: FadedStage::Depth,
+                    list: FadedList::Opaque,
                     sector: 1
                 },
-                ParticleDraw {
-                    stage: ParticleStage::TexturedDepth,
-                    list: ParticleList::Textured,
+                FadedDraw {
+                    stage: FadedStage::AlphaTestedDepth,
+                    list: FadedList::AlphaTested,
                     sector: 0
                 },
-                ParticleDraw {
-                    stage: ParticleStage::TexturedDepth,
-                    list: ParticleList::Textured,
+                FadedDraw {
+                    stage: FadedStage::AlphaTestedDepth,
+                    list: FadedList::AlphaTested,
                     sector: 1
                 },
             ]
@@ -1046,36 +1129,36 @@ mod tests {
         assert_eq!(
             plan[4..],
             [
-                ParticleDraw {
-                    stage: ParticleStage::Colour,
-                    list: ParticleList::VertexColour,
+                FadedDraw {
+                    stage: FadedStage::Colour,
+                    list: FadedList::Opaque,
                     sector: 0
                 },
-                ParticleDraw {
-                    stage: ParticleStage::Colour,
-                    list: ParticleList::Textured,
+                FadedDraw {
+                    stage: FadedStage::Colour,
+                    list: FadedList::AlphaTested,
                     sector: 0
                 },
-                ParticleDraw {
-                    stage: ParticleStage::Colour,
-                    list: ParticleList::VertexColour,
+                FadedDraw {
+                    stage: FadedStage::Colour,
+                    list: FadedList::Opaque,
                     sector: 1
                 },
-                ParticleDraw {
-                    stage: ParticleStage::Colour,
-                    list: ParticleList::Textured,
+                FadedDraw {
+                    stage: FadedStage::Colour,
+                    list: FadedList::AlphaTested,
                     sector: 1
                 },
             ]
         );
-        assert!(particle_pass(0).is_empty());
-        for draw in particle_pass(1) {
+        assert!(faded_pass(0).is_empty());
+        for draw in faded_pass(1) {
             assert_eq!(draw.stage.writes_colour(), !draw.stage.writes_depth());
         }
-        assert!(ParticleStage::Depth.writes_depth());
-        assert!(ParticleStage::Colour.writes_colour());
-        assert!(ParticleStage::TexturedDepth.writes_depth());
-        assert!(!ParticleStage::TexturedDepth.writes_colour());
+        assert!(FadedStage::Depth.writes_depth());
+        assert!(FadedStage::Colour.writes_colour());
+        assert!(FadedStage::AlphaTestedDepth.writes_depth());
+        assert!(!FadedStage::AlphaTestedDepth.writes_colour());
     }
     #[test]
     fn a_class_word_picks_its_material_list_and_the_id_is_found_in_order() {

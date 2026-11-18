@@ -137,9 +137,10 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   the sub-image blits and the canvas placement of the icon atlas
   ([`docs/formats/RFI.md`](../../docs/formats/RFI.md), Generated mip levels).
 - `geometry`: the original's planar vertex streams (format-word flags, per-stream sizes and buffer offsets, attribute locations, index-size encoding and CPU index batches) as tested pure rules; not called by the running renderer, where Bevy's mesh allocator takes their place.
+- `material::LateDraw` and `ExaMaterial::alpha_tested`: the draws outside a blend mode's list (the grass hook: unblended, depth writes off; the faded pass's depth half and colour half) and the alpha-tested programs' cut (`EXA_ALPHA_TEST` in `exa.wesl`: diffuse alpha below ½, the grass's below 0.1), compiled in only for alpha-tested records so the rest keep the early depth test ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
 - `exa_vertex.wesl`: the surface material's vertex stage, Bevy's mesh vertex stage plus the original's projection depth bias for surfaces in the decal and blended lists (`passes::biased_depth_term`, `passes::list_depth_shift`; a pipeline key bit from `ExaMaterial::blend_state`, `material::LIST_DEPTH_BIAS` off with `--no-list-depth-bias`) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
 - `passes` (blended order): `BlendState`, `blended_ranks` and `order_bias` put the original's decal and blended list order on Bevy's transparent phase through `ExaMaterial::depth_bias`, re-ranked by `material::order_blended_states` when materials are added or removed ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
-- `sector_walk`: the renderer's sector-major walk of the decal and blended lists on Bevy's transparent phase: after Bevy's sort the phase is re-sorted, stably, by list (read back from `passes::order_bias`'s blocks) and then, for the decal and blended lists, by the mesh's scene sector (`DrawSectors`, kept by `exa_world::scene_live`); within one sector by state rank (read back from the sort value) and registration position (`DrawSlot`), Bevy's distance order kept for surfaces the scene does not hold and for everything after the blended lists; a scene without room sectors is left alone. It also carries the portal scissor (`SectorScissors`): on a super-sampled scene view, transient scissor items in the transparent phase set the render pass's scissor to a doorway sector's rectangle (doubled to the sub-frame samples, held inside the viewport) for its entries with the scissor bit and back to the whole view after them, as the original's sub-frame viewports do; a single view is not clipped, as in the original. Logs its counts every 240 frames.
+- `sector_walk`: the renderer's sector-major walk of the decal and blended lists on Bevy's transparent phase: after Bevy's sort the phase is re-sorted, stably, by list (read back from `passes::order_bias`'s blocks) and then, for the decal and blended lists, by the mesh's scene sector (`DrawSectors`, kept by `exa_world::scene_live`); within one sector by state rank (read back from the sort value) and registration position (`DrawSlot`), Bevy's distance order kept for surfaces the scene does not hold and for everything after the blended lists; a scene without room sectors is left alone. It also carries the portal scissor (`SectorScissors`): on a super-sampled scene view, transient scissor items in the transparent phase set the render pass's scissor to a doorway sector's rectangle (doubled to the sub-frame samples, held inside the viewport) for its entries with the scissor bit and back to the whole view after them, as the original's sub-frame viewports do; a single view is not clipped, as in the original. The scissored opaque and alpha-tested meshes of the scene view leave Bevy's batched opaque phases for the transparent phase's first two list blocks with their own pipelines (`move_scissored_opaque`), and go back through Bevy's dirty specializations when the bit goes; the hooks and the faded pass are not clipped. Logs its counts every 240 frames.
 - `queue`: the deferred draw queue (1023 entries, bucketed by the sector's light count at weight 0.004 or more capped at six, kept as a list grouped by bucket with the original's head and behind-the-first insertion rules).
 - `capture`: the still-image capture plan (eight samples jittered from the recorded `view` table, blended at `1 − 1/(i+1)`, half-size downsample) and the two recorded downsample shader sources.
 - `quality`: the settings screen's live renderer options: `ShadowQuality`
@@ -157,17 +158,20 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   quads the measured scene draws ([`docs/UI.md`](../../docs/UI.md#gpu-benchmark)).
 - `passes`: the shader factory's list choice (the object word's alpha and shadow bits and the renderer's version pick one of six lists) and the material class's list selection (the `0x8000` alpha-tested bit picks the shadow list, the low nibble 0 the opaque list and 1–4 the blended one) with the id search the renderer's lookup runs, the original's fixed frame walk (clear, alpha-tested and opaque
   classes with depth writes, hook lists, the depth-biased decal class and
-  blended per-sector lists with depth writes off, the particles' depth
-  pre-pass and colour, the environment's weather), the blended list's
+  blended per-sector lists with depth writes off, the cut-away faded pass's
+  depth half and colour half, the environment's weather), the blended list's
   layer/opacity selection and the opaque list's grouping by material program
   key (the layer is bits 4-7 of the blend word), the per-list draw walk (one
   program bind per material group, entries filtered by the renderer's
   visibility mask, sectors in scene order, the entries' `0x1000_0000`
   scissor switches, the blended entry's `1 − opacity` alpha under the
-  `0x203` word) and the particle pass (its own visibility mask, both lists
-  depth-only per sector, the second with its textures, then per sector both
-  lists in colour with per-entry alpha), with the
-  Bevy phase each step maps to
+  `0x203` word) and the faded pass (`faded_pass`: its own visibility mask,
+  the opaque and alpha-tested lists depth-only per sector, the second with
+  its textures for the alpha test, then per sector both lists in colour
+  with per-entry alpha), with the Bevy phase each step maps to, and
+  `PhaseList`, the transparent phase's list blocks in walk order (scissored
+  alpha-tested and opaque meshes, the grass hook, decals, blended, the late
+  block with `FADED_DEPTH_BIAS` and `FADED_COLOUR_BIAS`)
   ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
 - `view`: the 3D view's arithmetic: the perspective frustum's half extents,
   the super-sampling levels (1/2/3/4/8 sub-views, up to four a pass, their

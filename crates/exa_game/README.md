@@ -3071,7 +3071,9 @@ parent and children carries; `scene_nodes::fade_step` moves each mesh's
 amount on the frame clock's whole milliseconds; and each part gets the
 draw its mask asks: its own material when solid, a blended copy whose
 opacity replaces the diffuse alpha while fading (and when settled without
-supersampling), its own material drawn into one diagonal of each
+supersampling), drawn as the faded pass's colour half after every blended
+surface, with a depth child (`CutAwayDepth`) laying its depth before any
+faded colour, its own material drawn into one diagonal of each
 supersampled 2 × 2 block when settled under supersampling, opacity 0 (still
 casting) when faded out, hidden for a part whose own surface is blended.
 `EXA_CUT_AWAY=0` turns it off. Rendering only: no body, pick or simulation

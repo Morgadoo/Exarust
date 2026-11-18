@@ -1,0 +1,6 @@
+- [x] Read the frame walk, the faded pass and the grass hook's registration in the assembly
+- [x] Alpha test compiled into the alpha-tested programs
+- [x] Grass hook block: unblended, depth writes off, after the opaque lists
+- [x] Faded pass: depth children before every faded colour, after the blended lists
+- [x] Scissored opaque and alpha-tested meshes on the transparent phase
+- [x] Worker GPU picture pairs and FPS; golden suite
