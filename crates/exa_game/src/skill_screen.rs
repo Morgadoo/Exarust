@@ -219,10 +219,11 @@ pub(crate) fn open_skills(
     mut ui: ResMut<SkillUi>,
     bank: Option<ResMut<exa_audio::SoundBank>>,
     mut sources: Option<ResMut<Assets<AudioSource>>>,
-    (mut commands, mut control, mut story): (
+    (mut commands, mut control, mut story, words): (
         Commands,
         Option<ResMut<PlayerControl>>,
         Option<ResMut<StoryExperience>>,
+        Option<Res<crate::flow::ModeWords>>,
     ),
 ) {
     if requests.read().count() == 0 {
@@ -266,6 +267,9 @@ pub(crate) fn open_skills(
         bottom: window.physical_height() as i32,
     };
     let mut screen = SkillScreen::open(bounds, unit, false, 0, now);
+    if let Some(words) = words.as_deref() {
+        screen.level_cap = words.level_cap;
+    }
     screen.attach(&mut data, false, RATES);
     info!(
         "skills: the skill screen opens (ready {}, skills {:?})",

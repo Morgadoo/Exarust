@@ -921,6 +921,9 @@ pub struct ManageDay {
     pub fighters: u32,
     pub end_day: bool,
     pub alpha: u8,
+    /// The mode's level cap the ready tests compare with
+    /// ([`crate::flow::ModeWords::level_cap`]; 12 in the arena).
+    pub level_cap: u32,
 }
 
 /// The manager or an employee as the manage window reads the record.
@@ -941,16 +944,16 @@ impl ManageRecord {
         rank_of(&self.fighter.skill_xp)
     }
 
-    /// Whether the record has a technique to train.
-    pub fn ready(&self) -> bool {
-        report::ready_to_train(&self.fighter.skill_xp, &self.fighter.techniques)
+    /// Whether the record has a technique to train, below the level cap.
+    pub fn ready(&self, cap: u32) -> bool {
+        report::ready_to_train(&self.fighter.skill_xp, &self.fighter.techniques, cap)
     }
 
-    pub fn role(&self) -> RowRole {
+    pub fn role(&self, cap: u32) -> RowRole {
         match self.profession {
             Profession::Combatant => RowRole::Fighter {
                 rank: self.rank(),
-                ready: self.ready(),
+                ready: self.ready(cap),
             },
             profession => RowRole::Specialist(profession),
         }
@@ -977,11 +980,11 @@ impl ManageRecord {
     }
 
     /// The row this record draws; the manager is the first row.
-    pub fn row(&self, manager: bool, alpha: u8) -> RosterRowText {
+    pub fn row(&self, manager: bool, alpha: u8, cap: u32) -> RosterRowText {
         roster_row(
             &report::name_text(&self.fighter.name),
             self.name_kind(manager),
-            self.role(),
+            self.role(cap),
             alpha,
             self.health,
         )
@@ -1019,8 +1022,8 @@ pub fn manage_refresh(
     name_of: impl Fn(u8) -> Option<[u8; 16]>,
 ) -> ManageRefresh {
     let mut roster = Vec::with_capacity(employees.len() + 1);
-    roster.push(manager.row(true, day.alpha));
-    roster.extend(employees.iter().map(|e| e.row(false, day.alpha)));
+    roster.push(manager.row(true, day.alpha, day.level_cap));
+    roster.extend(employees.iter().map(|e| e.row(false, day.alpha, day.level_cap)));
     let upkeep = employees.iter().map(ManageRecord::upkeep).sum();
     let fighters: Vec<ReportFighter> = employees
         .iter()
@@ -1037,7 +1040,15 @@ pub fn manage_refresh(
         recruit: recruit_open(day.fighters),
         hire: hire_open(employees.len()),
         roster,
-        report: report::report_lines(log, &fighters, &manager.fighter, listed, day.day, name_of),
+        report: report::report_lines(
+            log,
+            &fighters,
+            &manager.fighter,
+            listed,
+            day.day,
+            day.level_cap,
+            name_of,
+        ),
     }
 }
 
@@ -1680,6 +1691,7 @@ mod tests {
             fighters: 7,
             end_day: true,
             alpha: 255,
+            level_cap: report::TRAINING_CAP,
         };
         let refresh = manage_refresh(day, &manager, &employees, &[], &listed, |_| None);
         assert_eq!(refresh.title, "Day 4");
@@ -1759,6 +1771,7 @@ mod tests {
             fighters: 8,
             end_day: false,
             alpha: 100,
+            level_cap: report::TRAINING_CAP,
         };
         let refresh = manage_refresh(day, &manager, &employees, &[], &[], |_| None);
         assert_eq!(refresh.title, "Week 1 Day 1");
@@ -1783,9 +1796,9 @@ mod tests {
     fn a_specialist_name_is_inked_and_a_fighter_is_judged() {
         let specialist = record("Bors", 1, Profession::Physician, [0; 6], 65535, false);
         assert_eq!(specialist.rank(), 0);
-        assert!(specialist.ready());
+        assert!(specialist.ready(report::TRAINING_CAP));
         assert_eq!(
-            specialist.role(),
+            specialist.role(report::TRAINING_CAP),
             RowRole::Specialist(Profession::Physician)
         );
         assert_eq!(specialist.name_kind(false), NameKind::Specialist);
@@ -1799,17 +1812,17 @@ mod tests {
             true,
         );
         assert_eq!(fighter.rank(), 5);
-        assert!(!fighter.ready());
+        assert!(!fighter.ready(report::TRAINING_CAP));
         assert_eq!(
-            fighter.role(),
+            fighter.role(report::TRAINING_CAP),
             RowRole::Fighter {
                 rank: 5,
                 ready: false
             }
         );
         assert_eq!(fighter.name_kind(false), NameKind::Recruit);
-        assert_eq!(fighter.row(false, 255).rank.text, "Master");
-        assert_eq!(fighter.row(false, 255).health, 0.0);
+        assert_eq!(fighter.row(false, 255, report::TRAINING_CAP).rank.text, "Master");
+        assert_eq!(fighter.row(false, 255, report::TRAINING_CAP).health, 0.0);
     }
 
     #[test]
@@ -1831,6 +1844,7 @@ mod tests {
             fighters: 2,
             end_day: true,
             alpha: 255,
+            level_cap: report::TRAINING_CAP,
         };
         let refresh = manage_refresh(day, &manager, &[master], &[], &[], |_| None);
         assert_eq!(refresh.roster[1].rank.text, "Master+");
