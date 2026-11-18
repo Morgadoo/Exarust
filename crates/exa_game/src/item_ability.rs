@@ -144,7 +144,6 @@ impl Plugin for ItemAbilityPlugin {
                 Update,
                 (
                     debug_ability_item.in_set(exa_physics::FramePhase::Input),
-                    put_out_released_blades.in_set(exa_physics::FramePhase::World),
                     ability_tick
                         .in_set(exa_physics::FramePhase::World)
                         .after(exa_combat::weapon_blood::clear_at_world_reset)
@@ -168,6 +167,17 @@ impl Plugin for ItemAbilityPlugin {
                         .after(fire_row::frame_rows),
                 )
                     .chain(),
+            )
+            .add_systems(
+                Update,
+                // After the held items' check and the frame's flames (the
+                // flag reaches the step's copy through its command queue),
+                // before the hit hooks.
+                put_out_released_blades
+                    .in_set(exa_physics::FramePhase::World)
+                    .after(ability_tick)
+                    .after(exa_world::flame::frame_flames)
+                    .before(hit_hooks),
             )
             .add_systems(
                 FixedUpdate,
