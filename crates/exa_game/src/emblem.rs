@@ -253,9 +253,36 @@ pub fn preview_layer(
     textures: &exa_ui::gui_draw::GuiTextures,
     unit: i32,
 ) -> Option<exa_ui::gui_draw::GuiLayer> {
-    // The form's refresh fills each colour's bytes from its palette index
-    // on the dye palette's linear ramp before the preview takes them.
-    let preview = editor.preview(exa_ui::emblem_form::preview_palette);
+    let rect = exa_ui::preview_quad(exa_ui::emblem_form::FORM_WIDTH, unit);
+    emblem_layer(&editor.record, textures, rect)
+}
+
+/// An emblem drawn as the emblem draw does it: centred across on
+/// `centre_x`, its top at `top`, `size_units` GUI units square (the
+/// draw's quad: the left is the centre less half the size, halved as an
+/// integer).
+pub fn emblem_quad(centre_x: i32, top: i32, size_units: i32, unit: i32) -> [i32; 4] {
+    let size = unit * size_units;
+    let left = centre_x - size / 2;
+    [left, top, left + size, top + size]
+}
+
+/// The emblem `record` as a draw-path layer over `rect` (left, top, right,
+/// bottom): the emblem shader's body ([`exa_ui::emblem_sample`]) at the
+/// quad's size, from the record's pictures, its colours on the dye
+/// palette's ramp (as the form's refresh fills them), its mirrors and the
+/// shader's alpha. `None` when any picture is not loaded.
+pub fn emblem_layer(
+    record: &exa_ui::EmblemRecord,
+    textures: &exa_ui::gui_draw::GuiTextures,
+    rect: [i32; 4],
+) -> Option<exa_ui::gui_draw::GuiLayer> {
+    let preview = exa_ui::emblem_form::EmblemPreview {
+        textures: exa_ui::emblem_form::preview_textures(record),
+        colours: exa_ui::emblem_form::preview_colours(record, exa_ui::emblem_form::preview_palette),
+        mirror: record.mirror(),
+        alpha: exa_ui::emblem_form::PREVIEW_ALPHA,
+    };
     let names = &preview.textures;
     let layers = [
         textures.get(&names[0])?,
@@ -263,7 +290,6 @@ pub fn preview_layer(
         textures.get(&names[2])?,
         textures.get(&names[3])?,
     ];
-    let rect = exa_ui::preview_quad(exa_ui::emblem_form::FORM_WIDTH, unit);
     let size = rect[2] - rect[0];
     let image = exa_ui::preview_image(&preview, layers, size)?;
     let mut batch = exa_ui::skin::SkinBatch::new();

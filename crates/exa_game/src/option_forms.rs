@@ -1889,20 +1889,31 @@ pub(crate) fn paint_emblem_preview(
 }
 
 /// The textures the emblem preview samples: the record's background and
-/// design and the two shared layers, loaded once each.
+/// design and the two shared layers, loaded once each; with the Company
+/// Status form open, the company emblem's too.
 pub fn load_emblem_textures(
     windows: Option<Res<HubWindows>>,
     textures: Option<ResMut<exa_ui::gui_draw::GuiTextures>>,
     game: Option<Res<exa_assets::Game>>,
+    career: Option<Res<crate::hub_windows::ArenaCareer>>,
 ) {
     let (Some(windows), Some(mut textures)) = (windows, textures) else {
         return;
     };
-    let Some(state) = windows.forms.options.emblem.as_ref() else {
-        return;
-    };
-    for name in exa_ui::emblem_form::preview_textures(&state.editor.record) {
-        crate::creator_screen::ensure_texture(&mut textures, game.as_deref(), &name);
+    if let Some(state) = windows.forms.options.emblem.as_ref() {
+        for name in exa_ui::emblem_form::preview_textures(&state.editor.record) {
+            crate::creator_screen::ensure_texture(&mut textures, game.as_deref(), &name);
+        }
+    }
+    if windows
+        .forms
+        .get(crate::hub_forms::FormWindow::Status)
+        .is_some()
+        && let Some(career) = career.as_deref()
+    {
+        for name in exa_ui::emblem_form::preview_textures(&career.company.emblem) {
+            crate::creator_screen::ensure_texture(&mut textures, game.as_deref(), &name);
+        }
     }
 }
 

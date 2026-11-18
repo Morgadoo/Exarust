@@ -81,6 +81,10 @@ pub struct HardwareConfig {
     /// Apply changed a renderer option that rebuilds the shaders: the
     /// "Applying new settings..." screen opens on the next frame.
     pub warm_pending: bool,
+    /// The first run's auto-detection is under way: when it ends, the
+    /// detected options are written to the settings file with no form open
+    /// ([`HardwareConfig::apply_unformed`]).
+    pub apply_after_detection: bool,
 }
 
 impl Default for HardwareConfig {
@@ -124,6 +128,7 @@ impl HardwareConfig {
             screen_size: (0, 0),
             rumble: true,
             warm_pending: false,
+            apply_after_detection: false,
         }
     }
 
@@ -305,6 +310,53 @@ impl HardwareConfig {
         }
     }
 
+    /// The game's first run (its `FirstRun` setting was still set): the
+    /// auto-detection runs as the Defaults button's does, and once it has
+    /// its levels they are written to the settings file with no form open,
+    /// as the original's start-up runs the detection with its Apply flag.
+    pub fn first_run_detection(&mut self) {
+        self.apply_after_detection = true;
+        self.run_detection();
+        if self.benchmark.is_none() {
+            self.finish_detection();
+        }
+    }
+
+    /// The end of an auto-detection: the first run's writes the file.
+    fn finish_detection(&mut self) {
+        if std::mem::take(&mut self.apply_after_detection) {
+            let stored = self.apply_unformed();
+            info!("first run: detected settings stored: {stored}");
+        }
+    }
+
+    /// Apply with no form open (the original's Apply called with no form,
+    /// from the first run's detection): the settings file is read, the
+    /// lines are written into it from the page's values (the saved set
+    /// pushed into them, as the detection's push leaves them: the window
+    /// mode, hardware anti-aliasing and performance index stay the live
+    /// ones) and the live options, and it is written back. The renderer
+    /// options already match the saved set, so nothing else changes.
+    /// Returns whether the file was written; with a form open, or no file,
+    /// or a file that cannot be read, nothing happens.
+    pub fn apply_unformed(&mut self) -> bool {
+        if self.screen.is_some() {
+            return false;
+        }
+        let Some(path) = self.settings_file.clone() else {
+            return false;
+        };
+        let Some(mut bytes) = read_whole_file(&path) else {
+            return false;
+        };
+        let page = Screen {
+            draft: self.saved.pushed_draft(&self.live),
+            baseline: self.saved,
+        };
+        page.write_settings(&mut bytes, &self.live);
+        write_whole_file(&path, &bytes)
+    }
+
     /// Starts the GPU benchmark. The plugin's driver runs it and takes the
     /// quality levels it finds.
     pub fn start_benchmark(&mut self) {
@@ -320,6 +372,7 @@ impl HardwareConfig {
         self.live.perf_index = perf_index;
         let saved = self.live.auto_detected(&self.saved(), width, height);
         self.push_saved(saved);
+        self.finish_detection();
     }
 
     /// The Deck's fixed preset, instead of a benchmark.
@@ -1260,6 +1313,40 @@ mod tests {
         assert!(!applied.quality.supersample);
         assert!(!applied.quality.shadow_detail);
         assert_eq!(applied.lines[6], ("ShadowDetail", "5".to_string()));
+    }
+
+    #[test]
+    fn the_first_run_detection_stores_the_detected_levels_with_no_form() {
+        let path = temp_file("first_run.ini", b"\r\nFirstRun = 0");
+        let mut config = HardwareConfig::default().with_file(path.clone());
+        config.live.multisample = 2;
+        config.first_run_detection();
+        assert!(config.benchmark.is_some() && config.apply_after_detection);
+        // Nothing is written until the benchmark ends.
+        assert_eq!(std::fs::read(&path).unwrap(), b"\r\nFirstRun = 0");
+        config.finish_benchmark(4.0, 1600, 900);
+        assert!(!config.apply_after_detection);
+        assert!(config.screen.is_none());
+        let text = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+        assert!(text.starts_with("\r\nFirstRun = 0"), "{text}");
+        for line in [
+            "PerfIndex = 4.00",
+            "Supersample = 3",
+            "ShadingQuality = 5",
+            "ShadowDetail = 5",
+            "ShadowQuality = 4",
+            "HWMultisample = 2",
+        ] {
+            assert!(text.contains(line), "{line} in {text}");
+        }
+        // A later benchmark (the Defaults button's) writes nothing by itself.
+        std::fs::write(&path, b"").unwrap();
+        config.start_benchmark();
+        config.finish_benchmark(1.0, 1600, 900);
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        // With a form open the unformed Apply does nothing.
+        config.open(None);
+        assert!(!config.apply_unformed());
     }
 
     #[test]

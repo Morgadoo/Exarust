@@ -41,7 +41,8 @@
 //!
 //! The drags are the item panel's own ([`crate::item_container`]): a left
 //! press on an entry of either view marks it dragged with the grab at half
-//! the icon, and the left release ends it: an arsenal entry released over
+//! the icon (on the preview, whose view the form freezes, only a held item
+//! starts a drag: [`frozen_drag_icon`]), and the left release ends it: an arsenal entry released over
 //! the preview is equipped, a kit-list entry released over the arsenal box
 //! is returned, a release in the entry's own view only moves it there
 //! ([`Container::drop_entry`]), and a release anywhere else cancels and
@@ -1189,6 +1190,43 @@ impl PreviewPick<'_, '_> {
     }
 }
 
+/// The loadout form's view is frozen (the form sets the byte): its drag
+/// start ([`exa_ui::character_view::drag_start_plan`]) takes only a held
+/// item off the figure; a worn piece starts no drag, nor does an item
+/// whose icon does not resolve. Returns the drag's icon reference, or
+/// `None` (no reference kept).
+pub fn frozen_drag_icon(
+    item: PreviewItem,
+    mut icons: Option<&mut crate::item_panel_draw::PanelIcons>,
+    catalogue: Option<&exa_items::catalogue::ItemCatalogue>,
+    icon_size: i32,
+) -> Option<usize> {
+    let hand = item.hand.map_or(0, |hand| hand + 1);
+    if hand == 0 {
+        return None;
+    }
+    let icon = icons
+        .as_deref_mut()
+        .map_or(0, |icons| icons.reserve(item.id, item.flags, catalogue).0);
+    let plan = exa_ui::character_view::drag_start_plan(
+        true,
+        hand,
+        icon,
+        false,
+        item.flags,
+        None,
+        false,
+        icon_size.max(0) as u32,
+    );
+    if plan.payload.is_none() {
+        if let Some(icons) = icons {
+            icons.release(icon);
+        }
+        return None;
+    }
+    Some(icon)
+}
+
 /// The kit's views take the left button as their item panels do: a press
 /// on an entry starts its drag, and a press on the preview's figure starts
 /// a drag of the item its pick finds there. The release equips (an
@@ -1293,10 +1331,10 @@ pub fn kit_input(
                 worn: loadout.worn.clone(),
                 ..loadout_hands(loadout)
             };
-            if let Some(item) = pick.item_at(rects.preview, at, &p, &items) {
-                let (icon, _) = icons.as_deref_mut().map_or((0, (0, 0)), |icons| {
-                    icons.reserve(item.id, item.flags, catalogue)
-                });
+            if let Some(item) = pick.item_at(rects.preview, at, &p, &items)
+                && let Some(icon) =
+                    frozen_drag_icon(item, icons.as_deref_mut(), catalogue, open.list.icon_size)
+            {
                 open.drag = Some(KitDrag {
                     from_stock: false,
                     preview: Some(item),
@@ -1948,6 +1986,28 @@ mod tests {
             assert_eq!(loadouts[3].hands[0].id, 10);
             assert_eq!(loadouts[3].hands[1].id, 0);
         });
+    }
+
+    #[test]
+    fn the_frozen_preview_drags_only_a_held_item() {
+        let mut icons = crate::item_panel_draw::PanelIcons::default();
+        let worn = PreviewItem {
+            id: 20,
+            flags: 0,
+            hand: None,
+        };
+        assert_eq!(frozen_drag_icon(worn, Some(&mut icons), None, 160), None);
+        assert!(icons.cache.entries.is_empty());
+        let held = PreviewItem {
+            id: 10,
+            flags: 0,
+            hand: Some(1),
+        };
+        let icon = frozen_drag_icon(held, Some(&mut icons), None, 160).unwrap();
+        assert_eq!(icon, 1);
+        assert_eq!(icons.cache.entries[0].refs, 1);
+        // Without the icon manager the icon does not resolve: no drag.
+        assert_eq!(frozen_drag_icon(held, None, None, 160), None);
     }
 
     #[test]

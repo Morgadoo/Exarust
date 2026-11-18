@@ -1670,7 +1670,9 @@ own paint list, the manage roster rows and the shop's panels and stock draw
 through `gui_paint`. Manage Company, Company Records, Company Status, the
 loadout form and the dismiss and yes/no dialogs are built from their
 constructors' record tables (`hub_forms`, on `exa_ui::record_form`): the
-records lay out at unit 4, rescale to the live unit and draw in the shown
+records lay out at unit 4, rescale to the live unit (Company Status draws
+the company's emblem at its top centre first, `hub_windows::status_emblem`)
+and draw in the shown
 palette and line skin (a combo box's back as the line skin's rail,
 `gui_paint::paint_combo_back`, and its front through its own draw,
 `gui_paint::paint_combo_front`; a line-skinned button's hovered caption
@@ -1774,7 +1776,8 @@ previews' stand-in view): an item released over it is worn or taken into
 the hands on the copy, the displaced pieces and hand items that are not
 the shop's going to the pack (never the braies); a press on its figure
 picks and drags an item off, which comes off when a panel takes it, or
-anywhere for a shop item. The shop's new copies are registered with the item
+anywhere for a shop item (the view is locked: a shop item's drag carries a
+payload no panel takes, `shop_preview::drag_kind`). The shop's new copies are registered with the item
 catalogue as the stock is made, so their icons render at once. Not drawn:
 the board's pictures, prize items and reward slots as images, the manage
 report lines and controls, and the trade window's character preview (and
@@ -1852,7 +1855,10 @@ value and sixteen full-screen quads through its own fragment program,
 runs, four quads a warm-up frame and sixteen a measured one, all at one
 depth so each is shaded); Defaults runs the detection (the benchmark, or
 the Deck preset), and `steam_deck`/`video_memory_mb` are the Deck and video
-memory probes. It pushes the live options into `exa_render::quality`
+memory probes. The first run (the settings file's `FirstRun` still set)
+runs the detection too and writes what it found into the settings file
+with no form open (`HardwareConfig::first_run_detection`,
+`apply_unformed`). It pushes the live options into `exa_render::quality`
 (super-sampling on or off, shadow-map sizes, MSAA), the audio buses, the
 frame-rate readout and the window's mode, size and present mode
 ([`docs/UI.md`](../../docs/UI.md#settings-options)).
@@ -1867,7 +1873,9 @@ Cancel) and `BindingEditor` (a key cell opens the key-read screen); Apply
 commits the bindings to the running game and sends `BindingsApplied`, which
 the launcher saves to the store. Hiding the menu closes the form. The
 key-read and warm-up screens draw their text over a black backdrop at their
-fade. `--open-settings settings|controls` opens it once loaded.
+fade. While the GPU benchmark runs the form is hidden and the
+"Configuration" message box shows (`settings_form::analysing_box`).
+`--open-settings settings|controls` opens it once loaded.
 
 The camera's navigation unit is `nav_camera`: the align routine's wrap
 of the target yaw about the camera's, the engine's planar yaw, the orbit
@@ -2000,7 +2008,8 @@ the preview dresses it (`loadout_kit::dress_from_kit`: a copy the two out
 hands do not hold, then the same gate; the kit list keeps its entry). A
 press on the preview's figure picks the item under the pointer
 (`loadout_kit::PreviewPick`, the inventory figure's pick through the
-creator view's camera) and drags it: over the kit list it comes off the
+creator view's camera) and drags it when it is held (the form's view is
+frozen: a worn piece starts no drag, `loadout_kit::frozen_drag_icon`): over the kit list it comes off the
 rank's loadout, over the arsenal box it comes off and goes back
 (`return_from_preview`: the kit list loses one copy, every loadout keeps
 the remaining copies less one). A kit-list entry released over
