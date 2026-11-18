@@ -1595,4 +1595,53 @@ mod tests {
             assert_eq!(*app.world().resource::<GolemAlarm>(), expected);
         }
     }
+
+    /// The level start queues its reset right after the level's section is
+    /// put in place, as the viewer's level start does; the restore reads
+    /// the changed section afterwards, so a save's alarm wins over the
+    /// reset (the original resets before its import, whose settings hook
+    /// restores the alarm) and an archive level keeps the reset.
+    #[test]
+    fn the_level_start_reset_comes_before_the_saved_alarm() {
+        let saved = GolemAlarm {
+            armed: AlarmZone {
+                armed: true,
+                at: Vec3::new(10.0, 0.0, 66.0),
+                pass: 474,
+            },
+            rung: 2,
+        };
+        let before = GolemAlarm {
+            armed: AlarmZone {
+                armed: true,
+                at: Vec3::new(-5.0, 0.0, 12.0),
+                pass: 31,
+            },
+            rung: 1,
+        };
+        for from_save in [false, true] {
+            let mut app = App::new();
+            let bytes = alarm_section(&saved);
+            app.insert_resource(before)
+                .add_systems(Update, restore_saved_alarm)
+                .add_systems(Startup, move |mut commands: Commands| {
+                    commands.insert_resource(exa_world::LevelSource {
+                        entry: "exanima02.rfc".to_string(),
+                        bytes: bytes.clone().into(),
+                        from_save,
+                        spawned: Vec::new(),
+                    });
+                    commands.queue(reset_at_level_start);
+                });
+            app.update();
+            let expected = if from_save {
+                saved
+            } else {
+                let mut reset = before;
+                reset.level_start_reset();
+                reset
+            };
+            assert_eq!(*app.world().resource::<GolemAlarm>(), expected);
+        }
+    }
 }

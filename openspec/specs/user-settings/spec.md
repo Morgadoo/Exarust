@@ -128,3 +128,10 @@ A bound `KeyDef` macro SHALL run its commands only when its key reaches the root
 #### Scenario: Ctrl and Shift held
 - **WHEN** shift+S and ctrl+S are bound and S goes down with both held over the game view
 - **THEN** only the shift+S macro runs
+
+### Requirement: Steam Deck first-run defaults
+The game's first run on a Steam Deck SHALL write CursorSize 150, GUISize 1 and GILowPrecision 1 into the user's settings file before it reads the settings, and a first run off a Deck SHALL write none of them.
+
+#### Scenario: A first run on a Deck
+- **WHEN** the game starts for the first time on a Steam Deck
+- **THEN** the settings file holds the three defaults and the game reads them
