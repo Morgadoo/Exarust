@@ -577,18 +577,24 @@ fn flicker_trace() -> bool {
     *TRACE.get_or_init(|| std::env::var("EXA_FLICKER_TRACE").is_ok_and(|v| v == "1"))
 }
 
-/// One flicker step for every animating light, at the frame's time, in
+/// One flicker step for every animating light, at the scene clock's step
+/// ([`crate::scene_frame::SceneFrame`]), in
 /// entity index (spawn) order: the shared generator's draws then go to the
 /// same lights whatever tables the query walks (the original steps its
 /// lights in the scene's order, each sector's list as registered). Bevy's
 /// own `Entity` order is the reverse of the index's.
 fn flicker_lights(
     time: Res<Time>,
+    scene: Option<Res<crate::scene_frame::SceneFrame>>,
     mut rng: ResMut<FlickerRng>,
     mut lights: Query<(Entity, &mut LightSource, Option<&GlobalTransform>)>,
     mut frame: Local<u64>,
 ) {
-    let ms = frame_ms(time.delta().as_millis());
+    // The scene clock's step (the original's lights read the scene's);
+    // an app without the scene clock (headless tools) times the frame.
+    let ms = scene
+        .as_deref()
+        .map_or_else(|| frame_ms(time.delta().as_millis()), |s| s.dt_ms);
     let trace = flicker_trace() && frame.is_multiple_of(30);
     *frame += 1;
     let state = rng.0;

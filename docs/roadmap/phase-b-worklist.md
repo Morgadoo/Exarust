@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 322 | 97,894 | B1 wire (or prove unreachable) |
-| partial | 895 | 673,063 | B4 complete the port |
+| uncalled | 319 | 96,760 | B1 wire (or prove unreachable) |
+| partial | 897 | 674,096 | B4 complete the port |
 | missing | 37 | 6,211 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,12 +15,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 130,060 | 14,784 | 238 |
-| render | 91,571 | 10,884 | 2,710 |
+| render | 91,802 | 10,653 | 2,710 |
 | ui | 69,065 | 32,066 | 167 |
 | characters | 66,506 | 11,244 | 1,452 |
 | modes | 57,853 | 7,005 | 363 |
 | powers | 60,532 | 1,307 | 181 |
-| world | 50,252 | 8,635 | 324 |
+| world | 51,054 | 7,732 | 324 |
 | ai | 57,286 | 776 | 11 |
 | items | 38,648 | 4,077 | 525 |
 | data | 17,286 | 3,068 | 0 |
@@ -66,7 +66,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TLoadoutForm | modes | 5 / 6,248 | 1 / 80 | 0 / 0 | 6,328 |
 | RFE_Export_RFC2 (unit routines) | data | 7 / 5,868 | 2 / 240 | 0 / 0 | 6,108 |
 | TMatchBoard | modes | 3 / 6,102 | 0 / 0 | 0 / 0 | 6,102 |
-| RF_Navigation (unit routines) | render | 6 / 4,181 | 7 / 1,804 | 0 / 0 | 5,985 |
+| RF_Navigation (unit routines) | render | 7 / 4,412 | 6 / 1,573 | 0 / 0 | 5,985 |
 | RF_GUI_Main (unit routines) | ui | 8 / 4,651 | 6 / 1,187 | 1 / 23 | 5,861 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
 | RF_GUI_Controls (unit routines) | ui | 7 / 4,821 | 2 / 881 | 0 / 0 | 5,702 |
@@ -179,7 +179,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | THairEditForm | ui | 1 / 828 | 1 / 117 | 0 / 0 | 945 |
 | RF_DataIO (unit routines) | data | 0 / 0 | 3 / 936 | 0 / 0 | 936 |
 | TPostProcessor | render | 3 / 929 | 0 / 0 | 0 / 0 | 929 |
-| TSceneTaskInt | world | 0 / 0 | 2 / 903 | 0 / 0 | 903 |
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
 | TForceBlastGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
 | FG_AIFunctions (unit routines) | script | 6 / 888 | 0 / 0 | 0 / 0 | 888 |
@@ -188,6 +187,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Import_RFC2 (unit routines) | data | 3 / 490 | 1 / 386 | 0 / 0 | 876 |
 | TForceTorrentEffect | powers | 1 / 811 | 0 / 0 | 0 / 0 | 811 |
 | TPwrSpiritForm | powers | 2 / 803 | 0 / 0 | 0 / 0 | 803 |
+| TSceneTaskInt | world | 1 / 802 | 0 / 0 | 0 / 0 | 802 |
 | TMainMenu | ui | 2 / 799 | 0 / 0 | 0 / 0 | 799 |
 | TBarricadeEntity | powers | 1 / 787 | 0 / 0 | 0 / 0 | 787 |
 | Character roles & relations (script functions) | ai | 2 / 464 | 1 / 318 | 0 / 0 | 782 |

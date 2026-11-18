@@ -37,6 +37,7 @@ pub mod room_view;
 pub mod rooms;
 pub mod saved_parts;
 pub mod scene_env;
+pub mod scene_frame;
 pub mod scene_live;
 pub mod scene_nodes;
 pub mod shadow_links;
