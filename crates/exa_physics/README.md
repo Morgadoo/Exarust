@@ -844,7 +844,9 @@ the mesh's own tree query hands only the triangles around the sphere) in
 order with the mesh's own sphere and sweep queries (front faces only,
 pushed out to 2 cm), each on the triangle's mesh record
 (`cloth_level::face_of`: the record builder's normal and plane, its closest
-point; a degenerate triangle skipped) and, for a sweep, the sweep record's
+point; a degenerate triangle skipped; a resting sphere's push floor the
+kd-tree leaf's 1e-6 on a mesh with a tree, the brute-force query's 1e-10
+otherwise, `LevelPiece::tree`) and, for a sweep, the sweep record's
 direction and length, set again from the pushed end (`cloth_level::swept`);
 a pushed particle's travel is then shortened by
 0.1 cm, or cancelled when shorter. A level push (or a level plane's)
@@ -1016,7 +1018,10 @@ built from a `FloorMesh` (a floor node's mesh: its second flag word's
 `0x800000`, or a tile grid cell's floor parts, which the original merges
 into a `+Floor` node with that bit), static or a rigid body's stand-in;
 the build records them (`StaticColliders::is_floor`) and the body
-detection's level answers `Level::floor_piece` from them. The level logs
+detection's level answers `Level::floor_piece` from them. A rigid body's
+stand-in is met only when the ray, within the nearest hit so far, crosses
+its box in its own frame (`Level::floor_box`, the original's slab test
+`intersect::segment_box_slabs`: a flat body plate is never met). The level logs
 how many it built ("static colliders built: … of them floor"). Each floor
 piece runs the engine's plain mesh ray (`contact::mesh_ray`: triangles in
 index order, front faces with the determinant at least the engine's epsilon,
