@@ -328,6 +328,9 @@
 //! `exarust`: the window size, full screen, vertical sync, supersampling,
 //! the frame-rate readout and the GUI size they name apply unless the
 //! command line says otherwise, and the store's key bindings are used.
+//! The first run (the file's `FirstRun` still set) runs the GPU benchmark
+//! and stores the levels it detects, as the original's first start does
+//! (not in a grid quadrant or a `--screenshot` run).
 //!
 //! In tile-grid levels only the rooms the player can see are drawn, as in
 //! the original: the player's room and those behind a door within 2 m; the
@@ -2063,6 +2066,10 @@ fn build_app(
         );
         if options.benchmark {
             hardware.start_benchmark();
+        } else if user.first_run && options.offscreen.is_none() && options.screenshot.is_none() {
+            // The first run's auto-detection, stored when it ends. Grid
+            // quadrants and screenshot runs keep their settings unmeasured.
+            hardware.first_run_detection();
         }
         Some(hardware)
     } else {

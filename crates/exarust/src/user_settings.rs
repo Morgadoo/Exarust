@@ -32,6 +32,10 @@ pub struct UserSettings {
     /// The store as the Settings form's Apply last saved it, shared with
     /// the launcher's copy so that the exit save writes it back.
     pub applied: AppliedStore,
+    /// The settings file still had its `FirstRun` set (or none): this is
+    /// the game's first run, whose start runs the auto-detection and stores
+    /// what it finds.
+    pub first_run: bool,
 }
 
 /// The store Apply last saved (shared between the copies of
@@ -236,9 +240,11 @@ pub fn load(project: &str) -> Option<UserSettings> {
         ini_path: ini.clone(),
         store_path: settings_ini::store_file(&folder, project),
         applied: AppliedStore::default(),
+        first_run: false,
     };
     // The game's first run: its one-setting save records that it happened.
-    if user.last_bool("FirstRun").unwrap_or(true) {
+    let first_run = user.last_bool("FirstRun").unwrap_or(true);
+    if first_run {
         settings_ini::save_one_setting_to_file(&ini, "FirstRun", settings_ini::format_bool(false));
     }
     let loaded = SettingsStore::load(read_whole_file(&user.store_path).unwrap_or_default());
@@ -247,6 +253,7 @@ pub fn load(project: &str) -> Option<UserSettings> {
     }
     Some(UserSettings {
         store: loaded.store,
+        first_run,
         ..user
     })
 }
@@ -308,6 +315,7 @@ mod tests {
             ini_path: PathBuf::new(),
             store_path: PathBuf::new(),
             applied: AppliedStore::default(),
+            first_run: false,
         }
     }
 

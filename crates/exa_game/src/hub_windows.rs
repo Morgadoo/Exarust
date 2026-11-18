@@ -1827,7 +1827,7 @@ pub(crate) struct Look<'a> {
 }
 
 impl<'a> Look<'a> {
-    fn new(
+    pub(crate) fn new(
         fade: f32,
         unit: i32,
         textures: &'a GuiTextures,
