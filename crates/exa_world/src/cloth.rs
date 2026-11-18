@@ -1003,6 +1003,14 @@ impl Plugin for ClothPlugin {
             .insert_resource(ClothDebug::from_env())
             .add_systems(Update, (build_cloth_nodes, publish_scene_wind)
                 .in_set(exa_physics::FramePhase::World))
+            // A hair cloth draws two culled passes once it is built.
+            .add_systems(
+                Update,
+                crate::cloth_draw::draw_hair_passes
+                    .after(build_cloth_nodes)
+                    .run_if(resource_exists::<Assets<exa_render::material::ExaMaterial>>)
+                    .in_set(exa_physics::FramePhase::World),
+            )
             // The sector runs its simulated objects inside the bodies'
             // tick: their own step before the solver, their body contacts in
             // it (the solver's cloth stage), their pass after the collisions
