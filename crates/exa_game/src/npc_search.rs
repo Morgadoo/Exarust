@@ -1413,6 +1413,9 @@ pub fn follow_and_search(
                 .is_some_and(|l| exa_ai::rooms::in_sight(level, feet_cm, l.place));
             let act =
                 exa_ai::idle::follow_leader(&mut state.follower, leader.as_ref(), visible, true);
+            // The follow state's busy flag is the brain's: its target pass
+            // reads it.
+            npc.activity_busy = state.follower.busy;
             route.mode = state.follower.mode;
             route.leader_at = state.follower.planned;
             if leader.is_some()
@@ -1662,6 +1665,7 @@ pub fn follow_and_search(
                         npc.roll = roll;
                         // The activity's answer is the follow's busy flag.
                         state.follower.busy = busy;
+                        npc.activity_busy = busy;
                         if state.logged != Some(search.state) {
                             state.logged = Some(search.state);
                             // With the brain's attention: its goal entity,

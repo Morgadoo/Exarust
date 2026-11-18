@@ -247,6 +247,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<exa_combat::impact::LimbImpact>()
         .bridge_copy::<exa_ai::route_walk::AiRoute>()
+        .bridge_copy::<exa_ai::roles::FormerLevel>()
         .bridge_message::<crate::thaum::cast::Otherwhere>()
         .bridge_message::<crate::thaum::hold_live::HoldEnd>()
         .bridge_message::<crate::thaum::kinesis_live::KinesisPicked>()
@@ -1017,6 +1018,7 @@ struct ForceSight<'w, 's> {
     walls: Query<'w, 's, &'static LiveBarricade>,
     ids: Query<'w, 's, (Entity, &'static CharacterId)>,
     roles: Query<'w, 's, &'static Roles>,
+    formers: Query<'w, 's, &'static exa_ai::roles::FormerLevel>,
     db: Option<Res<'w, RoleDatabase>>,
     ticks: Option<Res<'w, BodyTicks>>,
 }
@@ -1024,11 +1026,13 @@ struct ForceSight<'w, 's> {
 /// The last attitude the viewer keeps about whoever raised the effect. No
 /// stored relation, and no character to keep one about, leaves it 0. The
 /// mind powers are applied by the caller.
+#[allow(clippy::too_many_arguments)]
 fn caster_relation(
     caster: Entity,
     relations: Option<&mut Relations>,
     ids: &Query<(Entity, &CharacterId)>,
     role_sets: &Query<&Roles>,
+    formers: &Query<&exa_ai::roles::FormerLevel>,
     locale: u32,
     now: u32,
 ) -> f32 {
@@ -1036,10 +1040,12 @@ fn caster_relation(
         && let Ok((_, id)) = ids.get(caster)
         && let Ok(roles) = role_sets.get(caster)
     {
+        // A caster that left its level with the player: the relation kept
+        // in that level's table moves to the global one.
         let partner = Partner {
             id: id.0,
             roles,
-            former: None,
+            former: exa_ai::roles::FormerLevel::pair(formers.get(caster).ok()),
         };
         relations.last_attitude(&partner, now, locale)
     } else {
@@ -1054,6 +1060,7 @@ pub struct MindRelations<'w, 's> {
     relations: Query<'w, 's, &'static mut Relations>,
     ids: Query<'w, 's, (Entity, &'static CharacterId)>,
     roles: Query<'w, 's, &'static Roles>,
+    formers: Query<'w, 's, &'static exa_ai::roles::FormerLevel>,
     db: Option<Res<'w, RoleDatabase>>,
 }
 
@@ -1069,6 +1076,7 @@ impl MindRelations<'_, '_> {
             self.relations.get_mut(observer).ok().map(Mut::into_inner),
             &self.ids,
             &self.roles,
+            &self.formers,
             locale,
             now,
         )
@@ -1138,19 +1146,7 @@ fn see_force_effects(
             continue;
         };
         let chest = body_chest(body);
-        let facing = body
-            .parts
-            .first()
-            .map(|part| {
-                let (_, rotation, _) = part.transform().to_scale_rotation_translation();
-                rotation * Vec3::Z
-            })
-            .unwrap_or(Vec3::Z);
-        let viewer = crate::effects::danger::Viewer {
-            chest,
-            look: facing,
-            facing,
-        };
+        let viewer = force_viewer(body, chest, npc.gaze.body_look);
         // The resistance technique averages a binding with the attitude it
         // found. It is the technique bit on the viewer's cast body.
         let resist = casts
@@ -1174,14 +1170,16 @@ fn see_force_effects(
                     relations.as_deref_mut(),
                     &sight.ids,
                     &sight.roles,
+                    &sight.formers,
                     locale,
                     now,
                 );
                 combatant::trust(caster, raw, resist, &mind)
             });
-            let Some(seen) = hazard.assess(&viewer, relation, caster == Some(who)) else {
-                continue;
-            };
+            // The original assesses into a copy of the brain's contact and
+            // keeps the whole record: every word the effect writes (noticed,
+            // sighting, concern target, alarm, urge and face) reaches the
+            // contact, and the others keep their values.
             let id = effect.to_bits();
             let mut record = npc
                 .contacts
@@ -1192,11 +1190,12 @@ fn see_force_effects(
                     id,
                     ..ContactRecord::default()
                 });
-            record.object = true;
-            if seen.flags & crate::effects::danger::SEEN_FLAG != 0 {
-                record.flags |= combatant::CONTACT_NOTICED;
+            let mut seen = crate::effects::danger::Seen::of_contact(&record);
+            if !hazard.assess_into(&viewer, relation, caster == Some(who), &mut seen) {
+                continue;
             }
-            record.alarm = seen.fear;
+            seen.write_contact(&mut record);
+            record.object = true;
             let at = match hazard {
                 crate::effects::danger::Hazard::Barricade { wall, .. } => {
                     npc.wall_steps.push(exa_ai::combat::WallStep {
@@ -1227,6 +1226,35 @@ fn see_force_effects(
                 room: -1,
             });
         }
+    }
+}
+
+/// The body a brain sees the force effects from: its chest, the look its
+/// gaze last wrote into the body (the frame's forward until the brain first
+/// turns) for the squared face term, and the character frame's forward for
+/// the linear one (the first part's forward for a body with no frame yet).
+fn force_viewer(body: &Ragdoll, chest: Vec3, body_look: Vec3) -> crate::effects::danger::Viewer {
+    let facing = body
+        .drive
+        .as_ref()
+        .and_then(|drive| drive.frame())
+        .map(|frame| Vec3::from(frame.matrix3.z_axis).normalize_or(Vec3::Z))
+        .or_else(|| {
+            body.parts.first().map(|part| {
+                let (_, rotation, _) = part.transform().to_scale_rotation_translation();
+                rotation * Vec3::Z
+            })
+        })
+        .unwrap_or(Vec3::Z);
+    let look = if body_look == Vec3::ZERO {
+        facing
+    } else {
+        body_look
+    };
+    crate::effects::danger::Viewer {
+        chest,
+        look,
+        facing,
     }
 }
 
@@ -3050,6 +3078,77 @@ mod tests {
         assert_eq!(wave.position_cm, Vec3::new(0.0, 100.0, 400.0));
     }
 
+    /// A blast's assessment reaches the whole contact (noticed, sighting,
+    /// concern target, alarm, urge and face), from the look the brain's gaze
+    /// wrote into the body: a brain looking away from the blast gets the
+    /// larger face word. A word the assessment leaves keeps the contact's
+    /// value.
+    #[test]
+    fn a_blast_fills_the_contact_from_the_bodys_look() {
+        use crate::effects::danger::{Hazard, Seen, Viewer, assess_blast};
+        use bevy::math::Affine3A;
+        use exa_physics::body::PartSetup;
+        let mut app = App::new();
+        app.add_systems(Update, see_force_effects);
+        let at = Vec3::new(0.0, 100.0, 300.0);
+        let blast = app
+            .world_mut()
+            .spawn(Hazard::Blast { at, released: true })
+            .id();
+        let body = || {
+            Ragdoll::new(&[PartSetup {
+                bone: 0,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            }])
+            .with_drive()
+        };
+        let mut away = Npc::new([0.0; 4]);
+        away.gaze.body_look = -Vec3::Z;
+        away.contacts.push(ContactRecord {
+            id: blast.to_bits(),
+            object: true,
+            tolerance: 0.25,
+            ..ContactRecord::default()
+        });
+        let away = app.world_mut().spawn((body(), away)).id();
+        let ahead = app.world_mut().spawn((body(), Npc::new([0.0; 4]))).id();
+        app.update();
+        let contact = |who: Entity| app.world().get::<Npc>(who).unwrap().force_sights[0].contact;
+        let (away, ahead) = (contact(away), contact(ahead));
+        let mut expect = Seen::default();
+        let chest = body_chest(&body());
+        let viewer = Viewer {
+            chest,
+            look: -Vec3::Z,
+            facing: Vec3::Z,
+        };
+        assert!(assess_blast(at, true, &viewer, false, 0.0, &mut expect));
+        assert_eq!(away.noticed, expect.alarm);
+        assert_eq!(away.sighting, expect.near);
+        assert_eq!(away.concern_target, expect.reach);
+        assert_eq!(away.alarm, expect.fear);
+        assert_eq!(away.seen, expect.urge);
+        assert_eq!(away.stamp, expect.face);
+        assert_eq!(away.soothe, 0.0, "the blast clears its relation word");
+        assert_eq!(away.tolerance, 0.25, "a word it leaves keeps its value");
+        assert!(away.concern_target > 0.0 && away.noticed > 0.0);
+        assert!(
+            away.stamp > ahead.stamp,
+            "looking away from it: {} against {}",
+            away.stamp,
+            ahead.stamp
+        );
+    }
+
     /// A full relation to the caster takes the fear to nothing. A brain with
     /// no relation still fears the same wall.
     #[test]
@@ -3122,6 +3221,92 @@ mod tests {
         assert_eq!(friend.force_sights[0].contact.alarm, 0.0);
         let stranger = app.world().get::<Npc>(stranger).unwrap();
         assert!(stranger.force_sights[0].contact.alarm > 0.0);
+    }
+
+    /// A caster that left its level with the player keeps the relations the
+    /// characters of that level had with it: the brain's level-table record
+    /// moves to the global table and its attitude takes the fear away.
+    #[test]
+    fn a_follower_from_another_level_keeps_its_old_friends() {
+        use bevy::math::Affine3A;
+        use exa_ai::roles::{FormerLevel, LevelRelations, Relation};
+        use exa_physics::body::PartSetup;
+        let mut app = App::new();
+        app.add_systems(Update, see_force_effects);
+        let caster = app
+            .world_mut()
+            .spawn((
+                CharacterId(0x4000_0003),
+                Roles::default(),
+                FormerLevel {
+                    locale: 5,
+                    id: 0x8000_0007,
+                },
+            ))
+            .id();
+        let mut draws = Mt19937::new(1);
+        let wall = Barricade::raise(
+            WallFrame::facing(Vec3::new(0.0, 100.0, 200.0), Vec3::Z),
+            0.25,
+            0,
+            |_, _, _| None,
+            None,
+            &mut draws,
+        );
+        app.world_mut().spawn((
+            LiveBarricade {
+                wall,
+                caster: Some(caster),
+            },
+            crate::effects::danger::Hazard::Barricade {
+                wall: crate::effects::danger::Wall {
+                    centre: Vec3::new(0.0, 100.0, 200.0),
+                    along: Vec3::X,
+                    half_width: 150.0,
+                },
+                rising: true,
+                strong: false,
+            },
+        ));
+        let body = Ragdoll::new(&[PartSetup {
+            bone: 0,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }])
+        .with_drive();
+        let mut relations = Relations::default();
+        relations.levels.push(LevelRelations {
+            locale: 5,
+            table: [(
+                7,
+                Relation {
+                    last: 100.0,
+                    ..Relation::default()
+                },
+            )]
+            .into(),
+        });
+        let friend = app
+            .world_mut()
+            .spawn((body, Npc::new([0.0; 4]), relations))
+            .id();
+        app.update();
+        let npc = app.world().get::<Npc>(friend).unwrap();
+        assert_eq!(npc.force_sights[0].contact.alarm, 0.0);
+        let relations = app.world().get::<Relations>(friend).unwrap();
+        assert!(
+            relations.levels[0].table.is_empty(),
+            "moved out of the level"
+        );
+        assert_eq!(relations.global.len(), 1);
     }
 
     /// A frenzy wipes the relation, so a friend fears the wall again. Suspicion

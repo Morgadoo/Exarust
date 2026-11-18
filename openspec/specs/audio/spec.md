@@ -427,3 +427,10 @@ The main menu's music code SHALL crossfade the main track to the menu theme it s
 #### Scenario: The music code typed
 - **WHEN** the music code is typed on the main menu with the plain theme playing
 - **THEN** a crossfade to the drum-and-bass theme at 0.2 is asked for
+
+### Requirement: A story track plays on through a door
+A story level's track SHALL be played only when it differs from the track playing on their first 15 characters; a story door change SHALL leave the music to its transition (which stops the track only when the destination's differs), so a level whose track plays already keeps it playing.
+
+#### Scenario: Two levels with the same track
+- **WHEN** a story level whose track is the one playing loads
+- **THEN** the track is not stopped or started again
