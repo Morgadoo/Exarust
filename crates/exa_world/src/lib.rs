@@ -875,7 +875,7 @@ fn insert_object_records(
     {
         let node = entity;
         commands.queue(move |world: &mut World| {
-            mechanisms::put_out_light(world, node);
+            mechanisms::switch_off(world, node);
         });
     }
     // Level load starts a light operative's arc when its value bit is set.
@@ -1871,9 +1871,11 @@ pub fn spawn_model_nodes_at(
 /// Nodes whose meshes a light of the same model leaves out of its shadow
 /// map, as the original does: the light's siblings, its parent and its
 /// grandparent (a fire's light hangs under the fire node, so a torch does
-/// not shadow its own flame). A light at the model's root leaves out
-/// nothing. Each node comes with the light's parent node, which identifies
-/// the light ([`shadow_links::ShadowExclude`]).
+/// not shadow its own flame), except a mesh whose render word keeps
+/// [`KEEP_OWN_LIGHT`] (the torch's `TorchSdw`, the ornate lamps' shadow
+/// discs). A light at the model's root (the original's object node) leaves
+/// out nothing. Each node comes with the light's parent node, which
+/// identifies the light ([`shadow_links::ShadowExclude`]).
 fn self_shadowless(model: &Model) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for (i, node) in model.nodes.iter().enumerate() {
@@ -1896,10 +1898,16 @@ fn self_shadowless(model: &Model) -> Vec<(usize, usize)> {
         out.push((parent, parent));
         out.extend(model.nodes[parent].parent.map(|g| (g, parent)));
     }
+    out.retain(|&(j, _)| model.nodes[j].render_flags & KEEP_OWN_LIGHT == 0);
     out.sort_unstable();
     out.dedup();
     out
 }
+
+/// The mesh render word's bit that keeps a mesh in its own object's light's
+/// shadow map (38 shipped meshes: the torch's shadow disc, lamps, braziers
+/// and the camp set's walls and decks).
+pub const KEEP_OWN_LIGHT: u32 = 0x1000;
 
 /// A level portal's marker node (the `0x3DD0E004` emitter record) with its
 /// stored size. The game replaces it with the portal's sparks and light
@@ -4001,6 +4009,43 @@ mod tests {
             render_flags: 0,
             triangles: None,
         }
+    }
+
+    /// A light leaves its siblings, parent and grandparent out of its cube
+    /// map, but not a mesh whose render word keeps the keep-own-light bit
+    /// (the torch's shadow disc), and a light at the root none.
+    #[test]
+    fn a_light_keeps_a_flagged_mesh_of_its_own_object() {
+        let light = exa_formats::rfc::Light {
+            flags: 0,
+            color: [1.0, 1.0, 1.0],
+            multiplier: 1.0,
+            intensity: 1.0,
+            radius: 1.0,
+            softness: 0.0,
+            spot: None,
+            ranged: true,
+            animation: None,
+        };
+        let root = node("torch", None, None);
+        let mut disc = node("TorchSdw", Some(0), None);
+        disc.render_flags = KEEP_OWN_LIGHT;
+        let head = node("head", Some(0), None);
+        let mut lamp = node("lamp", Some(2), None);
+        lamp.light = Some(light);
+        let mut cap = node("cap", Some(2), None);
+        cap.render_flags = KEEP_OWN_LIGHT;
+        let wick = node("wick", Some(2), None);
+        let model = Model {
+            nodes: vec![root, disc, head, lamp, cap, wick],
+        };
+        // Siblings (the wick, not the flagged cap), the parent and the
+        // grandparent, each with the light's parent.
+        assert_eq!(self_shadowless(&model), vec![(0, 2), (2, 2), (5, 2)]);
+        let mut top = node("top", None, None);
+        top.light = Some(light);
+        let model = Model { nodes: vec![top] };
+        assert!(self_shadowless(&model).is_empty());
     }
 
     /// A fade rule hides a light under it only once the daylight is above
