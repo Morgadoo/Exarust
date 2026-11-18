@@ -683,8 +683,7 @@ fn darken_part(world: &mut World, part: Entity) {
     else {
         return;
     };
-    let Some(mut materials) =
-        world.get_resource_mut::<Assets<exa_render::material::ExaMaterial>>()
+    let Some(mut materials) = world.get_resource_mut::<Assets<exa_render::material::ExaMaterial>>()
     else {
         return;
     };
@@ -696,7 +695,8 @@ fn darken_part(world: &mut World, part: Entity) {
     }
     own.params.emissive = Vec3::ZERO.extend(own.params.emissive.w);
     let copy = materials.add(own);
-    if let Some(mut slot) = world.get_mut::<MeshMaterial3d<exa_render::material::ExaMaterial>>(part) {
+    if let Some(mut slot) = world.get_mut::<MeshMaterial3d<exa_render::material::ExaMaterial>>(part)
+    {
         slot.0 = copy;
     }
 }
@@ -1662,13 +1662,15 @@ mod tests {
         let build = || {
             let mut world = World::new();
             world.insert_resource(Assets::<ExaMaterial>::default());
-            let shared = world.resource_mut::<Assets<ExaMaterial>>().add(ExaMaterial {
-                params: ExaParams {
-                    emissive: glow,
+            let shared = world
+                .resource_mut::<Assets<ExaMaterial>>()
+                .add(ExaMaterial {
+                    params: ExaParams {
+                        emissive: glow,
+                        ..default()
+                    },
                     ..default()
-                },
-                ..default()
-            });
+                });
             let node = world.spawn_empty().id();
             let part = |world: &mut World, parent| {
                 world
@@ -1681,7 +1683,10 @@ mod tests {
             let c = part(&mut world, child);
             let d = part(&mut world, child);
             let light = world
-                .spawn((VoxelLight::from_record([1.0, 0.5, 0.25], 2.0, 1.0), ChildOf(node)))
+                .spawn((
+                    VoxelLight::from_record([1.0, 0.5, 0.25], 2.0, 1.0),
+                    ChildOf(node),
+                ))
                 .id();
             (world, node, [a, b, c, d], light)
         };
