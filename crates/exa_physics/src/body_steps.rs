@@ -342,6 +342,19 @@ pub(super) fn trigger_distance(
     TRIGGER_RADII * radius(energy, base, scale, stepping, bonus) * factor
 }
 
+/// The knockback step's push (cm) as the force effects pass it: the
+/// direction with its height zeroed, times `amount · 2`, cut to `step_cm`
+/// when its squared length (`(x² + y²) + z²`) is longer (a NaN is not cut).
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn knock_push(direction: Vec3, amount: f32, step_cm: f32) -> Vec3 {
+    let mut push = Vec3::new(direction.x, 0.0, direction.z) * (amount * 2.0);
+    let len2 = (push.x * push.x + push.y * push.y) + push.z * push.z;
+    if len2 > step_cm * step_cm {
+        push *= step_cm / len2.sqrt();
+    }
+    push
+}
+
 /// The step length (cm): 80 · √scale · the leg extension.
 pub fn step_length(scale: f32, extension: f32) -> f32 {
     STEP_LENGTH * scale.max(0.0).sqrt() * extension.max(0.0)

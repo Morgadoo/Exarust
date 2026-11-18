@@ -1213,12 +1213,37 @@ pub fn post_raise(
     }
 }
 
+/// The revival's voice pick: the voice's names (grunt, groans, scream,
+/// wound set) from the record and its race, as a new fighter's
+/// ([`crate::character_voice::voice_of`]); its volume, gain, pitch and
+/// clock stay. Without the game's races the built-in human's.
+pub(crate) fn repick_voice(
+    voice: &mut exa_combat::voice::CharacterVoice,
+    record: &exa_formats::characters::CharacterRecord,
+    game: Option<&exa_assets::Game>,
+) {
+    let races = game.map(crate::scene_bodies::game_races).unwrap_or_default();
+    let builtin = exa_formats::races::builtin_human();
+    let race = exa_formats::races::of_character(&races, record.race).unwrap_or(&builtin);
+    let sounds = game.and_then(|g| g.0.pack(exa_assets::PackKind::Sound));
+    let exists = |name: &str| {
+        sounds.is_some_and(|p| p.get(&format!("{}01", name.to_ascii_lowercase())).is_some())
+    };
+    let picked = crate::character_voice::voice_of(record, race, voice.volume, voice.pitch, exists);
+    voice.grunt = picked.grunt;
+    voice.groan_short = picked.groan_short;
+    voice.groan_heavy = picked.groan_heavy;
+    voice.scream = picked.scream;
+    voice.wound = picked.wound;
+}
+
 /// The dead powers' raise of a corpse, in the original's order: the loot
 /// window open on the body closes ([`crate::gui_screens::close_loot_on_body`],
 /// on the frame's GUI),
 /// a body without decay is revived (its record's and its character's feral
-/// level become the revival's 0.2, its rules gain the decayed bit and its
-/// most energy follows), the body is revived as the AI manager's rise
+/// level become the revival's 0.2, its voice is picked again from the
+/// record ([`repick_voice`]: the undead voice), its rules gain the decayed
+/// bit and its most energy follows), the body is revived as the AI manager's rise
 /// revives it ([`crate::rise::revive_corpse`]: knocked out at once, its
 /// muscles back, so it gets up), and its yellow and red health become a
 /// half and full, written over the revive's own yellow.
@@ -1241,6 +1266,7 @@ pub fn raise_corpse(
         Option<&mut exa_character::record::CharacterData>,
     )>,
     mut frame: Option<ResMut<exa_physics::sim_app::FrameCommands>>,
+    game: Option<Res<exa_assets::Game>>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as u32);
     // The dead powers close the loot window open on the body before they
@@ -1258,7 +1284,7 @@ pub fn raise_corpse(
         knock,
         mut fighter,
         mut body,
-        voice,
+        mut voice,
         hands,
         npc,
         roles,
@@ -1279,6 +1305,11 @@ pub fn raise_corpse(
     if let Some(revival) = revival {
         if let Some(mut data) = data {
             data.record.feral = revival.decay;
+            // The revival picks the voice again from the record, whose
+            // feral level now takes the undead voice.
+            if let Some(voice) = voice.as_deref_mut() {
+                repick_voice(voice, &data.record, game.as_deref());
+            }
         }
         fighter.stats.feral = revival.decay;
         fighter.stats.rules.0 |= casts::DECAYED_RULE;

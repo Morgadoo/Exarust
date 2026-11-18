@@ -28,7 +28,8 @@
 //!   and pitch). A part's limb callback ([`strike_torrent_part`]) pushes the
 //!   part's particles at the gathered surface's weights by
 //!   [`limb_impulse`]; a struck character takes [`torrent_knock`] of the
-//!   part's gathered impulse: the energy, a knockback step, its instability
+//!   part's gathered impulse: the energy, a knockback step (the step
+//!   routine, `Ragdoll::knock_along`, as the blast's), its instability
 //!   counter +1, the loosened pins and concern 1 at 0.01 toward the caster;
 //!   a body met is woken.
 //! - **Leaving**: the frame that would build no triangles removes it
@@ -483,9 +484,9 @@ fn knock_torrent_character(
     }) else {
         return;
     };
-    if let Some((direction, size)) = knock.knock {
-        let flat = Vec3::new(direction.x, 0.0, direction.z);
-        body.begin_knockback(flat * (size / CM));
+    if let Some((direction, amount)) = knock.knock {
+        // The knockback step routine, without the chest's velocity.
+        body.knock_along(direction, amount);
     }
     if let Ok(mut combatant) = combatants.get_mut(struck) {
         let aggression = npcs

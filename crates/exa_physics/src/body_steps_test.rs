@@ -873,3 +873,35 @@ fn footwork_walks_backwards_without_a_fall() {
     assert!(moved > 0.5, "moved {moved} m back");
     assert!(low_balance > 0.2, "balance fell to {low_balance}");
 }
+
+/// The force effects' knockback push: the direction flattened, times twice
+/// the amount, cut to the step length (the length taken over x, y and z).
+#[test]
+fn the_force_knock_push_is_twice_the_amount_flattened_and_cut_to_the_step() {
+    // 10 along x, the height dropped: 20 cm.
+    let push = knock_push(Vec3::new(1.0, 5.0, 0.0), 10.0, 80.0);
+    assert_eq!(push, Vec3::new(20.0, 0.0, 0.0));
+    // 60 along z would be 120: cut to the 80 cm step.
+    let push = knock_push(Vec3::Z, 60.0, 80.0);
+    assert!(close(push.z, 80.0) && push.x == 0.0);
+    // A NaN length is not cut.
+    assert!(knock_push(Vec3::X, f32::NAN, 80.0).x.is_nan());
+}
+
+/// The step routine on a body: the knockback kind set and the step's
+/// target the chest plus the cut push; clearing the kind leaves the step.
+#[test]
+fn a_force_knock_starts_a_knockback_step_at_the_chest_plus_the_push() {
+    let (mut body, _) = standing_at(Vec3::ZERO);
+    let drive = body.drive.as_mut().unwrap();
+    drive.balance.set_extension(1.0);
+    let chest = drive.balance.chest().unwrap_or(Vec3::ZERO);
+    let step = step_length(drive.stats.scale, 1.0);
+    body.knock_along(Vec3::X, 1000.0);
+    let target = body.step_target().expect("stepping");
+    assert!(close(target.x - chest.x, step / 100.0), "{target} {chest}");
+    assert!(body.drive.as_ref().unwrap().steps.knockback);
+    body.clear_knockback_kind();
+    assert!(!body.drive.as_ref().unwrap().steps.knockback);
+    assert!(body.stepping());
+}
