@@ -82,16 +82,24 @@ impl ShownParchment {
     }
 }
 
-/// The alpha of the texel at `(x, y)` counted from the image's top, as the
-/// original's sampler turns the click's row into its bottom-up storage row
-/// (the height less the row). Outside the image it is transparent.
+/// The alpha the original's sampler reads for the texel at `(x, y)` counted
+/// from the image's top. The sampler is block-granular: it turns the row
+/// into its bottom-up storage row (the height less the row, unsigned, no
+/// minus one), takes the compressed 4×4 block holding that storage row and
+/// the column (logical shifts), and answers the block's texel at column 1,
+/// row 1 in storage order, with no bounds check. Here a texel outside the
+/// image (the sampler reads past it, for instance a row-0 click one block
+/// row above the top) is transparent.
 fn texel_alpha(texture: &GuiTexture, x: i32, y: i32) -> u8 {
-    let (w, h) = (texture.width as i64, texture.height as i64);
-    let (x, y) = (i64::from(x), i64::from(y));
-    if x < 0 || y < 0 || x >= w || y >= h {
+    let (w, h) = (texture.width, texture.height);
+    let storage_row = (h.wrapping_sub(y as u32) >> 2) as u64 * 4 + 1;
+    let column = ((x as u32) >> 2) as u64 * 4 + 1;
+    if storage_row >= u64::from(h) || column >= u64::from(w) {
         return 0;
     }
-    texture.pixels[(y * w + x) as usize][3]
+    // The decoded image's rows run top-down.
+    let row = u64::from(h) - 1 - storage_row;
+    texture.pixels[(row * u64::from(w) + column) as usize][3]
 }
 
 /// The parchment and its pending request.
@@ -255,13 +263,19 @@ pub(crate) fn draw_parchment(
 mod tests {
     use super::*;
 
+    /// Eight by eight texels, clear but for one texel per 4×4 block: the
+    /// texel at column 1 and storage row 1 (bottom-up) of the top-left and
+    /// the bottom-right blocks is opaque.
     fn texture() -> GuiTexture {
-        // Four by two texels: the top row opaque, the bottom one clear.
-        let mut pixels = vec![[0u8, 0, 0, 0xff]; 4];
-        pixels.extend(vec![[0u8, 0, 0, 0]; 4]);
+        let mut pixels = vec![[0u8; 4]; 64];
+        let mut set = |storage_row: usize, column: usize| {
+            pixels[(7 - storage_row) * 8 + column] = [0, 0, 0, 0xff];
+        };
+        set(5, 1); // the top-left block (storage rows 4..8)
+        set(1, 5); // the bottom-right block (storage rows 0..4)
         GuiTexture {
-            width: 4,
-            height: 2,
+            width: 8,
+            height: 8,
             pixels,
         }
     }
@@ -270,24 +284,33 @@ mod tests {
         ShownParchment {
             item: 9,
             image: "Map_Exanima01".into(),
-            rect: (100, 50, 4, 2),
-            texels: (4, 2),
+            rect: (100, 50, 8, 8),
+            texels: (8, 8),
             unit,
             fade: PopupFade::default(),
         }
     }
 
-    /// At six pixels to the unit one screen pixel is one texel: the top
-    /// row hits, the clear bottom row and a point off the form do not.
+    /// At six pixels to the unit one screen pixel is one texel. The sample
+    /// is the block's: a click anywhere in a block answers its texel at
+    /// column 1, storage row 1 (the row from the top turned bottom-up as
+    /// the height less the row). Row 0 turns into storage row 8, a block
+    /// row past the image, which is clear; a point off the form misses.
     #[test]
-    fn the_parchment_hits_where_its_texture_is_opaque() {
+    fn the_parchment_hits_by_its_texture_blocks() {
         let t = texture();
         let p = shown(6);
-        assert!(p.hit((100, 50), &t));
-        assert!(p.hit((103, 50), &t));
-        assert!(!p.hit((101, 51), &t));
-        assert!(!p.hit((99, 50), &t));
-        assert!(!p.hit((104, 50), &t));
+        // Rows 1..=4 from the top are storage rows 7..=4: the top-left block.
+        assert!(p.hit((100, 51), &t));
+        assert!(p.hit((103, 54), &t));
+        assert!(!p.hit((104, 52), &t));
+        // Rows 5..=7 are storage rows 3..=1: the bottom-right block.
+        assert!(p.hit((107, 57), &t));
+        assert!(p.hit((104, 55), &t));
+        assert!(!p.hit((101, 56), &t));
+        // Row 0 samples past the image.
+        assert!(!p.hit((101, 50), &t));
+        assert!(!p.hit((99, 52), &t));
     }
 
     /// The map's 1024 by 512 image at unit four is 683 by 341, centred on
