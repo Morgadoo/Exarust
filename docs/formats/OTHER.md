@@ -1050,11 +1050,39 @@ over 255 and the damage as 2/(2 − x) − 1; apparel takes damage x/(2 − x)
 too and dirt (x² + x)/2. The rest of the factory job is under Weapon
 factories (Paint).
 
-Not yet painted: the gemstone's pattern pass (a texture the factory never
-sets), the alpha pass, the factory's
-shared atlas (each part is painted on its own at its component's
-resolution) and per-instance randomized appearances. The painter samples
-the nearest texel where the GPU filters.
+**Sampling** (REA on the loads and `textures.flb`). Every program reads at
+the fragment's centre (`vrTex`, scaled by `MatTile`, `DmgTile`, `ShdTile`
+or `UVScale`).
+- Library textures load with the word of the material setup that loads
+  them: `0x70133` (linear magnification and minification) for steel, iron,
+  blade, the cloths, silk, velvet, suede, the leathers, wired grip, painted
+  steel, plate and chain; `0x70100` for the woods and painted planks and
+  `0x70103` for copper alloy and satin, gemstone and resin (nearest). All
+  repeat and keep no mip chain. The texture manager keeps one texture per
+  name, so a name two setups load (the scuff maps of steel and wood) keeps
+  the word of the material first used in the session
+  (`paint::Texels::claim_filter`). Linear reads the bilinear mix of the
+  four level-0 texels around the sample point, magnified or minified, its
+  fractions cut to 1/256 steps as GPUs filter [inf]
+  (`paint::Samples::library4`); nearest reads the texel whose square holds
+  the point.
+- A job's own maps load with `0x133`: a factory region's shade, normal and
+  masks with the image's own wrap bits (no shipped component map sets
+  them), an apparel block's likewise (two of 2136 apparel maps set them):
+  linear at level 0 with clamped edges, so a blade's `UVScale` past the
+  map's end reads its last row (`paint::sample_region_map`, also for the
+  shade scratch's inputs). The emblem pictures load with `0x70133`.
+- At texture detail 3 every library texture and component map uploads its
+  level 0 (detail classes 0 and 2 only, `exa-tool corpus paint-maps`).
+
+Never drawn on shipped data: the gemstone pattern colour program
+(`gemstone_d` with `0x20000`, the item picture times 3 in place of the
+palette colour times 2) runs only for a region whose picture slot is set,
+and the factory's region builder, the only job that draws regions, never
+writes it; the alternate steel normal (`steel_n` with `0x200000`, the item
+normal at unit 8 added to unit 2's) runs only for region flag 8 (part flag
+4), whose one shipped part (`shield test`) no item names (`exa-tool corpus
+factories`). Not yet painted: per-instance randomized appearances.
 
 ### Trade fields
 
@@ -1567,9 +1595,9 @@ factory weapons of a real save, part for part and material for material.
   drawn blended `ZERO, SRC_COLOR` into the sRGB-alpha colour target. Only
   `gemstone_a` exists in the shipped `textures.flb`. `_procmatr` is
   `_procmat1` with the refraction mode (material word 0x360207).
-- Not reproduced yet: the alternate-normal draw of part flag 4, linear
-  filtering of the source maps, and a crop above 1 overhanging its region
-  into the atlas.
+- Not reproduced yet: a crop above 1 overhanging its region into the
+  atlas. The alternate-normal draw of part flag 4 is never reached (see
+  Apparel painting, Sampling).
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
   4 material slots (material, finish, colour, mode), stats, and the stored

@@ -455,11 +455,7 @@ pub fn decomposition_mask(width: usize, height: usize, d: &Decomp<'_>) -> Texels
             texel[3] = 255;
         }
     }
-    Texels {
-        width,
-        height,
-        rgba,
-    }
+    Texels::new(width, height, rgba)
 }
 
 /// Generates rows `first..last` of the three maps into the row slices,
@@ -612,16 +608,15 @@ mod tests {
     use crate::paint::Texels;
 
     fn tex(width: usize, height: usize, rgba: [u8; 4]) -> Texels {
-        Texels {
+        Texels::new(
             width,
             height,
-            rgba: rgba
-                .iter()
+            rgba.iter()
                 .copied()
                 .cycle()
                 .take(width * height * 4)
                 .collect(),
-        }
+        )
     }
 
     /// The three chargen passes on concrete texels: the colour is the
@@ -896,11 +891,7 @@ mod tests {
     #[test]
     fn the_mask_pass_shifts_only_the_weight_fetch() {
         let seams = tex(2, 1, [255, 255, 255, 255]);
-        let weight = Texels {
-            width: 2,
-            height: 1,
-            rgba: vec![0, 0, 0, 255, 255, 255, 255, 255],
-        };
+        let weight = Texels::new(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
         let flat = tex(1, 1, [128, 128, 255, 255]);
         let d = Decomp {
             amount: 1.0,

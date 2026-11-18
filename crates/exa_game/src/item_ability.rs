@@ -169,12 +169,55 @@ impl Plugin for ItemAbilityPlugin {
                     .chain(),
             )
             .add_systems(
+                Update,
+                // After the held items' check and the frame's flames (the
+                // flag reaches the step's copy through its command queue),
+                // before the hit hooks.
+                put_out_released_blades
+                    .in_set(exa_physics::FramePhase::World)
+                    .after(ability_tick)
+                    .after(exa_world::flame::frame_flames)
+                    .before(hit_hooks),
+            )
+            .add_systems(
                 FixedUpdate,
                 follow_items
                     .in_set(exa_physics::body::AfterSolver::Observe)
                     .after(crate::thaum::long_door_live::pick_long_doors)
                     .before(crate::thaum::live::tick_arcs),
             );
+    }
+}
+
+/// The lit blade's release hook: lighting a blade installs the flame row's
+/// put-out as the item's release hook, which the hand change calls when
+/// the item leaves the hand. A held weapon that comes loose (a drop,
+/// [`exa_physics::grip::CameLoose`]) then puts its row out: the row takes
+/// its extinguish flag and fades, the item's lit flag ([`LitBlade`]) goes
+/// and the player's light is refreshed (`player_light` follows the flag).
+/// A blade sheathed or swapped away leaves the scene with its row, so only
+/// a drop leaves a row behind. [Exarust: the ability check no longer runs
+/// for an item out of the hands, so without the hook the dropped blade's
+/// row would burn on.]
+pub(crate) fn put_out_released_blades(
+    mut commands: Commands,
+    mut loose: MessageReader<exa_physics::grip::CameLoose>,
+    lit: Query<&LitBlade>,
+    mut rows: Query<&mut Flame>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+) {
+    for came in loose.read() {
+        let Ok(lit) = lit.get(came.item) else {
+            continue;
+        };
+        if let Ok(mut flame) = rows.get_mut(lit.row) {
+            step_write(fixed.as_deref_mut(), lit.row, &mut flame, Flame::extinguish);
+        }
+        commands.entity(came.item).remove::<LitBlade>();
+        info!(
+            "item ability: {:?} drops its lit blade {:?}: the row goes out",
+            came.holder, came.item
+        );
     }
 }
 
@@ -1105,6 +1148,39 @@ fn flame_row_loops(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lit blade that comes loose puts its row out (the release hook):
+    /// the row fades on, the lit flag goes; a held blade keeps burning.
+    #[test]
+    fn a_dropped_lit_blade_puts_its_row_out() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<exa_physics::grip::CameLoose>()
+            .add_systems(Update, put_out_released_blades);
+        let holder = app.world_mut().spawn_empty().id();
+        let mut lit_blade = || {
+            let row = app
+                .world_mut()
+                .spawn(Flame::new(Vec3::ZERO, Vec3::Y * 30.0, 0, 1))
+                .id();
+            let blade = app.world_mut().spawn(LitBlade { row }).id();
+            (blade, row)
+        };
+        let (dropped, dropped_row) = lit_blade();
+        let (held, held_row) = lit_blade();
+        app.world_mut().write_message(exa_physics::grip::CameLoose {
+            item: dropped,
+            holder,
+        });
+        app.update();
+        let out = |app: &App, row: Entity| {
+            app.world().get::<Flame>(row).unwrap().row().flags & fire_row::EXTINGUISHING != 0
+        };
+        assert!(out(&app, dropped_row));
+        assert!(app.world().get::<LitBlade>(dropped).is_none());
+        assert!(!out(&app, held_row));
+        assert!(app.world().get::<LitBlade>(held).is_some());
+    }
 
     #[test]
     fn each_flame_row_draws_with_its_own_fade() {
