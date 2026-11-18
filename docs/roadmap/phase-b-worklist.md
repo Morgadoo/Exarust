@@ -5,232 +5,212 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 550 | 140,952 | B1 wire (or prove unreachable) |
-| partial | 1,253 | 784,733 | B4 complete the port |
-| missing | 43 | 9,233 | B4 port |
+| uncalled | 372 | 107,473 | B1 wire (or prove unreachable) |
+| partial | 969 | 713,766 | B4 complete the port |
+| missing | 42 | 9,112 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
 ## By section (open bytes)
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 139,044 | 16,556 | 238 |
-| render | 107,731 | 21,652 | 3,232 |
-| ui | 80,849 | 38,865 | 288 |
-| characters | 84,180 | 14,061 | 1,452 |
-| powers | 71,974 | 2,261 | 2,321 |
-| world | 55,355 | 15,716 | 563 |
-| modes | 63,036 | 7,005 | 363 |
-| ai | 67,452 | 1,271 | 11 |
-| items | 51,166 | 7,592 | 525 |
-| data | 26,124 | 9,435 | 0 |
-| runtime | 18,651 | 2,355 | 181 |
-| core | 10,149 | 3,305 | 59 |
+| physics | 137,038 | 16,556 | 238 |
+| render | 97,456 | 12,993 | 3,232 |
+| ui | 71,319 | 33,988 | 167 |
+| characters | 72,838 | 11,619 | 1,452 |
+| modes | 61,957 | 7,005 | 363 |
+| powers | 63,675 | 1,714 | 2,321 |
+| ai | 61,062 | 1,061 | 11 |
+| world | 51,687 | 9,448 | 563 |
+| items | 39,698 | 4,117 | 525 |
+| data | 22,076 | 3,427 | 0 |
+| runtime | 17,689 | 1,927 | 181 |
+| core | 9,818 | 2,740 | 59 |
 | script | 3,796 | 878 | 0 |
-| audio | 3,025 | 0 | 0 |
-| combat | 2,201 | 0 | 0 |
+| audio | 2,097 | 0 | 0 |
+| combat | 1,560 | 0 | 0 |
 
 ## By component, largest first
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 36 / 95,019 | 4 / 1,337 | 0 / 0 | 96,356 |
-| SG_CharacterGen (unit routines) | characters | 46 / 30,160 | 25 / 5,384 | 0 / 0 | 35,544 |
-| TSimSector | physics | 26 / 21,125 | 0 / 0 | 0 / 0 | 21,125 |
-| TMotilePart | characters | 37 / 17,208 | 4 / 1,296 | 2 / 1,370 | 19,874 |
-| XA_Arena (unit routines) | modes | 27 / 16,076 | 3 / 1,321 | 4 / 363 | 17,760 |
+| TMotileDynamics | physics | 35 / 94,952 | 4 / 1,337 | 0 / 0 | 96,289 |
+| SG_CharacterGen (unit routines) | characters | 38 / 28,359 | 23 / 5,324 | 0 / 0 | 33,683 |
+| TSimSector | physics | 24 / 20,331 | 0 / 0 | 0 / 0 | 20,331 |
+| TMotilePart | characters | 31 / 15,455 | 4 / 1,296 | 2 / 1,370 | 18,121 |
+| XA_Arena (unit routines) | modes | 24 / 15,711 | 3 / 1,321 | 4 / 363 | 17,395 |
 | TVXGIManager | render | 11 / 16,981 | 0 / 0 | 0 / 0 | 16,981 |
-| SG_PlayerControls (unit routines) | ai | 29 / 16,413 | 0 / 0 | 0 / 0 | 16,413 |
+| SG_PlayerControls (unit routines) | ai | 27 / 15,796 | 0 / 0 | 0 / 0 | 15,796 |
 | TPathFinder | ai | 4 / 14,517 | 0 / 0 | 0 / 0 | 14,517 |
-| TGUIForm | ui | 31 / 10,077 | 20 / 3,989 | 0 / 0 | 14,066 |
-| TGUIDrawSkin | ui | 2 / 3,550 | 22 / 9,559 | 0 / 0 | 13,109 |
-| RF_Skinning (unit routines) | characters | 7 / 12,272 | 2 / 375 | 0 / 0 | 12,647 |
+| TGUIDrawSkin | ui | 2 / 3,550 | 19 / 9,231 | 0 / 0 | 12,781 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
 | XA_SaveGames (unit routines) | modes | 19 / 11,691 | 1 / 128 | 0 / 0 | 11,819 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
-| TMotileAI | ai | 18 / 11,134 | 1 / 142 | 1 / 11 | 11,287 |
-| TStaticTerrain | world | 10 / 8,748 | 3 / 522 | 0 / 0 | 9,270 |
+| RF_Skinning (unit routines) | characters | 4 / 10,882 | 1 / 189 | 0 / 0 | 11,071 |
+| TGUIForm | ui | 19 / 8,872 | 11 / 1,942 | 0 / 0 | 10,814 |
+| TMotileAI | ai | 15 / 10,312 | 1 / 142 | 1 / 11 | 10,465 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
-| Character equipment & inventory routines (TCharacterView by address) | items | 19 / 8,669 | 0 / 0 | 0 / 0 | 8,669 |
-| FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
-| RF_3DView (unit routines) | render | 14 / 7,385 | 0 / 0 | 7 / 1,146 | 8,531 |
-| RF_OS_Functions (unit routines) | runtime | 12 / 6,629 | 5 / 1,749 | 0 / 0 | 8,378 |
-| FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
-| TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
-| TVCCloth | physics | 12 / 7,143 | 5 / 688 | 0 / 0 | 7,831 |
+| RF_OS_Functions (unit routines) | runtime | 9 / 6,381 | 5 / 1,749 | 0 / 0 | 8,130 |
+| Character equipment & inventory routines (TCharacterView by address) | items | 12 / 7,858 | 0 / 0 | 0 / 0 | 7,858 |
+| RF_3DView (unit routines) | render | 11 / 6,665 | 0 / 0 | 7 / 1,146 | 7,811 |
+| FLX_GPUPrograms (unit routines) | render | 4 / 7,413 | 2 / 266 | 0 / 0 | 7,679 |
 | TRBDDoor | world | 3 / 7,666 | 0 / 0 | 0 / 0 | 7,666 |
-| TTetraRBD | physics | 13 / 6,912 | 2 / 661 | 0 / 0 | 7,573 |
+| TVCCloth | physics | 9 / 6,840 | 5 / 688 | 0 / 0 | 7,528 |
+| TStaticTerrain | world | 6 / 7,120 | 1 / 201 | 0 / 0 | 7,321 |
+| TGUIItemView | ui | 1 / 4,979 | 13 / 2,302 | 0 / 0 | 7,281 |
 | RF_SceneNodes (unit routines) | world | 5 / 6,798 | 2 / 333 | 0 / 0 | 7,131 |
-| RF_GUI_Main (unit routines) | ui | 9 / 5,686 | 8 / 1,289 | 2 / 144 | 7,119 |
-| RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
-| SG_GameGUI (unit routines) | ui | 13 / 6,927 | 0 / 0 | 0 / 0 | 6,927 |
-| TRenderer | render | 15 / 6,335 | 1 / 526 | 1 / 10 | 6,871 |
+| FLX_Content_Stream (unit routines) | data | 10 / 6,482 | 4 / 458 | 0 / 0 | 6,940 |
+| TTetraRBD | physics | 9 / 6,166 | 2 / 661 | 0 / 0 | 6,827 |
 | Steam Input action bindings | runtime | 11 / 6,523 | 2 / 166 | 2 / 107 | 6,796 |
 | RFE_GridEnvs (unit routines) | world | 7 / 6,790 | 0 / 0 | 0 / 0 | 6,790 |
+| RF_GUI_Controls (unit routines) | ui | 8 / 5,654 | 3 / 1,003 | 0 / 0 | 6,657 |
 | RFE_Export_RFC2 (unit routines) | data | 10 / 6,403 | 2 / 240 | 0 / 0 | 6,643 |
-| RF_Textures (unit routines) | render | 17 / 5,574 | 9 / 1,051 | 0 / 0 | 6,625 |
-| FLX_Materials_Procedural (unit routines) | items | 4 / 3,720 | 11 / 2,821 | 0 / 0 | 6,541 |
-| TMatchBoard | modes | 4 / 6,481 | 0 / 0 | 0 / 0 | 6,481 |
-| TLoadoutForm | modes | 6 / 6,320 | 1 / 80 | 0 / 0 | 6,400 |
-| Character roles & relations (script functions) | ai | 10 / 5,694 | 2 / 603 | 0 / 0 | 6,297 |
-| RF_Navigation (unit routines) | render | 6 / 4,181 | 9 / 2,080 | 0 / 0 | 6,261 |
+| TLoadoutForm | modes | 5 / 6,248 | 1 / 80 | 0 / 0 | 6,328 |
 | SG_GameMain (unit routines) | modes | 16 / 6,134 | 0 / 0 | 0 / 0 | 6,134 |
-| FLX_Character_Textures (unit routines) | characters | 13 / 5,935 | 1 / 187 | 0 / 0 | 6,122 |
-| TCharacterView | ui | 13 / 5,178 | 1 / 866 | 0 / 0 | 6,044 |
-| T3DViewport | ui | 19 / 4,915 | 2 / 1,101 | 0 / 0 | 6,016 |
+| TMatchBoard | modes | 3 / 6,102 | 0 / 0 | 0 / 0 | 6,102 |
+| TRenderer | render | 14 / 5,993 | 0 / 0 | 1 / 10 | 6,003 |
+| RF_Navigation (unit routines) | render | 6 / 4,181 | 7 / 1,804 | 0 / 0 | 5,985 |
+| RF_GUI_Main (unit routines) | ui | 8 / 4,651 | 6 / 1,187 | 1 / 23 | 5,861 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
-| TParticleSystem | powers | 3 / 4,746 | 4 / 1,039 | 0 / 0 | 5,785 |
-| TMesh | render | 9 / 5,059 | 2 / 703 | 0 / 0 | 5,762 |
 | TPlayerBehaviour | ai | 2 / 5,670 | 0 / 0 | 0 / 0 | 5,670 |
-| TProcMaterial | items | 9 / 5,114 | 0 / 0 | 1 / 525 | 5,639 |
-| TIconManager | ui | 0 / 0 | 6 / 5,573 | 0 / 0 | 5,573 |
-| SG_Character_Data (unit routines) | characters | 9 / 2,332 | 21 / 3,211 | 0 / 0 | 5,543 |
 | TAISearchActivity | ai | 5 / 5,505 | 0 / 0 | 0 / 0 | 5,505 |
-| FLX_System (unit routines) | core | 23 / 2,171 | 22 / 2,983 | 1 / 59 | 5,213 |
-| TSkinController2 | characters | 6 / 3,997 | 2 / 1,193 | 0 / 0 | 5,190 |
+| SG_GameGUI (unit routines) | ui | 9 / 5,498 | 0 / 0 | 0 / 0 | 5,498 |
+| TParticleSystem | powers | 3 / 4,746 | 2 / 617 | 0 / 0 | 5,363 |
+| TCharacterView | ui | 6 / 4,466 | 1 / 866 | 0 / 0 | 5,332 |
+| TIconManager | ui | 0 / 0 | 5 / 5,304 | 0 / 0 | 5,304 |
 | RF_Dynamics (unit routines) | physics | 4 / 1,692 | 10 / 3,489 | 0 / 0 | 5,181 |
-| TForceShellEffect | powers | 6 / 4,985 | 0 / 0 | 0 / 0 | 4,985 |
-| Item description phrases | items | 5 / 4,855 | 0 / 0 | 0 / 0 | 4,855 |
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
 | TTendrilEffect | powers | 1 / 4,804 | 0 / 0 | 0 / 0 | 4,804 |
-| SG_ItemGUI (unit routines) | items | 8 / 3,063 | 7 / 1,703 | 0 / 0 | 4,766 |
 | RF_Morphing (unit routines) | characters | 2 / 4,764 | 0 / 0 | 0 / 0 | 4,764 |
-| RF_Main (unit routines) | runtime | 14 / 4,263 | 4 / 405 | 0 / 0 | 4,668 |
-| TGSLines | ui | 3 / 3,841 | 5 / 815 | 0 / 0 | 4,656 |
+| SG_Character_Data (unit routines) | characters | 8 / 2,218 | 9 / 2,436 | 0 / 0 | 4,654 |
+| FLX_System (unit routines) | core | 20 / 1,840 | 19 / 2,740 | 1 / 59 | 4,639 |
 | RF_HW_Config (unit routines) | ui | 7 / 4,439 | 3 / 198 | 0 / 0 | 4,637 |
-| TNavCameraControl | render | 1 / 4,401 | 1 / 192 | 0 / 0 | 4,593 |
+| TSkinController2 | characters | 3 / 3,363 | 2 / 1,193 | 0 / 0 | 4,556 |
+| TNavCameraControl | render | 1 / 4,401 | 0 / 0 | 0 / 0 | 4,401 |
 | TSkillUI | ui | 4 / 3,673 | 2 / 716 | 0 / 0 | 4,389 |
-| TTerrainManager | world | 6 / 3,351 | 6 / 1,033 | 0 / 0 | 4,384 |
-| SG_Thaum_DIsp (unit routines) | powers | 11 / 3,827 | 1 / 431 | 0 / 0 | 4,258 |
+| RF_Textures (unit routines) | render | 11 / 3,687 | 4 / 670 | 0 / 0 | 4,357 |
+| FLX_Character_Textures (unit routines) | characters | 2 / 4,094 | 1 / 187 | 0 / 0 | 4,281 |
+| T3DViewport | ui | 7 / 3,176 | 2 / 1,101 | 0 / 0 | 4,277 |
+| TTerrainManager | world | 6 / 3,351 | 2 / 923 | 0 / 0 | 4,274 |
 | SG_CharacterAI (unit routines) | ai | 12 / 4,255 | 0 / 0 | 0 / 0 | 4,255 |
-| TTerrainGrass | world | 4 / 4,208 | 0 / 0 | 0 / 0 | 4,208 |
-| Texture compression formats (DXT/LATC) | render | 8 / 3,532 | 0 / 0 | 1 / 473 | 4,005 |
-| TLightSource | render | 8 / 3,486 | 1 / 494 | 0 / 0 | 3,980 |
-| RF_DataIO (unit routines) | data | 1 / 823 | 15 / 3,123 | 0 / 0 | 3,946 |
+| TGSLines | ui | 2 / 3,540 | 2 / 714 | 0 / 0 | 4,254 |
+| SG_Thaum_DIsp (unit routines) | powers | 10 / 3,765 | 1 / 431 | 0 / 0 | 4,196 |
+| TTerrainGrass | world | 3 / 4,057 | 0 / 0 | 0 / 0 | 4,057 |
+| TLightSource | render | 7 / 3,405 | 1 / 494 | 0 / 0 | 3,899 |
 | RF_Materials (unit routines) | render | 2 / 3,866 | 0 / 0 | 0 / 0 | 3,866 |
 | RFT_BoundSphere (unit routines) | core | 2 / 3,851 | 0 / 0 | 0 / 0 | 3,851 |
-| TShellEffect | powers | 5 / 2,730 | 0 / 0 | 1 / 1,070 | 3,800 |
+| TProcMaterial | items | 5 / 3,325 | 0 / 0 | 1 / 525 | 3,850 |
+| TMesh | render | 4 / 3,114 | 2 / 703 | 0 / 0 | 3,817 |
 | TCombatant | ai | 8 / 3,509 | 2 / 268 | 0 / 0 | 3,777 |
-| SG_Thaum_Force (unit routines) | powers | 7 / 3,561 | 0 / 0 | 1 / 181 | 3,742 |
-| FLX_Character_Motions (unit routines) | characters | 1 / 1,612 | 8 / 2,034 | 0 / 0 | 3,646 |
-| TGUIItemContainer | items | 2 / 2,080 | 1 / 1,476 | 0 / 0 | 3,556 |
-| Engine math (vectors, matrices, fast trig) | core | 12 / 3,295 | 1 / 235 | 0 / 0 | 3,530 |
+| SG_ItemGUI (unit routines) | items | 3 / 2,553 | 4 / 1,049 | 0 / 0 | 3,602 |
+| FLX_Materials_Procedural (unit routines) | items | 2 / 3,578 | 0 / 0 | 0 / 0 | 3,578 |
+| RF_Main (unit routines) | runtime | 9 / 3,549 | 0 / 0 | 0 / 0 | 3,549 |
+| Texture compression formats (DXT/LATC) | render | 7 / 3,069 | 0 / 0 | 1 / 473 | 3,542 |
 | RF_Intersection (unit routines) | physics | 2 / 288 | 9 / 3,188 | 0 / 0 | 3,476 |
-| RF_GUI_Controls_Ex (unit routines) | ui | 9 / 3,457 | 0 / 0 | 0 / 0 | 3,457 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
-| RF_Terrain (unit routines) | world | 1 / 609 | 2 / 2,801 | 0 / 0 | 3,410 |
+| TGUIItemContainer | items | 1 / 1,847 | 1 / 1,476 | 0 / 0 | 3,323 |
 | RF_Mesh (unit routines) | render | 1 / 1,108 | 1 / 2,210 | 0 / 0 | 3,318 |
+| Engine math (vectors, matrices, fast trig) | core | 12 / 3,295 | 0 / 0 | 0 / 0 | 3,295 |
+| RF_GUI_Controls_Ex (unit routines) | ui | 7 / 3,277 | 0 / 0 | 0 / 0 | 3,277 |
 | TShadowMapDirect | render | 4 / 3,259 | 0 / 0 | 0 / 0 | 3,259 |
-| RF_DBObjects (unit routines) | data | 2 / 2,672 | 3 / 524 | 0 / 0 | 3,196 |
 | TFireEffectRow | powers | 3 / 3,114 | 0 / 0 | 0 / 0 | 3,114 |
 | TGeometry | render | 6 / 2,254 | 0 / 0 | 1 / 804 | 3,058 |
 | RF_Terrain_Materials (unit routines) | world | 1 / 2,474 | 3 / 484 | 0 / 0 | 2,958 |
 | TCharCreation | modes | 6 / 2,108 | 5 / 818 | 0 / 0 | 2,926 |
+| RF_DBObjects (unit routines) | data | 2 / 2,672 | 2 / 202 | 0 / 0 | 2,874 |
 | RF_Polyhedra (unit routines) | render | 2 / 2,831 | 0 / 0 | 0 / 0 | 2,831 |
-| .rfi image codec | render | 0 / 0 | 10 / 2,793 | 0 / 0 | 2,793 |
-| TItemGUIManager | items | 8 / 1,889 | 4 / 903 | 0 / 0 | 2,792 |
-| TScanEffect | powers | 4 / 1,722 | 0 / 0 | 1 / 1,070 | 2,792 |
-| T3DNode | world | 7 / 1,202 | 3 / 1,190 | 1 / 324 | 2,716 |
-| Pixel-format converters (8-bit and float) | render | 0 / 0 | 11 / 2,594 | 0 / 0 | 2,594 |
+| TItemGUIManager | items | 7 / 1,858 | 4 / 903 | 0 / 0 | 2,761 |
+| SG_Thaum_Force (unit routines) | powers | 4 / 2,521 | 0 / 0 | 1 / 181 | 2,702 |
 | TGUITableView | ui | 1 / 2,523 | 0 / 0 | 0 / 0 | 2,523 |
 | FLX_IconRender (unit routines) | render | 0 / 0 | 7 / 2,195 | 2 / 286 | 2,481 |
-| RFE_MeshTools (unit routines) | render | 1 / 37 | 6 / 2,341 | 0 / 0 | 2,378 |
-| TProjectManager | data | 3 / 2,370 | 0 / 0 | 0 / 0 | 2,370 |
 | RF_kdTrees (unit routines) | world | 10 / 2,369 | 0 / 0 | 0 / 0 | 2,369 |
-| TGridEnvManager | world | 3 / 2,199 | 0 / 0 | 0 / 0 | 2,199 |
-| TForceBarricadeEffect | powers | 2 / 2,119 | 0 / 0 | 0 / 0 | 2,119 |
-| TInventory | items | 7 / 2,069 | 1 / 41 | 0 / 0 | 2,110 |
+| TProjectManager | data | 2 / 2,322 | 0 / 0 | 0 / 0 | 2,322 |
+| TForceShellEffect | powers | 2 / 2,243 | 0 / 0 | 0 / 0 | 2,243 |
+| TShellEffect | powers | 2 / 1,068 | 0 / 0 | 1 / 1,070 | 2,138 |
+| Pixel-format converters (8-bit and float) | render | 0 / 0 | 10 / 2,109 | 0 / 0 | 2,109 |
 | TAudioEnvironment | audio | 3 / 2,097 | 0 / 0 | 0 / 0 | 2,097 |
-| TScene | world | 1 / 740 | 8 / 1,355 | 0 / 0 | 2,095 |
-| SG_ObjectDB2 (unit routines) | data | 6 / 1,848 | 2 / 228 | 0 / 0 | 2,076 |
 | TTextRenderer | ui | 1 / 2,043 | 0 / 0 | 0 / 0 | 2,043 |
-| TForceBarrierEffect | powers | 2 / 2,028 | 0 / 0 | 0 / 0 | 2,028 |
 | TArsenalView | items | 3 / 1,349 | 2 / 608 | 0 / 0 | 1,957 |
+| TInventory | items | 5 / 1,909 | 1 / 41 | 0 / 0 | 1,950 |
 | TClassSelect | modes | 5 / 1,940 | 0 / 0 | 0 / 0 | 1,940 |
-| Shading-mask GLSL snippets | render | 2 / 1,895 | 1 / 38 | 0 / 0 | 1,933 |
 | Scene content helpers (unit before RF_Dynamics) | world | 1 / 925 | 4 / 768 | 1 / 239 | 1,932 |
-| FLX_ItemFactory (unit routines) | items | 3 / 1,915 | 0 / 0 | 0 / 0 | 1,915 |
-| RF_MeshVoxels (unit routines) | render | 1 / 1,434 | 1 / 468 | 0 / 0 | 1,902 |
+| TForceBarricadeEffect | powers | 1 / 1,922 | 0 / 0 | 0 / 0 | 1,922 |
+| SG_ObjectDB2 (unit routines) | data | 5 / 1,791 | 1 / 125 | 0 / 0 | 1,916 |
 | TkdTree | world | 3 / 1,661 | 1 / 240 | 0 / 0 | 1,901 |
-| TSceneEnvironment | world | 4 / 1,897 | 0 / 0 | 0 / 0 | 1,897 |
+| TForceBarrierEffect | powers | 1 / 1,894 | 0 / 0 | 0 / 0 | 1,894 |
 | SG_Dynamics_Effects (unit routines) | powers | 3 / 1,876 | 0 / 0 | 0 / 0 | 1,876 |
 | TDivCardForm | modes | 1 / 1,863 | 0 / 0 | 0 / 0 | 1,863 |
-| TSelectionUI | ui | 5 / 1,856 | 0 / 0 | 0 / 0 | 1,856 |
-| TCharDecomp2 | characters | 5 / 1,766 | 0 / 0 | 0 / 0 | 1,766 |
-| TShadowCubeMap | render | 6 / 1,749 | 0 / 0 | 0 / 0 | 1,749 |
+| TGridEnvManager | world | 2 / 1,844 | 0 / 0 | 0 / 0 | 1,844 |
+| Shading-mask GLSL snippets | render | 1 / 1,830 | 0 / 0 | 0 / 0 | 1,830 |
+| RFE_MeshTools (unit routines) | render | 1 / 37 | 4 / 1,772 | 0 / 0 | 1,809 |
+| FLX_ItemFactory (unit routines) | items | 2 / 1,794 | 0 / 0 | 0 / 0 | 1,794 |
 | RF_Env_Effects (unit routines) | powers | 1 / 1,666 | 0 / 0 | 0 / 0 | 1,666 |
 | Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 1 / 1,662 | 0 / 0 | 0 / 0 | 1,662 |
+| TSceneEnvironment | world | 2 / 1,658 | 0 / 0 | 0 / 0 | 1,658 |
 | TPwrDispLongDoor_I | powers | 2 / 1,649 | 0 / 0 | 0 / 0 | 1,649 |
 | TTransitionScreen | ui | 3 / 1,605 | 0 / 0 | 0 / 0 | 1,605 |
+| TSelectionUI | ui | 3 / 1,545 | 0 / 0 | 0 / 0 | 1,545 |
 | TTErrainkdTree | world | 0 / 0 | 5 / 1,513 | 0 / 0 | 1,513 |
-| RF_ObjectLibs (unit routines) | data | 4 / 1,227 | 1 / 284 | 0 / 0 | 1,511 |
 | SG_Thaum_Mind (unit routines) | powers | 3 / 1,121 | 1 / 375 | 0 / 0 | 1,496 |
 | TWeaponBlood | combat | 2 / 1,494 | 0 / 0 | 0 / 0 | 1,494 |
-| RF_Dynamics_Animation (unit routines) | characters | 4 / 1,411 | 0 / 0 | 1 / 82 | 1,493 |
 | TPwrForceThrow_I | powers | 3 / 1,309 | 1 / 170 | 0 / 0 | 1,479 |
 | TRTDialogue | script | 1 / 1,461 | 0 / 0 | 0 / 0 | 1,461 |
 | Screen-quad GLSL snippets | render | 5 / 1,457 | 0 / 0 | 0 / 0 | 1,457 |
-| TGridEnvBuilder | world | 2 / 431 | 4 / 1,004 | 0 / 0 | 1,435 |
+| TShadowCubeMap | render | 4 / 1,439 | 0 / 0 | 0 / 0 | 1,439 |
+| RF_MeshVoxels (unit routines) | render | 1 / 1,434 | 0 / 0 | 0 / 0 | 1,434 |
+| RF_Dynamics_Animation (unit routines) | characters | 3 / 1,343 | 0 / 0 | 1 / 82 | 1,425 |
 | RF_Dynamics_Game (unit routines) | world | 4 / 1,111 | 2 / 312 | 0 / 0 | 1,423 |
 | TTerrainMesh | render | 3 / 1,408 | 0 / 0 | 0 / 0 | 1,408 |
-| TGUIDrawSkinTex | ui | 4 / 1,400 | 0 / 0 | 0 / 0 | 1,400 |
-| RF_UIDManager (unit routines) | data | 1 / 248 | 7 / 1,148 | 0 / 0 | 1,396 |
-| TMemBlockLibrary | data | 1 / 272 | 4 / 1,092 | 0 / 0 | 1,364 |
-| TGUITask | ui | 6 / 956 | 4 / 400 | 0 / 0 | 1,356 |
 | RF_SceneEditor (unit routines) | world | 1 / 234 | 3 / 1,117 | 0 / 0 | 1,351 |
-| TTexture | render | 2 / 872 | 2 / 451 | 0 / 0 | 1,323 |
+| Character roles & relations (script functions) | ai | 3 / 746 | 2 / 603 | 0 / 0 | 1,349 |
 | Equipment effects and focus-item slot (RFE_Effects_Electricity (unit routines) by address) | characters | 5 / 1,151 | 1 / 167 | 0 / 0 | 1,318 |
-| RF_Renderer (unit routines) | render | 0 / 0 | 6 / 1,315 | 0 / 0 | 1,315 |
-| SG_Thaumaturgy (unit routines) | powers | 4 / 1,296 | 0 / 0 | 0 / 0 | 1,296 |
 | RFE_MeshSubdivide (unit routines) | render | 4 / 1,186 | 0 / 0 | 1 / 96 | 1,282 |
+| TScene | world | 1 / 740 | 4 / 535 | 0 / 0 | 1,275 |
 | TPwrForceStrikes_C | powers | 2 / 1,259 | 0 / 0 | 0 / 0 | 1,259 |
-| TPostProcessor | render | 4 / 1,210 | 0 / 0 | 0 / 0 | 1,210 |
+| SG_Thaumaturgy (unit routines) | powers | 3 / 1,227 | 0 / 0 | 0 / 0 | 1,227 |
+| T3DNode | world | 1 / 899 | 0 / 0 | 1 / 324 | 1,223 |
+| TGUIDrawSkinTex | ui | 3 / 1,209 | 0 / 0 | 0 / 0 | 1,209 |
 | TPwrDispVanish_I | powers | 2 / 1,175 | 0 / 0 | 0 / 0 | 1,175 |
 | THairColPicker | ui | 2 / 1,159 | 0 / 0 | 0 / 0 | 1,159 |
 | TSceneTaskInt | world | 0 / 0 | 4 / 1,133 | 0 / 0 | 1,133 |
 | TBlastEntity | powers | 2 / 1,124 | 0 / 0 | 0 / 0 | 1,124 |
-| TForceBlastEffect | powers | 2 / 1,120 | 0 / 0 | 0 / 0 | 1,120 |
 | Golem guardians and alarm zones (RFE_Effects_Electricity (unit routines) by address) | characters | 3 / 1,111 | 0 / 0 | 0 / 0 | 1,111 |
-| TSector | world | 2 / 326 | 1 / 776 | 0 / 0 | 1,102 |
+| TGridEnvBuilder | world | 1 / 94 | 4 / 1,004 | 0 / 0 | 1,098 |
 | SG_TradeSystem (unit routines) | modes | 4 / 1,029 | 1 / 69 | 0 / 0 | 1,098 |
 | XA_ExperienceSys (unit routines) | modes | 1 / 936 | 2 / 153 | 0 / 0 | 1,089 |
+| TScanEffect | powers | 1 / 19 | 0 / 0 | 1 / 1,070 | 1,089 |
 | RFE_Effects_Electricity (unit routines) | powers | 2 / 1,050 | 0 / 0 | 0 / 0 | 1,050 |
-| T3DView | render | 2 / 977 | 1 / 69 | 0 / 0 | 1,046 |
 | SG_Teleporters (unit routines) | world | 2 / 1,042 | 0 / 0 | 0 / 0 | 1,042 |
-| RF_Import_RFC2 (unit routines) | data | 5 / 645 | 1 / 386 | 0 / 0 | 1,031 |
 | TBubbleEffect | powers | 1 / 1,031 | 0 / 0 | 0 / 0 | 1,031 |
+| RF_Import_RFC2 (unit routines) | data | 4 / 605 | 1 / 386 | 0 / 0 | 991 |
+| TForceBlastEffect | powers | 1 / 948 | 0 / 0 | 0 / 0 | 948 |
 | THairEditForm | ui | 1 / 828 | 1 / 117 | 0 / 0 | 945 |
 | SG_GameFunctions (unit routines) | script | 3 / 445 | 2 / 495 | 0 / 0 | 940 |
+| RF_DataIO (unit routines) | data | 0 / 0 | 3 / 936 | 0 / 0 | 936 |
+| TPostProcessor | render | 3 / 929 | 0 / 0 | 0 / 0 | 929 |
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
 | TForceBlastGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
-| TForceTorrentEffect | powers | 2 / 889 | 0 / 0 | 0 / 0 | 889 |
 | FG_AIFunctions (unit routines) | script | 6 / 888 | 0 / 0 | 0 / 0 | 888 |
 | FLX_EffectRender (unit routines) | powers | 1 / 887 | 0 / 0 | 0 / 0 | 887 |
+| TForceTorrentEffect | powers | 1 / 811 | 0 / 0 | 0 / 0 | 811 |
 | TPwrSpiritForm | powers | 2 / 803 | 0 / 0 | 0 / 0 | 803 |
 | TMainMenu | ui | 2 / 799 | 0 / 0 | 0 / 0 | 799 |
 | TBarricadeEntity | powers | 1 / 787 | 0 / 0 | 0 / 0 | 787 |
-| OpenAL loader | audio | 1 / 781 | 0 / 0 | 0 / 0 | 781 |
-| TCopperSatin | items | 1 / 776 | 0 / 0 | 0 / 0 | 776 |
-| RF_GUI_Taskbar (unit routines) | ui | 4 / 574 | 1 / 198 | 0 / 0 | 772 |
 | TRendererShaderFactory | render | 1 / 684 | 1 / 85 | 0 / 0 | 769 |
 | TGemstone | items | 1 / 760 | 0 / 0 | 0 / 0 | 760 |
 | TResin | items | 1 / 752 | 0 / 0 | 0 / 0 | 752 |
 | TPwrDispSummonDemon_I | powers | 1 / 752 | 0 / 0 | 0 / 0 | 752 |
 | TSteelPainted | items | 1 / 748 | 0 / 0 | 0 / 0 | 748 |
-| TCopperAlloy | items | 1 / 748 | 0 / 0 | 0 / 0 | 748 |
 | TSteelChain | items | 1 / 732 | 0 / 0 | 0 / 0 | 732 |
-| TToolTip | ui | 2 / 730 | 0 / 0 | 0 / 0 | 730 |
-| TCacheShaderScreen | ui | 4 / 715 | 0 / 0 | 0 / 0 | 715 |
 | TScriptRole | script | 1 / 712 | 0 / 0 | 0 / 0 | 712 |
-| RFE_Effects_Blood (unit routines) | combat | 3 / 707 | 0 / 0 | 0 / 0 | 707 |
 | TSteelGen | items | 1 / 700 | 0 / 0 | 0 / 0 | 700 |
 | TIronGen | items | 1 / 700 | 0 / 0 | 0 / 0 | 700 |
-| FPC System RTL | runtime | 6 / 675 | 1 / 23 | 0 / 0 | 698 |
-| FLX_PostProcess (unit routines) | render | 2 / 569 | 0 / 0 | 1 / 127 | 696 |
 | TSteelBlade | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
 | TSteelPlate2 | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
+| FPC System RTL | runtime | 6 / 675 | 0 / 0 | 0 / 0 | 675 |
 | TEndSessionMenu | modes | 2 / 666 | 0 / 0 | 0 / 0 | 666 |
+| RF_ObjectLibs (unit routines) | data | 2 / 662 | 0 / 0 | 0 / 0 | 662 |
 | TPickerForm | ui | 1 / 184 | 2 / 473 | 0 / 0 | 657 |
 | TForceTorrentGeometry | powers | 1 / 651 | 0 / 0 | 0 / 0 | 651 |
 | TTendrilGeometry | powers | 1 / 651 | 0 / 0 | 0 / 0 | 651 |
@@ -239,97 +219,83 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Program main (Exanima.lpr) | runtime | 4 / 561 | 0 / 0 | 1 / 74 | 635 |
 | XA_HelpSystem (unit routines) | ui | 0 / 0 | 1 / 619 | 0 / 0 | 619 |
 | TStringLibrary | data | 0 / 0 | 4 / 615 | 0 / 0 | 615 |
+| FLX_Character_Motions (unit routines) | characters | 0 / 0 | 3 / 613 | 0 / 0 | 613 |
+| RF_Terrain (unit routines) | world | 1 / 609 | 0 / 0 | 0 / 0 | 609 |
 | TForceWaveEntity | powers | 1 / 603 | 0 / 0 | 0 / 0 | 603 |
-| TMaterialManager3 | render | 0 / 0 | 2 / 585 | 0 / 0 | 585 |
 | SG_Prelude_Main (unit routines) | modes | 2 / 575 | 0 / 0 | 0 / 0 | 575 |
-| TLightAlias | render | 3 / 566 | 0 / 0 | 0 / 0 | 566 |
 | GUI support routines (unit before RF_GUI_Main) | ui | 0 / 0 | 1 / 564 | 0 / 0 | 564 |
 | Colour helpers and parallel-for dispatch (RF_kdTrees (unit routines) by address) | core | 2 / 563 | 0 / 0 | 0 / 0 | 563 |
-| TPlanksPainted | items | 1 / 548 | 0 / 0 | 0 / 0 | 548 |
-| Scene node despawn and viewport step (TSceneTaskInt by address) | world | 0 / 0 | 2 / 544 | 0 / 0 | 544 |
+| TToolTip | ui | 1 / 553 | 0 / 0 | 0 / 0 | 553 |
 | TPackageLibrary | data | 1 / 542 | 0 / 0 | 0 / 0 | 542 |
-| TThaumTree | powers | 4 / 293 | 3 / 246 | 0 / 0 | 539 |
+| TLightAlias | render | 2 / 537 | 0 / 0 | 0 / 0 | 537 |
 | TClothSilk | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
 | TClothPadded1 | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
 | TClothPadded2 | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
 | TClothVelvet | items | 1 / 528 | 0 / 0 | 0 / 0 | 528 |
-| TForceWaveEffect | powers | 2 / 526 | 0 / 0 | 0 / 0 | 526 |
-| TMaterial | render | 2 / 285 | 1 / 232 | 0 / 0 | 517 |
 | TClothBasic | items | 1 / 516 | 0 / 0 | 0 / 0 | 516 |
 | TClothFine | items | 1 / 508 | 0 / 0 | 0 / 0 | 508 |
+| TGUITask | ui | 3 / 504 | 0 / 0 | 0 / 0 | 504 |
 | RF_Environment (unit routines) | world | 0 / 0 | 4 / 497 | 0 / 0 | 497 |
-| TWoodFineA | items | 1 / 488 | 0 / 0 | 0 / 0 | 488 |
-| TWoodRoughA | items | 1 / 488 | 0 / 0 | 0 / 0 | 488 |
-| TTaskInterface | ui | 0 / 0 | 3 / 476 | 0 / 0 | 476 |
-| FLX_GUI_Graphics (unit routines) | ui | 5 / 470 | 0 / 0 | 0 / 0 | 470 |
-| RF_Terrain_Static (unit routines) | world | 1 / 468 | 0 / 0 | 0 / 0 | 468 |
+| TForceWaveEffect | powers | 1 / 472 | 0 / 0 | 0 / 0 | 472 |
 | TDropDownList | ui | 2 / 210 | 1 / 256 | 0 / 0 | 466 |
 | TCharViewBehaviour | ai | 1 / 466 | 0 / 0 | 0 / 0 | 466 |
+| Item description phrases | items | 1 / 465 | 0 / 0 | 0 / 0 | 465 |
 | TLeatherA01 | items | 1 / 464 | 0 / 0 | 0 / 0 | 464 |
 | TLeatherA02 | items | 1 / 464 | 0 / 0 | 0 / 0 | 464 |
 | TPhysiquePicker | ui | 4 / 464 | 0 / 0 | 0 / 0 | 464 |
 | TSuedeA01 | items | 1 / 456 | 0 / 0 | 0 / 0 | 456 |
 | TWiredGripA01 | items | 1 / 456 | 0 / 0 | 0 / 0 | 456 |
+| TTexture | render | 1 / 453 | 0 / 0 | 0 / 0 | 453 |
 | THelpScreen | ui | 2 / 177 | 2 / 199 | 2 / 77 | 453 |
-| TShadowCubeTex | render | 1 / 237 | 1 / 206 | 0 / 0 | 443 |
 | SGD_GameObjEdit (unit routines) | ui | 1 / 440 | 0 / 0 | 0 / 0 | 440 |
-| FLXG_Character_Races (unit routines) | characters | 3 / 434 | 0 / 0 | 0 / 0 | 434 |
-| TReadKeyScreen | ui | 3 / 425 | 0 / 0 | 0 / 0 | 425 |
-| TTextureManager | render | 2 / 417 | 0 / 0 | 0 / 0 | 417 |
-| TPopUpDesc | items | 3 / 401 | 0 / 0 | 0 / 0 | 401 |
-| TDataLibrary | data | 0 / 0 | 2 / 400 | 0 / 0 | 400 |
+| TThaumTree | powers | 3 / 276 | 1 / 121 | 0 / 0 | 397 |
+| Scene node despawn and viewport step (TSceneTaskInt by address) | world | 0 / 0 | 1 / 388 | 0 / 0 | 388 |
 | RFG_Dialogue (unit routines) | script | 0 / 0 | 2 / 383 | 0 / 0 | 383 |
-| Core string/number formatting utilities | core | 1 / 269 | 1 / 87 | 0 / 0 | 356 |
-| RF_GUI_3DViewport (unit routines) | ui | 1 / 14 | 2 / 340 | 0 / 0 | 354 |
-| TSubObject | render | 2 / 338 | 0 / 0 | 0 / 0 | 338 |
+| RF_UIDManager (unit routines) | data | 0 / 0 | 1 / 359 | 0 / 0 | 359 |
+| FLX_PostProcess (unit routines) | render | 1 / 222 | 0 / 0 | 1 / 127 | 349 |
 | TQuadFBO | render | 2 / 328 | 0 / 0 | 0 / 0 | 328 |
-| Graphics & key settings (ini) | data | 1 / 126 | 1 / 201 | 0 / 0 | 327 |
-| TObjLibManager | data | 1 / 321 | 0 / 0 | 0 / 0 | 321 |
 | TCharLoot | items | 1 / 311 | 0 / 0 | 0 / 0 | 311 |
 | Fire particle presets | powers | 2 / 309 | 0 / 0 | 0 / 0 | 309 |
+| TTaskInterface | ui | 0 / 0 | 1 / 305 | 0 / 0 | 305 |
+| TReadKeyScreen | ui | 1 / 303 | 0 / 0 | 0 / 0 | 303 |
 | FLX_FX_Fire (unit routines) | powers | 1 / 300 | 0 / 0 | 0 / 0 | 300 |
-| RF_DataManager (unit routines) | data | 1 / 295 | 0 / 0 | 0 / 0 | 295 |
 | RF_GLGeometry (unit routines) | render | 0 / 0 | 0 / 0 | 1 / 290 | 290 |
+| FLX_GUI_Graphics (unit routines) | ui | 2 / 289 | 0 / 0 | 0 / 0 | 289 |
 | TGUIColSwatch | ui | 0 / 0 | 1 / 272 | 0 / 0 | 272 |
 | RF_GUI_Text_Edit (unit routines) | ui | 0 / 0 | 1 / 270 | 0 / 0 | 270 |
+| Core string/number formatting utilities | core | 1 / 269 | 0 / 0 | 0 / 0 | 269 |
 | FLXG_Pathfinding (unit routines) | ai | 2 / 265 | 0 / 0 | 0 / 0 | 265 |
 | SG_GUI_Skills (unit routines) | ui | 0 / 0 | 1 / 197 | 1 / 67 | 264 |
-| SG_EmblemGen (unit routines) | modes | 2 / 264 | 0 / 0 | 0 / 0 | 264 |
-| SG_Character_DBs (unit routines) | data | 1 / 18 | 3 / 239 | 0 / 0 | 257 |
-| TVoxelLight | render | 2 / 245 | 0 / 0 | 0 / 0 | 245 |
+| TSector | world | 1 / 245 | 0 / 0 | 0 / 0 | 245 |
 | TPopUpContainer | items | 1 / 245 | 0 / 0 | 0 / 0 | 245 |
 | TDBObjManager | data | 1 / 245 | 0 / 0 | 0 / 0 | 245 |
+| TCacheShaderScreen | ui | 1 / 242 | 0 / 0 | 0 / 0 | 242 |
 | TGameTips | script | 1 / 229 | 0 / 0 | 0 / 0 | 229 |
-| TPopupParchment | ui | 2 / 220 | 0 / 0 | 0 / 0 | 220 |
-| FLX_GUI_Skinned (unit routines) | ui | 2 / 217 | 0 / 0 | 0 / 0 | 217 |
 | TCamera | render | 1 / 212 | 0 / 0 | 0 / 0 | 212 |
-| TAbstractPathFinder | ai | 0 / 0 | 11 / 210 | 0 / 0 | 210 |
-| RFE_Dynamics_Cloth (unit routines) | physics | 2 / 210 | 0 / 0 | 0 / 0 | 210 |
-| TTexLoaderThread | render | 1 / 209 | 0 / 0 | 0 / 0 | 209 |
 | TRFCExporter | data | 1 / 208 | 0 / 0 | 0 / 0 | 208 |
-| TMotileBehaviour | characters | 1 / 27 | 3 / 178 | 0 / 0 | 205 |
-| TVoxeliser | render | 0 / 0 | 1 / 193 | 0 / 0 | 193 |
-| TStreamThread | data | 0 / 0 | 1 / 181 | 0 / 0 | 181 |
 | RF_Material_Manager (unit routines) | render | 0 / 0 | 1 / 180 | 0 / 0 | 180 |
-| TVanishEffect | powers | 1 / 176 | 0 / 0 | 0 / 0 | 176 |
+| TMotileBehaviour | characters | 0 / 0 | 3 / 178 | 0 / 0 | 178 |
 | TAbstractToolTip | ui | 0 / 0 | 2 / 175 | 0 / 0 | 175 |
-| RFA_Main (unit routines) | audio | 1 / 147 | 0 / 0 | 0 / 0 | 147 |
+| TPopUpDesc | items | 2 / 168 | 0 / 0 | 0 / 0 | 168 |
+| RFE_Dynamics_Cloth (unit routines) | physics | 1 / 165 | 0 / 0 | 0 / 0 | 165 |
+| TPopupParchment | ui | 1 / 163 | 0 / 0 | 0 / 0 | 163 |
+| RF_Renderer (unit routines) | render | 0 / 0 | 2 / 160 | 0 / 0 | 160 |
 | TTextBox | ui | 0 / 0 | 1 / 139 | 0 / 0 | 139 |
-| Default material shader factory | render | 0 / 0 | 1 / 134 | 0 / 0 | 134 |
+| Graphics & key settings (ini) | data | 1 / 126 | 0 / 0 | 0 / 0 | 126 |
 | RFP_Mipmaps_Kaiser (unit routines) | render | 0 / 0 | 2 / 124 | 0 / 0 | 124 |
-| TPwrLoyalty_E | powers | 1 / 124 | 0 / 0 | 0 / 0 | 124 |
+| SG_Character_DBs (unit routines) | data | 1 / 18 | 1 / 106 | 0 / 0 | 124 |
 | TCharBaseForm | ui | 1 / 102 | 0 / 0 | 0 / 0 | 102 |
-| RF_StoreSettings (unit routines) | data | 2 / 99 | 0 / 0 | 0 / 0 | 99 |
-| TTerrainPlugin | world | 0 / 0 | 1 / 94 | 0 / 0 | 94 |
-| TShopWindow | modes | 1 / 89 | 0 / 0 | 0 / 0 | 89 |
+| FLXG_Character_Races (unit routines) | characters | 1 / 98 | 0 / 0 | 0 / 0 | 98 |
+| .rfi image codec | render | 0 / 0 | 1 / 94 | 0 / 0 | 94 |
+| SG_EmblemGen (unit routines) | modes | 1 / 90 | 0 / 0 | 0 / 0 | 90 |
 | TCharEditForm | ui | 1 / 84 | 0 / 0 | 0 / 0 | 84 |
 | TStatusForm | ui | 1 / 78 | 0 / 0 | 0 / 0 | 78 |
-| TEntity | ai | 2 / 24 | 1 / 48 | 0 / 0 | 72 |
-| TActivePower | powers | 1 / 69 | 0 / 0 | 0 / 0 | 69 |
-| TPhysicsController | physics | 2 / 51 | 2 / 15 | 0 / 0 | 66 |
+| TEntity | ai | 1 / 21 | 1 / 48 | 0 / 0 | 69 |
+| RFE_Effects_Blood (unit routines) | combat | 1 / 66 | 0 / 0 | 0 / 0 | 66 |
 | TScriptActor | script | 1 / 61 | 0 / 0 | 0 / 0 | 61 |
-| TRBPushSurface | world | 1 / 53 | 0 / 0 | 0 / 0 | 53 |
-| TRBRotator | world | 1 / 53 | 0 / 0 | 0 / 0 | 53 |
 | TArsenalContFrame | items | 0 / 0 | 1 / 40 | 0 / 0 | 40 |
 | TKFCLinear3f | characters | 0 / 0 | 1 / 36 | 0 / 0 | 36 |
+| RF_GUI_Taskbar (unit routines) | ui | 1 / 26 | 0 / 0 | 0 / 0 | 26 |
+| TPhysicsController | physics | 0 / 0 | 2 / 15 | 0 / 0 | 15 |
+| RF_GUI_3DViewport (unit routines) | ui | 1 / 14 | 0 / 0 | 0 / 0 | 14 |
 | Steam API glue | runtime | 0 / 0 | 1 / 12 | 0 / 0 | 12 |
