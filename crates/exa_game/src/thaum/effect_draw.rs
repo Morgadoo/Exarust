@@ -610,7 +610,7 @@ pub(crate) fn ripple_shell_hits(
                 [p.x, p.y, p.z]
             })
             .unwrap_or([0.0; 3]);
-        for (of, mut aura) in &mut auras {
+        for (of, mut aura) in auras.iter_mut().sort_unstable::<Entity>() {
             if of.0 != hit.fighter {
                 continue;
             }

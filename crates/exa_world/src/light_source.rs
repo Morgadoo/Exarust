@@ -569,18 +569,49 @@ pub struct LightFixture {
     pub base: Vec4,
 }
 
-/// One flicker step for every animating light, at the frame's time.
+/// `EXA_FLICKER_TRACE=1`: [`flicker_lights`] logs, every 30th frame, the
+/// order it walked the animating lights in (entity, position) and the
+/// generator's state before the walk, to compare two builds' draw orders.
+fn flicker_trace() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("EXA_FLICKER_TRACE").is_ok_and(|v| v == "1"))
+}
+
+/// One flicker step for every animating light, at the frame's time, in
+/// entity index (spawn) order: the shared generator's draws then go to the
+/// same lights whatever tables the query walks (the original steps its
+/// lights in the scene's order, each sector's list as registered). Bevy's
+/// own `Entity` order is the reverse of the index's.
 fn flicker_lights(
     time: Res<Time>,
     mut rng: ResMut<FlickerRng>,
-    mut lights: Query<&mut LightSource>,
+    mut lights: Query<(Entity, &mut LightSource, Option<&GlobalTransform>)>,
+    mut frame: Local<u64>,
 ) {
     let ms = frame_ms(time.delta().as_millis());
-    for mut source in &mut lights {
+    let trace = flicker_trace() && frame.is_multiple_of(30);
+    *frame += 1;
+    let state = rng.0;
+    let mut walked = Vec::new();
+    for (entity, mut source, at) in lights
+        .iter_mut()
+        .sort_unstable_by_key::<Entity, _>(|e| e.index_u32())
+    {
         if !source.animates() {
             continue;
         }
+        if trace {
+            let p = at.map_or(Vec3::ZERO, |t| t.translation());
+            walked.push(format!("{entity}@{:.2},{:.2},{:.2}", p.x, p.y, p.z));
+        }
         source.flicker_step(&mut || rng.draw(), ms);
+    }
+    if trace {
+        info!(
+            "flicker order: frame {} rng {state:#010x} ms {ms}: {}",
+            *frame - 1,
+            walked.join(" ")
+        );
     }
 }
 
@@ -638,6 +669,46 @@ pub(crate) fn apply_light_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Finding F571: the flicker's shared generator goes to the lights in
+    /// entity index (spawn) order, though the query walks the later light's table
+    /// first.
+    #[test]
+    fn the_flicker_draws_in_entity_order() {
+        use bevy::ecs::system::RunSystemOnce;
+        #[derive(Component)]
+        struct Other;
+        let mut world = World::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        world.insert_resource(time);
+        world.init_resource::<FlickerRng>();
+        let light = || LightSource::new(FLICKER, 2.0);
+        // The table of (light, Other) is made first; the earlier light
+        // lands in the second table.
+        let first_table = world.spawn((light(), Other)).id();
+        let early = world.spawn(light()).id();
+        let late = world.spawn((light(), Other)).id();
+        world.despawn(first_table);
+        let walked: Vec<Entity> = world
+            .query::<(Entity, &LightSource)>()
+            .iter(&world)
+            .map(|(e, _)| e)
+            .collect();
+        assert_eq!(
+            walked,
+            [late, early],
+            "the query walks the late light first"
+        );
+        world.run_system_once(flicker_lights).unwrap();
+        let mut rng = FlickerRng(0);
+        let (mut a, mut b) = (light(), light());
+        a.flicker_step(&mut || rng.draw(), 16.0);
+        b.flicker_step(&mut || rng.draw(), 16.0);
+        assert_ne!(a, b);
+        assert_eq!(world.get::<LightSource>(early), Some(&a));
+        assert_eq!(world.get::<LightSource>(late), Some(&b));
+    }
 
     /// The oracle's case: the linear workflow's direct colour is the
     /// colour linearised by the original's sRGB routine (fast logarithm

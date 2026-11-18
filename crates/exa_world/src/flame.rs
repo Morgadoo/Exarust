@@ -50,6 +50,7 @@ impl Plugin for FlamePlugin {
                     .before(BodyPostStep),
             ),
         );
+        app.init_resource::<FlameSeeds>();
         app.insert_resource(FireLightPin::from_env()).add_systems(
             Update,
             (
@@ -93,7 +94,48 @@ pub fn bridge_flame_types(app: &mut App) {
         .bridge_copy::<CarriedFire>()
         .bridge_snapshot::<Ragdoll>()
         .bridge_move_resource::<SolverStages>()
-        .bridge_copy_in_resource::<exa_physics::SceneGrid>();
+        .bridge_copy_in_resource::<exa_physics::SceneGrid>()
+        // A fire the step spawns (a lever's job fire) numbers its flames
+        // from the simulation's own count.
+        .bridge_own_resource::<FlameSeeds>();
+}
+
+/// The count of flames seeded so far in this world ([`queue_seeded`]): the
+/// key a flame's random streams start from, in the order the spawns are
+/// applied. An entity's index is not one: in this Bevy each resource and
+/// message type is an entity of its own, so a build that adds an unrelated
+/// type moves every index after it, and with them each flame's draws and
+/// the fire light's flicker (finding F571).
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FlameSeeds(pub u32);
+
+impl FlameSeeds {
+    /// The next flame's number, from 1.
+    pub fn take(&mut self) -> u32 {
+        self.0 = self.0.wrapping_add(1);
+        self.0
+    }
+}
+
+/// Runs `seed` when `commands` apply, with the next [`FlameSeeds`] number of
+/// the world they apply to: the spawns of one system in their order, the
+/// systems in the schedule's, whatever entity ids they were given.
+pub fn queue_seeded(commands: &mut Commands, seed: impl FnOnce(&mut World, u32) + Send + 'static) {
+    commands.queue(move |world: &mut World| {
+        let n = world.get_resource_or_init::<FlameSeeds>().take();
+        seed(world, n);
+    });
+}
+
+/// Reseeds `entity`'s flame when `commands` apply: its streams start from
+/// the next [`FlameSeeds`] number mixed with `salt` (a constant of the
+/// spawner, so two kinds of system seeded alike still differ).
+pub fn queue_reseed(commands: &mut Commands, entity: Entity, salt: u32) {
+    queue_seeded(commands, move |world, n| {
+        if let Some(mut flame) = world.get_mut::<Flame>(entity) {
+            flame.reseed(n.wrapping_mul(0x9E37_79B9) ^ salt);
+        }
+    });
 }
 
 /// Debug tool (`EXA_FIRE_LIGHT=<f>`): every fire light's intensity is held
@@ -180,6 +222,13 @@ impl Flame {
             rng: Rng::new(seed | 1),
             seed,
         }
+    }
+
+    /// The same flame with its streams started again from `seed` (before
+    /// its first step: the frame's view takes its seed when it attaches).
+    pub fn reseed(&mut self, seed: u32) {
+        self.rng = Rng::new(seed | 1);
+        self.seed = seed;
     }
 
     /// The same flame drawn with ONE, ONE ([`FlameMaterial::additive`]).

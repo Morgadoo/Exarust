@@ -301,7 +301,7 @@ pub(crate) fn body_sounds(
     let mut size = |name: &str| sizes.size(Some(&game), name).unwrap_or(0);
     // The touches walked once, not once a body.
     let mut struck = struck_by_body(touches);
-    for (entity, mut body, names) in &mut bodies {
+    for (entity, mut body, names) in bodies.iter_mut().sort_unstable::<Entity>() {
         if body.held_by.is_some() {
             continue;
         }
