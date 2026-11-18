@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r313, 11-16) | target |
+| measure | start (r186, 11-10) | now (r314, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **62.1%** | **100%** |
+| **Ledger: bytes in a final state** | — | **62.25%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9251 | all |
+| Tests passing | 8,489 | 9253 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,8 +98,8 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 139 | 158,262 |
-| Rendering & GPU | 10 | 10 | 268 | 134,588 |
+| Physics, bodies & cloth | 7 | 7 | 136 | 156,742 |
+| Rendering & GPU | 10 | 10 | 266 | 132,403 |
 | UI | 12 | 12 | 317 | 122,469 |
 | Characters, motion & animation | 8 | 8 | 213 | 99,693 |
 | Thaumaturgy & effects | 9 | 9 | 123 | 86,009 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 5 | 3,025 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,861** | **950,914** |
+| **Total** | **90** | **90** | **1,856** | **947,209** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 314 | The ten mesh query slots are identical to the original over 5000 cases each; the cloth level contact reads the mesh face record and the sweep record; the grid shift is proven unreachable in 0.9.5 and the grid rebuild is the teardown reset; the placement static Height Query mode is ported (no caller yet); the placement route stop clears the run bit and the free walk; no picture or trace change. |
 | 2026-11-16 | 313 | Saves now carry the live part records of every placed object and prop (doors, levers, chains, cloth) and each mechanism live object word, so a door left open or an armed lever reloads as the player left it (proved by a save then load on the worker); the menu music toggle crossfades; a companion skill rise writes its AI skill and confidence; archive load 16.7 s to 11.2 s. |
 | 2026-11-16 | 312 | The post processor fades are wired (story start and revive fade in from black, the mind awakening and the teleport bubble hold start the desaturation fade); a condition-scaled placed object lights and glows follow its condition live; the exanima01 near-flame excess is localised in the GI ambient near the light (direct light matches retail, specular negligible, slot cache ruled out); the spectating light reading corrected (it is the sound listener). |
 | 2026-11-16 | 311 | The force effects draw through their own programs: the wave drawn and lit through the blast frame (F188), the barricade through effectfbrcd, the tendrils through effectsmoke with their scroll (F193), a charging blast strip, off-screen arc emitters build nothing, level arcs bind BeamNoise01; FPS rose in every cast scene (vanish 74 to 145); the golden vanish scene changed on purpose. |
