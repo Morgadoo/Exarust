@@ -3917,6 +3917,7 @@ pub fn scene_merged_mesh(
                 occlude: false,
                 index_range: Some((first, first + group.index_count as usize)),
                 tag: 0,
+                group: None,
             });
         }
     }
@@ -3964,9 +3965,12 @@ pub struct DressedMerge {
 /// Merges a dressed character's built parts into the original's one skinned
 /// mesh: each part's vertex streams (positions, normals, UVs, weights) are
 /// turned back into the file's form and appended by [`crate::merge::merge`].
-/// The handles are matched to the runs by material name; a name shared by
-/// two parts (the original groups by name too) uses the first handle met in
-/// merge order.
+/// The original matches its groups by material: a worn garment's `&`
+/// parts all take the garment's one painted material, so they fold into
+/// one run per garment (keyed by the part's `tag`, drawn with the first
+/// handle met in that garment), and two garments' same-named `&` parts stay
+/// apart, each with its own paint. Every other run is grouped by material
+/// name and draws the first handle met under that name.
 ///
 /// The position-stream ids are the parts' own vertex numbers (the built
 /// meshes keep no stream ids); they only feed the occlusion fade, which no
@@ -3992,25 +3996,43 @@ pub fn merge_dressed(parts: &[DressedPart<'_>]) -> Option<DressedMerge> {
             occlude: false,
             index_range: None,
             tag: part.tag,
+            group: painted_group(part),
         });
     }
     let merged = crate::merge::merge(&merge_parts)?;
     let mut materials = Vec::with_capacity(merged.subobjects.len());
     for run in &merged.subobjects {
-        if let Some(handle) = handles.get(run.material.as_str()) {
+        if run.group.is_none()
+            && let Some(handle) = handles.get(run.material.as_str())
+        {
             materials.push(handle.clone());
             continue;
         }
         let handle = parts
             .iter()
             .zip(&streams)
-            .find(|(part, stream)| stream.is_some() && part.material == run.material)
+            .find(|(part, stream)| {
+                stream.is_some()
+                    && match run.group {
+                        Some(garment) => painted_group(part) == Some(garment),
+                        None => painted_group(part).is_none() && part.material == run.material,
+                    }
+            })
             .map(|(part, _)| part.handle.clone())
             .unwrap_or_default();
-        handles.insert(run.material.clone(), handle.clone());
+        if run.group.is_none() {
+            handles.insert(run.material.clone(), handle.clone());
+        }
         materials.push(handle);
     }
     Some(DressedMerge { merged, materials })
+}
+
+/// The painted garment a dressed part's run is keyed by: a worn garment's
+/// (`tag` > 0) `&` part, which the original draws with that garment's
+/// painted material; `None` for the body's parts and every named material.
+fn painted_group(part: &DressedPart<'_>) -> Option<u32> {
+    (part.tag != 0 && part.material.starts_with('&')).then_some(part.tag)
 }
 
 /// A built mesh's streams as the merge takes them: positions, normals, UVs,
@@ -5984,6 +6006,62 @@ mod tests {
             };
             assert_eq!(joints[0][0], if expected == 0.0 { 3 } else { 7 });
         }
+    }
+
+    /// Two worn garments with the same `&` material name draw each with its
+    /// own paint, and one garment's two `&` names share its one run.
+    #[test]
+    fn merge_dressed_keeps_each_garments_paint() {
+        use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+        let triangle = |offset: f32| {
+            Mesh::new(PrimitiveTopology::TriangleList, Default::default())
+                .with_inserted_attribute(
+                    Mesh::ATTRIBUTE_POSITION,
+                    vec![
+                        [offset, 0.0, 0.0],
+                        [offset + 1.0, 0.0, 0.0],
+                        [offset, 1.0, 0.0],
+                    ],
+                )
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; 3])
+                .with_inserted_attribute(
+                    Mesh::ATTRIBUTE_UV_0,
+                    vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                )
+                .with_inserted_attribute(
+                    Mesh::ATTRIBUTE_JOINT_INDEX,
+                    VertexAttributeValues::Uint16x4(vec![[1, 0, 0, 0]; 3]),
+                )
+                .with_inserted_attribute(
+                    Mesh::ATTRIBUTE_JOINT_WEIGHT,
+                    vec![[1.0, 0.0, 0.0, 0.0]; 3],
+                )
+                .with_inserted_indices(Indices::U32(vec![0, 1, 2]))
+        };
+        let meshes = [triangle(0.0), triangle(2.0), triangle(4.0)];
+        let red: Handle<ExaMaterial> =
+            Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(1), Default::default());
+        let blue: Handle<ExaMaterial> =
+            Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(2), Default::default());
+        let part = |mesh, material, handle: &Handle<ExaMaterial>, tag| DressedPart {
+            mesh,
+            frame: crate::merge::IDENTITY,
+            bone: 1,
+            material,
+            handle: handle.clone(),
+            triangle_flags: None,
+            cull: 0,
+            tag,
+        };
+        let parts = [
+            part(&meshes[0], "&cloth", &red, 1),
+            part(&meshes[1], "&cloth", &blue, 2),
+            part(&meshes[2], "&trim", &red, 1),
+        ];
+        let merged = merge_dressed(&parts).expect("three parts");
+        assert_eq!(merged.merged.subobjects.len(), 2);
+        assert_eq!(merged.materials, [red.clone(), blue.clone()]);
+        assert_eq!(merged.merged.subobjects[0].index_count, 6);
     }
 
     /// The shipped human body merges into one mesh with its material runs
