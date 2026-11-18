@@ -1664,6 +1664,7 @@ pub(crate) fn paint_form_with(
                         pad: c.margin,
                         text: &c.text,
                         view: extras.edits.iter().find(|(r, _)| *r == i).map(|(_, v)| *v),
+                        caret_lit: false,
                     },
                     unit,
                     &look.palette,

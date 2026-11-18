@@ -1202,6 +1202,42 @@ impl Plugin for PanelLivePlugin {
     }
 }
 
+/// Entering combat mode lets the GUI's held left button go before the
+/// screens close: the window manager's held press is released (a held
+/// title or scroll press ends), and an item drag in flight is released at
+/// the pointer, so it drops where the pointer is (a panel under it takes
+/// it, anywhere else cancels it) instead of being swept with its screen.
+/// Nothing happens while the button holds nothing.
+pub fn release_held_drag(world: &mut World) {
+    use bevy::ecs::system::RunSystemOnce;
+    if let Some(mut screens) = world.get_resource_mut::<GameScreens>()
+        && screens.task.pointer.buttons & 1 != 0
+    {
+        screens.task.release(1);
+    }
+    if !world
+        .get_resource::<PanelDrag>()
+        .is_some_and(|d| d.source.is_some())
+        || !world.contains_resource::<ScriptedRelease>()
+    {
+        return;
+    }
+    let at = {
+        let mut windows = world.query_filtered::<&Window, With<PrimaryWindow>>();
+        let pointer = world.get_resource::<ScriptedPointer>();
+        windows.iter(world).next().and_then(|window| {
+            pointer_of(window, pointer).map(|p| (p * window.scale_factor()).as_ivec2())
+        })
+    };
+    // No pointer on the window: the release lands on no panel.
+    let at = at.unwrap_or(IVec2::new(i32::MIN, i32::MIN));
+    world.resource_mut::<ScriptedRelease>().0 = Some(at);
+    info!("combat entry: the item drag in flight is released at {at}");
+    if let Err(error) = world.run_system_once(release) {
+        warn!("combat entry: the drag release did not run: {error}");
+    }
+}
+
 /// The race flags the equipment panel's core test reads for a record's race
 /// byte: the first flag word of the race the byte names (id = byte + 1),
 /// or the built-in record's 0 when the table lacks it.
@@ -1641,6 +1677,42 @@ mod tests {
         };
         assert_eq!(run(true), (false, false, false));
         assert_eq!(run(false), (true, true, true));
+    }
+
+    /// Entering combat mode lets the GUI's held button go before the
+    /// sweep: an item drag in flight is released at the pointer, so the
+    /// entry lands where the pointer holds it in the pack, and the drag
+    /// ends; with no drag nothing happens.
+    #[test]
+    fn combat_entry_releases_the_item_drag_at_the_pointer() {
+        use exa_items::possession::Carried;
+        let (mut app, _) = live_app(vec![Carried {
+            id: 10,
+            flags: 0,
+            x: 0,
+            y: 0,
+        }]);
+        release_held_drag(app.world_mut());
+        let client = pack_client(&app);
+        let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+        let middle = IVec2::new(client.left + cell.x + 40, client.top + cell.y + 40);
+        app.world_mut().resource_mut::<ScriptedPointer>().0 = Some(middle.as_vec2());
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert_eq!(
+            app.world().resource::<PanelDrag>().source,
+            Some(Panel::PlayerPack)
+        );
+        let moved = middle + IVec2::new(60, 40);
+        app.world_mut().resource_mut::<ScriptedPointer>().0 = Some(moved.as_vec2());
+        app.update();
+        release_held_drag(app.world_mut());
+        assert_eq!(app.world().resource::<PanelDrag>().source, None);
+        let screens = app.world().resource::<GameScreens>();
+        assert_eq!(screens.pack.entries.len(), 1);
+        assert_ne!(screens.pack.entries[0].cell, cell, "dropped at the pointer");
     }
 
     #[test]

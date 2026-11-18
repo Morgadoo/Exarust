@@ -1700,8 +1700,11 @@ lists and the palette swatch popup draw through the line skin's form draw
 with their own words (shadow, backdrop, the wide window frame; a list
 opened from a line-skinned combo loses its panel style and rises by a unit
 less one; a combo's list is placed by the GUI's child placement, a pixel
-over its owner's bottom edge or above it, never cut; a hovered combo draws
-its text through the skin's glowing text), the emblem form's swatches the line skin's shade, and the
+over its owner's bottom edge or above it, never cut, and opens on the
+combo's press; a hovered combo draws its text through the skin's glowing
+text; the pad's words reach an open list or palette first, a step moving
+its selection, MenuSel choosing and MenuBak closing,
+`HubWindows::popup_command`), the emblem form's swatches the line skin's shade, and the
 board's and Manage Company's tables the line skin's header line.
 The focus follows the pointer to the record under it, and a focused text
 field or combo box takes the keys through its own handler
@@ -2120,7 +2123,9 @@ goes to the form's back slot, the directional pick or the focused control
 (`pad_menu::fallback`). The forms' pad arms are live: the main menu's and
 the manual's key slots, the skill screen's key slot and link search, the
 arsenal's scroll words, the Settings form's pick and records, the arena
-board's tables and the hub's message box (`--pad-press` scripts the menu
+board's tables and its bottom buttons the pad reaches (End Day, Close,
+Enter, Forfeit: MenuSel clicks the focused one), an open combo list or
+colour palette, and the hub's message box (`--pad-press` scripts the menu
 set's buttons and sticks). There is no Steam
 library, no binding panel and no floating
 gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
@@ -2404,8 +2409,16 @@ inventory lights the page button of the shown body's set and, after a swap, load
 (`gui_screens::inventory_follows_the_set`). A press on the page button of the other set asks
 the shown body for the swap (`gui_screens::swap_from_page_button`, refused
 while the body is busy or an item drag is in flight), and the journal's
-entry list opens its drop-down list of titles over the windows; a picked row
-stores the text and shows that entry (`GameScreens::journal_pick`). With a
+entry list opens its drop-down list of titles over the windows from a press
+on its arrow; a picked row stores the text and shows that entry
+(`GameScreens::journal_pick`). The list is an editable combo box
+(`GameScreens::journal_combo`): New gives it the key focus with its title
+selected, a press on its text places the caret and focuses it, a drag
+selects, its caret blinks and draws, and the keys go to its handler; each
+edit renames the selected entry and its row in the titles
+(`Journal::list_changed`'s edit arm). Entering combat mode releases the
+GUI's held left button first (`panel_live::release_held_drag`): an item
+drag in flight drops at the pointer before the screens close. With a
 game screen open, ten idle seconds restamp the idle turn's clock instead of
 turning the camera (`idle_orbit`). `figure_pick` takes items off the figure: the pick
 of the item under the pointer (the CPU-skinned merged runs' faces, whose

@@ -883,6 +883,21 @@ pub struct GameScreens {
     /// The journal list's drop-down list while it is open over the
     /// journal.
     pub journal_list: Option<JournalList>,
+    /// The journal list's own editing (an editable combo box): its edit
+    /// bytes, whether it holds the GUI's key focus and its caret's blink.
+    pub journal_combo: JournalCombo,
+}
+
+/// The journal list's editing: the edit bytes the combo box keeps (made
+/// when a press, a key or the focus first reaches it), whether the box
+/// holds the GUI's key focus (the focus word of the journal's form names
+/// it: its state's focus bit 0x400 and the form's caret bit follow), and
+/// the caret's blink counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct JournalCombo {
+    pub view: Option<exa_ui::text_edit::EditView>,
+    pub focused: bool,
+    pub blink: u32,
 }
 
 /// The journal list's open drop-down list and its place on the screen.
@@ -927,6 +942,7 @@ impl Default for GameScreens {
             journal_titles: Vec::new(),
             journal_row: 0,
             journal_list: None,
+            journal_combo: JournalCombo::default(),
         }
     }
 }
@@ -1272,6 +1288,8 @@ impl GameScreens {
         {
             list.text = crate::os_clipboard::text_to_ansi(&state.title);
         }
+        // The list's new text starts its edit bytes over.
+        self.journal_combo.view = None;
         if let Some(text_box) = self.journal_box.as_mut() {
             text_box
                 .text
@@ -1297,6 +1315,10 @@ impl GameScreens {
                     self.task
                         .focus_set(Some(screen.form), exa_ui::game_gui::JOURNAL_FOCUS);
                 }
+                // The add's focus moves the GUI's key focus to the list
+                // with no answer bits: its whole title is selected, so the
+                // first typed key replaces it.
+                self.journal_combo_focus(true, 0);
                 info!("gui: journal entry {} added", self.journal.entries.len());
             }
             JOURNAL_ERASE => {
@@ -1339,6 +1361,24 @@ impl GameScreens {
             list.items.len()
         );
         self.journal_list = Some(JournalList { list, rect });
+        self.journal_list_bits(true);
+    }
+
+    /// The list's open marks the combo box (state 0x60) until the list's
+    /// close clears it.
+    fn journal_list_bits(&mut self, open: bool) {
+        if let Some(list) = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form_mut(screen.form))
+            .and_then(|f| f.base_mut())
+            .and_then(|f| f.records.get_mut(JOURNAL_LIST))
+        {
+            if open {
+                list.state |= crate::option_forms::LIST_OPEN;
+            } else {
+                list.state &= !crate::option_forms::LIST_OPEN;
+            }
+        }
     }
 
     /// A row picked in the journal's drop-down list (1-based): the list
@@ -1375,11 +1415,248 @@ impl GameScreens {
         );
         if keep {
             self.journal_list = Some(open);
+        } else {
+            self.journal_list_bits(false);
         }
         if let Some(row) = row {
             self.journal_pick(row);
         }
         true
+    }
+
+    /// The journal list's record (the combo box), as the journal's form
+    /// holds it.
+    fn journal_list_record(&self) -> Option<Control> {
+        self.find(GameScreen::Journal)
+            .and_then(|screen| self.task.form(screen.form))
+            .and_then(|f| f.base())
+            .and_then(|f| f.records.get(JOURNAL_LIST))
+            .cloned()
+    }
+
+    /// The main font of the journal's GUI level: its advances place the
+    /// list's caret, as they lay out its drawn run.
+    fn journal_font(&self) -> exa_ui::gui_font::GuiFont {
+        *exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(self.journal_unit)).main
+    }
+
+    /// The journal list's edit bytes, made with its creation's when no
+    /// press, key or focus reached it yet.
+    fn journal_view(&mut self, text: &[u8]) -> exa_ui::text_edit::EditView {
+        *self
+            .journal_combo
+            .view
+            .get_or_insert_with(|| exa_ui::field_edit::created_view(text))
+    }
+
+    /// The journal's form focus change (the form's focus slot): from the
+    /// list (`focused`) to nothing, or from nothing to the list with the
+    /// focus word's answer bits. The list's state takes or loses its
+    /// focus bit (0x400) and the form's caret bit follows; a focus that
+    /// comes with no answer bits (New's, not a press's) is the focus
+    /// message with word 0, which selects the list's whole text.
+    fn journal_combo_focus(&mut self, focused: bool, bits: u32) {
+        if focused == self.journal_combo.focused {
+            return;
+        }
+        let Some(text) = self.journal_list_record().map(|r| r.text) else {
+            return;
+        };
+        let code = JOURNAL_LIST as u32 + 1;
+        let (current, new) = if focused {
+            (0, code | (bits & 0x7f_0000))
+        } else {
+            (code, 0)
+        };
+        let mut view = self.journal_view(&text);
+        if let Some(form) = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form_mut(screen.form))
+            .and_then(|f| f.base_mut())
+        {
+            let mut states: Vec<u32> = form.records.iter().map(|r| r.state).collect();
+            if let Some(change) =
+                exa_ui::form::focus_change(&mut states, &mut form.state, current, new)
+                && let Some((_, 0)) = change.focus
+            {
+                exa_ui::field_edit::focus_gained(&text, &mut view);
+            }
+            for (r, state) in form.records.iter_mut().zip(states) {
+                r.state = state;
+            }
+        }
+        self.journal_combo.view = Some(view);
+        self.journal_combo.focused = focused;
+        self.journal_combo.blink = 0;
+        debug!("gui: the journal list's key focus: {focused}");
+    }
+
+    /// The journal list's pointer after the window manager's frame. A left
+    /// press the list held in its edit state (its press answered 0x15,
+    /// which moves the key focus to it) focuses it and drops the anchor
+    /// at the caret under the pointer; any other press takes the focus
+    /// off it. With the button held on it the caret follows the pointer
+    /// and the selection grows from the anchor (0x30). While it has the
+    /// focus its caret blinks (the record's caret style).
+    pub fn journal_combo_pointer(&mut self, frame: &crate::form_input::PointerFrame, held: bool) {
+        let Some(c) = self.journal_list_record() else {
+            return;
+        };
+        let held_by_list = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form(screen.form))
+            .and_then(|f| f.base())
+            .is_some_and(|f| f.held == JOURNAL_LIST as i32 + 1);
+        let at = frame.at;
+        let editing = exa_ui::controls::combo_press(c.state) == exa_ui::controls::ComboPress::Edit;
+        if frame.pressed {
+            if held_by_list && editing {
+                self.journal_combo_focus(
+                    true,
+                    exa_ui::controls::combo_cursor(
+                        c.style,
+                        at.map_or(0, |a| a.0) as u32,
+                        (c.x, c.y, c.w, c.h),
+                        c.margin,
+                        self.journal_unit,
+                    ),
+                );
+                if let Some(at) = at {
+                    self.journal_caret(&c, at.0, true);
+                }
+            } else {
+                self.journal_combo_focus(false, 0);
+            }
+        } else if held
+            && held_by_list
+            && self.journal_combo.focused
+            && let Some(at) = at
+        {
+            self.journal_caret(&c, at.0, false);
+        }
+        if self.journal_combo.focused
+            && let Some(form) = self
+                .find(GameScreen::Journal)
+                .and_then(|screen| self.task.form_mut(screen.form))
+                .and_then(|f| f.base_mut())
+        {
+            exa_ui::form::caret_blink(c.style, &mut self.journal_combo.blink, &mut form.state);
+        }
+    }
+
+    /// The list's caret under a pointer `x`: a press (0x40) drops the
+    /// anchor with it, a drag (0x30) moves the caret only; the run then
+    /// scrolls to keep it in view.
+    fn journal_caret(&mut self, c: &Control, x: i32, press: bool) {
+        let font = self.journal_font();
+        let unit = self.journal_unit;
+        let mut view = self.journal_view(&c.text);
+        let run = exa_ui::controls::run_width(&c.text, view.first, view.length, &font.advances);
+        let origin = exa_ui::controls::combo_text_origin(
+            (c.x, c.y, c.w, c.h),
+            c.margin,
+            unit,
+            c.style,
+            run,
+            font.ascent,
+            font.glyph.1,
+        );
+        let span = exa_ui::controls::combo_text_span(c.w, c.margin, unit);
+        if press {
+            exa_ui::field_edit::press_caret(&font, &c.text, &mut view, origin.x, x, span);
+        } else {
+            exa_ui::field_edit::drag_caret(&font, &c.text, &mut view, origin.x, x, span);
+        }
+        self.journal_combo.view = Some(view);
+        if let Some(form) = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form_mut(screen.form))
+            .and_then(|f| f.base_mut())
+        {
+            form.state |= exa_ui::form::state::CARET_LIT;
+        }
+        self.journal_combo.blink = 0;
+    }
+
+    /// Whether the journal list holds the key focus while the window
+    /// manager's focus is on the journal: the keys are then the list's
+    /// key message (0xa0).
+    pub fn journal_combo_focused(&self) -> bool {
+        self.journal_combo.focused
+            && self.focused() == Some(GameScreen::Journal)
+            && !self.journal_box_focused()
+    }
+
+    /// A key message for the focused journal list: the combo box's key
+    /// handler through the edit unit ([`exa_ui::field_edit::combo_key`]:
+    /// Enter calls the owner with 0x300000, any other key edits with the
+    /// box's limit and span and, the list having the notify style, calls
+    /// it with 0x200000), then the list's callback with those bits: the
+    /// edit state's arm renames the selected entry and its title in the
+    /// list's titles ([`exa_ui::game_gui::Journal::list_changed`]).
+    /// Answers the clipboard request.
+    pub fn journal_combo_key(
+        &mut self,
+        key: exa_ui::field_edit::FieldKey,
+        clipboard: Option<&[u8]>,
+    ) -> Option<exa_ui::text_edit::EditAction> {
+        let c = self.journal_list_record()?;
+        let font = self.journal_font();
+        let mut view = self.journal_view(&c.text);
+        let mut text = c.text.clone();
+        let effect = exa_ui::field_edit::combo_key(
+            &font,
+            exa_ui::field_edit::FieldWords {
+                text: &mut text,
+                view: &mut view,
+                style: c.style,
+                max_len: 255,
+                has_callback: c.reports,
+            },
+            c.w,
+            c.margin,
+            self.journal_unit,
+            key,
+            clipboard,
+        );
+        self.journal_combo.view = Some(view);
+        self.journal_combo.blink = 0;
+        if let Some(form) = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form_mut(screen.form))
+            .and_then(|f| f.base_mut())
+        {
+            form.state |= exa_ui::form::state::CARET_LIT;
+            if let Some(list) = form.records.get_mut(JOURNAL_LIST) {
+                list.text = text.clone();
+            }
+        }
+        if let Some(bits) = effect.call {
+            self.journal_list_changed(bits, &text);
+        }
+        effect.clipboard
+    }
+
+    /// The journal list's callback with the state bits its handler set:
+    /// in the edit state (0x200000) the list's text becomes the selected
+    /// entry's title and its row in the list's titles; otherwise the pick
+    /// arm ([`GameScreens::journal_pick`]).
+    fn journal_list_changed(&mut self, bits: u32, text: &[u8]) {
+        if bits & exa_ui::field_edit::COMBO_EDITED == 0 {
+            self.journal_pick(self.journal_row);
+            return;
+        }
+        let title = crate::os_clipboard::ansi_to_text(text);
+        let text_now = self.journal_text.clone();
+        self.journal
+            .list_changed(true, &title, self.journal_row, &text_now);
+        if let Some(row) = self.journal_titles.get_mut(self.journal.current) {
+            *row = text.to_vec();
+        }
+        debug!(
+            "gui: journal entry {} renamed {title:?}",
+            self.journal.current + 1
+        );
     }
 
     /// Keeps the journal's text box on its journal (a title drag moves the
@@ -1931,6 +2208,7 @@ impl GameScreens {
             GameScreen::Journal => {
                 self.journal_box = None;
                 self.journal_list = None;
+                self.journal_combo = JournalCombo::default();
                 self.journal.store_text(&self.journal_text);
                 self.journal.place = place;
             }
@@ -3185,9 +3463,17 @@ fn screens_pointer(
     // The journal's open drop-down list is over the windows and takes the
     // pointer while it is up.
     if screens.journal_list_pointer(&frame) {
+        // The press that opened the list held nothing: its release still
+        // clears the window manager's buttons.
+        if frame.released {
+            screens.task.release(1);
+        }
         return;
     }
     let tick = crate::form_input::drive(&mut screens.task, &frame, timers.as_deref_mut());
+    // The journal list's press, drag and caret, before the records'
+    // callbacks (New's focus moves to the list after its press).
+    screens.journal_combo_pointer(&frame, mouse.pressed(MouseButton::Left));
     crate::form_input::ShownTooltip::follow(
         &mut screens.tooltip,
         &tick,
@@ -3257,11 +3543,34 @@ pub fn screens_keys(
     frame: Res<crate::gui_keys::GuiKeyFrame>,
     mut screens: ResMut<GameScreens>,
     mut climbed: Option<ResMut<crate::gui_keys::TaskKeys>>,
+    mut clipboard: Option<ResMut<crate::os_clipboard::SystemClipboard>>,
 ) {
     if frame.keys.is_empty() || !screens.keys_to_window() || screens.journal_box_focused() {
         return;
     }
     for key in &frame.keys {
+        // The journal list with the key focus takes every key but Tab
+        // (the form's own) as its key message, and answers 3.
+        if screens.journal_combo_focused()
+            && (key.flags & exa_ui::gui_keys::TYPED != 0 || key.key != 9)
+        {
+            if let Some(press) = crate::option_forms::field_key_of(*key) {
+                let pasted =
+                    (press.ctrl && !press.typed && press.byte == exa_ui::text_edit::key::PASTE)
+                        .then(|| clipboard.as_deref_mut().and_then(|c| c.read()))
+                        .flatten();
+                let action = screens.journal_combo_key(press, pasted.as_deref());
+                if let Some(
+                    exa_ui::text_edit::EditAction::Copy(bytes)
+                    | exa_ui::text_edit::EditAction::Cut(bytes),
+                ) = action
+                    && let Some(c) = clipboard.as_deref_mut()
+                {
+                    c.put(&bytes);
+                }
+            }
+            continue;
+        }
         let route = screens.task.key(key.key, key.flags);
         debug!(
             "gui: key {:#x} (word {:#x}) on the game screens: {route:?}",
@@ -3589,6 +3898,10 @@ pub(crate) fn screen_font(
 
 /// Paints the control records a screen's form carries: buttons with their
 /// caption and labels as text. The unlocated control is not drawn.
+///
+/// `combo` is the combo box's edit bytes and its form's caret bit, when
+/// it keeps them (the journal list).
+#[allow(clippy::too_many_arguments)]
 fn paint_controls(
     controls: &[Control],
     unit: i32,
@@ -3596,6 +3909,7 @@ fn paint_controls(
     font: &exa_ui::gui_font::GuiFont,
     size: Option<(u16, u16)>,
     glyphs: Option<&exa_ui::GuiLevelState>,
+    combo: Option<(Option<exa_ui::text_edit::EditView>, bool)>,
     painted: &mut gui_paint::Painted,
 ) {
     for control in controls {
@@ -3615,7 +3929,8 @@ fn paint_controls(
                             state: control.state,
                             pad: control.margin,
                             text: &control.text,
-                            view: None,
+                            view: combo.and_then(|(view, _)| view),
+                            caret_lit: combo.is_some_and(|(_, lit)| lit),
                         },
                         unit,
                         palette,
@@ -3804,7 +4119,16 @@ fn paint_inventory(
     painted.layers.extend(outer.over());
     // The form's own records, with the hover bits the pointer gave them.
     let controls = records.map_or_else(|| layout.controls_at(bounds), <[Control]>::to_vec);
-    paint_controls(&controls, unit, &palette, &font, size, None, &mut painted);
+    paint_controls(
+        &controls,
+        unit,
+        &palette,
+        &font,
+        size,
+        None,
+        None,
+        &mut painted,
+    );
     // The rating dots draw in the label group's seventh ink.
     if let Some(doll) = doll
         && let (Some(value), Some(sheet)) = (doll.dots, doll.sheet)
@@ -3872,6 +4196,8 @@ pub(crate) struct JournalPaint<'a> {
     pub text_box: Option<&'a JournalBox>,
     pub box_hover: i32,
     pub glyphs: Option<&'a exa_ui::GuiLevelState>,
+    /// The list's edit bytes and the form's caret bit.
+    pub combo: Option<(Option<exa_ui::text_edit::EditView>, bool)>,
 }
 
 /// The journal's frame, its records (New, Erase and the entry list), and
@@ -3918,6 +4244,7 @@ fn paint_journal(
         &font,
         size,
         paint.glyphs,
+        paint.combo,
         &mut painted,
     );
     let rect = layout.child_at(0, bounds);
@@ -4250,6 +4577,14 @@ pub(crate) fn draw_screens(
                         text_box,
                         box_hover: text_box.map_or(0, |b| screens.hover_mark(b.form)),
                         glyphs: level.as_deref(),
+                        combo: Some((
+                            screens.journal_combo.view,
+                            screens
+                                .task
+                                .form(screen.form)
+                                .and_then(|f| f.base())
+                                .is_some_and(|f| f.state & exa_ui::form::state::CARET_LIT != 0),
+                        )),
                     },
                     unit,
                     textures,
@@ -6285,6 +6620,7 @@ mod tests {
                 text_box: None,
                 box_hover: 0,
                 glyphs: None,
+                combo: None,
             },
             4,
             &textures,
@@ -6700,8 +7036,8 @@ mod tests {
         );
     }
 
-    /// The journal's entry list: a release over it opens its drop-down list
-    /// of the titles with the selected row chosen; picking the first row
+    /// The journal's entry list: a press on its arrow opens its drop-down
+    /// list of the titles with the selected row chosen; picking the first row
     /// stores the text typed into the second entry and shows the first.
     #[test]
     fn the_journal_list_drops_down_and_picks_an_entry() {
@@ -6726,7 +7062,17 @@ mod tests {
         point(&mut app, centre);
         app.update();
         type_text(&mut app, window, "second");
-        release_over(&mut app, JOURNAL_LIST);
+        // The list's arrow (its text part is the edit state).
+        let arrow = {
+            let screens = app.world().resource::<GameScreens>();
+            let form = screens.find(GameScreen::Journal).unwrap().form;
+            let r = &screens.task.form(form).unwrap().base().unwrap().records[JOURNAL_LIST];
+            ((r.x + r.w - 3) as f32, (r.y + r.h / 2) as f32)
+        };
+        point(&mut app, arrow);
+        app.update();
+        button(&mut app, MouseButton::Left, true);
+        button(&mut app, MouseButton::Left, false);
         let (rect, row_y) = {
             let screens = app.world().resource::<GameScreens>();
             assert_eq!(screens.journal_row, 2);
@@ -6754,6 +7100,95 @@ mod tests {
         assert_eq!(
             screens.journal_box.as_ref().unwrap().text.text.as_bytes(),
             b"first"
+        );
+    }
+
+    /// The journal's entry list is an editable combo box: New gives it the
+    /// key focus with its whole title selected, so typing renames the
+    /// entry and its row in the list's titles (the list's edit-state
+    /// callback); a press on its arrow opens the drop-down list and takes
+    /// the focus off it; a press on its text holds it, places the caret
+    /// under the pointer and focuses it again.
+    #[test]
+    fn the_journal_list_renames_its_entry_as_it_is_typed() {
+        let (mut app, window) = journal_app();
+        let record = |app: &App, i: usize| {
+            let screens = app.world().resource::<GameScreens>();
+            let form = screens.find(GameScreen::Journal).unwrap().form;
+            screens.task.form(form).unwrap().base().unwrap().records[i].clone()
+        };
+        let click = |app: &mut App, at: (i32, i32)| {
+            point(app, (at.0 as f32, at.1 as f32));
+            app.update();
+            button(app, MouseButton::Left, true);
+            button(app, MouseButton::Left, false);
+        };
+        let new = record(&app, JOURNAL_NEW);
+        click(&mut app, (new.x + new.w / 2, new.y + new.h / 2));
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert!(screens.journal_combo.focused, "New focuses the list");
+            let view = screens.journal_combo.view.unwrap();
+            assert_eq!((view.anchor, view.caret), (0, 9), "the whole title");
+        }
+        assert_ne!(record(&app, JOURNAL_LIST).state & 0x400, 0);
+        type_text(&mut app, window, "Camp");
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert_eq!(screens.journal.entries[1].title, "Camp");
+            assert_eq!(screens.journal.entries[0].title, "New Entry");
+            assert_eq!(screens.journal_titles[1], b"Camp");
+        }
+        assert_eq!(record(&app, JOURNAL_LIST).text, b"Camp");
+        // The arrow opens the list with the new title.
+        let list = record(&app, JOURNAL_LIST);
+        let arrow = (list.x + list.w - 3, list.y + list.h / 2);
+        click(&mut app, arrow);
+        {
+            let screens = app.world().resource::<GameScreens>();
+            let open = screens
+                .journal_list
+                .as_ref()
+                .expect("the arrow opens the list");
+            assert_eq!(
+                open.list.items,
+                vec![b"New Entry".to_vec(), b"Camp".to_vec()]
+            );
+            assert!(!screens.journal_combo.focused);
+        }
+        assert_eq!(record(&app, JOURNAL_LIST).state & 0x60, 0x60, "open marks");
+        // A press off the list closes it; a press on the text's left
+        // places the caret before the first byte.
+        click(&mut app, (5, 5));
+        assert!(app.world().resource::<GameScreens>().journal_list.is_none());
+        assert_eq!(
+            record(&app, JOURNAL_LIST).state & 0x60,
+            0,
+            "the close clears them"
+        );
+        let text_at = (list.x + list.margin + 1, list.y + list.h / 2);
+        point(&mut app, (text_at.0 as f32, text_at.1 as f32));
+        app.update();
+        assert_eq!(
+            record(&app, JOURNAL_LIST).state & 0xf_0000,
+            0x2_0000,
+            "the text part is the edit state"
+        );
+        button(&mut app, MouseButton::Left, true);
+        button(&mut app, MouseButton::Left, false);
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert!(screens.journal_combo.focused);
+            assert_eq!(screens.journal_combo.view.unwrap().caret, 0);
+            assert!(
+                screens.journal_list.is_none(),
+                "the edit press opens nothing"
+            );
+        }
+        type_text(&mut app, window, "X");
+        assert_eq!(
+            app.world().resource::<GameScreens>().journal.entries[1].title,
+            "XCamp"
         );
     }
 

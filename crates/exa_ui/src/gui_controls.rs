@@ -569,6 +569,33 @@ pub fn dispatch(
             }
         }
         (5, _) => 0,
+        // The combo box's pointer query: an editable box answers the text
+        // cursor left of its arrow (the hover code 0x20000, its edit
+        // state), else nothing (the default 0x10000).
+        (crate::controls::COMBO_BOX, message::QUERY) => {
+            let c = &controls[i];
+            crate::controls::combo_cursor(c.style, param, (c.x, c.y, c.w, c.h), c.margin, unit)
+        }
+        // The combo box's left press: in its edit state the press drops
+        // the anchor at the caret (the owner places it with its font) and
+        // the box holds the press (0x15, which also moves the key focus
+        // to it); otherwise the press opens the drop-down list (the owner
+        // runs it) and answers 3. Other buttons answer 0.
+        (crate::controls::COMBO_BOX, message::PRESS) => {
+            if button & 7 != 1 {
+                0
+            } else if crate::controls::combo_press(controls[i].state)
+                == crate::controls::ComboPress::Edit
+            {
+                0x15
+            } else {
+                events.push(ControlEvent::Changed(i));
+                3
+            }
+        }
+        // The combo box's release only answers 3: its list opened on the
+        // press.
+        (crate::controls::COMBO_BOX, message::RELEASE) => 3,
         // A hovered record with tooltip text asks for its tooltip. A button
         // (class 1) shows its record's second string, so it asks only
         // with one set: the retail inventory's captioned Primary and
