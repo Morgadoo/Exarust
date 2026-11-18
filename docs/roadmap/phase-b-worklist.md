@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 327 | 99,377 | B1 wire (or prove unreachable) |
-| partial | 904 | 682,261 | B4 complete the port |
+| uncalled | 326 | 98,598 | B1 wire (or prove unreachable) |
+| partial | 903 | 682,003 | B4 complete the port |
 | missing | 37 | 6,211 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,10 +14,10 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 130,060 | 15,739 | 238 |
+| physics | 130,060 | 14,960 | 238 |
 | render | 91,571 | 10,884 | 2,710 |
 | ui | 69,501 | 32,594 | 167 |
-| characters | 71,329 | 11,244 | 1,452 |
+| characters | 71,071 | 11,244 | 1,452 |
 | modes | 57,853 | 7,005 | 363 |
 | powers | 62,833 | 1,307 | 181 |
 | world | 50,252 | 8,635 | 324 |
@@ -34,10 +34,10 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 32 / 88,168 | 3 / 1,094 | 0 / 0 | 89,262 |
+| TMotileDynamics | physics | 32 / 88,168 | 2 / 315 | 0 / 0 | 88,483 |
 | SG_CharacterGen (unit routines) | characters | 38 / 28,359 | 23 / 5,324 | 0 / 0 | 33,683 |
 | TSimSector | physics | 23 / 20,137 | 0 / 0 | 0 / 0 | 20,137 |
-| TMotilePart | characters | 30 / 15,154 | 4 / 1,296 | 2 / 1,370 | 17,820 |
+| TMotilePart | characters | 29 / 14,896 | 4 / 1,296 | 2 / 1,370 | 17,562 |
 | XA_Arena (unit routines) | modes | 23 / 15,343 | 3 / 1,321 | 4 / 363 | 17,027 |
 | TVXGIManager | render | 11 / 16,981 | 0 / 0 | 0 / 0 | 16,981 |
 | SG_PlayerControls (unit routines) | ai | 27 / 15,796 | 0 / 0 | 0 / 0 | 15,796 |

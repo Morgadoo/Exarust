@@ -184,18 +184,6 @@ fn gi_block_sample(k: u32, p: vec3<f32>, n: vec3<f32>, t: Taps) -> vec4<f32> {
     return gi_mean(sum, t);
 }
 
-// The centre of the 6 m terrain block a point lies on (world metres): the
-// tile (centred on the mesh's origin `c`) is eight blocks a side. The
-// original's terrain caller looks the GI block up from each terrain
-// block's own position.
-fn terrain_block_centre(c: vec3<f32>, p: vec3<f32>) -> vec3<f32> {
-    let size = max(splat.tile.x, 1e-3);
-    let step = size / 8.0;
-    let i = clamp(floor((p.xz - c.xz + size * 0.5) / step), vec2(0.0), vec2(7.0));
-    let xz = c.xz - size * 0.5 + (i + 0.5) * step;
-    return vec3(xz.x, c.y, xz.y);
-}
-
 // Layer `k`'s textures at `uv` (base level).
 fn layer_diffuse(k: u32, uv: vec2<f32>) -> vec4<f32> {
     switch k {
@@ -500,11 +488,14 @@ fn fragment(
     // `Ambient.w`: 8, 3 under an open sky.
     let ambient_w = select(REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, has(OUTDOOR));
     if has(GI) {
-        // The resident block the terrain block's centre falls in (the
-        // original's per-object `VXGIPos`); no block reads black.
+        // The resident block the tile's position falls in: the original's
+        // static terrain draw picks `VXGIPos` once per tile, from the tile
+        // record's position (the centre of its vertex grid, the mesh's
+        // origin `c`), and sets it for each of the tile's blocks; no block
+        // reads black.
         let world_from_local = mesh[in.instance_index].world_from_local;
         let c = vec3(world_from_local[0].w, world_from_local[1].w, world_from_local[2].w);
-        let slot = gi_slot(splat.gi_grid, splat.gi_cells, terrain_block_centre(c, in.world_position.xyz));
+        let slot = gi_slot(splat.gi_grid, splat.gi_cells, c);
         let g = gi_block_sample(slot, wp, n, disc);
         if has(DEBUG_GI) && !has(DEBUG_SPLIT) {
             var dbg: FragmentOutput;
