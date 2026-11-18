@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r316, 11-16) | target |
+| measure | start (r186, 11-10) | now (r317, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **62.33%** | **100%** |
+| **Ledger: bytes in a final state** | — | **62.77%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9264 | all |
+| Tests passing | 8,489 | 9271 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,11 +98,11 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 136 | 156,742 |
+| Physics, bodies & cloth | 7 | 7 | 134 | 155,838 |
 | Rendering & GPU | 10 | 10 | 266 | 132,403 |
-| UI | 12 | 12 | 313 | 120,881 |
+| UI | 12 | 12 | 312 | 120,002 |
 | Characters, motion & animation | 8 | 8 | 213 | 99,693 |
-| Thaumaturgy & effects | 9 | 9 | 123 | 86,009 |
+| Thaumaturgy & effects | 9 | 9 | 117 | 76,556 |
 | World, levels & terrain | 5 | 5 | 140 | 71,634 |
 | Game modes, arena & session | 7 | 7 | 153 | 70,404 |
 | AI & behaviour | 8 | 8 | 111 | 68,734 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 5 | 3,025 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,847** | **945,244** |
+| **Total** | **90** | **90** | **1,838** | **934,008** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 317 | Force blast, wave and torrent hits knock a character back through the original knockback step routine (up to a step) instead of a flattened stand-in; the torrent frame trails the caster aim through the turn spring; a revived corpse takes the undead voice; an ending dome hum climbs as the original; a summoned demon settles during its fade-in; the hire 0x41 message box lets the pointer reach the forms under it; peak memory equal to main, the opponent-blast scene runs slower because twice as many parts are struck. |
 | 2026-11-16 | 316 | F571: build-dependent golden changes on fire-lit shots came from particle seeds keyed by entity index, which Bevy resource and message entities shift with any type a build adds; flames are now seeded in the order their spawns apply and shared random streams and light registration are walked in a sorted order; two builds differing only by an unused resource give identical traces and pictures. |
 | 2026-11-16 | 315 | Combo lists open by the GUI child placement (over the owner edge or above it, uncut) and a hovered combo glows its text; the pad pick uses the original record reach test; the pointer table matches the shipped executable; the first built-in glyph is the GUISymbl square; the game skin atlas is resampled to 40 by 20 units at the GUI unit and again on scale changes (skinned frames draw smooth; golden hub changed on purpose); five stale ledger rows corrected. |
 | 2026-11-16 | 314 | The ten mesh query slots are identical to the original over 5000 cases each; the cloth level contact reads the mesh face record and the sweep record; the grid shift is proven unreachable in 0.9.5 and the grid rebuild is the teardown reset; the placement static Height Query mode is ported (no caller yet); the placement route stop clears the run bit and the free walk; no picture or trace change. |

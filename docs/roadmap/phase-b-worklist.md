@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 550 | 140,952 | B1 wire (or prove unreachable) |
-| partial | 1,262 | 795,969 | B4 complete the port |
+| partial | 1,253 | 784,733 | B4 complete the port |
 | missing | 43 | 9,233 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,11 +14,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 139,948 | 16,556 | 238 |
+| physics | 139,044 | 16,556 | 238 |
 | render | 107,731 | 21,652 | 3,232 |
-| ui | 81,728 | 38,865 | 288 |
+| ui | 80,849 | 38,865 | 288 |
 | characters | 84,180 | 14,061 | 1,452 |
-| powers | 81,427 | 2,261 | 2,321 |
+| powers | 71,974 | 2,261 | 2,321 |
 | world | 55,355 | 15,716 | 563 |
 | modes | 63,036 | 7,005 | 363 |
 | ai | 67,452 | 1,271 | 11 |
@@ -34,7 +34,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 38 / 95,923 | 4 / 1,337 | 0 / 0 | 97,260 |
+| TMotileDynamics | physics | 36 / 95,019 | 4 / 1,337 | 0 / 0 | 96,356 |
 | SG_CharacterGen (unit routines) | characters | 46 / 30,160 | 25 / 5,384 | 0 / 0 | 35,544 |
 | TSimSector | physics | 26 / 21,125 | 0 / 0 | 0 / 0 | 21,125 |
 | TMotilePart | characters | 37 / 17,208 | 4 / 1,296 | 2 / 1,370 | 19,874 |
@@ -57,12 +57,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_3DView (unit routines) | render | 14 / 7,385 | 0 / 0 | 7 / 1,146 | 8,531 |
 | RF_OS_Functions (unit routines) | runtime | 12 / 6,629 | 5 / 1,749 | 0 / 0 | 8,378 |
 | FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
-| RF_GUI_Main (unit routines) | ui | 10 / 6,565 | 8 / 1,289 | 2 / 144 | 7,998 |
 | TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
 | TVCCloth | physics | 12 / 7,143 | 5 / 688 | 0 / 0 | 7,831 |
 | TRBDDoor | world | 3 / 7,666 | 0 / 0 | 0 / 0 | 7,666 |
 | TTetraRBD | physics | 13 / 6,912 | 2 / 661 | 0 / 0 | 7,573 |
 | RF_SceneNodes (unit routines) | world | 5 / 6,798 | 2 / 333 | 0 / 0 | 7,131 |
+| RF_GUI_Main (unit routines) | ui | 9 / 5,686 | 8 / 1,289 | 2 / 144 | 7,119 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
 | SG_GameGUI (unit routines) | ui | 13 / 6,927 | 0 / 0 | 0 / 0 | 6,927 |
 | TRenderer | render | 15 / 6,335 | 1 / 526 | 1 / 10 | 6,871 |
@@ -75,7 +75,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TLoadoutForm | modes | 6 / 6,320 | 1 / 80 | 0 / 0 | 6,400 |
 | Character roles & relations (script functions) | ai | 10 / 5,694 | 2 / 603 | 0 / 0 | 6,297 |
 | RF_Navigation (unit routines) | render | 6 / 4,181 | 9 / 2,080 | 0 / 0 | 6,261 |
-| TForceTorrentEffect | powers | 4 / 6,177 | 0 / 0 | 0 / 0 | 6,177 |
 | SG_GameMain (unit routines) | modes | 16 / 6,134 | 0 / 0 | 0 / 0 | 6,134 |
 | FLX_Character_Textures (unit routines) | characters | 13 / 5,935 | 1 / 187 | 0 / 0 | 6,122 |
 | TCharacterView | ui | 13 / 5,178 | 1 / 866 | 0 / 0 | 6,044 |
@@ -101,9 +100,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGSLines | ui | 3 / 3,841 | 5 / 815 | 0 / 0 | 4,656 |
 | RF_HW_Config (unit routines) | ui | 7 / 4,439 | 3 / 198 | 0 / 0 | 4,637 |
 | TNavCameraControl | render | 1 / 4,401 | 1 / 192 | 0 / 0 | 4,593 |
-| SG_Thaum_DIsp (unit routines) | powers | 13 / 4,087 | 1 / 431 | 0 / 0 | 4,518 |
 | TSkillUI | ui | 4 / 3,673 | 2 / 716 | 0 / 0 | 4,389 |
 | TTerrainManager | world | 6 / 3,351 | 6 / 1,033 | 0 / 0 | 4,384 |
+| SG_Thaum_DIsp (unit routines) | powers | 11 / 3,827 | 1 / 431 | 0 / 0 | 4,258 |
 | SG_CharacterAI (unit routines) | ai | 12 / 4,255 | 0 / 0 | 0 / 0 | 4,255 |
 | TTerrainGrass | world | 4 / 4,208 | 0 / 0 | 0 / 0 | 4,208 |
 | Texture compression formats (DXT/LATC) | render | 8 / 3,532 | 0 / 0 | 1 / 473 | 4,005 |
@@ -124,7 +123,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Mesh (unit routines) | render | 1 / 1,108 | 1 / 2,210 | 0 / 0 | 3,318 |
 | TShadowMapDirect | render | 4 / 3,259 | 0 / 0 | 0 / 0 | 3,259 |
 | RF_DBObjects (unit routines) | data | 2 / 2,672 | 3 / 524 | 0 / 0 | 3,196 |
-| TForceWaveEffect | powers | 3 / 3,178 | 0 / 0 | 0 / 0 | 3,178 |
 | TFireEffectRow | powers | 3 / 3,114 | 0 / 0 | 0 / 0 | 3,114 |
 | TGeometry | render | 6 / 2,254 | 0 / 0 | 1 / 804 | 3,058 |
 | RF_Terrain_Materials (unit routines) | world | 1 / 2,474 | 3 / 484 | 0 / 0 | 2,958 |
@@ -187,7 +185,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_Thaumaturgy (unit routines) | powers | 4 / 1,296 | 0 / 0 | 0 / 0 | 1,296 |
 | RFE_MeshSubdivide (unit routines) | render | 4 / 1,186 | 0 / 0 | 1 / 96 | 1,282 |
 | TPwrForceStrikes_C | powers | 2 / 1,259 | 0 / 0 | 0 / 0 | 1,259 |
-| TForceDomeEffect | powers | 1 / 1,253 | 0 / 0 | 0 / 0 | 1,253 |
 | TPostProcessor | render | 4 / 1,210 | 0 / 0 | 0 / 0 | 1,210 |
 | TPwrDispVanish_I | powers | 2 / 1,175 | 0 / 0 | 0 / 0 | 1,175 |
 | THairColPicker | ui | 2 / 1,159 | 0 / 0 | 0 / 0 | 1,159 |
@@ -207,6 +204,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_GameFunctions (unit routines) | script | 3 / 445 | 2 / 495 | 0 / 0 | 940 |
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
 | TForceBlastGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
+| TForceTorrentEffect | powers | 2 / 889 | 0 / 0 | 0 / 0 | 889 |
 | FG_AIFunctions (unit routines) | script | 6 / 888 | 0 / 0 | 0 / 0 | 888 |
 | FLX_EffectRender (unit routines) | powers | 1 / 887 | 0 / 0 | 0 / 0 | 887 |
 | TPwrSpiritForm | powers | 2 / 803 | 0 / 0 | 0 / 0 | 803 |
@@ -255,6 +253,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TClothPadded1 | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
 | TClothPadded2 | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
 | TClothVelvet | items | 1 / 528 | 0 / 0 | 0 / 0 | 528 |
+| TForceWaveEffect | powers | 2 / 526 | 0 / 0 | 0 / 0 | 526 |
 | TMaterial | render | 2 / 285 | 1 / 232 | 0 / 0 | 517 |
 | TClothBasic | items | 1 / 516 | 0 / 0 | 0 / 0 | 516 |
 | TClothFine | items | 1 / 508 | 0 / 0 | 0 / 0 | 508 |
