@@ -1593,6 +1593,7 @@ pub(crate) fn steer_player(
                     yaw: None,
                     held: true,
                     statics: false,
+                    at: None,
                 });
                 if by != Vec3::ZERO {
                     standing += by;

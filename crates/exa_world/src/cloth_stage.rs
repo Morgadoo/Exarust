@@ -1046,7 +1046,15 @@ fn finish_one(
                 }
                 triangles.clear();
                 physics.0.triangles(record.piece, lo, hi, &mut triangles);
-                contacts.gather_level(&plan.to_object, triangles.iter().copied());
+                // The node mesh's own kd-tree record, else the collider's
+                // own triangle count.
+                let tree = physics
+                    .0
+                    .colliders
+                    .get_unknown_gen(record.piece)
+                    .and_then(|(_, handle)| statics.has_tree(handle))
+                    .unwrap_or_else(|| physics.0.has_tree(record.piece));
+                contacts.gather_level(&plan.to_object, triangles.iter().copied(), tree);
             }
             work.pieces = contacts.pieces.len() as u32;
             work.triangles = contacts.level.len() as u32;

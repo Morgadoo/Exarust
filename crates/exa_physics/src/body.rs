@@ -6437,6 +6437,10 @@ impl Level for MaskedLevel<'_> {
         })
     }
 
+    fn floor_box(&self, piece: u32) -> Option<(Affine3A, Vec3, Vec3)> {
+        self.world.floor_box(piece)
+    }
+
     /// A floor piece that holds its node mesh's first triangle.
     fn floor_skips_first(&self, piece: u32) -> bool {
         self.masks.is_some_and(|m| {

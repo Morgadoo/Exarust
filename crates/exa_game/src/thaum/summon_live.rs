@@ -186,6 +186,20 @@ pub(crate) fn arrive_demons(
         entry.entity = Some(vanish);
         if let ActiveClass::Summon(power) = &mut entry.class {
             power.arrive(demon.to_bits(), Some(wisps.to_bits()), now);
+            // The arrival's placement: the frame at the summon's place,
+            // turned by its facing, and the body put on the ground by the
+            // leg snap in its static mode (the sectors' static meshes
+            // only).
+            if let Some(place) = power.place {
+                let at = Vec3::from_array(place) / CM;
+                commands.entity(demon).insert(crate::limp::GroundPlacement {
+                    floor: at.y,
+                    yaw: Some(power.yaw),
+                    held: false,
+                    statics: true,
+                    at: Some(at),
+                });
+            }
         }
         // Held: its AI's statue byte.
         if let Ok(mut npc) = mind.npcs.get_mut(demon) {
@@ -384,5 +398,47 @@ mod tests {
         app.update();
         assert_eq!(app.world().get::<Ragdoll>(demon).unwrap().settling(), 0);
         assert!(!app.world().get::<Npc>(demon).unwrap().statue);
+    }
+
+    /// The arrival places the demon as the original's does: the frame at
+    /// the summon's place (cm, here in metres) turned by its facing, the
+    /// body put on the ground by the leg snap over the static meshes only.
+    #[test]
+    fn the_arrival_places_the_demon_on_the_static_ground() {
+        let mut app = App::new();
+        app.init_resource::<EffectDraws>()
+            .init_resource::<EffectRoll>()
+            .add_message::<exa_audio::PointSounded>()
+            .add_systems(Update, arrive_demons);
+        let mut summon = Summon::ai(0);
+        summon.place = Some([120.0, 30.0, -250.0]);
+        summon.yaw = 1.25;
+        summon.asked = true;
+        summon.phase = SUMMON_SPAWN;
+        let mut caster = PowerCaster::new(&[]);
+        caster.active.push(ActiveEntry {
+            id: 0,
+            cast_id: 0,
+            state: 0,
+            class: ActiveClass::Summon(summon),
+            tick_cost: 0.0,
+            entity: None,
+            companions: Vec::new(),
+            throw_view: None,
+        });
+        let caster = app.world_mut().spawn(caster).id();
+        let demon = app
+            .world_mut()
+            .spawn((demon_body(), Summoned { caster }))
+            .id();
+        app.update();
+        let asked = *app
+            .world()
+            .get::<crate::limp::GroundPlacement>(demon)
+            .expect("the demon is placed on the ground");
+        assert!(asked.statics && !asked.held);
+        assert_eq!(asked.at, Some(Vec3::new(1.2, 0.3, -2.5)));
+        assert_eq!(asked.floor, 0.3);
+        assert_eq!(asked.yaw, Some(1.25));
     }
 }
