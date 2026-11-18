@@ -957,9 +957,15 @@ impl Default for Search {
     }
 }
 
+/// The score the search activity is constructed with: while the activity
+/// answers busy, the target pass starts its notice score here, so only a
+/// contact that scores above it draws the brain's attention from the
+/// search (the goal entity's own score replaces it while the pick flag
+/// holds).
+pub const NOTICE_FLOOR: f32 = 4.0;
+
 impl Search {
-    /// A new search: standing, with the lookahead of 4 the original sets
-    /// (unused by its tick).
+    /// A new search: standing, its notice floor [`NOTICE_FLOOR`].
     pub fn new() -> Self {
         Self {
             state: State::Stand,
