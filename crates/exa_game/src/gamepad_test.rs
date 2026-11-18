@@ -974,3 +974,73 @@ fn the_scripted_pad_holds_its_actions_over_their_frames() {
     assert!(ScriptedPad::parse("jump@1").is_none());
     assert!(ScriptedPad::parse("talk@4-4").is_none());
 }
+
+/// The live reader runs the `Powers` hold on the simulation's clock: while
+/// the simulation holds (its snapshot's time stays), a held `Powers` never
+/// reaches the power tree however long the real clock runs; once the
+/// simulation's time passes the half second, it does.
+#[test]
+fn a_held_simulation_clock_holds_the_powers_hold_in_the_live_reader() {
+    use bevy::time::TimePlugin;
+    use exa_physics::sim_app::{SimSnapshot, Snapshots};
+
+    let mut app = App::new();
+    app.add_plugins((TimePlugin, GamepadPlugin))
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(100),
+        ));
+    let at = |ms: u64| Snapshots {
+        previous: None,
+        current: Some(SimSnapshot {
+            tick: 0,
+            time_ms: ms,
+            linked: 0,
+        }),
+    };
+    app.insert_resource(at(1000));
+    let id = app
+        .world_mut()
+        .spawn((Gamepad::default(), GamepadSettings::default()))
+        .id();
+    // The set primes with nothing held, then `Powers` is pressed.
+    for _ in 0..3 {
+        app.update();
+    }
+    app.world_mut()
+        .get_mut::<Gamepad>(id)
+        .unwrap()
+        .digital_mut()
+        .press(GamepadButton::DPadUp);
+    let mut tree = false;
+    for _ in 0..20 {
+        app.update();
+        tree |= app.world().resource::<PlayPad>().frame().state & command::POWER_TREE != 0;
+    }
+    // Two real seconds on a held simulation: the hold has not run out.
+    assert!(!tree);
+    assert!(app.world().resource::<PlayPad>().frame().state & command::POWER_BAR != 0);
+    app.insert_resource(at(1501));
+    app.update();
+    assert!(app.world().resource::<PlayPad>().frame().state & command::POWER_TREE != 0);
+}
+
+/// The step repeat re-arms on the simulation's clock too: a held stick in
+/// the power bar's step mode steps once while the simulation holds.
+#[test]
+fn the_step_repeat_runs_on_the_simulation_clock() {
+    let ctx = PlayContext {
+        modes: StepModes {
+            power_bar: true,
+            dialogue: false,
+        },
+        ..play_ctx()
+    };
+    let mut play = primed_play();
+    let right = pad().with_analog(Id::Move, Vec2::new(0.5, 0.0));
+    assert_eq!(play.update_at(4, 10, &right, ctx).pressed, command::STEP_RIGHT);
+    // The real clock runs a second; the simulation's stays: no repeat.
+    for now in (100..1100).step_by(100) {
+        assert_eq!(play.update_at(now, 10, &right, ctx).pressed, 0);
+    }
+    assert_eq!(play.update_at(1200, 311, &right, ctx).pressed, command::STEP_RIGHT);
+}

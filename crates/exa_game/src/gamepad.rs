@@ -1425,9 +1425,9 @@ pub struct PlayPad {
     state: u32,
     /// The player command word the game reads.
     command: u32,
-    /// The step repeat's deadline (ms of the real clock).
+    /// The step repeat's deadline (ms of the simulation's clock).
     repeat_at: i64,
-    /// The `Powers` hold's deadline.
+    /// The `Powers` hold's deadline (ms of the simulation's clock).
     powers_at: i64,
     /// A gameplay set was activated at this time and its held keys still
     /// need priming.
@@ -1501,8 +1501,23 @@ impl PlayPad {
         self.prime_at = Some(now_ms);
     }
 
-    /// One frame of gameplay input at `now_ms` (the real clock).
+    /// One frame of gameplay input at `now_ms`, with the simulation's
+    /// clock at the same time (for tests and callers without one).
     pub fn update(&mut self, now_ms: i64, sample: &PadSample, ctx: PlayContext) -> &PlayFrame {
+        self.update_at(now_ms, now_ms, sample, ctx)
+    }
+
+    /// One frame of gameplay input. The set's priming waits on `now_ms`,
+    /// the real clock; the step repeat and the `Powers` hold run on
+    /// `sim_ms`, the simulation's game clock (the original reads its
+    /// simulation time there), so a held simulation (a pause) holds them.
+    pub fn update_at(
+        &mut self,
+        now_ms: i64,
+        sim_ms: i64,
+        sample: &PadSample,
+        ctx: PlayContext,
+    ) -> &PlayFrame {
         if !self.started {
             self.started = true;
             self.variant = ctx.variant;
@@ -1537,16 +1552,16 @@ impl PlayPad {
             let axes = f64::from(axes);
             // The original compares the widened axis with the double 0.1.
             if axes > 0.1 {
-                if self.repeat_at < now_ms {
+                if self.repeat_at < sim_ms {
                     previous &= !bits.1;
-                    self.repeat_at = now_ms + STEP_REPEAT_MS;
+                    self.repeat_at = sim_ms + STEP_REPEAT_MS;
                 }
                 self.state |= bits.1;
                 direction = bits.1;
             } else if axes < -0.1 {
-                if self.repeat_at < now_ms {
+                if self.repeat_at < sim_ms {
                     previous &= !bits.0;
-                    self.repeat_at = now_ms + STEP_REPEAT_MS;
+                    self.repeat_at = sim_ms + STEP_REPEAT_MS;
                 }
                 self.state |= bits.0;
                 direction = bits.0;
@@ -1605,8 +1620,8 @@ impl PlayPad {
             let before = self.state;
             self.state |= command::POWER_BAR;
             if previous & command::POWER_BAR == 0 {
-                self.powers_at = now_ms + POWERS_HOLD_MS;
-            } else if self.powers_at < now_ms {
+                self.powers_at = sim_ms + POWERS_HOLD_MS;
+            } else if self.powers_at < sim_ms {
                 self.state = before | command::POWER_BAR | command::POWER_TREE;
             }
         }
@@ -1832,8 +1847,15 @@ fn read_pad(
     scripted: Option<ResMut<ScriptedPad>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     look: Option<Res<crate::player::CursorLook>>,
+    sim: Option<Res<exa_physics::sim_app::Snapshots<exa_physics::sim_app::SimSnapshot>>>,
 ) {
     let now = time.elapsed().as_millis() as i64;
+    // The simulation's clock as the frame last saw it (the step repeat and
+    // the `Powers` hold run on it); before the first step, its start.
+    let sim_ms = sim
+        .as_deref()
+        .and_then(|s| s.current.as_ref())
+        .map_or(0, |s| s.time_ms as i64);
     let scripted_sample = scripted
         .filter(|_| loading.is_none())
         .map(|mut scripted| scripted.next_sample());
@@ -1920,7 +1942,7 @@ fn read_pad(
         camera_right: right,
         camera_forward: forward,
     };
-    play.update(now, &sample.for_set(active), ctx);
+    play.update_at(now, sim_ms, &sample.for_set(active), ctx);
 }
 
 /// `--pad-press`: a scripted gamepad for checks without one (a debug aid,
