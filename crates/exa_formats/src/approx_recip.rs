@@ -460,8 +460,8 @@ mod tests {
     /// The processor's own answer, to compare against on an Intel CPU.
     #[cfg(target_arch = "x86_64")]
     fn intel_cpu() -> bool {
-        // SAFETY: CPUID leaf 0 exists on every x86-64.
-        let id = unsafe { std::arch::x86_64::__cpuid(0) };
+        // CPUID leaf 0 exists on every x86-64.
+        let id = std::arch::x86_64::__cpuid(0);
         let mut vendor = [0u8; 12];
         vendor[..4].copy_from_slice(&id.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&id.edx.to_le_bytes());
