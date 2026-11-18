@@ -889,7 +889,7 @@ carry, no pose drive), as the original's living step hands it on; a limp body's 
 joint inside its range through their smoothed lengths, reset when the
 body goes limp (`body::Ragdoll::go_limp`). In a living body every slack
 link is a link muscle that turns its joint toward the clip's angle (its
-damping term divided in double, its pull saturated through the processor's
+damping term divided in double, its pull saturated through the
 approximate reciprocal root and reciprocal, `RSQRTSS` and `RCPSS`, as the
 original's), with the gains the character tick sets from what the character does
 (`body::Bearing`), its race (`body::RaceMuscles`) and its own character's
@@ -2064,3 +2064,18 @@ queues the children as pending) and the sector's
 pending-batch append.
 
 Fixed-tick cost: `body::first_by_key` finds the holders of held items by key (the first part's entity) in one walk that ends once every key is found, with the answer a `find` per item gives; the pair stage tests a sleeping part's cell (`Part::cell`, the pose's cell) before building its pose. `EXA_SWEEP_STATS=1` logs, every 83 ticks, how many characters the controller swept and the colliders and triangles within their capsules' boxes (the sewer's player follow meets about 4000 triangles a tick); `EXA_FIXED_EXECUTOR=single` runs the fixed step's systems one at a time.
+
+## Approximate reciprocals (DEC-7)
+
+`engine_math::reciprocal_sqrt`, `reciprocal_approx` and `reciprocal_approx3`
+(and the cloth's and mesh queries' local helpers) answer `RSQRTSS`, `RCPSS`
+and `RCPPS` with `exa_formats::approx_recip`'s fixed Intel tables, not the
+running processor's instruction (Intel and AMD disagree on about half the
+inputs), so a run repeats on every machine. The sites where the original
+approximates take them: the swept box test (`sector::swept_box_hit`), the
+weight normalisations (`sector::normalise_sum`, `scale_to_max`), the sweep
+set-up and the moved sphere's sweep (`intersect::Sweep::new`, `of_move`,
+the squared length summed `(x² + y²) + z²`), the fast barycentric routine and
+the level hit's centre fallback through it over the rest particles
+(`body::Part::hit`).
+

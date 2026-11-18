@@ -466,8 +466,9 @@ mod tests {
         );
         let centre = basis.from_light(fit.centre_cm) / 100.0;
         let clip = cascade.clip_from_world * centre.extend(1.0);
-        assert!(clip.x.abs() < 1e-4 && clip.y.abs() < 1e-4);
-        assert!((clip.z - 0.5).abs() < 1e-4);
+        // The light's basis is unit to 12 bits (DEC-7).
+        assert!(clip.x.abs() < 1e-3 && clip.y.abs() < 1e-3);
+        assert!((clip.z - 0.5).abs() < 1e-3);
         // The fitted box covers the clipped volume's sphere: the quantiser
         // picks the nearest 200 cm step to the radius + 80 cm, so it is never
         // more than 20 cm short.
@@ -545,7 +546,7 @@ mod tests {
         // reverse-Z range and the box's sides land on the map's edges.
         let centre = basis.from_light(fit.centre_cm) / 100.0;
         let clip = cascade.clip_from_world * centre.extend(1.0);
-        assert!((clip.z - fit.far_cm / (fit.near_cm + fit.far_cm)).abs() < 1e-4);
+        assert!((clip.z - fit.far_cm / (fit.near_cm + fit.far_cm)).abs() < 1e-3);
         let edge = basis.from_light(fit.centre_cm + Vec3::X * fit.half_extent_cm) / 100.0;
         let clip = cascade.clip_from_world * edge.extend(1.0);
         assert!((clip.x - 1.0).abs() < 1e-4);

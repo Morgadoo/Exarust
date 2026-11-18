@@ -194,15 +194,12 @@ impl Polyhedron {
     }
 }
 
-/// `v` scaled to unit length (zero stays zero). The original uses the
-/// processor's approximate reciprocal square root; this is exact.
+/// `v` scaled to unit length by the engine's normalise: the squared length
+/// `(y² + 0) + (x² + z²)`, a zero vector kept zero (times zero), and the
+/// approximate reciprocal square root (`RSQRTSS`, the fixed Intel answer:
+/// DEC-7).
 fn normalised(v: [f32; 3]) -> [f32; 3] {
-    let len2 = (v[1] * v[1] + 0.0) + (v[0] * v[0] + v[2] * v[2]);
-    if len2 == 0.0 {
-        return [0.0; 3];
-    }
-    let inv = 1.0 / len2.sqrt();
-    v.map(|x| x * inv)
+    exa_physics::engine_math::normalize_approx(bevy::math::Vec3::from_array(v)).to_array()
 }
 
 /// The engine's fast sine and cosine together: a quadrant fold (multiply
@@ -489,7 +486,8 @@ mod tests {
         assert_eq!(s.points.len(), 642);
         assert_eq!(s.edges.len(), 1920);
         for p in &s.points {
-            assert!((length(*p) - 1.0).abs() < 1e-5);
+            // Unit to the approximate reciprocal root's 12 bits.
+            assert!((length(*p) - 1.0).abs() < 5e-4);
         }
     }
 
@@ -514,7 +512,7 @@ mod tests {
         assert_eq!(one.face_edges[0], [1, 2, 7]);
         assert_eq!(one.face_edges[3], [6, 7, 8]);
         // Midpoints are on the unit sphere.
-        assert!((length(one.points[12]) - 1.0).abs() < 1e-6);
+        assert!((length(one.points[12]) - 1.0).abs() < 5e-4);
     }
 
     #[test]
@@ -613,8 +611,8 @@ mod tests {
         assert_eq!(s.tangents.len(), s.positions.len());
         assert_eq!(s.tangents[0], [0.0; 4]);
         let t = s.tangents[1];
-        assert!((t[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
-        assert!((t[2] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((t[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 5e-4);
+        assert!((t[2] + std::f32::consts::FRAC_1_SQRT_2).abs() < 5e-4);
         assert_eq!(t[3], -1.0);
         assert!(s.colours.iter().all(|&c| c == 0xFFFF_FFFF));
         for p in &s.positions {

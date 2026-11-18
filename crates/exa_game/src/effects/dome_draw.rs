@@ -322,7 +322,7 @@ mod tests {
         // full radius (the subdivision leaves some points unused).
         for &i in indices {
             let p = Vec3::from_array(points[usize::from(i)]);
-            assert!((p.length() - BARRIER_RADIUS).abs() < 1e-2);
+            assert!((p.length() - BARRIER_RADIUS).abs() < 5e-4 * BARRIER_RADIUS);
             assert!(p.z >= -1e-2);
         }
     }

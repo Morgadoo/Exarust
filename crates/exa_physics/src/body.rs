@@ -956,10 +956,12 @@ impl Part {
         }
         // The deepest point of the sphere, or its centre when that lies far
         // outside the tetrahedron (the largest weight's magnitude over 1, by
-        // the original's maximum chain, so a NaN weight can pass).
+        // the original's maximum chain, so a NaN weight can pass). The
+        // centre's weights are the original's fast barycentric routine over
+        // the rest particles (its approximate reciprocal, DEC-7).
         let w = match self.weights_exact(q - delta) {
             Some(w) if !crate::sector::far_outside(w) => w,
-            _ => weights(self, centre),
+            _ => crate::engine_math::barycentric_fast(centre, &self.rest.map(|p| p.to_array())),
         };
         let normal = crate::engine_math::normalize_exact(delta);
         // The plane 0.1 cm under the point, subtracted in double as the
@@ -985,7 +987,7 @@ impl Part {
         }
         // Spread so that the heaviest particle takes the whole push: the
         // weights normalised to their sum, then to their largest (the
-        // original's two normalisations, here with exact reciprocals).
+        // original's two normalisations, with their approximate reciprocals).
         if let Some((spread, _)) = crate::sector::normalise_to_max(w) {
             self.push(&spread, delta);
         }

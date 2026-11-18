@@ -167,7 +167,8 @@ mod tests {
         let [w, f] = handling_pushes(0.5, 0.5, origin, guide, weapon, hand).unwrap();
         assert!(close(blade_lift(0.5), 0.731_808));
         assert!(close(blade_bend(0.5), 0.28));
-        assert!((w - Vec3::new(-6.586_272, -8.781_696, 17.472)).length() < 1e-3);
+        // Up to the approximate reciprocal root's 12 bits.
+        assert!((w - Vec3::new(-6.586_272, -8.781_696, 17.472)).length() < 1e-2);
         assert!((f - Vec3::new(-0.274_428, -0.365_904, 1.092)).length() < 1e-3);
         assert!(handling_pushes(0.05, 0.5, origin, guide, weapon, hand).is_none());
         // Moving the origin, the same points push differently.

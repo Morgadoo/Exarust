@@ -1915,37 +1915,16 @@ fn minss(a: f32, b: f32) -> f32 {
     if a < b { a } else { b }
 }
 
-/// The processor's reciprocal square root estimate (about 12 bits), which
-/// the original's vector code uses.
+/// The reciprocal square root estimate (about 12 bits) the original's
+/// vector code takes from `RSQRTSS`: the fixed Intel answer (DEC-7).
 pub fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: SSE is part of the x86_64 baseline.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
+    crate::approx_recip::reciprocal_sqrt(value)
 }
 
-/// The processor's reciprocal estimate (about 12 bits).
+/// The reciprocal estimate (about 12 bits, `RCPSS`): the fixed Intel
+/// answer (DEC-7).
 fn reciprocal(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: SSE is part of the x86_64 baseline.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rcp_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value
-    }
+    crate::approx_recip::reciprocal(value)
 }
 
 /// `x·y + … ` in the order the original's packed dot sums lanes: x and y,
@@ -3621,7 +3600,8 @@ mod tests {
     /// three edge regions.
     #[test]
     fn the_face_record_and_its_closest_point() {
-        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3);
+        // Up to the approximate reciprocal root's 12 bits (DEC-7).
+        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 3e-3);
         // A right triangle in the XZ plane, normal +Y.
         let face = Face::new([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, -2.0]);
         assert!(near(face.normal, [0.0, 1.0, 0.0]));

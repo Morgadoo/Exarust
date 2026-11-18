@@ -824,4 +824,9 @@ the tracked velocity along the striking body's long axis, unrooted. A
 striker with no tracker keeps the blade point's own speed. A fist's striker
 frame turns +Y onto its hand's −x for the right hand and +x for the left
 (`exa_character`'s `fist_transform`), the axis the routine measures an
-unarmed contact along.
+unarmed contact along. The contact is measured where it lies, with no clamp at
+the far end: the damage routine ignores a contact at or past it (p ≥ 1),
+fists included, as the original's does. The fallback sweep
+(`detect_hits`, a striker with no pair contacts) takes the contact on the
+struck part's sphere surface toward the blade, so an end driven into a part
+touches it short of that end.

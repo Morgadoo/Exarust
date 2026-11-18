@@ -178,8 +178,11 @@ fn a_moving_sphere_meets_a_box_by_slabs() {
     assert!(hit(Vec3::new(-100.0, 0.0, 0.0), Vec3::new(83.0, 0.0, 0.0)));
     // Entry at 180/179 of the travel: past its end.
     assert!(!hit(Vec3::new(-100.0, 0.0, 0.0), Vec3::new(79.0, 0.0, 0.0)));
-    // Entry exactly at the end misses.
-    assert!(!hit(Vec3::new(70.0, 0.0, 0.0), Vec3::new(80.0, 0.0, 0.0)));
+    // Entry at the end in exact terms: 10 times the approximate reciprocal
+    // of 10 is 0.99976, just before the end, so it hits.
+    assert!(hit(Vec3::new(70.0, 0.0, 0.0), Vec3::new(80.0, 0.0, 0.0)));
+    // An entry past the end misses.
+    assert!(!hit(Vec3::new(69.0, 0.0, 0.0), Vec3::new(79.99, 0.0, 0.0)));
     // A resting sphere 11.3 cm from the box's corner is inside the grown
     // box: the corners count, unlike a true sphere–box distance.
     let corner = Vec3::new(118.0, 18.0, 0.0);
@@ -351,34 +354,40 @@ fn the_weight_normalisations_are_the_originals() {
     // into the next compare and gives way there, a NaN second one at once.
     assert_eq!(largest_abs([f32::NAN, 2.0, 0.0, 0.0]), 0.0);
     assert_eq!(largest_abs([2.0, f32::NAN, 0.0, 0.0]), 2.0);
+    // The reciprocals are the approximate ones (DEC-7): 1/1 is 0.99976.
+    let r1 = crate::engine_math::reciprocal_approx(1.0);
+    assert_eq!(r1.to_bits(), 0x3f7f_f000);
     assert_eq!(
         normalise_sum([1.0, 0.0, 0.0, 0.0]),
-        Some([1.0, 0.0, 0.0, 0.0])
+        Some([r1, 0.0, 0.0, 0.0])
     );
+    let r2 = crate::engine_math::reciprocal_approx(2.0);
     assert_eq!(
         normalise_sum([1.0, 0.0, 0.0, 1.0]),
-        Some([0.5, 0.0, 0.0, 0.5])
+        Some([r2, 0.0, 0.0, r2])
     );
     assert_eq!(normalise_sum([-1.0, 0.0, 0.0, 0.0]), None);
     assert_eq!(normalise_sum([0.0; 4]), None);
+    let back = crate::engine_math::reciprocal_approx(r1);
     assert_eq!(
         normalise_to_max([1.0, 0.0, 0.0, 0.0]),
-        Some(([1.0, 0.0, 0.0, 0.0], 1.0))
+        Some(([r1 * back, 0.0, 0.0, 0.0], back))
     );
-    assert_eq!(normalise_to_max([0.25; 4]), Some(([1.0; 4], 4.0)));
+    let (w, phi) = normalise_to_max([0.25; 4]).unwrap();
+    assert!(w.iter().all(|w| (w - 1.0).abs() < 5e-4) && (phi - 4.0).abs() < 2e-3);
     assert_eq!(normalise_to_max([-1.0, -1.0, -1.0, -1.0]), None);
 }
 
-/// The original scales by the reciprocal of the sum (or of the largest
-/// magnitude) rather than dividing: the oracle's form, which differs from
-/// a division in the last bit (here 0x3EAFE423 against 0x3EAFE422, and
-/// 0xBE2AAAAB against 0xBE2AAAAA).
+/// The original scales by the approximate reciprocal of the sum (or of the
+/// largest magnitude) rather than dividing: the oracle's form.
 #[test]
 fn the_weight_normalisations_multiply_by_the_reciprocal() {
     let w = normalise_sum([1.01, 0.87, 0.41, 0.65]).unwrap();
-    assert_eq!(w[0].to_bits(), 0x3eaf_e423);
+    // With the fixed approximate reciprocal (DEC-7): the exact one gave
+    // 0x3EAFE423 and 0xBE2AAAAB.
+    assert_eq!(w[0].to_bits(), 0x3eaf_e5d7);
     let (w, _) = scale_to_max([-0.1, 0.6, -0.53, -0.36]);
-    assert_eq!(w[0].to_bits(), 0xbe2a_aaab);
+    assert_eq!(w[0].to_bits(), 0xbe2a_accd);
     // A negative zero weight is dropped to +0 (the maximum with zero).
     assert_eq!(
         normalise_sum([-0.0, 1.0, 0.0, 0.0]).unwrap()[0].to_bits(),

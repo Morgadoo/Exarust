@@ -31,6 +31,7 @@
 use bevy::math::{Affine3A, Vec3};
 use bevy::platform::collections::HashMap;
 
+use crate::engine_math::{reciprocal_approx, reciprocal_approx3};
 use crate::intersect::{self, max_first, min_first};
 
 /// The processor's per-component minimum ([`intersect::min_first`]).
@@ -528,25 +529,25 @@ pub fn far_outside(weights: [f32; 4]) -> bool {
 /// weight not above zero, a NaN or −0 included, becomes +0) and the rest
 /// scaled by the reciprocal of their sum, so they add to 1; the original's
 /// sum normalisation, its sum taken `((w₁ + w₀) + w₂) + w₃`. The original
-/// multiplies by the processor's approximate reciprocal of the sum and has
-/// no guard; Exarust's reciprocal is exact (DEC-7) and it gives None when
-/// the sum is zero or NaN, for its callers to skip the hit.
+/// multiplies by the approximate reciprocal of the sum (`RCPSS`, the fixed
+/// Intel answer: DEC-7) and has no guard; Exarust gives None when the sum
+/// is zero or NaN, for its callers to skip the hit.
 pub fn normalise_sum(weights: [f32; 4]) -> Option<[f32; 4]> {
     let clamped = weights.map(|w| max_first(w, 0.0));
     let sum = ((clamped[1] + clamped[0]) + clamped[2]) + clamped[3];
     if sum.is_nan() || sum <= 0.0 {
         return None;
     }
-    let r = 1.0 / sum;
+    let r = reciprocal_approx(sum);
     Some(clamped.map(|w| w * r))
 }
 
 /// The original's max normalisation: the weights times the reciprocal of
 /// their largest magnitude ([`largest_abs`]), so that the largest is ±1,
-/// and that reciprocal (φ). The original's reciprocal is the processor's
-/// approximate one; Exarust's is exact (DEC-7).
+/// and that reciprocal (φ). The reciprocal is the approximate one
+/// (`RCPSS`, the fixed Intel answer: DEC-7).
 pub fn scale_to_max(weights: [f32; 4]) -> ([f32; 4], f32) {
-    let r = 1.0 / largest_abs(weights);
+    let r = reciprocal_approx(largest_abs(weights));
     (weights.map(|w| w * r), r)
 }
 
@@ -577,9 +578,10 @@ pub struct Meeting {
 /// the exit: the sign bit of their difference, so touching does not count.
 /// No threshold separates a resting sphere: a zero travel gives infinite
 /// reciprocals, which make the test "inside the inflated box" (its corners
-/// included). The original's reciprocal is the processor's approximate one.
+/// included). The reciprocals are the approximate ones (`RCPPS`, the fixed
+/// Intel answer: DEC-7).
 pub fn swept_box_hit(start: Vec3, end: Vec3, radius: f32, box_centre: Vec3, half: Vec3) -> bool {
-    let inverse = (end - start).recip();
+    let inverse = reciprocal_approx3(end - start);
     let offset = box_centre - start;
     let extent = half + Vec3::splat(radius);
     let high = (extent + offset) * inverse;

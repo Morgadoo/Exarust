@@ -163,8 +163,9 @@ fn the_spine_takes_the_twist_the_lumbar_half() {
     twist_spine(&mut parts, &[(1, true), (2, false)], twist);
     let turn = |p: &Affine3A| Quat::from_mat3a(&p.matrix3);
     assert_eq!(parts[0], at(0.0));
-    assert!(turn(&parts[1]).dot(Quat::from_rotation_y(0.3)).abs() > 1.0 - 1e-6);
-    assert!(turn(&parts[2]).dot(twist).abs() > 1.0 - 1e-6);
+    // The half turn is normalised by the approximate reciprocal root.
+    assert!(turn(&parts[1]).dot(Quat::from_rotation_y(0.3)).abs() > 1.0 - 5e-4);
+    assert!(turn(&parts[2]).dot(twist).abs() > 1.0 - 5e-4);
     assert_eq!(parts[1].translation, at(0.1).translation);
     let mut kept = vec![at(0.0), at(0.1)];
     twist_spine(&mut kept, &[(1, true)], Quat::IDENTITY);

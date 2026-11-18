@@ -287,7 +287,8 @@ mod tests {
             .unwrap();
         assert_eq!(points.len(), 642);
         for p in points {
-            assert!((Vec3::from_array(*p).length() - SIZE_CM).abs() < 1e-3);
+            // On the sphere up to the approximate reciprocal root's 12 bits.
+            assert!((Vec3::from_array(*p).length() - SIZE_CM).abs() < 5e-4 * SIZE_CM);
         }
     }
 

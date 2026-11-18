@@ -688,7 +688,9 @@ smoothed_model` smooths every mesh node of a model and refits its bounds
 (`exarust model … --msm`).
 `polyhedra` builds the icosahedron, its cap and their subdivisions for the
 effect shells, and the mind effects' UV sphere with the original's fast
-sine, normals, texture coordinates, tangents and cross-strip indices.
+sine, normals, texture coordinates, tangents and cross-strip indices
+(the subdivision's midpoints and the sphere's tangents made unit by the
+engine normalise, the approximate reciprocal square root of DEC-7).
 See [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Editable meshes)
 and [`docs/RENDERING.md`](../../docs/RENDERING.md) (Effect shells).
 

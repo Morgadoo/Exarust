@@ -95,11 +95,16 @@ fn the_processor_minimum_and_maximum_pick_the_second_on_nan() {
 
 #[test]
 fn a_sweep_takes_its_length_and_direction() {
+    // The approximate reciprocal root and reciprocals (DEC-7): 12 bits.
+    let near = |a: f32, b: f32| assert!((a - b).abs() <= 5e-4 * b.abs(), "{a} vs {b}");
     let sweep = Sweep::new(Vec3::ZERO, Vec3::new(3.0, 4.0, 0.0));
-    close(sweep.length, 5.0);
-    close_vec(sweep.direction, Vec3::new(0.6, 0.8, 0.0));
-    close(sweep.inverse_direction.x, 5.0 / 3.0);
-    close(sweep.inverse_direction.y, 1.25);
+    let r = crate::engine_math::reciprocal_sqrt(25.0);
+    assert_eq!(sweep.length, 25.0 * r);
+    near(sweep.length, 5.0);
+    near(sweep.direction.x, 0.6);
+    near(sweep.direction.y, 0.8);
+    near(sweep.inverse_direction.x, 5.0 / 3.0);
+    near(sweep.inverse_direction.y, 1.25);
     assert!(sweep.inverse_direction.z.is_infinite());
 }
 
@@ -257,18 +262,20 @@ fn a_capsule_and_a_sphere_touch_at_their_combined_reach() {
         Vec3::new(5.0, 3.0, 0.0),
         1.0
     ));
-    // Perpendicular 2, reach 2: touching.
+    // Perpendicular just under 2, reach 2: touching (at exactly 2 the
+    // approximate unit direction decides).
     assert!(!sphere_segment_separated(
         &sweep,
         1.0,
-        Vec3::new(5.0, 2.0, 0.0),
+        Vec3::new(5.0, 1.999, 0.0),
         1.0
     ));
-    // Past the end, 2 beyond the end point, reach 2: touching.
+    // Past the end, just under 2 beyond the end point (the length is
+    // 100 times the approximate reciprocal root, 9.9976), reach 2: touching.
     assert!(!sphere_segment_separated(
         &sweep,
         1.0,
-        Vec3::new(12.0, 0.0, 0.0),
+        Vec3::new(11.99, 0.0, 0.0),
         1.0
     ));
     // Just off that: distance² 4.01.
