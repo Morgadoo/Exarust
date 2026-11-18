@@ -938,9 +938,10 @@ pub(crate) fn reselect_on_mode_switch(
 /// The camera switch's camera half: a camera that has not seen the last
 /// mode switch takes the entered mode's record
 /// ([`ChaseCamera::take_record`]). A camera built from that mode's record
-/// that has had none since takes the switch as its construction; a switch
-/// to no mode leaves the camera its record (the original detaches the
-/// controller from the view, which Exarust's camera has no part for).
+/// that has had none since takes the switch as its construction. A switch
+/// to no mode that the camera saw happen detaches the controller from the
+/// view ([`ChaseCamera::detached`]: its tick stops) and leaves it its
+/// record; a switch into a mode attaches it again before the record.
 pub(crate) fn take_mode_records(
     modes: Res<crate::player_controls::GameModes>,
     config: Option<Res<crate::hw_config::HardwareConfig>>,
@@ -951,10 +952,18 @@ pub(crate) fn take_mode_records(
         if cam.switches_seen == Some(modes.switches) {
             continue;
         }
+        let saw_switch = cam.switches_seen.is_some();
         cam.switches_seen = Some(modes.switches);
         let Some(mode) = modes.current() else {
+            if saw_switch && !cam.detached {
+                cam.detached = true;
+                info!("camera: the controller detaches from the view (no mode)");
+            }
             continue;
         };
+        if std::mem::take(&mut cam.detached) {
+            info!("camera: the controller attaches to the view again");
+        }
         let record = mode.camera_record(on_deck);
         // A new camera is built from the shipped Character record.
         if std::mem::take(&mut cam.fresh)
@@ -2778,6 +2787,10 @@ pub struct ChaseCamera {
     /// [`take_mode_records`].
     pub(crate) mode: Option<crate::player_controls::GameMode>,
     switches_seen: Option<u32>,
+    /// The controller is detached from the view: a switch to no mode
+    /// detaches it, and the view no longer runs its tick (the camera holds
+    /// where it was) until a switch into a mode attaches it again.
+    pub(crate) detached: bool,
     /// The camera was built from its mode's record and no switch has given
     /// it one since: the first switch into that mode is its construction.
     fresh: bool,
@@ -2855,6 +2868,7 @@ impl Default for ChaseCamera {
             controller,
             mode: Some(crate::player_controls::GameMode::Character),
             switches_seen: None,
+            detached: false,
             fresh: true,
             free: None,
         };
@@ -3522,6 +3536,10 @@ pub fn chase_camera(
         _ => Vec3::ZERO,
     };
     for (mut cam, mut t, mut projection) in &mut cameras {
+        // A detached controller is not run by the view.
+        if cam.detached {
+            continue;
+        }
         // The controls' capture drags while it is the orbit's, from the
         // frame after it began (`cursor_look`); a drag ends an alignment.
         if look.orbits() && !look.began {
