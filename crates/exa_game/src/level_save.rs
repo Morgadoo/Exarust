@@ -42,10 +42,14 @@
 //! the body's motion since it was registered. A body hung from the world by
 //! its links (a door's leaf, a lever's arm, a chain) moves neither the
 //! placed object nor the prop it hangs in.
-//! [Exarust's: the part records of an object's or prop's own bodies and
-//! cloth (the hung leaves' and arms' live frames, the live cloth particles)
-//! and the settings chunk's live words are the loaded section's; the living
-//! spawn does not restore a saved pose tree.]
+//! The part records of an object's or prop's owned bodies and cloth are the
+//! live ones ([`part_records`]): a hung leaf's, an arm's or a chain link's
+//! live world frame, a moved cloth's live particles, so a door left open
+//! loads open. A mechanism's placement word is its live object word
+//! ([`LiveWord`]: a door's stored word with its latch, mode and countdown,
+//! a lever's word with an armed return's time, a push surface's state).
+//! [Exarust's: the settings chunk's live words are the loaded section's;
+//! the living spawn does not restore a saved pose tree.]
 //!
 //! The original's character section (`0xCAC00001`): each character's health
 //! is stored into its record, the local character database is flushed and
@@ -70,7 +74,7 @@ use exa_formats::rfc_level::LevelRaw;
 use crate::level_transition::{SettingsState, export_level_scene};
 
 /// A placed object as it stands in the running scene.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LivePlacement {
     /// Its place in the loaded section's list; `None` for an object put
     /// into the world since (a drop).
@@ -81,6 +85,30 @@ pub struct LivePlacement {
     pub condition: u8,
     /// Its placement: three rotation rows and the translation (metres).
     pub rows: [[f32; 3]; 4],
+    /// A mechanism's live object word (a door's or sliding leaf's stored
+    /// word, a lever's word with an armed return's time, a push surface's
+    /// state byte), which the placement record stores as the original's
+    /// object word; `None` keeps the stored word with the live condition
+    /// byte.
+    pub word: Option<LiveWord>,
+    /// Its model's nodes as they stand, which its part records are written
+    /// from ([`part_records`]); `None` keeps the section's records.
+    pub parts: Option<Vec<LivePart>>,
+}
+
+/// A mechanism's live object word: the stored word's bits under `keep`
+/// stay, `value` fills the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveWord {
+    pub keep: u32,
+    pub value: u32,
+}
+
+impl LiveWord {
+    /// The placement word `stored` becomes.
+    pub fn over(self, stored: u32) -> u32 {
+        (stored & self.keep) | (self.value & !self.keep)
+    }
 }
 
 /// What the placed-object pass did.
@@ -98,6 +126,8 @@ pub struct PlacementCounts {
     pub unspawned: usize,
     /// Objects added since the load.
     pub added: usize,
+    /// Kept objects whose part records the live scene rewrote.
+    pub parts: usize,
 }
 
 /// A placement's rows from a world transform.
@@ -193,7 +223,18 @@ pub fn placed_after(
             Some(live) => {
                 counts.kept += 1;
                 object.id = live.id;
-                object.flags = (object.flags & !0x00FF_0000) | (u32::from(live.condition) << 16);
+                object.flags = match live.word {
+                    Some(word) => word.over(object.flags),
+                    None => (object.flags & !0x00FF_0000) | (u32::from(live.condition) << 16),
+                };
+                if let Some(records) = live
+                    .parts
+                    .as_deref()
+                    .and_then(|parts| part_records(&object.attachments, parts))
+                {
+                    counts.parts += 1;
+                    object.attachments = records;
+                }
                 if rows_apart(&live.rows, &object.transform) > UNMOVED {
                     let travel = Vec3::from(live.rows[3]).distance(Vec3::from(object.transform[3]));
                     if travel > 0.01 {
@@ -221,10 +262,13 @@ pub fn placed_after(
 /// its placement in its parent's frame (the parent prop's, or the level's
 /// for a prop at the root), three rotation rows and the translation
 /// (metres), as the section's prop record stores it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LiveProp {
     pub index: u32,
     pub rows: [[f32; 3]; 4],
+    /// Its model's nodes as they stand, which its part records are written
+    /// from ([`part_records`]); `None` keeps the section's records.
+    pub parts: Option<Vec<LivePart>>,
 }
 
 /// What the prop pass did.
@@ -236,6 +280,8 @@ pub struct PropCounts {
     pub moved: usize,
     /// Of those, the ones that moved more than a centimetre.
     pub moved_far: usize,
+    /// Props whose part records the live scene rewrote.
+    pub parts: usize,
 }
 
 /// The section's props after the live scene: each prop the scene holds
@@ -249,6 +295,14 @@ pub fn props_after(props: &mut [exa_formats::level::Prop], live: &[LiveProp]) ->
             continue;
         };
         counts.kept += 1;
+        if let Some(records) = prop
+            .parts
+            .as_deref()
+            .and_then(|parts| part_records(&stored.attachments, parts))
+        {
+            counts.parts += 1;
+            stored.attachments = records;
+        }
         if rows_apart(&prop.rows, &stored.transform) > UNMOVED {
             let travel = Vec3::from(prop.rows[3]).distance(Vec3::from(stored.transform[3]));
             counts.moved += 1;
@@ -257,6 +311,149 @@ pub fn props_after(props: &mut [exa_formats::level::Prop], live: &[LiveProp]) ->
         }
     }
     counts
+}
+
+/// One node of a placed object's or prop's model as it stands now, for
+/// [`part_records`]: its tree place and name, the attachment its model node
+/// carries, its live world frame (metres) and what moved since the load.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LivePart {
+    pub name: String,
+    /// Its parent's index in the list; `None` for a root (the first root
+    /// stands for the object's node).
+    pub parent: Option<usize>,
+    pub kind: exa_world::saved_parts::PartKind,
+    /// Its live world frame (metres).
+    pub world: Affine3A,
+    /// It moved against its parent since the load (by more than
+    /// [`UNMOVED`]).
+    pub moved: bool,
+    /// For a cloth that moved off its start: every position element of its
+    /// mesh in the level's frame (metres), the live particles.
+    pub cloth: Option<Vec<[f32; 3]>>,
+}
+
+/// The part records the original's exporter writes for a placed object or a
+/// prop, over the live nodes: walking the object node's children in order,
+/// a body's node writes a transform record (its name, its word, its live
+/// world frame) with its own children's records nested in it, a cloth's
+/// node writes its live particles, a node with no attachment is passed over
+/// with its subtree, and an emitter ends its siblings' records.
+///
+/// [Exarust's: a record the section stored is written back unchanged while
+/// its node stands within [`UNMOVED`] of it (the live frame is the stored
+/// one through single-precision matrices), and an owned node with no stored
+/// record that has not moved against its parent writes none, since the
+/// load puts it back where it is from its parent alone (the original writes
+/// a record for every owned body and cloth; the load would then copy every
+/// model that holds one). A record's word is the stored one (0 in every
+/// shipped record; 0 for a new one).]
+///
+/// Returns `None` when nothing moved (the stored records are written as they
+/// are), or when they hold a placement tree (`0x3DE0EC00`, none shipped),
+/// which the exporter never writes back.
+pub fn part_records(
+    stored: &[exa_formats::level::PropAttachment],
+    parts: &[LivePart],
+) -> Option<Vec<exa_formats::level::PropAttachment>> {
+    use exa_formats::level::PropAttachment;
+    use exa_world::saved_parts::PartKind;
+    fn has_tree(list: &[PropAttachment]) -> bool {
+        list.iter().any(|r| match r {
+            PropAttachment::Tree { .. } => true,
+            PropAttachment::Transform { children, .. } => has_tree(children),
+            PropAttachment::MeshPositions { .. } => false,
+        })
+    }
+    fn walk(
+        at: usize,
+        stored: &[PropAttachment],
+        parts: &[LivePart],
+        depth: usize,
+    ) -> (Vec<PropAttachment>, bool) {
+        let mut out = Vec::new();
+        let mut changed = false;
+        if depth > parts.len() {
+            return (out, false);
+        }
+        for (c, part) in parts.iter().enumerate() {
+            if c == at || part.parent != Some(at) {
+                continue;
+            }
+            let record = stored.iter().find(|r| {
+                r.name() == part.name
+                    && matches!(
+                        (r, part.kind),
+                        (PropAttachment::Transform { .. }, PartKind::Body)
+                            | (PropAttachment::MeshPositions { .. }, PartKind::Cloth)
+                    )
+            });
+            match part.kind {
+                PartKind::None => continue,
+                PartKind::Emitter => break,
+                PartKind::Body => {
+                    let (word, kept, inner) = match record {
+                        Some(PropAttachment::Transform {
+                            word,
+                            transform,
+                            children,
+                            ..
+                        }) => (*word, Some(*transform), children.as_slice()),
+                        _ => (0, None, &[][..]),
+                    };
+                    let (children, inner_changed) = walk(c, inner, parts, depth + 1);
+                    let live = rows_of(part.world);
+                    let transform = match kept {
+                        Some(rows) if rows_apart(&rows, &live) <= UNMOVED => rows,
+                        Some(_) => {
+                            changed = true;
+                            live
+                        }
+                        None if part.moved || !children.is_empty() => {
+                            changed = true;
+                            live
+                        }
+                        None => continue,
+                    };
+                    changed |= inner_changed;
+                    out.push(PropAttachment::Transform {
+                        name: part.name.clone(),
+                        word,
+                        transform,
+                        children,
+                    });
+                }
+                PartKind::Cloth => {
+                    let word = match record {
+                        Some(PropAttachment::MeshPositions { word, .. }) => *word,
+                        _ => 0,
+                    };
+                    match (&part.cloth, record) {
+                        (Some(positions), _) => {
+                            changed = true;
+                            out.push(PropAttachment::MeshPositions {
+                                name: part.name.clone(),
+                                word,
+                                positions: positions.clone(),
+                            });
+                        }
+                        (None, Some(record)) => out.push(record.clone()),
+                        (None, None) => {}
+                    }
+                }
+            }
+        }
+        (out, changed)
+    }
+    if has_tree(stored) {
+        return None;
+    }
+    let root = parts.iter().position(|p| p.parent.is_none())?;
+    let (records, changed) = walk(root, stored, parts, 0);
+    // Once anything changed the list is the walk's: a stored record it did
+    // not reach (no such node, or past an emitter) is left out, as the
+    // original's exporter writes only what the live nodes hold.
+    changed.then_some(records)
 }
 
 /// A debug helper for the saved props' evidence (`EXA_PROP_NUDGE=dx,dy,dz`,
@@ -739,6 +936,181 @@ pub struct LevelSaveScene<'w, 's> {
     /// bodies' place, turn and parts ([`Self::left_character`]).
     left: Option<Res<'w, crate::left_behind::LeftBody>>,
     left_bodies: Query<'w, 's, LeftBodyParts, With<crate::player::PlayerBody>>,
+    /// The owned nodes and mechanisms the part records and object words
+    /// read.
+    owned: OwnedParts<'w, 's>,
+}
+
+/// A mechanism body's glue, for its live object word.
+type MechanismGlue = (
+    Entity,
+    Option<&'static exa_physics::body::DoorBody>,
+    Option<&'static exa_physics::body::SlideBody>,
+    Option<&'static exa_physics::body::LeverBody>,
+    Option<&'static exa_physics::body::PlateBody>,
+);
+
+/// A cloth part as the frame holds it: its cloth (the start the frame
+/// built it from), its file data, its drawn mesh and its world transform.
+type ClothPart = (
+    &'static exa_world::cloth::ClothInstance,
+    &'static exa_world::cloth::ClothSource,
+    &'static GlobalTransform,
+);
+
+/// What the save reads of the placed objects' and props' own nodes: their
+/// model trees, the bodies that move them, the cloth on them and the
+/// mechanisms' glue.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct OwnedParts<'w, 's> {
+    trees: Query<'w, 's, &'static exa_world::saved_parts::PartTree>,
+    body_nodes: Query<'w, 's, &'static exa_physics::prop::BodyNode>,
+    ragdolls: Query<'w, 's, &'static exa_physics::body::Ragdoll>,
+    globals: Query<'w, 's, &'static GlobalTransform>,
+    node_parts: Query<'w, 's, &'static exa_world::node_parts::NodeParts>,
+    cloths: Query<'w, 's, ClothPart>,
+    meshes: Option<Res<'w, Assets<Mesh>>>,
+    mechanisms: Query<'w, 's, MechanismGlue, MechanismFilter>,
+}
+
+/// The bodies that carry a mechanism's glue.
+type MechanismFilter = Or<(
+    With<exa_physics::body::DoorBody>,
+    With<exa_physics::body::SlideBody>,
+    With<exa_physics::body::LeverBody>,
+    With<exa_physics::body::PlateBody>,
+)>;
+
+/// A cloth particle further than this from its start (cm, any axis) makes
+/// its cloth write its live particles [Exarust's: the original writes every
+/// cloth's particles].
+const CLOTH_UNMOVED_CM: f32 = 1.0;
+
+impl OwnedParts<'_, '_> {
+    /// A node's live world frame: its body part's for a node a body moves,
+    /// else its world transform.
+    fn frame(&self, entity: Entity) -> Option<Affine3A> {
+        if let Ok(node) = self.body_nodes.get(entity)
+            && let Ok(body) = self.ragdolls.get(node.body)
+            && let Some(part) = body.parts.get(node.part)
+        {
+            return Some(part.transform());
+        }
+        self.globals.get(entity).ok().map(GlobalTransform::affine)
+    }
+
+    /// The live particles of a cloth node that moved off its start: every
+    /// position element of its mesh in the level's frame (metres), from
+    /// the drawn mesh of each of its cloth parts. `None` when it has not
+    /// moved, or when its parts do not cover every element.
+    fn cloth(&self, node: Entity) -> Option<Vec<[f32; 3]>> {
+        let meshes = self.meshes.as_deref()?;
+        let parts = self.node_parts.get(node).ok()?;
+        let mut elements: Vec<Option<[f32; 3]>> = Vec::new();
+        let mut moved = false;
+        for &part in &parts.parts {
+            let Ok((instance, source, global)) = self.cloths.get(part) else {
+                continue;
+            };
+            let mesh = meshes.get(&instance.mesh)?;
+            let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
+            let part_elements = source.mesh.part_elements.get(source.part)?;
+            if elements.is_empty() {
+                elements = vec![None; source.mesh.elements];
+            }
+            for (v, at) in positions.iter().enumerate() {
+                let at = Vec3::from_array(*at);
+                let (Some(&element), Some(&particle)) =
+                    (part_elements.get(v), instance.vertex_particle.get(v))
+                else {
+                    return None;
+                };
+                if let Some(start) = instance.start.get(particle) {
+                    moved |= (at * 100.0 - *start).abs().max_element() > CLOTH_UNMOVED_CM;
+                }
+                let slot = elements.get_mut(element as usize)?;
+                *slot = Some(global.affine().transform_point3(at).to_array());
+            }
+        }
+        if !moved || elements.is_empty() {
+            return None;
+        }
+        elements.into_iter().collect()
+    }
+
+    /// The model nodes of the object or prop rooted at `root` as they stand
+    /// ([`part_records`] writes its records from them); `None` without a
+    /// tree that can hold one.
+    fn live_parts(&self, root: Entity) -> Option<Vec<LivePart>> {
+        use exa_world::saved_parts::PartKind;
+        let tree = self.trees.get(root).ok()?;
+        let frames: Vec<Option<Affine3A>> =
+            tree.nodes.iter().map(|n| self.frame(n.entity)).collect();
+        let parts: Option<Vec<LivePart>> = tree
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let world = frames[i]?;
+                let moved = match node.parent.and_then(|p| frames.get(p).copied().flatten()) {
+                    Some(parent) => {
+                        rows_apart(&rows_of(parent.inverse() * world), &rows_of(node.spawned))
+                            > UNMOVED
+                    }
+                    None => false,
+                };
+                Some(LivePart {
+                    name: node.name.clone(),
+                    parent: node.parent,
+                    kind: node.kind,
+                    world,
+                    moved,
+                    cloth: (node.kind == PartKind::Cloth)
+                        .then(|| self.cloth(node.entity))
+                        .flatten(),
+                })
+            })
+            .collect();
+        parts
+    }
+
+    /// The live object word of each mechanism by the placed object it
+    /// belongs to (`owner`: the nearest one at or above its body's root): a
+    /// door's or sliding leaf's stored word and a lever's word whole, a push
+    /// surface's state as the word's low byte.
+    fn words(
+        &self,
+        owner: impl Fn(Entity) -> Option<Entity>,
+    ) -> std::collections::HashMap<Entity, LiveWord> {
+        let mut out = std::collections::HashMap::new();
+        for (entity, door, slide, lever, plate) in &self.mechanisms {
+            let Some(object) = owner(entity) else {
+                continue;
+            };
+            let whole = |value: i32| LiveWord {
+                keep: 0,
+                value: value as u32,
+            };
+            let word = if let Some(door) = door {
+                whole(door.door.stored())
+            } else if let Some(slide) = slide {
+                whole(slide.door.stored())
+            } else if let Some(lever) = lever {
+                whole(lever.lever.word)
+            } else if let Some(plate) = plate {
+                LiveWord {
+                    keep: !0xFF,
+                    value: u32::from(plate.plate.saved()),
+                }
+            } else {
+                continue;
+            };
+            // A pair's leaves keep the one object word between them (their
+            // orders share bit 0); the first leaf found writes it.
+            out.entry(object).or_insert(word);
+        }
+        out
+    }
 }
 
 /// A player body's place, locomotion turn and parts, for the left body's
@@ -843,6 +1215,7 @@ impl LevelSaveScene<'_, '_> {
     /// over a moved body takes the body's motion since it was registered).
     pub fn live_placements(&self) -> Vec<LivePlacement> {
         let motion = self.body_motion();
+        let words = self.owned.words(|entity| self.owner(entity, false));
         let mut out: Vec<LivePlacement> = self
             .placed
             .iter()
@@ -857,12 +1230,26 @@ impl LevelSaveScene<'_, '_> {
                     id: item.tagged_id,
                     condition: item.condition,
                     rows: rows_of(affine),
+                    word: words.get(&entity).copied(),
+                    parts: self.owned.live_parts(entity),
                 }
             })
             .collect();
         // The list's order, then the drops in spawn order.
         out.sort_by_key(|p| p.index.unwrap_or(u32::MAX));
         out
+    }
+
+    /// The placed object (or, with `props`, the placed object or prop) at
+    /// or above `entity`.
+    fn owner(&self, entity: Entity, props: bool) -> Option<Entity> {
+        let mut at = entity;
+        loop {
+            if self.placed.contains(at) || (props && self.props.contains(at)) {
+                return Some(at);
+            }
+            at = self.parents.get(at).ok()?.parent();
+        }
     }
 
     /// The motion of each free body since its registration, by the placed
@@ -921,6 +1308,7 @@ impl LevelSaveScene<'_, '_> {
                 Some(LiveProp {
                     index: index.0,
                     rows: rows_of(parent.inverse() * at),
+                    parts: self.owned.live_parts(entity),
                 })
             })
             .collect();
@@ -1056,6 +1444,7 @@ impl LevelSaveScene<'_, '_> {
         )>,
     ) -> Option<(String, Vec<u8>)> {
         let live = self.live_placements();
+        let words = live.iter().filter(|p| p.word.is_some()).count();
         let props = self.live_props();
         let characters = characters.filter(|_| story).and_then(|(live, world)| {
             let local = self.local.as_deref_mut()?;
@@ -1118,20 +1507,23 @@ impl LevelSaveScene<'_, '_> {
         ) {
             Ok((bytes, counts, prop_counts)) => {
                 info!(
-                    "save: level section {} props: {} kept, {} moved ({} by more than 1 cm)",
+                    "save: level section {} props: {} kept, {} moved ({} by more than 1 cm), {} with live part records",
                     source.locale(),
                     prop_counts.kept,
                     prop_counts.moved,
-                    prop_counts.moved_far
+                    prop_counts.moved_far,
+                    prop_counts.parts
                 );
                 info!(
-                    "save: level section {} exported ({} bytes, local tier {} records): {} placed objects kept ({} moved, {} by more than 1 cm), {} gone, {} never spawned, {} added",
+                    "save: level section {} exported ({} bytes, local tier {} records): {} placed objects kept ({} moved, {} by more than 1 cm, {} with live part records, {} mechanism words), {} gone, {} never spawned, {} added",
                     source.locale(),
                     bytes.len(),
                     db.store(exa_formats::objdb::Tier::Local).len(),
                     counts.kept,
                     counts.moved,
                     counts.moved_far,
+                    counts.parts,
+                    words,
                     counts.removed,
                     counts.unspawned,
                     counts.added
@@ -1168,6 +1560,8 @@ mod tests {
             id,
             condition: 5,
             rows,
+            word: None,
+            parts: None,
         }
     }
 
@@ -1199,7 +1593,8 @@ mod tests {
                 moved_far: 1,
                 removed: 2,
                 unspawned: 1,
-                added: 1
+                added: 1,
+                parts: 0,
             }
         );
         let ids: Vec<u32> = out.iter().map(|o| o.id).collect();
@@ -1255,6 +1650,8 @@ mod tests {
                 id: object.id,
                 condition: ((object.flags >> 16) & 0xFF) as u8,
                 rows: object.transform,
+                word: None,
+                parts: None,
             })
             .collect();
         let moved = live[0].index.unwrap();
@@ -1269,6 +1666,8 @@ mod tests {
                 [0.0, 0.0, 1.0],
                 [1.0, 2.0, 3.0],
             ],
+            word: None,
+            parts: None,
         });
         // The live local tier: the level's own with one record dropped.
         let mut local = scene.local_database.clone().unwrap();
@@ -1350,14 +1749,17 @@ mod tests {
                 LiveProp {
                     index: 0,
                     rows: noise,
+                    parts: None,
                 },
                 LiveProp {
                     index: 1,
                     rows: moved,
+                    parts: None,
                 },
                 LiveProp {
                     index: 7,
                     rows: moved,
+                    parts: None,
                 },
             ],
         );
@@ -1366,7 +1768,8 @@ mod tests {
             PropCounts {
                 kept: 2,
                 moved: 1,
-                moved_far: 1
+                moved_far: 1,
+                parts: 0,
             }
         );
         assert_eq!(props[0].transform, prop(1.0).transform);
@@ -1638,7 +2041,7 @@ mod tests {
                 moved: 2,
                 removed: 1,
                 unspawned: 1,
-                added: 1
+                added: 1,
             }
         );
         let ids: Vec<u32> = out.iter().map(|p| p.id).collect();
@@ -1813,3 +2216,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "level_save_parts_test.rs"]
+mod parts_test;

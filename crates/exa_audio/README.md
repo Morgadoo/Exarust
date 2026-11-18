@@ -14,7 +14,7 @@ bus next to the rodio sources) are in.
 |---|---|
 | `bank` | the name-keyed buffer cache (`Sound.rpk` WAV files), numbered sets, the variant picker and the engine generator |
 | `environment` | the 512-voice pool, listener and bus gains, audibility ranking, the quicksort, source binding, the per-update state machine and the OpenAL distance model |
-| `music` | the two-track crossfader (A/B), its four states and the level's track; the overlay requests (`MusicOverlay`, Spirit Form's realm music); a story level's track, volume, ambience and preset by the bytes of its name, and whether entering it changes the music |
+| `music` | the two-track crossfader (A/B), its four states and the level's track; the overlay requests (`MusicOverlay`, Spirit Form's realm music); the crossfade requests (`MusicCrossfade`, the main menu's music code); a story level's track, volume, ambience and preset by the bytes of its name, and whether entering it changes the music |
 | `ambience` | an area's looping bed and its scheduled one-shots |
 | `reverb` | the global EAX reverb parameter block, the level's decay offset and on/off, and the block the effect holds |
 | `efx` | OpenAL Soft 1.21's EAX reverb (`ReverbDsp`) and a source's send to it (`wet_send`) |

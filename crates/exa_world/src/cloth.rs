@@ -92,12 +92,17 @@ pub struct ClothInstance {
     pub stale_mesh: bool,
     /// Whether the rustle loop was last sent playing.
     pub rustling: bool,
+    /// Each particle's place when the cloth was built (cm, the node's
+    /// frame): a save writes the live particles of a cloth that moved off
+    /// them.
+    pub start: Vec<Vec3>,
 }
 
 impl ClothInstance {
     /// A cloth over `mesh`, whose vertex `i` draws particle
     /// `vertex_particle[i]`.
     pub fn new(cloth: Cloth, mesh: Handle<Mesh>, vertex_particle: Vec<usize>) -> Self {
+        let start = cloth.particles.iter().map(|p| p.position).collect();
         Self {
             cloth,
             mesh,
@@ -105,6 +110,7 @@ impl ClothInstance {
             frame: None,
             stale_mesh: false,
             rustling: false,
+            start,
         }
     }
 }
