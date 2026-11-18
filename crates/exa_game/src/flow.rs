@@ -1367,6 +1367,12 @@ pub enum Step {
     StartRecord([u32; 3]),
     /// Lay the story's starting torch in the world ([`StoryLight`]).
     StoryLight(StoryLight),
+    /// Start the main view's screen fade in from black
+    /// ([`exa_render::post::ScreenFade::begin_fade`]): the story start's,
+    /// after its camera shot, and the revive's, last. After a level load it
+    /// waits for the level with the rest of the batch ([`AfterLoad`]), as
+    /// the original runs it once its load returns.
+    ScreenFade,
     /// Write the story start's condition word, animator flags and turn
     /// factor (the fields each background sets; `None` leaves one).
     StoryPose {
@@ -2420,6 +2426,8 @@ impl Flow {
             start.placement.position,
             viewport,
         )));
+        // The post processor's screen fade, after the shot.
+        steps.push(Step::ScreenFade);
         if let Some(companion) = start.companion {
             steps.push(Step::Companion(companion));
         }
@@ -3172,6 +3180,8 @@ impl Flow {
             Step::Block(false),
             Step::Controls(true),
             Step::Hook(Hook::Story),
+            // The screen fades in from black last.
+            Step::ScreenFade,
         ]);
         steps
     }
@@ -4671,6 +4681,15 @@ pub(crate) fn apply_steps(
                         world.get_resource_mut::<Messages<exa_script::EndAllConversations>>()
                     {
                         ends.write(exa_script::EndAllConversations);
+                    }
+                });
+            }
+            Step::ScreenFade => {
+                commands.queue(|world: &mut World| {
+                    if let Some(mut fade) = world.get_resource_mut::<exa_render::post::ScreenFade>()
+                    {
+                        fade.begin_fade();
+                        info!("game flow: the screen fades in");
                     }
                 });
             }
@@ -9526,6 +9545,49 @@ mod tests {
             assert!(!talk.engine.panel.open);
             assert!(talk.engine.narration.is_none());
         }
+    }
+
+    /// The story start fades the main view in from black once its level is
+    /// in (after the shot), and the revive does at once, last.
+    #[test]
+    fn the_story_start_and_the_revive_fade_the_screen_in() {
+        let mut app = session_app();
+        app.init_resource::<exa_render::post::ScreenFade>();
+        let steps = {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            let viewport = flow.viewport;
+            flow.start_story(Background::Unknown, 1.0, viewport, 0)
+        };
+        let at = |s: &Step| steps.iter().position(|t| t == s).unwrap();
+        let camera = steps
+            .iter()
+            .position(|s| matches!(s, Step::Camera(_)))
+            .unwrap();
+        assert_eq!(at(&Step::ScreenFade), camera + 1);
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        app.update();
+        // The fade waits with the rest for the level.
+        assert!(
+            app.world()
+                .resource::<exa_render::post::ScreenFade>()
+                .requests
+                .is_empty()
+        );
+        for _ in 0..AFTER_LOAD_WAIT_FRAMES + 2 {
+            app.update();
+        }
+        assert_eq!(
+            app.world()
+                .resource::<exa_render::post::ScreenFade>()
+                .requests,
+            vec![exa_render::post::FadeRequest::Screen]
+        );
+        let mut flow = Flow {
+            mode: Mode::Story,
+            ..Default::default()
+        };
+        assert_eq!(flow.revive(0).last(), Some(&Step::ScreenFade));
     }
 
     /// The new story's first wake-up is watched once its level is in: the
