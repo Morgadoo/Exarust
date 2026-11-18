@@ -4360,3 +4360,17 @@ A hub message box without the modal bit 0x80 SHALL keep the keys but let a point
 #### Scenario: The hire refusal box
 - **WHEN** a 0x41 box is open over a form and the pointer clicks that form's button beside the box
 - **THEN** the form under the box answers and the box stays on top
+
+### Requirement: Parchment block sample
+The parchment's hit test SHALL read the compressed 4x4 block holding the click's bottom-up storage row (the height less the row) and column, and answer the block's texel at column 1, row 1; a texel past the image is transparent.
+
+#### Scenario: A click inside a block
+- **WHEN** a click lands anywhere in a block whose (1, 1) texel is opaque
+- **THEN** the parchment takes the click
+
+### Requirement: Skill screen armour refresh
+Closing the skill screen SHALL write the technique word and then run the armour pass over the player's worn outfit.
+
+#### Scenario: Closing the skill screen
+- **WHEN** the skill screen closes
+- **THEN** the player's body is marked for the armour refresh

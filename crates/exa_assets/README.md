@@ -133,7 +133,10 @@ material run becomes a drawable sub-mesh (`model::run_mesh`) bound to the
 character's skeleton with the root part as joint 0. Each part's `tag` is
 kept per merged triangle (`Merged::triangle_tags`, permuted with the faces
 by the material regroup, as the original's per-face item table;
-`model::run_tags` gives a run's slice)
+`model::run_tags` gives a run's slice). A worn garment's `&` parts are
+grouped by the garment (`MergePart::group`, `SubObject::group`), as the
+original matches groups by the garment's painted material: one run per
+garment, two garments never sharing one)
 (`exa_character::dress::assemble` builds the plan). The per-node draw stays
 as the fallback for a character without its body model. The built meshes
 keep no vertex slot masks and no triangle flags, so on shipped data the

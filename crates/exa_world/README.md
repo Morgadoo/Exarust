@@ -307,3 +307,15 @@ and the grid's rooms; portal clipping is next (see
   top-level `+F` pieces the transparent pass runs over, and the child skip
   for the 20 cm subdivision (`#`, `+` and
   `[` children are not subdivided, but are still built).
+
+## Hair passes and the light flood's clear
+
+A cloth whose record carries the hair bit is drawn as two culled passes
+(`cloth_draw::draw_hair_passes`): its entity draws the front-culled copy of
+its material, a child the back-culled one (`ExaMaterial::second_pass`, kept
+out of the blended walk and sorted just after the first). A light's
+re-flood clears it from a box around its new place
+(`light_flood::CellLights::clear_box`), not from every cell it entered; the
+rooms a flood aliases come from the cells that flood recorded
+(`cells_of`). The terrain's composite pools take their detail side from
+the texture-detail setting.
