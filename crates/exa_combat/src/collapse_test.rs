@@ -1020,10 +1020,11 @@ fn the_dropped_weapon_meets_another_body() {
     assert_ne!(at, alone);
     // (x and z one bit off the weapon-first push: the sides round apart.
     // x moved one more bit when the link push took the original's
-    // c·(w·share) order.)
+    // c·(w·share) order; and again when the approximate reciprocals took
+    // the fixed Intel answers, DEC-7.)
     assert_eq!(
         (at.x.to_bits(), at.y.to_bits(), at.z.to_bits()),
-        (0xbda3_ae17, 0x3f7e_43be, 0xbe49_2d0b)
+        (0xbda3_b06d, 0x3f7e_43c8, 0xbe49_2d1c)
     );
 }
 

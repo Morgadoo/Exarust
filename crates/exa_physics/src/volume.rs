@@ -242,21 +242,10 @@ impl VolumeOptions {
     }
 }
 
-/// The processor's approximate reciprocal (RCPSS), as the original's mesh
-/// queries take it; exact off x86-64.
+/// The approximate reciprocal (`RCPSS`), as the original's mesh queries
+/// take it: the fixed Intel answer (DEC-7).
 fn approximate_reciprocal(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // The same approximate reciprocal the original's triangle code uses.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rcp_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value
-    }
+    exa_formats::approx_recip::reciprocal(value)
 }
 
 /// The squared distance a sphere query must beat (one ulp-sized margin

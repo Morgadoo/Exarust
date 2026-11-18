@@ -591,8 +591,9 @@ impl Wisps {
 /// The strand's smoothed points: the root, a Hermite point a little out
 /// (`t = 0.6·|P1 − P0|/spacing`, at most 0.5), then each point and the
 /// middle to the next, bent toward its neighbours; one more point past a
-/// visible end for the last side. Returns the points, their attributes and
-/// how many are drawn.
+/// visible end for the last side (none at the end itself, where the last
+/// drawn point is the last of the list). Returns the points, their
+/// attributes and how many are drawn.
 fn smooth_strip(
     p: &[Vec3],
     a: &[[f32; 4]],
@@ -635,12 +636,13 @@ fn smooth_strip(
         t_attr.push(lerp4(attr(j), attr(j + 1), 0.5));
     }
     let drawn = s.len() - 1;
+    // Past a visible end one more point steers the last drawn side; at the
+    // end itself the original adds none, so the last smoothed point's side
+    // is the tip's (three quarters toward its own raw side, see
+    // [`strip_sides`]).
     if count < end {
         s.push(get(count));
         t_attr.push(attr(count));
-    } else {
-        s.push(s[s.len() - 1]);
-        t_attr.push(t_attr[t_attr.len() - 1]);
     }
     (s, t_attr, drawn)
 }
@@ -881,5 +883,28 @@ mod tests {
         let mut dark = dark;
         dark.strands[0].flags = flag::STOPPED;
         assert!(dark.ribbon(1.0, Vec3::Z).removed);
+    }
+
+    /// At the visible end (`count >= end`) the original adds no extra
+    /// point: the last drawn side is the tip's, three quarters toward its
+    /// own raw side, not the middle rule over a copied point.
+    #[test]
+    fn a_strip_ending_at_its_end_gives_the_last_side_the_tip_rule() {
+        let p: Vec<Vec3> = (0..4)
+            .map(|k| Vec3::new(k as f32, (k * k) as f32 * 0.3, 0.0))
+            .collect();
+        let a = vec![[0.0, 1.0, 1.0, 0.0]; 4];
+        let (s, attrs, drawn) = smooth_strip(&p, &a, 3, 3, 1.0);
+        assert_eq!(s.len(), drawn + 1);
+        assert_eq!(attrs.len(), drawn + 1);
+        let sides = strip_sides(&s, Vec3::Z);
+        assert_eq!(sides.len(), drawn);
+        let m = s.len() - 1;
+        let raw = |j: usize| normalize((s[j + 1] - s[j - 1]).cross(Vec3::Z));
+        assert_eq!(sides[m - 1], lerp(raw(m - 2), raw(m - 1), 0.75));
+        // Past a visible end the extra point is the next strand point.
+        let (s, _, drawn) = smooth_strip(&p, &a, 3, 4, 1.0);
+        assert_eq!(s.len(), drawn + 2);
+        assert_eq!(s[s.len() - 1], p[3]);
     }
 }

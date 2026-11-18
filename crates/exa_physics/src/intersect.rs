@@ -125,18 +125,21 @@ pub struct Sweep {
 }
 
 impl Sweep {
-    /// A sweep from `start` to `end`. A zero-length sweep has length and
+    /// A sweep from `start` to `end`: the squared length summed
+    /// `(x² + y²) + z²`, its approximate reciprocal square root (`RSQRTSS`)
+    /// and the direction's approximate reciprocals (`RCPPS`), both the
+    /// fixed Intel answers (DEC-7). A zero-length sweep has length and
     /// direction NaN, as the original's reciprocal square root of zero does.
     pub fn new(start: Vec3, end: Vec3) -> Self {
         let delta = end - start;
-        let squared = delta.length_squared();
-        let inverse = squared.sqrt().recip();
+        let squared = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
+        let inverse = crate::engine_math::reciprocal_sqrt(squared);
         let direction = delta * inverse;
         Self {
             origin: start,
             length: squared * inverse,
             direction,
-            inverse_direction: direction.recip(),
+            inverse_direction: crate::engine_math::reciprocal_approx3(direction),
         }
     }
 
@@ -147,7 +150,7 @@ impl Sweep {
     pub fn of_move(start: Vec3, end: Vec3) -> Self {
         let sweep = Self::new(start, end);
         Self {
-            inverse_direction: (sweep.direction + Vec3::ZERO).recip(),
+            inverse_direction: crate::engine_math::reciprocal_approx3(sweep.direction + Vec3::ZERO),
             ..sweep
         }
     }

@@ -2447,13 +2447,18 @@ fn grid_normals(positions: &[[f32; 3]], n: usize) -> Vec<[f32; 3]> {
 }
 
 /// Surface normal from a 3 × 3 Sobel filter over the heights, reaching into
-/// the apron at tile edges.
+/// the apron at tile edges: the original's window normal
+/// ([`manager::window_normal`]: its sum order, the factor one eighth over
+/// the cell side, and the engine's normalise with the approximate
+/// reciprocal square root, DEC-7), over the heights in metres.
 fn sobel_normal(tile: &TerrainTile, i: i32, j: i32, spacing: f32) -> Vec3 {
     let h = |di: i32, dj: i32| tile.height_apron(i + di, j + dj);
-    let gx = (h(1, -1) + 2.0 * h(1, 0) + h(1, 1)) - (h(-1, -1) + 2.0 * h(-1, 0) + h(-1, 1));
-    let gz = (h(-1, 1) + 2.0 * h(0, 1) + h(1, 1)) - (h(-1, -1) + 2.0 * h(0, -1) + h(1, -1));
-    let scale = 1.0 / (8.0 * spacing);
-    Vec3::new(-gx * scale, 1.0, -gz * scale).normalize()
+    let window = [
+        [h(-1, -1), h(0, -1), h(1, -1)],
+        [h(-1, 0), h(0, 0), h(1, 0)],
+        [h(-1, 1), h(0, 1), h(1, 1)],
+    ];
+    Vec3::from_array(manager::window_normal(window, (1.0 / spacing) * 0.125))
 }
 
 #[cfg(test)]

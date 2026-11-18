@@ -139,20 +139,9 @@ fn dot(a: Vec3, b: Vec3) -> f32 {
     xy + a.z * b.z
 }
 
-/// The processor's approximate reciprocal (`RCPSS`).
+/// The approximate reciprocal (`RCPSS`): the fixed Intel answer (DEC-7).
 fn reciprocal(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: SSE is part of the x86_64 baseline.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rcp_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value
-    }
+    exa_formats::approx_recip::reciprocal(value)
 }
 
 /// The face plane of a cloth triangle: `(b − a) × (c − a)` scaled by the

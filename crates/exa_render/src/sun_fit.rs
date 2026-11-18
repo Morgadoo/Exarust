@@ -267,17 +267,12 @@ impl LightBasis {
     }
 }
 
-/// A vector scaled to unit length, summed `(x² + z²) + y²` and zero left
-/// zero (times zero, so each component keeps its sign), as the original's
-/// normalise. The original uses the processor's approximate reciprocal
-/// square root; this uses the exact one, so the result differs in the last
-/// dozen bits.
+/// A vector scaled to unit length as the original's normalise: summed
+/// `(x² + z²) + y²`, zero left zero (times zero, so each component keeps
+/// its sign), and the approximate reciprocal square root (`RSQRTSS`, the
+/// fixed Intel answer: DEC-7).
 fn normalised(v: Vec3) -> Vec3 {
-    let squared = (v.x * v.x + v.z * v.z) + v.y * v.y;
-    if squared == 0.0 {
-        return v * 0.0;
-    }
-    v * squared.sqrt().recip()
+    exa_physics::engine_math::normalize_approx(v)
 }
 
 /// The light's view matrix, column-major as the original stores it: the
@@ -739,6 +734,12 @@ pub fn fitted_sphere(volume: &ConvexVolume) -> Option<Sphere> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sun straight overhead. The approximate reciprocal root of 1 is
+    /// 0.99976 (Intel's table, DEC-7), under the fixed frame's 0.9999 gate,
+    /// so a unit vertical takes the regular path (and a zero right) as the
+    /// original's would; 1.25 normalises to 0.99991, past the gate.
+    const OVERHEAD: Vec3 = Vec3::new(0.0, 1.25, 0.0);
     use bevy::math::Vec3;
 
     /// A zero vector keeps its components' signs (times zero), as the
@@ -867,17 +868,17 @@ mod tests {
     #[test]
     fn the_light_basis_is_the_originals() {
         // The sun straight overhead: the fixed frame.
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         assert_eq!(basis.dir, Vec3::NEG_Y);
         assert_eq!(basis.right, Vec3::X);
         assert_eq!(basis.up, Vec3::NEG_Z);
         // Straight below gives the same fixed frame.
-        assert_eq!(LightBasis::from_towards_sun(Vec3::NEG_Y), basis);
+        assert_eq!(LightBasis::from_towards_sun(-OVERHEAD), basis);
         // Towards (1, 1, 0): dir = (−1/√2, −1/√2, 0); right = dir × Y = −Z;
         // up = right × dir.
         let basis = LightBasis::from_towards_sun(v(1.0, 1.0, 0.0));
         let a = std::f32::consts::FRAC_1_SQRT_2;
-        let close = |a: Vec3, b: Vec3| (a - b).length() < 1e-6;
+        let close = |a: Vec3, b: Vec3| (a - b).length() < 1e-3;
         assert!(close(basis.dir, v(-a, -a, 0.0)));
         assert!(close(basis.right, v(0.0, 0.0, -1.0)));
         assert!(close(basis.up, v(-a, a, 0.0)));
@@ -894,7 +895,8 @@ mod tests {
         let p = v(120.0, -45.0, 33.0);
         let there = basis.to_light(p);
         let back = basis.from_light(there);
-        assert!((back - p).length() < 1e-4);
+        // The basis is unit to 12 bits, so the round trip is too.
+        assert!((back - p).length() < 1e-3 * p.length());
     }
 
     #[test]
@@ -1000,7 +1002,7 @@ mod tests {
     fn fewer_than_two_corners_fit_nothing() {
         let empty = ConvexVolume::default();
         let mut fit = SunFit::default();
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         assert!(!fit.fit(&empty, &basis, UVec2::splat(4096)));
         assert_eq!(fit, SunFit::default());
         // A volume whose corners all merge into one point.
@@ -1038,7 +1040,7 @@ mod tests {
         // In the light's frame (sun overhead: right +X, up −Z, dir −Y) the
         // centre is (0, 0, −550); 1484.1/200 + 0.4 = 7.82 → 8 steps, and
         // from 3000 the shrink is taken (1484.1 < 2980).
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         let mut fit = SunFit::default();
         assert!(fit.fit(&volume, &basis, UVec2::splat(4096)));
         assert_eq!(fit.half_extent_cm, 1600.0);
@@ -1057,7 +1059,7 @@ mod tests {
         let mut fit = SunFit::default();
         assert!(!fit.fit(
             &volume,
-            &LightBasis::from_towards_sun(Vec3::Y),
+            &LightBasis::from_towards_sun(OVERHEAD),
             UVec2::splat(4096)
         ));
         assert_eq!(fit.half_extent_cm, INITIAL_HALF_EXTENT_CM);
@@ -1065,7 +1067,7 @@ mod tests {
 
     #[test]
     fn the_fit_quantises_and_snaps() {
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         let mut fit = SunFit::default();
         assert!(fit.fit(&cube(Vec3::ZERO, 500.0), &basis, UVec2::splat(4096)));
         // (866.025)/200 + 0.4 = 4.73 → 5 steps.
@@ -1081,7 +1083,7 @@ mod tests {
             centre_cm: Vec3::ZERO,
             ..Default::default()
         };
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         let matrices = fit.matrices(&basis, UVec2::splat(4096));
         let clip = |light: Vec3| {
             let world = basis.from_light(light) / CM_PER_METRE;
@@ -1130,7 +1132,7 @@ mod tests {
         // A 200 cm cube: r = 173.2, 173.2/200 + 0.4 = 1.27 → 1 step. From
         // 3000 the shrink is taken (173.2 < 2980): 200 cm, well below the
         // whole-scene mode's 1 000 cm minimum, which this mode never reads.
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         let mut fit = SunFit::default();
         assert!(fit.fit(&cube(Vec3::ZERO, 100.0), &basis, UVec2::splat(4096)));
         assert_eq!(fit.half_extent_cm, 200.0);
@@ -1145,7 +1147,7 @@ mod tests {
             centre: v(100.0, 200.0, 300.0),
             extent: v(2000.0, 500.0, 1500.0),
         };
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         let mut fit = SunFit::default();
         // The far field is the scene's own radius from the node unit, here
         // modelled as the same half-diagonal.
@@ -1193,7 +1195,7 @@ mod tests {
 
     #[test]
     fn the_whole_scene_box_is_the_radius_across_and_near_to_far_along() {
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let basis = LightBasis::from_towards_sun(OVERHEAD);
         let scene = SceneBox {
             centre: v(0.0, 100.0, 0.0),
             extent: v(2000.0, 500.0, 2000.0),
@@ -1262,8 +1264,10 @@ mod tests {
         // dir -Z with the up hint +Y: right = -Z × Y = +X, up = X × -Z = +Y.
         let origin = Vec3::new(10.0, 20.0, 30.0);
         let m = light_view_matrix(Vec3::NEG_Z, Vec3::Y, origin);
-        assert_eq!(m.row(0), Vec4::new(1.0, 0.0, 0.0, -10.0));
-        assert_eq!(m.row(1), Vec4::new(0.0, 1.0, 0.0, -20.0));
+        // Each axis unit to the approximate reciprocal root's 12 bits.
+        let near = |a: Vec4, b: Vec4| (a - b).abs().max_element() < 1e-2;
+        assert!(near(m.row(0), Vec4::new(1.0, 0.0, 0.0, -10.0)));
+        assert!(near(m.row(1), Vec4::new(0.0, 1.0, 0.0, -20.0)));
         assert_eq!(m.row(2), Vec4::new(0.0, 0.0, -1.0, 30.0));
         // A tilted direction: the rows (not the columns) are the basis, so
         // a point maps to its dot products with right, up and dir.
