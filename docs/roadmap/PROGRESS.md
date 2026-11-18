@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r330, 11-16) | target |
+| measure | start (r186, 11-10) | now (r331, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **69.68%** | **100%** |
+| **Ledger: bytes in a final state** | — | **69.78%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9325 | all |
+| Tests passing | 8,489 | 9331 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,7 +99,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 108 | 145,082 |
-| Rendering & GPU | 10 | 10 | 171 | 104,953 |
+| Rendering & GPU | 10 | 10 | 165 | 102,497 |
 | UI | 12 | 12 | 200 | 101,298 |
 | Characters, motion & animation | 8 | 8 | 138 | 79,202 |
 | Game modes, arena & session | 7 | 7 | 136 | 65,221 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 3 | 2,097 |
 | Combat, weapons & damage | 1 | 1 | 3 | 1,560 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,225** | **760,578** |
+| **Total** | **90** | **90** | **1,219** | **758,122** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 331 | The frame walk runs in the original list blocks: scissored opaque and alpha-tested meshes leave the batched phases so the doorway scissor clips them, the cut-away faded pass lays depth before colour after all blended surfaces, grass draws in its hook block with depth writes off and the 0.1 cut, alpha-tested records cut their texels in the colour pass (the pass had no discard), the rain draws its reflected set and each view uploads its bloom kernel; plants now show cut blades; golden unchanged. |
 | 2026-11-16 | 330 | The CPU painter samples each library texture as the original load word asks (linear for 0x70133 metals, cloths, leathers; nearest for woods and coppers; the first claim wins), every job own map as a clamped level-0 bilinear mix and emblem pictures bilinearly; the gemstone pattern pass and the alternate steel normal are shown never to draw on shipped data (DEC-12 condition met); a dropped lit blade puts out its flame row; golden and FPS unchanged, painter wall time unchanged. |
 | 2026-11-16 | 329 | The main tick game clock (holding with the pause counter) and the scene task capped step run live, the light flicker taking the scene step; the pad step repeat and Powers hold run on the simulation clock; the per-mode words come from the original mode switch (arena level cap 12 read by the skill screen, the HUD alert and the company report); the camera detaches on a switch to no mode, a shot copies its view into the cursor pin, and the player own arena entrant start takes the fast two-point shot; golden unchanged. |
 | 2026-11-16 | 328 | Terrain takes one GI slot per tile as the original (arenao3 one tile row changes tone; e01, e02, hub identical); moving nodes take the original cell bytes and change rooms only on a cell change; the light flood cleanup box and cell insert reconciled with round 327 against the assembly (32-bit box arithmetic, no whole-cell shortcut); the grid +Ceiling node decoded as never drawn and never cast. |

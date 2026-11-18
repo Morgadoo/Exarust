@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 319 | 96,760 | B1 wire (or prove unreachable) |
-| partial | 876 | 658,494 | B4 complete the port |
+| partial | 870 | 656,038 | B4 complete the port |
 | missing | 37 | 6,211 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,7 +15,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 130,060 | 14,784 | 238 |
-| render | 91,802 | 10,653 | 2,710 |
+| render | 89,346 | 10,653 | 2,710 |
 | ui | 69,065 | 32,066 | 167 |
 | characters | 66,506 | 11,244 | 1,452 |
 | modes | 57,853 | 7,005 | 363 |
@@ -71,7 +71,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
 | RF_GUI_Controls (unit routines) | ui | 7 / 4,821 | 2 / 881 | 0 / 0 | 5,702 |
 | TPlayerBehaviour | ai | 2 / 5,670 | 0 / 0 | 0 / 0 | 5,670 |
-| TRenderer | render | 13 / 5,644 | 0 / 0 | 1 / 10 | 5,654 |
 | TAISearchActivity | ai | 5 / 5,505 | 0 / 0 | 0 / 0 | 5,505 |
 | SG_GameMain (unit routines) | modes | 14 / 5,443 | 0 / 0 | 0 / 0 | 5,443 |
 | FLX_Content_Stream (unit routines) | data | 8 / 4,923 | 4 / 458 | 0 / 0 | 5,381 |
@@ -100,6 +99,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RFT_BoundSphere (unit routines) | core | 2 / 3,851 | 0 / 0 | 0 / 0 | 3,851 |
 | TMesh | render | 4 / 3,114 | 2 / 703 | 0 / 0 | 3,817 |
 | SG_ItemGUI (unit routines) | items | 3 / 2,553 | 4 / 1,049 | 0 / 0 | 3,602 |
+| TRenderer | render | 8 / 3,502 | 0 / 0 | 1 / 10 | 3,512 |
 | TCombatant | ai | 6 / 3,234 | 2 / 268 | 0 / 0 | 3,502 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
 | RF_Intersection (unit routines) | physics | 2 / 288 | 8 / 3,137 | 0 / 0 | 3,425 |
@@ -176,7 +176,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceBlastEffect | powers | 1 / 948 | 0 / 0 | 0 / 0 | 948 |
 | THairEditForm | ui | 1 / 828 | 1 / 117 | 0 / 0 | 945 |
 | RF_DataIO (unit routines) | data | 0 / 0 | 3 / 936 | 0 / 0 | 936 |
-| TPostProcessor | render | 3 / 929 | 0 / 0 | 0 / 0 | 929 |
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
 | TForceBlastGeometry | powers | 2 / 890 | 0 / 0 | 0 / 0 | 890 |
 | FG_AIFunctions (unit routines) | script | 6 / 888 | 0 / 0 | 0 / 0 | 888 |
@@ -204,6 +203,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TStrikesGeometry | powers | 1 / 646 | 0 / 0 | 0 / 0 | 646 |
 | XA_HelpSystem (unit routines) | ui | 0 / 0 | 1 / 619 | 0 / 0 | 619 |
 | TStringLibrary | data | 0 / 0 | 4 / 615 | 0 / 0 | 615 |
+| TPostProcessor | render | 2 / 615 | 0 / 0 | 0 / 0 | 615 |
 | FLX_Character_Motions (unit routines) | characters | 0 / 0 | 3 / 613 | 0 / 0 | 613 |
 | RF_Terrain (unit routines) | world | 1 / 609 | 0 / 0 | 0 / 0 | 609 |
 | TForceWaveEntity | powers | 1 / 603 | 0 / 0 | 0 / 0 | 603 |
