@@ -35,6 +35,7 @@ pub mod prop_skin;
 pub mod published_light;
 pub mod room_view;
 pub mod rooms;
+pub mod saved_parts;
 pub mod scene_env;
 pub mod scene_live;
 pub mod scene_nodes;
@@ -973,12 +974,22 @@ fn spawn_placed_object(
         });
     };
     let share = item.light_share(object.flags);
+    let condition_scaled = item.model_flags & exa_formats::objdb::CONDITION_SCALED != 0;
+    // A condition-scaled object keeps its records' values (and its own
+    // copies of its glow materials) to scale again when its condition
+    // changes ([`ConditionLit`]).
+    let record_lights: Vec<(usize, f32)> = if condition_scaled {
+        root_voxel_lights(&model)
+    } else {
+        Vec::new()
+    };
+    let mut glows = Vec::new();
     let scaled;
     let model = if share == 1.0 {
         model.as_ref()
     } else {
         let mut m = with_light_share(&model, share);
-        dim_child_glows(&mut m, share, loader.materials);
+        glows = dim_child_glows(&mut m, share, loader.materials);
         scaled = m;
         &scaled
     };
@@ -993,6 +1004,9 @@ fn spawn_placed_object(
     };
     let (e, nodes) = spawn_model_nodes_at(commands, model, Some(placement), daylight);
     mark_cloth_starts(commands, model, &nodes, &object.attachments);
+    if let Some(tree) = saved_parts::PartTree::of(model, &nodes) {
+        commands.entity(e).insert(tree);
+    }
     commands.entity(e).insert((
         Name::new(item.name.clone()),
         room_view::PendingRoom::default(),
@@ -1001,6 +1015,19 @@ fn spawn_placed_object(
         ChildOf(parent),
     ));
     insert_object_records(commands, e, item, object);
+    if condition_scaled {
+        commands.entity(e).insert(ConditionLit {
+            share,
+            lights: record_lights
+                .iter()
+                .filter_map(|&(i, base)| nodes.get(i).map(|&n| (n, base)))
+                .collect(),
+            nodes: root_children(model)
+                .filter_map(|i| nodes.get(i).copied())
+                .collect(),
+            glows,
+        });
+    }
     // A door object is bound to its room link with its object node's first
     // child, whose body the rooms then read (`room_view::PlacedDoor`).
     if db_objects::node_kind(item) == db_objects::KIND_DOOR
@@ -1154,15 +1181,123 @@ fn with_light_share(model: &Model, share: f32) -> Model {
     model
 }
 
+/// The nodes hanging directly under `model`'s root, by index.
+fn root_children(model: &Model) -> impl Iterator<Item = usize> + '_ {
+    let root = model.roots().next();
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(move |(_, n)| n.parent.is_some() && n.parent == root)
+        .map(|(i, _)| i)
+}
+
+/// The voxel lights hanging directly under `model`'s root: each node's
+/// index and its record's intensity.
+fn root_voxel_lights(model: &Model) -> Vec<(usize, f32)> {
+    let root = model.roots().next();
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.parent.is_some() && n.parent == root)
+        .filter_map(|(i, n)| n.voxel_light.as_ref().map(|l| (i, l.intensity)))
+        .collect()
+}
+
+/// A placed object whose lights follow its condition (its record's model
+/// flags carry the condition-scaled bit): the share its lights and glows
+/// were last scaled by, its root's voxel-light nodes with their records'
+/// intensities, the nodes under its root, and its glow parts' own materials
+/// with their unscaled emissive colours (made at spawn when the share is
+/// not 1, else at the first re-scale, so an unspent object keeps sharing
+/// its materials).
+#[derive(Component, Debug, Clone)]
+pub struct ConditionLit {
+    pub share: f32,
+    pub lights: Vec<(Entity, f32)>,
+    pub nodes: Vec<Entity>,
+    pub glows: Vec<(Handle<exa_render::material::ExaMaterial>, Vec4)>,
+}
+
+/// Scales a placed object's lights again when its condition byte changes,
+/// as the original's object light pass does after every change of a
+/// placed object's condition (the inventory, the controls, the object
+/// database, the teleporter's charge): each voxel light under the root at
+/// its record's intensity times (1 − c/255)², its colour recomputed, and
+/// the glow meshes' emissive by the same share.
+pub fn rescale_condition_lights(
+    mut objects: Query<(&PlacedItem, &mut ConditionLit), Changed<PlacedItem>>,
+    mut lights: Query<&mut exa_render::gi::VoxelLight>,
+    children: Query<&Children>,
+    mut parts: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+) {
+    for (item, mut lit) in &mut objects {
+        let share = condition_share(item.condition);
+        if share == lit.share {
+            continue;
+        }
+        // An object spawned unspent shares its materials: its glowing
+        // parts take their own copies now.
+        if lit.share == 1.0 && lit.glows.is_empty() {
+            let mut glows = Vec::new();
+            for &node in &lit.nodes {
+                for part in children.get(node).into_iter().flatten() {
+                    let Ok(mut handle) = parts.get_mut(*part) else {
+                        continue;
+                    };
+                    let Some(material) = materials.get(handle.0.id()).cloned() else {
+                        continue;
+                    };
+                    let e = material.params.emissive;
+                    if e.truncate() == Vec3::ZERO {
+                        continue;
+                    }
+                    let copy = materials.add(material);
+                    handle.0 = copy.clone();
+                    glows.push((copy, e));
+                }
+            }
+            lit.glows = glows;
+        }
+        info!(
+            "condition lights: placed object {} at condition {} re-scaled by {share} (was {})",
+            item.tagged_id, item.condition, lit.share
+        );
+        lit.share = share;
+        for &(node, base) in &lit.lights {
+            if let Ok(mut light) = lights.get_mut(node) {
+                light.base_intensity = base * share;
+                light.set_intensity(base * share);
+            }
+        }
+        for (handle, base) in &lit.glows {
+            if let Some(mut m) = materials.get_mut(handle.id()) {
+                m.params.emissive = (base.truncate() * share).extend(base.w);
+            }
+        }
+    }
+}
+
+/// The condition share of a condition byte: (1 − c/255)² in double
+/// precision, cast once ([`Item::light_share`]'s rule).
+pub fn condition_share(condition: u8) -> f32 {
+    let d = 1.0 - f64::from(condition) * (1.0 / 255.0);
+    (d * d) as f32
+}
+
 /// Scales the emissive colour of the meshes hanging directly under
 /// `model`'s root by an item's condition share, as the original scales a
 /// salve's glow mesh with its voxel light: the parts get copies of their
-/// materials, so the shared ones stay as they are.
+/// materials, so the shared ones stay as they are. Returns each copy with
+/// its unscaled emissive colour.
 fn dim_child_glows(
     model: &mut Model,
     share: f32,
     materials: &mut Assets<exa_render::material::ExaMaterial>,
-) {
+) -> Vec<(Handle<exa_render::material::ExaMaterial>, Vec4)> {
+    let mut copies = Vec::new();
     let root = model.roots().next();
     for node in &mut model.nodes {
         if node.parent.is_none() || node.parent != root {
@@ -1179,8 +1314,10 @@ fn dim_child_glows(
             let mut dimmed = material.clone();
             dimmed.params.emissive = (e.truncate() * share).extend(e.w);
             *handle = materials.add(dimmed);
+            copies.push((handle.clone(), e));
         }
     }
+    copies
 }
 
 /// Each of a placement's node records with the model node it applies to,
@@ -2315,6 +2452,9 @@ impl LevelLoad {
                                 self.daylight,
                             );
                             mark_cloth_starts(commands, model, &nodes, &prop.attachments);
+                            if let Some(tree) = saved_parts::PartTree::of(model, &nodes) {
+                                commands.entity(e).insert(tree);
+                            }
                             // A prop placed static is level geometry.
                             let (placement, geometry) = if prop.is_static() {
                                 (bodies::Placement::Static, bodies::LevelGeometry::All)
@@ -4182,6 +4322,155 @@ mod tests {
         assert_eq!(model.nodes[2].parts[0].1, glow);
         // The shared material is untouched.
         assert_eq!(emissive(0, 0), Vec4::new(0.04, 0.18, 0.35, 0.0));
+    }
+
+    /// A placed object's condition change scales its lights and glows
+    /// again, from the records' values, in the live system.
+    #[test]
+    fn a_condition_change_rescales_the_lights_and_glows() {
+        use exa_render::gi::VoxelLight;
+        use exa_render::material::{ExaMaterial, ExaParams};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Assets::<ExaMaterial>::default())
+            .add_systems(Update, rescale_condition_lights);
+        let base = Vec4::new(0.04, 0.18, 0.35, 0.0);
+        let glow = app
+            .world_mut()
+            .resource_mut::<Assets<ExaMaterial>>()
+            .add(ExaMaterial {
+                params: ExaParams {
+                    emissive: base,
+                    ..default()
+                },
+                ..default()
+            });
+        let light = app
+            .world_mut()
+            .spawn(VoxelLight::from_record([1.0, 0.5, 0.25], 2.0, 1.0))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                PlacedItem {
+                    id: 1,
+                    tagged_id: 1,
+                    condition: 0,
+                },
+                ConditionLit {
+                    share: 0.5,
+                    lights: vec![(light, 2.0)],
+                    nodes: Vec::new(),
+                    glows: vec![(glow.clone(), base)],
+                },
+            ))
+            .id();
+        app.update();
+        // Spent to half: (1 − 128/255)² of the record's values.
+        app.world_mut()
+            .get_mut::<PlacedItem>(root)
+            .unwrap()
+            .condition = 128;
+        app.update();
+        let share = condition_share(128);
+        assert!((share - 0.248_05).abs() < 1e-4);
+        let l = app.world().get::<VoxelLight>(light).unwrap();
+        assert_eq!(l.intensity, 2.0 * share);
+        assert_eq!(
+            l.colour,
+            VoxelLight::colour_for([1.0, 0.5, 0.25], 2.0 * share, false)
+        );
+        let e = app
+            .world()
+            .resource::<Assets<ExaMaterial>>()
+            .get(glow.id())
+            .unwrap()
+            .params
+            .emissive;
+        assert_eq!(e, (base.truncate() * share).extend(0.0));
+        // Fully spent: no light, and back to new from the records.
+        app.world_mut()
+            .get_mut::<PlacedItem>(root)
+            .unwrap()
+            .condition = 255;
+        app.update();
+        assert_eq!(app.world().get::<VoxelLight>(light).unwrap().intensity, 0.0);
+        app.world_mut()
+            .get_mut::<PlacedItem>(root)
+            .unwrap()
+            .condition = 0;
+        app.update();
+        assert_eq!(app.world().get::<VoxelLight>(light).unwrap().intensity, 2.0);
+    }
+
+    /// An object spawned unspent shares its glow material until its first
+    /// re-scale, which gives its glowing part its own copy.
+    #[test]
+    fn an_unspent_object_takes_its_own_glow_material_at_the_first_rescale() {
+        use exa_render::material::{ExaMaterial, ExaParams};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Assets::<ExaMaterial>::default())
+            .add_systems(Update, rescale_condition_lights);
+        let base = Vec4::new(0.04, 0.18, 0.35, 0.0);
+        let shared = app
+            .world_mut()
+            .resource_mut::<Assets<ExaMaterial>>()
+            .add(ExaMaterial {
+                params: ExaParams {
+                    emissive: base,
+                    ..default()
+                },
+                ..default()
+            });
+        let node = app.world_mut().spawn_empty().id();
+        let part = app
+            .world_mut()
+            .spawn((MeshMaterial3d(shared.clone()), ChildOf(node)))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                PlacedItem {
+                    id: 1,
+                    tagged_id: 1,
+                    condition: 0,
+                },
+                ConditionLit {
+                    share: 1.0,
+                    lights: Vec::new(),
+                    nodes: vec![node],
+                    glows: Vec::new(),
+                },
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<ExaMaterial>>(part)
+                .unwrap()
+                .0,
+            shared
+        );
+        app.world_mut()
+            .get_mut::<PlacedItem>(root)
+            .unwrap()
+            .condition = 128;
+        app.update();
+        let own = app
+            .world()
+            .get::<MeshMaterial3d<ExaMaterial>>(part)
+            .unwrap()
+            .0
+            .clone();
+        assert_ne!(own, shared);
+        let materials = app.world().resource::<Assets<ExaMaterial>>();
+        let share = condition_share(128);
+        assert_eq!(
+            materials.get(own.id()).unwrap().params.emissive,
+            (base.truncate() * share).extend(0.0)
+        );
+        assert_eq!(materials.get(shared.id()).unwrap().params.emissive, base);
     }
 
     fn item(id: u32, model: &str, worn: &str, colour: u8) -> Item {

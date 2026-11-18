@@ -174,6 +174,7 @@ pub struct EventOutputs<'w> {
     conversations: Option<ResMut<'w, exa_script::Conversations>>,
     time: Option<Res<'w, Time<Virtual>>>,
     glows: Option<ResMut<'w, crate::mind::sight::MindGlows>>,
+    fade: Option<ResMut<'w, exa_render::post::ScreenFade>>,
 }
 
 type EventPlayerQuery<'w, 's> = Query<
@@ -449,16 +450,22 @@ fn apply(
             }
         }
         // The mind awakening's glow on the player (the Mind sight draws it).
-        Effect::MindAwakening => match (player.as_ref(), out.glows.as_mut()) {
-            (Some(player), Some(glows)) => {
-                glows.add(crate::mind::runtime::body_id(player.0));
-                info!(
-                    "game event {code:#x}: the mind awakening's glow on {:?}",
-                    player.0
-                );
+        Effect::MindAwakening => {
+            match (player.as_ref(), out.glows.as_mut()) {
+                (Some(player), Some(glows)) => {
+                    glows.add(crate::mind::runtime::body_id(player.0));
+                    info!(
+                        "game event {code:#x}: the mind awakening's glow on {:?}",
+                        player.0
+                    );
+                }
+                _ => info!("game event {code:#x}: the mind awakening has no player to glow on"),
             }
-            _ => info!("game event {code:#x}: the mind awakening has no player to glow on"),
-        },
+            // Then the main view's desaturation fade, kind 0.
+            if let Some(fade) = out.fade.as_mut() {
+                fade.begin_desaturate(0);
+            }
+        }
         Effect::ForceAwakening => {
             info!("game event {code:#x}: {effect:?} (its body effect is not ported)")
         }

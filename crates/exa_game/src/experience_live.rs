@@ -101,10 +101,12 @@ pub struct StoryExperience {
     /// ([`crate::experience::ARMOUR_SKILL`]): the body's armour is redone.
     pub armour_rose: bool,
     /// The companions whose skill rose in the last pass (their index in
-    /// the party) with their new technique word and whether the skill was
-    /// the armour skill: the rise refreshes the body (its technique word)
-    /// and, for the armour skill, its armour, as the player's does.
-    pub companion_rises: Vec<(usize, u32, bool)>,
+    /// the party) with their new technique word, whether the skill was
+    /// the armour skill and the AI's two new shares (the combat skill and
+    /// the confidence trait over 100): the rise refreshes the body (its
+    /// technique word) and, for the armour skill, its armour, as the
+    /// player's does, and writes the two shares into the companion's AI.
+    pub companion_rises: Vec<(usize, u32, bool, Option<[f32; 2]>)>,
     /// Play started and the level-start hook ran.
     pub started: bool,
     /// The account experience last written to the settings, so an unchanged
@@ -179,11 +181,18 @@ impl StoryExperience {
         self.companion_rises.clear();
         for (index, companion) in self.party.iter_mut().enumerate() {
             let Conversion {
-                raised, techniques, ..
+                raised,
+                techniques,
+                ai_factors,
+                ..
             } = convert_companion(now, companion);
             if let (Some(skill), Some(word)) = (raised, techniques) {
-                self.companion_rises
-                    .push((index, word, skill == crate::experience::ARMOUR_SKILL));
+                self.companion_rises.push((
+                    index,
+                    word,
+                    skill == crate::experience::ARMOUR_SKILL,
+                    ai_factors,
+                ));
             }
         }
         if let Some(word) = techniques {
@@ -400,7 +409,13 @@ pub(crate) fn tick_story_experience(
         ),
         With<PlayerBody>,
     >,
-    mut companions: Query<&mut exa_character::record::CharacterData, Without<PlayerBody>>,
+    mut companions: Query<
+        (
+            &mut exa_character::record::CharacterData,
+            Option<&mut exa_ai::brain::Npc>,
+        ),
+        Without<PlayerBody>,
+    >,
     (level, source): (
         Option<Res<exa_world::room_view::LevelRooms>>,
         Option<Res<exa_world::LevelSource>>,
@@ -449,16 +464,26 @@ pub(crate) fn tick_story_experience(
         }
         let changed = live.advance(pass.now);
         for (body, learner) in live.party_bodies.iter().zip(&live.party) {
-            if let Ok(mut data) = companions.get_mut(*body) {
+            if let Ok((mut data, _)) = companions.get_mut(*body) {
                 write_learner(learner, &mut data.record);
             }
         }
         // A companion's rise refreshes its body: the technique word, and
         // the armour after a rise in the armour skill.
-        for &(index, word, armour) in &live.companion_rises {
+        for &(index, word, armour, factors) in &live.companion_rises {
             let Some(&body) = live.party_bodies.get(index) else {
                 continue;
             };
+            // The rise writes the AI's skill share and confidence (its
+            // constructor's two shares over 100); the shares derived from
+            // them at the AI's making stay.
+            if let (Some([skill, confidence]), Ok((_, Some(mut npc)))) =
+                (factors, companions.get_mut(body))
+                && let Some(personality) = npc.personality.as_mut()
+            {
+                personality.skill = skill;
+                personality.confidence = confidence;
+            }
             info!(
                 "experience: companion {body:?} rose at {} ms: technique word {word:#010x}{}",
                 pass.now,
@@ -826,7 +851,7 @@ mod tests {
     /// A companion's rise in the armour skill refreshes its body as the
     /// player's does: the technique word and the armour pass.
     #[test]
-    fn a_companions_armour_rise_refreshes_its_body() {
+    fn a_companions_armour_rise_refreshes_its_body_and_its_ai() {
         let worn = exa_formats::objdb::Armour {
             coverage: [50; 18],
             slash: 140,
@@ -848,6 +873,12 @@ mod tests {
                 exa_character::record::CharacterData::of_record(companion.clone()),
                 fighter,
                 exa_character::WornArmour(vec![worn]),
+                exa_ai::brain::Npc {
+                    personality: Some(exa_ai::personality::personality(
+                        0.0, [0.0; 4], 0.0, false, &mut 1,
+                    )),
+                    ..exa_ai::brain::Npc::new([0.0; 4])
+                },
             ))
             .id();
         {
@@ -869,6 +900,22 @@ mod tests {
                     .skills
             ))
         );
+        // The AI takes the risen combat skill and confidence over 100.
+        let learner = app.world().resource::<StoryExperience>().party[0].clone();
+        let personality = app
+            .world()
+            .get::<exa_ai::brain::Npc>(body)
+            .unwrap()
+            .personality
+            .unwrap();
+        assert_eq!(
+            (personality.skill, personality.confidence),
+            (
+                (f64::from(learner.combat_skill) * 0.01) as f32,
+                (f64::from(learner.courage) * 0.01) as f32
+            )
+        );
+        assert!(personality.skill > 0.0);
         let fighter = app.world().get::<exa_combat::Fighter>(body).unwrap();
         assert!(fighter.stats.deflection);
         assert_eq!(

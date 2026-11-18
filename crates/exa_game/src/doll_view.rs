@@ -2676,6 +2676,53 @@ mod tests {
         assert!(p.carried.iter().any(|c| c.id == new && c.flags & HELD != 0));
     }
 
+    /// The give-back of a hand item the pack does not list: with the pack
+    /// open it is added at the pack's centre and placed, and the carried
+    /// list gains it at that cell; with no pack open it is appended at the
+    /// give-back place (0x28, 4), and a listed item is left as it is.
+    #[test]
+    fn a_displaced_item_the_pack_does_not_list_is_added_at_its_centre() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1280, 720);
+        let mut icons = PanelIcons::new(4);
+        let mut roll = 1u32;
+        let mut p = Possessions::default();
+        let old = Hand {
+            id: 0x77,
+            flags: HELD,
+        };
+        // No pack open: appended at the give-back place.
+        give_back_displaced(&mut screens, &mut icons, None, &mut p, old, &mut roll);
+        assert_eq!(p.carried.len(), 1);
+        let c = p.carried[0];
+        assert_eq!((c.id, c.flags, c.x, c.y), (0x77, 0, 0x28, 4));
+        // Already listed: nothing more.
+        give_back_displaced(&mut screens, &mut icons, None, &mut p, old, &mut roll);
+        assert_eq!(p.carried.len(), 1);
+        // The pack open and not listing it: the centre add places it and
+        // the record takes it at that cell.
+        let mut p = Possessions::default();
+        screens.open_inventory(true, true, 4);
+        assert!(
+            crate::panel_live::open_panels(&screens)
+                .iter()
+                .any(|(panel, _)| *panel == Panel::PlayerPack)
+        );
+        give_back_displaced(&mut screens, &mut icons, None, &mut p, old, &mut roll);
+        let entry = screens.pack.entries.iter().find(|e| e.id == 0x77).unwrap();
+        assert_eq!(entry.flags & HELD, 0);
+        assert_eq!(p.carried.len(), 1);
+        assert_eq!(p.carried[0].id, 0x77);
+        assert_eq!(p.carried[0].flags & HELD, 0);
+        // A second give-back finds the entry and adds nothing.
+        give_back_displaced(&mut screens, &mut icons, None, &mut p, old, &mut roll);
+        assert_eq!(
+            screens.pack.entries.iter().filter(|e| e.id == 0x77).count(),
+            1
+        );
+        assert_eq!(p.carried.len(), 1);
+    }
+
     /// The shown item's icon sits at the view's lower-left corner: the
     /// draw origin of (unit, height less unit) and the hover's test point
     /// agree, so the pointer is on it exactly where it draws.

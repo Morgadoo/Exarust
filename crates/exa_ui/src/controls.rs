@@ -2060,8 +2060,9 @@ pub struct ComboDraw {
     /// the bound colour). Only an edit state without the 0x10 bit takes it:
     /// the 0x10 test comes first.
     pub arrow_textured: bool,
-    /// The text goes through the text-edit draw (edit state `0x10000`)
-    /// rather than the plain draw-through.
+    /// The box is hovered (state bits `0xf0000` at `0x10000`): the arrow
+    /// takes the outlined draw and the whole text the skin's glowing text
+    /// at the label origin, rather than the plain draw-through.
     pub editing: bool,
     /// The text's colour slot: `0xe4` for the plain path.
     pub text_ink: u8,
@@ -2076,9 +2077,10 @@ pub const COMBO_ARROW_GLYPH: usize = 4;
 /// [`combo_arrow`]; with state bit 0x10 the plain glyph in slot `0xd4`,
 /// else in the edit state (`state & 0xf0000 == 0x10000`) the outlined
 /// glyph, else the plain glyph in slot `0xe0`. Then the main font, and the
-/// text: in the edit state through the text-edit draw at the label origin
-/// over [`combo_text_span`], otherwise in slot `0xe4` through the
-/// draw-through ([`combo_text_origin`] and the edit unit's run draw).
+/// text at the label origin over [`combo_text_span`]
+/// ([`combo_text_origin`]): in the hovered state the whole text through the
+/// skin's glowing text, otherwise in slot `0xe4` through the draw-through
+/// (the edit unit's run draw).
 pub fn combo_draw(rect: (i32, i32, i32, i32), unit: i32, style: u32, state: u32) -> ComboDraw {
     let arrow = combo_arrow(rect, unit, style);
     let editing = state & 0xf_0000 == 0x1_0000;

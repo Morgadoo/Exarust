@@ -316,6 +316,9 @@ impl Plugin for GlowPulsePlugin {
                 (
                     cancel_on_level.in_set(exa_physics::FramePhase::Session),
                     schedule_pulses.in_set(exa_physics::FramePhase::Session),
+                    // A placed object's lights follow its condition before
+                    // the pulses scale them.
+                    exa_world::rescale_condition_lights.in_set(exa_physics::FramePhase::World),
                     tick_pulses
                         .in_set(exa_physics::FramePhase::World)
                         .before(exa_character::apply_skin_looks),

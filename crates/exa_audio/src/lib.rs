@@ -55,9 +55,9 @@ pub use environment::{
 };
 pub use loops::{LoopSources, MAX_HELD};
 pub use music::{
-    LevelMusic, LevelMusicStart, LevelMusicVolume, MUSIC_VOLUME, MusicOverlay, MusicSetting,
-    StoryMusic, music_for_level, music_volume_for_level, story_music, story_music_changes,
-    story_music_changes_for_key,
+    LevelMusic, LevelMusicStart, LevelMusicVolume, MUSIC_VOLUME, MusicCrossfade, MusicOverlay,
+    MusicSetting, StoryMusic, music_for_level, music_volume_for_level, story_music,
+    story_music_changes, story_music_changes_for_key,
 };
 pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};
@@ -82,6 +82,7 @@ impl Plugin for AudioPlugin {
             .add_message::<sounds::PointSounded>()
             .add_message::<sounds::HandlingSounded>()
             .add_message::<music::MusicOverlay>()
+            .add_message::<music::MusicCrossfade>()
             .add_message::<exa_physics::mechanism::LockSounded>()
             .add_message::<exa_combat::impact::ImpactSounded>()
             .add_message::<exa_combat::pain::PainSounded>()
@@ -108,7 +109,7 @@ impl Plugin for AudioPlugin {
                     footsteps::foot_sounds,
                     music::start_music,
                     music::apply_music_setting,
-                    music::overlay_music,
+                    (music::overlay_music, music::crossfade_music).chain(),
                     ambience::set_level_ambience,
                     reverb::apply_level_reverb,
                     playback::advance_audio_environment,

@@ -27,9 +27,10 @@ placed and answering the pointer through the control messages
 (`record_form`), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
 its shape and, while the gamepad drives it, where it is drawn), the window's own pointer (`system_cursor`: the original's twelve-slot
-pointer table and show rule, and the menu cursor from `menucursor.rfi`
-resampled to the screen-height size, sharpened and set as the window's
-custom pointer), the health and focus bars with their fade and the stamina gauge
+pointer table as the shipped executable loads it (slots 0-4, 9 and 10
+empty, an empty slot hiding the pointer image) and show rule, and the menu
+cursor from `menucursor.rfi` resampled to the screen-height size, sharpened
+and set as the window's custom pointer), the health and focus bars with their fade and the stamina gauge
 (`hud`, framed with `guitex.rfi`; `HudShowUntil` holds the bars shown, as
 a click on the player's own body does for 5000 ms and a quick-bar cast or a
 healing step for 1000 ms; `HudBars.power_bar` holds them while the power
@@ -294,7 +295,10 @@ their controls rescale with the unit, the glyph sheet and the message
 box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
 app, and fills the large atlas from the common glyph sheet (`GlphCommon`,
-handles 1 to 19) once the game's data is loaded; `GuiTask::resize` sets a
+handles 1 to 19) and takes the executable's `GUISymbl` square as the first
+small glyph once the game's data is loaded; the game skin's atlas
+(`gui_draw::skin_atlas`) is `guiskin.rfi` resampled to 40 by 20 units at
+the GUI unit, again on each scale change; `GuiTask::resize` sets a
 window manager's drag distance from the window's height. The other
 widgets wait for forms that use them.
 

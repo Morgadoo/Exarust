@@ -477,8 +477,9 @@ const VK_UP: u32 = 0x26;
 const VK_DOWN: u32 = 0x28;
 
 /// The music code toggles the menu music: the alternative flag flips and
-/// the menu theme for it plays (the drum-and-bass theme at 0.2, the plain
-/// one at 0.1).
+/// the main track crossfades to the menu theme for it (the drum-and-bass
+/// theme at 0.2, the plain one at 0.1), as the original's toggle calls the
+/// audio environment's crossfade.
 pub(crate) fn toggle_music(flow: Option<&mut Flow>, steps: Option<&mut crate::flow::FlowSteps>) {
     let Some(flow) = flow else {
         return;
@@ -487,10 +488,9 @@ pub(crate) fn toggle_music(flow: Option<&mut Flow>, steps: Option<&mut crate::fl
     flow.alternative_music = toggled.drum_and_bass;
     info!("menu: the music code plays {}", toggled.theme);
     if let Some(steps) = steps {
-        steps.steps.push(crate::flow::Step::Music {
+        steps.steps.push(crate::flow::Step::MusicCrossfade {
             name: toggled.theme,
             volume: toggled.gain,
-            restart: false,
         });
     }
 }
@@ -1282,7 +1282,7 @@ mod tests {
         let steps = &app.world().resource::<crate::flow::FlowSteps>().steps;
         assert!(steps.iter().any(|step| matches!(
             step,
-            crate::flow::Step::Music { name, .. } if *name == exa_ui::menu::MENU_THEME_DNB.0
+            crate::flow::Step::MusicCrossfade { name, .. } if *name == exa_ui::menu::MENU_THEME_DNB.0
         )));
         // Escape on the start page goes back to the title through the root's
         // menu toggle, with the back handler's MenuClick at pitch 1.0; on

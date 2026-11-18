@@ -1361,13 +1361,14 @@ impl FormState {
         }
     }
 
-    /// Whether the pad's pick can reach a record: one that takes the
-    /// pointer, of a focusable class (a button, check box, image button or
-    /// trackbar).
+    /// Whether the pad's pick can reach a record: the form is the focused
+    /// one, so the record's own test decides
+    /// ([`crate::gui_controls::pad_reaches`]: shown, enabled, with the pad
+    /// style bit, of a focusable class).
     pub fn pad_reachable(&self, part: Part, i: usize) -> bool {
         self.controls(part)
             .get(i)
-            .is_some_and(|c| takes_hits(c) && matches!(c.class, 1..=4))
+            .is_some_and(crate::gui_controls::pad_reaches)
     }
 
     /// The record lists the pad's pick walks: the form's own and the

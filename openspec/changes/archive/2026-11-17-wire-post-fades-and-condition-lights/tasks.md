@@ -1,0 +1,5 @@
+- [x] The final pass takes the original's Blur vector (test: the_frame_fades_every_post_camera_from_black)
+- [x] Run-out fades stop (test: a_run_out_fade_stops_and_the_desaturation_clears_its_kind)
+- [x] The story start and the revive fade the screen in (test: the_story_start_and_the_revive_fade_the_screen_in)
+- [x] Condition changes re-scale a placed object's lights (test: a_condition_change_rescales_the_lights_and_glows)
+- [x] Diffuse-only debug view (test: the GI debug view parse test)

@@ -668,3 +668,9 @@ A system that draws one shared generator once per entity (the light flicker, the
 #### Scenario: Two lights in two tables
 - **WHEN** two flickering lights sit in different tables, the later-spawned one in the table the query walks first
 - **THEN** the earlier-spawned light still takes the generator's first draw
+### Requirement: Scene grid reset at the teardown
+The level teardown SHALL put the scene grid back to its default and empty the static collider grid, standing in for the grid rebuild the original's scene clear asks of the simulation.
+
+#### Scenario: A teardown after an all-pairs scene
+- **WHEN** a level whose scene had no grid is torn down
+- **THEN** the scene grid is the default again
