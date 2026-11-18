@@ -278,11 +278,22 @@ An apparel layer's wear weight SHALL be the job's table entry for the layer's st
 - **THEN** it paints Velvet with wear weight 1.0, not Velvet's 0.8
 
 ### Requirement: Painter magnifies linearly
-The CPU painter SHALL sample a region's own maps (shade, masks, item normal) bilinearly around each painted texel's centre, wrapping, when the map is no larger than the region along both axes; a map exactly the region's size SHALL read its texels as they are, and a larger one the nearest texel.
+The CPU painter SHALL sample a paint job's own maps (shade, masks, item normal, and the factory shade scratch's inputs) as the word `0x133` loads them: the bilinear mix of the four level-0 texels around each painted texel's centre, whether the map is magnified or minified, with clamped edges; a map exactly the region's size SHALL read its texels as they are.
 
 #### Scenario: A half-size mask
 - **WHEN** a two-texel mask of 0 and 255 is painted over four texels
-- **THEN** the texels read 0.25, 0.25, 0.75 and 0.75
+- **THEN** the texels read 0, 0.25, 0.75 and 1
+
+#### Scenario: A double-size mask
+- **WHEN** a four-texel mask of 0, 255, 0, 255 is painted over two texels
+- **THEN** both texels read 0.5
+
+### Requirement: Painter filters library textures linearly
+The CPU painter SHALL sample every library texture and emblem picture as the word `0x70133` loads them: the bilinear mix of the four level-0 texels around the sample point of the fragment's centre, repeating.
+
+#### Scenario: A two-texel damage map
+- **WHEN** a damage-scale texture two texels wide is sampled at painted column 511
+- **THEN** it reads close to the mean of its two texels
 
 ### Requirement: Garment paint runs
 A dressed character's merge SHALL group every `&` part of one worn garment into one run drawn with that garment's painted material, and SHALL keep two garments' `&` parts in separate runs even when their material names match; every other part SHALL be grouped by its material name.

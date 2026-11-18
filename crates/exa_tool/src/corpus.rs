@@ -481,6 +481,130 @@ pub fn factories(game: &GameData) -> Result<()> {
     Ok(())
 }
 
+// `exa-tool corpus paint-maps` ---------------------------------------------
+
+/// `exa-tool corpus paint-maps`: the images the item painter samples. Every
+/// procedural material's library textures (loaded with the word `0x70133`)
+/// and every factory component's `d`, `n` and `m1`..`m4` maps (loaded with
+/// `0x133` and the image's own wrap bits), tallied by detail class, wrap
+/// and stored chain; a detail class of 3 makes texture detail 3 upload
+/// level 1, which the painter would then sample instead of level 0. The
+/// apparel sets' maps (`<stem>d`, `n`, `m1`..) load with `0x133` too.
+pub fn paint_maps(game: &GameData) -> Result<()> {
+    use exa_formats::rfi::Rfi;
+    use std::collections::BTreeSet;
+    #[derive(Default)]
+    struct Tally {
+        images: usize,
+        missing: usize,
+        by_class: BTreeMap<u32, usize>,
+        by_wrap: BTreeMap<(bool, bool), usize>,
+        chained: usize,
+        examples: BTreeMap<String, Vec<String>>,
+    }
+    let look = |tally: &mut Tally, name: &str| {
+        let Some(b) = game.texture(name) else {
+            tally.missing += 1;
+            return;
+        };
+        let Ok(rfi) = Rfi::parse(b) else {
+            tally.missing += 1;
+            return;
+        };
+        let h = &rfi.header;
+        tally.images += 1;
+        *tally.by_class.entry(h.detail_class()).or_default() += 1;
+        let [s, t, _] = h.repeats();
+        *tally.by_wrap.entry((s, t)).or_default() += 1;
+        if h.has_mip_chain() {
+            tally.chained += 1;
+        }
+        let key = format!(
+            "class {} wrap {}{} level@3 {}",
+            h.detail_class(),
+            if s { "S" } else { "-" },
+            if t { "T" } else { "-" },
+            h.first_mip_level(3, 8192)
+        );
+        let e = tally.examples.entry(key).or_default();
+        if e.len() < 6 {
+            e.push(format!("{name} {}x{}", h.width, h.height));
+        }
+    };
+    let report = |what: &str, t: &Tally| {
+        println!(
+            "{what}: {} images ({} missing), {} with a stored chain",
+            t.images, t.missing, t.chained
+        );
+        println!("  detail classes: {:?}", t.by_class);
+        println!("  wrap (S, T): {:?}", t.by_wrap);
+        for (k, v) in &t.examples {
+            println!("  {k}: {}", v.join(", "));
+        }
+    };
+    let mut library = Tally::default();
+    let mut seen = BTreeSet::new();
+    for id in 1..=25u8 {
+        let m = exa_formats::procedural::material(id);
+        for stem in m.colour.iter().chain(&m.specular).chain(&m.normal) {
+            if seen.insert(stem.to_ascii_lowercase()) {
+                look(&mut library, stem);
+            }
+        }
+    }
+    report("library textures", &library);
+    let mut maps = Tally::default();
+    let mut stems = BTreeSet::new();
+    if let Some(pack) = game.pack(exa_rpk::PackKind::Factories) {
+        for e in pack.entries() {
+            if let Ok(f) = exa_formats::factory::Factory::parse(pack.bytes(e)) {
+                for p in &f.parts {
+                    for v in &p.variants {
+                        stems.insert(v.model.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+    }
+    for stem in &stems {
+        for suffix in ["d", "n", "m1", "m2", "m3", "m4"] {
+            let name = format!("{stem}{suffix}");
+            if game.texture(&name).is_some() {
+                look(&mut maps, &name);
+            }
+        }
+    }
+    report("factory component maps", &maps);
+    // Apparel sets: every image named `<stem>m1` outside the factory
+    // components, with its stem's shade, normal and masks.
+    let mut apparel = Tally::default();
+    let mut sets = BTreeSet::new();
+    for (kind, pack) in game.packs() {
+        if kind == exa_rpk::PackKind::Sound {
+            continue;
+        }
+        for e in pack.entries() {
+            let name = e.name.to_ascii_lowercase();
+            let name = name.trim_end_matches(".rfi");
+            if let Some(stem) = name.strip_suffix("m1")
+                && !stems.contains(stem)
+            {
+                sets.insert(stem.to_string());
+            }
+        }
+    }
+    for stem in &sets {
+        for suffix in ["d", "n", "m1", "m2", "m3", "m4", "m5", "m6", "m7"] {
+            let name = format!("{stem}{suffix}");
+            if game.texture(&name).is_some() {
+                look(&mut apparel, &name);
+            }
+        }
+    }
+    report("apparel set maps", &apparel);
+    Ok(())
+}
+
 // `exa-tool corpus images` --------------------------------------------------
 
 /// Share of an RGB8 normal map's texels whose blue (z) must be its largest

@@ -126,8 +126,8 @@ pub fn shade_scratch(
             if !region.job.tiling.covers_column(x, w) {
                 continue;
             }
-            let s = crate::paint::sample_at(region.job.shade, x, y, w, h);
-            let m = crate::paint::sample_at(first.mask, x, y, w, h);
+            let s = crate::paint::sample_region_map(region.job.shade, x, y, w, h, 1.0)[0];
+            let m = crate::paint::sample_region_map(first.mask, x, y, w, h, 1.0)[0];
             scratch[a] = shade_scratch_texel(scratch[a], s, m, bmsk);
         }
     }
@@ -380,19 +380,11 @@ mod tests {
     #[test]
     fn overlapping_regions_share_one_scratch() {
         use crate::paint::{Condition, PaintLayer, Texels, Tiling};
-        let flat = |w: usize, h: usize, v: u8| Texels {
-            width: w,
-            height: h,
-            rgba: [v, v, v, 255].repeat(w * h),
-        };
+        let flat = |w: usize, h: usize, v: u8| Texels::new(w, h, [v, v, v, 255].repeat(w * h));
         let half = flat(4, 1, 128);
         let full = flat(4, 1, 255);
         let light = flat(2, 1, 255);
-        let mask = Texels {
-            width: 2,
-            height: 1,
-            rgba: vec![255, 255, 255, 255, 0, 0, 0, 255],
-        };
+        let mask = Texels::new(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 255]);
         let layer = |mask| PaintLayer {
             mask,
             material: 1,

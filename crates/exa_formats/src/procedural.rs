@@ -65,6 +65,21 @@ pub struct Material {
     pub wear: f32,
 }
 
+impl Material {
+    /// The texture word the material's setup loads every one of its library
+    /// textures with: `0x70100` for the wood and painted planks setups,
+    /// `0x70103` for copper alloy, copper satin, gemstone and resin, and
+    /// `0x70133` (linear filtering) for every other one. All repeat on every
+    /// axis and keep no mip chain.
+    pub fn library_word(&self) -> u32 {
+        match self.family {
+            Family::Wood | Family::PlanksPainted => 0x70100,
+            Family::CopperAlloy | Family::CopperSatin | Family::Gemstone | Family::Resin => 0x70103,
+            _ => 0x70133,
+        }
+    }
+}
+
 /// The 25 materials by id, index 0 unused (ids 1..25).
 pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
     let cloth = |colour, spec, normal| Material {

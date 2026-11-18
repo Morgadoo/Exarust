@@ -560,12 +560,12 @@ planks). The colour map follows the original's sRGB chain; the surface map is
 its packed intensity/gloss/metal target; the normal map is the item's normal
 plus the material's and damage normals, and the specular pass measures its
 creases on that painted normal map. Library textures tile by the original's
-`MatTile`/`DmgTile` rules (`paint::Tiling`) and are read at the nearest
-texel. A region's own maps (shade, masks, item normal) no larger than the
-region are magnified bilinearly around each painted texel's centre,
-wrapping, as the original's linear samplers do; a larger one is read at
-the nearest texel of its full image (the original minifies through its mip
-chain, which the painter does not build). A factory region
+`MatTile`/`DmgTile` rules (`paint::Tiling`). Every sample is taken at the
+painted texel's centre, as the original's samplers filter: library textures
+and emblem pictures (loaded with `0x70133`) are the bilinear mix of four
+level-0 texels, repeating; a job's own maps (shade, masks, item normal,
+loaded with `0x133`) the same mix with clamped edges, magnified or minified
+(`paint::sample_region_map`; no mip chain). A factory region
 (`model::FactoryPaint`, drawn by `paint::RegionJob` into the weapon's
 atlas) paints each mask with its area's material (0 as
 SteelGen), lifted colour bytes and finish level, the factory's condition

@@ -29,7 +29,36 @@ pub struct Texels {
     pub width: usize,
     pub height: usize,
     pub rgba: Vec<u8>,
+    /// How the painter filters it as a library texture: the word the
+    /// first material to load it gave it ([`Texels::claim_filter`]).
+    filter: std::sync::atomic::AtomicU8,
 }
+
+/// A library texture's filter, from the word its first loader asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryFilter {
+    /// Linear magnification and minification (`0x10 | 0x20`, the word
+    /// `0x70133`).
+    Linear,
+    /// Nearest (`0x70100`, `0x70103`).
+    Nearest,
+}
+
+impl LibraryFilter {
+    /// The filter a texture word asks for: linear when it has both linear
+    /// bits.
+    pub fn of_word(word: u32) -> Self {
+        if word & 0x30 == 0x30 {
+            Self::Linear
+        } else {
+            Self::Nearest
+        }
+    }
+}
+
+const FILTER_UNSET: u8 = 0;
+const FILTER_LINEAR: u8 = 1;
+const FILTER_NEAREST: u8 = 2;
 
 /// A 0…1 value as an 8-bit texel: rounded half to even and clamped, as the
 /// render target converts a fragment.
@@ -38,15 +67,51 @@ pub fn byte(value: f32) -> u8 {
 }
 
 impl Texels {
-    /// Colour at texel (`x`, `y`), wrapping.
-    fn at(&self, x: i64, y: i64) -> Vec3 {
-        let a = self.at4(x, y);
-        Vec3::new(a[0], a[1], a[2])
+    /// A texture of `width` × `height` RGBA8 texels, its library filter not
+    /// yet claimed.
+    pub fn new(width: usize, height: usize, rgba: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            rgba,
+            filter: std::sync::atomic::AtomicU8::new(FILTER_UNSET),
+        }
     }
 
+    /// Claims the texture's library filter for a material's load word: the
+    /// original's texture manager keeps one texture per name, and a later
+    /// material loading the same name gets that texture with the word of
+    /// the first load. Returns the filter the texture keeps.
+    pub fn claim_filter(&self, filter: LibraryFilter) -> LibraryFilter {
+        use std::sync::atomic::Ordering;
+        let want = match filter {
+            LibraryFilter::Linear => FILTER_LINEAR,
+            LibraryFilter::Nearest => FILTER_NEAREST,
+        };
+        match self
+            .filter
+            .compare_exchange(FILTER_UNSET, want, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => filter,
+            Err(FILTER_NEAREST) => LibraryFilter::Nearest,
+            Err(_) => LibraryFilter::Linear,
+        }
+    }
+
+    /// The library filter the texture keeps (linear until a material
+    /// claims it).
+    pub fn library_filter(&self) -> LibraryFilter {
+        if self.filter.load(std::sync::atomic::Ordering::Relaxed) == FILTER_NEAREST {
+            LibraryFilter::Nearest
+        } else {
+            LibraryFilter::Linear
+        }
+    }
+
+    /// Colour and alpha at texel (`x`, `y`), wrapping.
     pub(crate) fn at4(&self, x: i64, y: i64) -> [f32; 4] {
-        let x = x.rem_euclid(self.width as i64) as usize;
-        let y = y.rem_euclid(self.height as i64) as usize;
+        let x = wrap(x, self.width);
+        let y = wrap(y, self.height);
         let p = &self.rgba[(y * self.width + x) * 4..][..4];
         std::array::from_fn(|k| p[k] as f32 / 255.0)
     }
@@ -57,20 +122,61 @@ impl Texels {
     fn bilinear(&self, s: f32, t: f32) -> [f32; 4] {
         let (i, j) = (s.floor(), t.floor());
         let (a, b) = (s - i, t - j);
-        let (w, h) = (self.width as i64, self.height as i64);
-        let i0 = (i as i64).rem_euclid(w) as usize;
-        let j0 = (j as i64).rem_euclid(h) as usize;
+        let i0 = wrap(i as i64, self.width);
+        let j0 = wrap(j as i64, self.height);
         let i1 = if i0 + 1 == self.width { 0 } else { i0 + 1 };
         let j1 = if j0 + 1 == self.height { 0 } else { j0 + 1 };
-        let texel = |x: usize, y: usize| &self.rgba[(y * self.width + x) * 4..][..4];
-        let (p00, p10) = (texel(i0, j0), texel(i1, j0));
-        let (p01, p11) = (texel(i0, j1), texel(i1, j1));
+        self.mix4(i0, i1, j0, j1, a, b)
+    }
+
+    /// [`Texels::bilinear`] with clamped edges (`GL_CLAMP_TO_EDGE`): a tap
+    /// past an edge reads the edge texel.
+    fn bilinear_clamped(&self, s: f32, t: f32) -> [f32; 4] {
+        let (i, j) = (s.floor(), t.floor());
+        let (a, b) = (s - i, t - j);
+        let (w, h) = (self.width as i64, self.height as i64);
+        let (i, j) = (i as i64, j as i64);
+        let i0 = i.clamp(0, w - 1) as usize;
+        let i1 = (i + 1).clamp(0, w - 1) as usize;
+        let j0 = j.clamp(0, h - 1) as usize;
+        let j1 = (j + 1).clamp(0, h - 1) as usize;
+        self.mix4(i0, i1, j0, j1, a, b)
+    }
+
+    /// The four texels at columns `i0`, `i1` and rows `j0`, `j1`, mixed by
+    /// the fractions `a` across and `b` down, as 0…1 values. The fractions
+    /// are cut to 1/256 steps, the sub-texel precision GPUs filter with
+    /// (8 bits), and the mix is exact integer arithmetic.
+    #[inline]
+    fn mix4(&self, i0: usize, i1: usize, j0: usize, j1: usize, a: f32, b: f32) -> [f32; 4] {
+        let (row0, row1) = (j0 * self.width, j1 * self.width);
+        let p = |x: usize| -> u32 {
+            u32::from_le_bytes(self.rgba[x * 4..x * 4 + 4].try_into().expect("four bytes"))
+        };
+        let (p00, p10) = (p(row0 + i0), p(row0 + i1));
+        let (p01, p11) = (p(row1 + i0), p(row1 + i1));
+        let wa = ((a * 256.0) as u32).min(256);
+        let wb = ((b * 256.0) as u32).min(256);
+        let w00 = (256 - wa) * (256 - wb);
+        let w10 = wa * (256 - wb);
+        let w01 = (256 - wa) * wb;
+        let w11 = wa * wb;
         std::array::from_fn(|k| {
-            let c = |p: &[u8]| p[k] as f32 / 255.0;
-            let top = c(p00) + (c(p10) - c(p00)) * a;
-            let bottom = c(p01) + (c(p11) - c(p01)) * a;
-            top + (bottom - top) * b
+            let c = |p: u32| (p >> (8 * k)) & 0xFF;
+            let v = c(p00) * w00 + c(p10) * w10 + c(p01) * w01 + c(p11) * w11;
+            v as f32 / (255.0 * 65536.0)
         })
+    }
+}
+
+/// `v` wrapped into `0..n`: a mask for the power-of-two sides every
+/// library texture has, the Euclidean remainder otherwise.
+#[inline]
+fn wrap(v: i64, n: usize) -> usize {
+    if n.is_power_of_two() {
+        (v & (n as i64 - 1)) as usize
+    } else {
+        v.rem_euclid(n as i64) as usize
     }
 }
 
@@ -675,8 +781,11 @@ impl Samples<'_> {
             })
     }
 
-    fn texel_of(&self, t: &Texels, uv: Uv) -> (i64, i64) {
-        let (x, y) = (self.x as f32, self.y as f32);
+    /// Where the fragment at this painted texel's centre samples library
+    /// texture `t`, in texel coordinates with texel centres at whole numbers
+    /// (`u·width − ½`, as GL's linear filter places them).
+    fn texel_of(&self, t: &Texels, uv: Uv) -> (f32, f32) {
+        let (x, y) = (self.x as f32 + 0.5, self.y as f32 + 0.5);
         let (tw, th) = (t.width as f32, t.height as f32);
         let d = self.tiling.density;
         let (sx, sy) = match uv {
@@ -695,10 +804,15 @@ impl Samples<'_> {
             }
             Uv::Region => (x * tw / self.w as f32, y * th / self.h as f32),
         };
-        (sx.floor() as i64, sy.floor() as i64)
+        (sx - 0.5, sy - 0.5)
     }
 
-    fn tex(&self, list: List, i: usize, family: Finish) -> Option<Vec3> {
+    /// A library texture at this texel. Every library texture loads with
+    /// the word `0x70133`: linear magnification and minification, no mip
+    /// chain, repeating on every axis. So the fragment reads the bilinear
+    /// mix of the four level-0 texels around its sample point, whether the
+    /// texture is magnified or minified there.
+    fn library4(&self, list: List, i: usize, family: Finish) -> Option<[f32; 4]> {
         let tex = match list {
             List::Colour => self.layer.library.get(i).copied().flatten(),
             List::Specular => self.layer.specular.get(i).copied().flatten(),
@@ -706,7 +820,17 @@ impl Samples<'_> {
         }?;
         let uv = sample_uv(family, list, i)?;
         let (sx, sy) = self.texel_of(tex, uv);
-        Some(tex.at(sx, sy))
+        Some(match tex.library_filter() {
+            LibraryFilter::Linear => tex.bilinear(sx, sy),
+            // The nearest texel: the one whose square holds the point
+            // (texel centres at whole numbers).
+            LibraryFilter::Nearest => tex.at4((sx + 0.5).floor() as i64, (sy + 0.5).floor() as i64),
+        })
+    }
+
+    fn tex(&self, list: List, i: usize, family: Finish) -> Option<Vec3> {
+        self.library4(list, i, family)
+            .map(|a| Vec3::new(a[0], a[1], a[2]))
     }
 
     fn colour(&self, i: usize, f: Finish) -> Vec3 {
@@ -715,14 +839,7 @@ impl Samples<'_> {
 
     /// Colour-list entry `i` with its alpha channel.
     fn colour4(&self, i: usize, f: Finish) -> [f32; 4] {
-        let Some(tex) = self.layer.library.get(i).copied().flatten() else {
-            return [0.5; 4];
-        };
-        let Some(uv) = sample_uv(f, List::Colour, i) else {
-            return [0.5; 4];
-        };
-        let (sx, sy) = self.texel_of(tex, uv);
-        tex.at4(sx, sy)
+        self.library4(List::Colour, i, f).unwrap_or([0.5; 4])
     }
 
     fn spec(&self, i: usize, f: Finish) -> Vec3 {
@@ -730,14 +847,7 @@ impl Samples<'_> {
     }
 
     fn spec4(&self, i: usize, f: Finish) -> [f32; 4] {
-        let Some(tex) = self.layer.specular.get(i).copied().flatten() else {
-            return [0.5; 4];
-        };
-        let Some(uv) = sample_uv(f, List::Specular, i) else {
-            return [0.5; 4];
-        };
-        let (sx, sy) = self.texel_of(tex, uv);
-        tex.at4(sx, sy)
+        self.library4(List::Specular, i, f).unwrap_or([0.5; 4])
     }
 
     fn normal(&self, i: usize, f: Finish) -> Vec3 {
@@ -2152,12 +2262,14 @@ pub struct Pattern<'a> {
 
 impl Pattern<'_> {
     /// The pattern's red channel at painted texel (`x`, `y`) of a `w`×`h`
-    /// region: `vrTex · PtrnPos.xy + PtrnPos.zw`, wrapping.
+    /// region: `vrTex · PtrnPos.xy + PtrnPos.zw` at the fragment's centre.
+    /// The emblem pictures load with `0x70133`, as the library textures:
+    /// linear at level 0, repeating.
     fn at(&self, x: usize, y: usize, w: usize, h: usize) -> f32 {
         let [sx, sy, ox, oy] = self.position;
-        let u = (x as f32 / w as f32 * sx + ox) * self.texels.width as f32;
-        let v = (y as f32 / h as f32 * sy + oy) * self.texels.height as f32;
-        self.texels.at(u.floor() as i64, v.floor() as i64).x
+        let u = ((x as f32 + 0.5) / w as f32 * sx + ox) * self.texels.width as f32;
+        let v = ((y as f32 + 0.5) / h as f32 * sy + oy) * self.texels.height as f32;
+        self.texels.bilinear(u - 0.5, v - 0.5)[0]
     }
 }
 
@@ -2403,6 +2515,13 @@ impl ShadeTile<'_> {
 }
 
 impl RegionJob<'_> {
+    /// One of the region's own maps (its shade, a mask, the item normal) at
+    /// painted texel (`x`, `y`) ([`sample_region_map`]).
+    fn own_map(&self, t: &Texels, x: usize, y: usize, scale: f32) -> [f32; 4] {
+        let (w, h) = self.size;
+        sample_region_map(t, x, y, w, h, scale)
+    }
+
     /// Every layer's coverage of every texel: its mask (times the emblem
     /// picture for a painted pattern), zero past the crop.
     pub fn covers(&self) -> Vec<Vec<f32>> {
@@ -2419,7 +2538,7 @@ impl RegionJob<'_> {
                         if !tiling.drawn(x, w) {
                             return 0.0;
                         }
-                        let mask = sample_stretched(layer.mask, x, y, w, h, s).x;
+                        let mask = self.own_map(layer.mask, x, y, s)[0];
                         pattern.map_or(mask, |p| mask * p.at(x, y, w, h))
                     })
                     .collect()
@@ -2432,7 +2551,7 @@ impl RegionJob<'_> {
         let scale = self.tiling.uv_scale_for(finish(layer.material));
         let (shade, tile_sign) = match &self.shade_tile {
             Some(tile) => (tile.at(x, y, w, h, scale), tile.sign()),
-            None => (sample_stretched(self.shade, x, y, w, h, scale).x, Vec2::ONE),
+            None => (self.own_map(self.shade, x, y, scale)[0], Vec2::ONE),
         };
         Texel {
             shade,
@@ -2473,7 +2592,7 @@ impl RegionJob<'_> {
                         h,
                     };
                     let t = self.texel(layer, x, y);
-                    let mask = sample_stretched(layer.mask, x, y, w, h, 1.0).x;
+                    let mask = self.own_map(layer.mask, x, y, 1.0)[0];
                     let a = gem_a(&t, &samples, family);
                     // `a · alpha + (1 − alpha)`, clamped by the unorm target
                     // before the blend multiplies.
@@ -2543,7 +2662,8 @@ impl RegionJob<'_> {
                     }
                     if let Some(item) = self.item_normal {
                         let s = self.tiling.uv_scale_for(family);
-                        let item = unit_xy(sample_stretched(item, x, y, w, h, s));
+                        let [nx, ny, nz, _] = self.own_map(item, x, y, s);
+                        let item = unit_xy(Vec3::new(nx, ny, nz));
                         let n = normal_of(family, layer.material, &t, &samples, item);
                         let o = &mut normal_out[at];
                         *o += (n.clamp(Vec2::NEG_ONE, Vec2::ONE) - *o) * cover;
@@ -2741,57 +2861,31 @@ fn normal_of(family: Finish, material: u8, t: &Texel, s: &Samples, item: Vec2) -
     }
 }
 
-/// The red channel of `t` at painted texel (`x`, `y`) of a `w` × `h`
-/// region, as every pass samples a region's own maps (shade, masks).
-pub(crate) fn sample_at(t: &Texels, x: usize, y: usize, w: usize, h: usize) -> f32 {
-    sample_scaled(t, x, y, w, h).x
-}
-
-/// A texture sampled at the paint's resolution (masks may be smaller).
-fn sample_scaled(t: &Texels, x: usize, y: usize, w: usize, h: usize) -> Vec3 {
-    sample_stretched(t, x, y, w, h, 1.0)
-}
-
-/// [`sample_scaled`] with the region's vertical coordinate times `scale`
-/// (the blade programs' `UVScale`), wrapping past the texture's edge.
-///
-/// The original's passes sample a region's own maps (shade, masks, item
-/// normal) through samplers that filter linearly, whose filter GL picks by
-/// how many texels one painted texel spans along the wider axis: at most
-/// one (a map as large as the region or smaller, which the region
-/// magnifies) is the magnification filter, bilinear over the four texels
-/// around the fragment's centre, wrapping; a map exactly the region's size
-/// lands every centre on a texel centre and reads that texel. A larger map
-/// is minified through its mip chain [Exarust gap: the painter has no mip
-/// chain and reads the nearest texel of the full image there].
-fn sample_stretched(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: f32) -> Vec3 {
-    let a = sample_stretched4(t, x, y, w, h, scale);
-    Vec3::new(a[0], a[1], a[2])
-}
-
-/// [`sample_stretched`] with the alpha channel.
-fn sample_stretched4(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: f32) -> [f32; 4] {
-    if scale == 1.0 {
-        if t.width == w && t.height == h {
-            return t.at4(x as i64, y as i64);
-        }
-        if t.width > w || t.height > h {
-            // Minified: the nearest texel of the full image.
-            return t.at4((x * t.width / w) as i64, (y * t.height / h) as i64);
-        }
+/// A paint job's own map (an apparel block's or a factory region's shade,
+/// normal and masks, and the shade and first mask the factory's shade
+/// scratch is drawn from) at painted texel (`x`, `y`) of a `w` × `h` region,
+/// the vertical coordinate times `scale`. Both jobs load these maps with the
+/// word `0x133`: linear magnification and minification at level 0 (no mip
+/// chain, so a larger map is filtered over its four nearest texels, never
+/// averaged down), and no wrap bits, so the edges clamp and a blade's
+/// `UVScale` past the map's end reads its last row. A map the region's size
+/// lands every centre on a texel centre and reads that texel. [Exarust gap:
+/// the two shipped apparel maps whose own header asks to repeat, which the
+/// upload may or-in, are clamped too.]
+pub(crate) fn sample_region_map(
+    t: &Texels,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    scale: f32,
+) -> [f32; 4] {
+    if scale == 1.0 && t.width == w && t.height == h {
+        return t.at4(x as i64, y as i64);
     }
-    let rows = t.height as f32 * scale;
-    let (step_u, step_v) = (t.width as f32 / w as f32, rows / h as f32);
-    if step_u.max(step_v) > 1.0 {
-        // Minified: the nearest texel of the full image.
-        let v = if scale == 1.0 {
-            (y * t.height / h) as i64
-        } else {
-            (y as f32 * scale * t.height as f32 / h as f32).floor() as i64
-        };
-        return t.at4((x * t.width / w) as i64, v);
-    }
-    t.bilinear(
+    let step_u = t.width as f32 / w as f32;
+    let step_v = t.height as f32 * scale / h as f32;
+    t.bilinear_clamped(
         (x as f32 + 0.5) * step_u - 0.5,
         (y as f32 + 0.5) * step_v - 0.5,
     )
@@ -2802,11 +2896,7 @@ mod tests {
     use super::*;
 
     fn flat(w: usize, v: u8) -> Texels {
-        Texels {
-            width: w,
-            height: w,
-            rgba: [v, v, v, 255].repeat(w * w),
-        }
+        Texels::new(w, w, [v, v, v, 255].repeat(w * w))
     }
 
     /// A job's four offsets: the engine's sequence quantised to 1/512 and
@@ -2897,13 +2987,7 @@ mod tests {
     /// 100, the rust map (60, 140, 0, 200), scuffs 90, the last map's
     /// green 180.
     fn gem_library() -> Vec<Option<Texels>> {
-        let px = |rgba: [u8; 4]| {
-            Some(Texels {
-                width: 1,
-                height: 1,
-                rgba: rgba.to_vec(),
-            })
-        };
+        let px = |rgba: [u8; 4]| Some(Texels::new(1, 1, rgba.to_vec()));
         vec![
             px([128, 128, 128, 255]),
             px([100, 100, 100, 255]),
@@ -3004,11 +3088,7 @@ mod tests {
     fn a_mirrored_steel_region_turns_its_item_normal() {
         let shade = flat(1, 128);
         let mask = flat(1, 255);
-        let item = Texels {
-            width: 1,
-            height: 1,
-            rgba: vec![255, 128, 255, 255],
-        };
+        let item = Texels::new(1, 1, vec![255, 128, 255, 255]);
         let layers = [PaintLayer {
             mask: &mask,
             material: 12,
@@ -3189,11 +3269,7 @@ mod tests {
                 [v, v, v, 255]
             })
             .collect();
-        Texels {
-            width: w,
-            height: w,
-            rgba,
-        }
+        Texels::new(w, w, rgba)
     }
 
     fn bare_layer(mask: &Texels, material: u8, tint: Vec3) -> PaintLayer<'_> {
@@ -3284,10 +3360,11 @@ mod tests {
             texels: &picture,
             position: [0.5, 1.0, 0.25, 0.0],
         };
-        // u = 2/4·0.5 + 0.25 = 0.5 → texel 2.
-        assert_eq!(p.at(2, 0, 4, 4), 120.0 / 255.0);
-        // u = 0.25 → texel 1.
-        assert_eq!(p.at(0, 0, 4, 4), 60.0 / 255.0);
+        // u = 2.5/4·0.5 + 0.25 = 0.5625: texel coordinate 1.75, between
+        // texels 1 and 2.
+        assert!((p.at(2, 0, 4, 4) - (60.0 + 0.75 * 60.0) / 255.0).abs() < 1e-6);
+        // u = 0.3125: texel coordinate 0.75.
+        assert!((p.at(0, 0, 4, 4) - 45.0 / 255.0).abs() < 1e-6);
     }
 
     #[test]
@@ -3314,47 +3391,160 @@ mod tests {
     }
 
     #[test]
-    fn the_stretched_sample_wraps_and_keeps_scale_one_exact() {
+    fn the_region_map_clamps_past_its_end() {
         let t = grey(4, |_, y| (y * 50) as u8);
-        for y in 0..8 {
+        // A map the region's size reads its texels.
+        for y in 0..4 {
             assert_eq!(
-                sample_stretched(&t, 0, y, 8, 8, 1.0),
-                sample_scaled(&t, 0, y, 8, 8)
+                sample_region_map(&t, 0, y, 4, 4, 1.0)[0],
+                (y * 50) as f32 / 255.0
             );
         }
-        // Row 3 of 4 at scale 2: v = 6 wraps to texel row 2.
-        assert_eq!(sample_stretched(&t, 0, 3, 4, 4, 2.0).x, 100.0 / 255.0);
+        // Row 3 of 4 at scale 2: v = 3.5 · 2 − 0.5 = 6.5 texels lies past
+        // the end and reads the clamped last row.
+        assert_eq!(sample_region_map(&t, 0, 3, 4, 4, 2.0)[0], 150.0 / 255.0);
     }
 
     /// A mask smaller than its region is magnified bilinearly around each
-    /// painted texel's centre, wrapping; one as large as the region reads
-    /// its texels as they are.
+    /// painted texel's centre, clamped at the edges; one as large as the
+    /// region reads its texels as they are; a larger one is filtered over
+    /// its four nearest level-0 texels.
     #[test]
     fn a_magnified_map_is_filtered_linearly() {
         // Two columns: 0 and 255.
-        let t = Texels {
-            width: 2,
-            height: 1,
-            rgba: [0, 0, 0, 255, 255, 255, 255, 255].to_vec(),
-        };
+        let t = Texels::new(2, 1, [0, 0, 0, 255, 255, 255, 255, 255].to_vec());
         // A region of 4: centres at texel coordinates −0.25, 0.25, 0.75,
-        // 1.25 (wrapping around to column 0 past the right edge).
-        let row: Vec<f32> = (0..4).map(|x| sample_at(&t, x, 0, 4, 1)).collect();
-        assert_eq!(row, [0.25, 0.25, 0.75, 0.75]);
+        // 1.25 (the outer two clamped to the edge columns).
+        let row: Vec<f32> = (0..4)
+            .map(|x| sample_region_map(&t, x, 0, 4, 1, 1.0)[0])
+            .collect();
+        assert_eq!(row, [0.0, 0.25, 0.75, 1.0]);
         // A region of 2 reads the texels.
-        assert_eq!(sample_at(&t, 1, 0, 2, 1), 1.0);
-        // A larger map keeps the nearest texel.
-        assert_eq!(sample_at(&t, 0, 0, 1, 1), 0.0);
+        assert_eq!(sample_region_map(&t, 1, 0, 2, 1, 1.0)[0], 1.0);
+        // A region of 1: its centre at texel coordinate 0.5, the mean.
+        assert_eq!(sample_region_map(&t, 0, 0, 1, 1, 1.0)[0], 0.5);
+    }
+
+    /// A job's own maps load with the word `0x133` and no wrap bits:
+    /// linear at level 0 whether magnified or minified, clamped at the
+    /// edges.
+    #[test]
+    fn a_region_map_is_filtered_linearly_and_clamped() {
+        // Four columns 0, 255, 0, 255 minified onto 2: the centres fall at
+        // texel coordinates 0.5 and 2.5, each the mean of two texels (the
+        // nearest texel of level 0 read 0 there).
+        let t = Texels::new(4, 1, [0, 0, 0, 255, 255, 255, 255, 255].repeat(2));
+        let row: Vec<f32> = (0..2)
+            .map(|x| sample_region_map(&t, x, 0, 2, 1, 1.0)[0])
+            .collect();
+        assert_eq!(row, [0.5, 0.5]);
+        // A map the region's size reads its texels.
+        assert_eq!(sample_region_map(&t, 1, 0, 4, 1, 1.0)[0], 1.0);
+        // Two rows 0 and 255 under a blade's UVScale of 2: the second row's
+        // centre lies past the map's end and reads the clamped last row
+        // (a repeating sampler would mix in the first).
+        let col = Texels::new(1, 2, [0, 0, 0, 255, 255, 255, 255, 255].to_vec());
+        assert_eq!(sample_region_map(&col, 0, 1, 1, 2, 2.0)[0], 1.0);
+    }
+
+    /// Every library texture loads with `0x70133`: linear filtering at
+    /// level 0, repeating, sampled at the fragment's centre. A damage-scale
+    /// texture two texels wide over a 1024-texel repeat: painted column 511
+    /// samples texel coordinate 511.5 / 512 − 0.5 ≈ 0.499, nearly the mean
+    /// of its two texels (the nearest texel read 0).
+    #[test]
+    fn a_library_texture_is_filtered_linearly_at_the_fragment_centre() {
+        let reference = grey(4, |_, _| 0);
+        let damage = Texels::new(2, 1, [0, 0, 0, 255, 255, 255, 255, 255].to_vec());
+        let mask = flat(1, 255);
+        let layer = PaintLayer {
+            mask: &mask,
+            material: 1,
+            tint: Vec3::ONE,
+            wear: 1.0,
+            library: vec![Some(&reference), Some(&damage)],
+            specular: vec![],
+            normals: vec![],
+            pattern: None,
+        };
+        let at = |x: usize| {
+            Samples {
+                layer: &layer,
+                painted_normal: None,
+                tiling: Tiling::default(),
+                x,
+                y: 0,
+                w: 1024,
+                h: 1,
+            }
+            .colour(1, Family::Cloth)
+            .x
+        };
+        let v = at(511);
+        // The fraction 0.499 filters as 127/256, the GPU's 8-bit step.
+        assert!((v - 127.0 / 256.0).abs() < 1e-6, "{v}");
+        // Column 255's centre lies just left of texel 0's centre: wrapping,
+        // it takes a sliver of texel 1.
+        assert!(at(255) > 0.0 && at(255) < 0.01);
+    }
+
+    /// The texture manager keeps one texture per name with its first
+    /// load's word: a wood material (`0x70100`) loading a scuff map first
+    /// makes a later steel material (`0x70133`) read it nearest too.
+    #[test]
+    fn a_shared_library_texture_keeps_its_first_loaders_filter() {
+        use exa_formats::procedural::material;
+        assert_eq!(material(12).library_word(), 0x70133);
+        assert_eq!(material(23).library_word(), 0x70103);
+        let wood = (1..=25)
+            .find(|&id| material(id).family == Family::Wood)
+            .unwrap();
+        assert_eq!(material(wood).library_word(), 0x70100);
+        let scuff = Texels::new(2, 1, [0, 0, 0, 255, 255, 255, 255, 255].to_vec());
+        assert_eq!(scuff.library_filter(), LibraryFilter::Linear);
+        assert_eq!(
+            scuff.claim_filter(LibraryFilter::of_word(0x70100)),
+            LibraryFilter::Nearest
+        );
+        assert_eq!(
+            scuff.claim_filter(LibraryFilter::of_word(0x70133)),
+            LibraryFilter::Nearest
+        );
+        // Read nearest: column 511's damage-scale point (texel coordinate
+        // 0.499) lies in texel 0's square.
+        let reference = grey(4, |_, _| 0);
+        let mask = flat(1, 255);
+        let layer = PaintLayer {
+            mask: &mask,
+            material: 1,
+            tint: Vec3::ONE,
+            wear: 1.0,
+            library: vec![Some(&reference), Some(&scuff)],
+            specular: vec![],
+            normals: vec![],
+            pattern: None,
+        };
+        let s = Samples {
+            layer: &layer,
+            painted_normal: None,
+            tiling: Tiling::default(),
+            x: 511,
+            y: 0,
+            w: 1024,
+            h: 1,
+        };
+        assert_eq!(s.colour(1, Family::Cloth).x, 0.0);
     }
 
     #[test]
     fn the_width_crop_limits_the_drawn_columns_without_rescaling() {
         // A horizontal gradient: texel u holds u.
         let t = grey(256, |x, _| x as u8);
-        // Region u reads source u whatever the crop: column 7 of 8 reads
-        // texel 224 (the quad's u texture coordinate is 0..crop over a
-        // width of size·crop).
-        assert_eq!((sample_stretched(&t, 7, 0, 8, 8, 1.0).x * 255.0) as u8, 224);
+        // Region u reads source u whatever the crop: column 7 of 8 samples
+        // texel coordinate 7.5 · 32 − 0.5 = 239.5, between texels 239 and
+        // 240 (the quad's u texture coordinate is 0..crop over a width of
+        // size·crop).
+        assert!((sample_region_map(&t, 7, 0, 8, 8, 1.0)[0] * 255.0 - 239.5).abs() < 1e-3);
         // A crop of 0.5 over 8 columns draws columns 0..=3 only.
         let half = Tiling::default().with_crop(0.5);
         assert!(half.drawn(3, 8));

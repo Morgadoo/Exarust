@@ -1601,11 +1601,11 @@ impl ModelLoader<'_> {
         let decoded = self.game.texture(name).and_then(|b| {
             let rfi = Rfi::parse(b).ok()?;
             let rgba = rfi.decode_rgba8().ok()?;
-            Some(Arc::new(Texels {
-                width: rfi.header.width as usize,
-                height: rfi.header.height as usize,
+            Some(Arc::new(Texels::new(
+                rfi.header.width as usize,
+                rfi.header.height as usize,
                 rgba,
-            }))
+            )))
         });
         if decoded.is_none() {
             self.warn_once(format!(
@@ -1786,15 +1786,21 @@ impl ModelLoader<'_> {
 
     /// The library textures a material's three passes read, decoded.
     fn material_texels(&mut self, material: u8) -> (TexelList, TexelList, TexelList) {
-        let lib = library(material).iter().map(|n| self.texels(n)).collect();
-        let spec = specular_library(material)
-            .iter()
-            .map(|n| self.texels(n))
-            .collect();
-        let normals = normal_library(material)
-            .iter()
-            .map(|n| self.texels(n))
-            .collect();
+        // The material's setup loads its textures with its word; a name an
+        // earlier material loaded keeps that material's filter.
+        let filter = crate::paint::LibraryFilter::of_word(
+            crate::paint::program_material(material).library_word(),
+        );
+        let mut load = |n: &&str| {
+            let t = self.texels(n);
+            if let Some(t) = &t {
+                t.claim_filter(filter);
+            }
+            t
+        };
+        let lib = library(material).iter().map(&mut load).collect();
+        let spec = specular_library(material).iter().map(&mut load).collect();
+        let normals = normal_library(material).iter().map(&mut load).collect();
         (lib, spec, normals)
     }
 
@@ -4335,11 +4341,7 @@ mod tests {
     }
 
     fn flat(w: usize, v: u8) -> Texels {
-        Texels {
-            width: w,
-            height: w,
-            rgba: [v, v, v, 255].repeat(w * w),
-        }
+        Texels::new(w, w, [v, v, v, 255].repeat(w * w))
     }
 
     fn condition(quality: u8, damage: u8) -> Appearance {
