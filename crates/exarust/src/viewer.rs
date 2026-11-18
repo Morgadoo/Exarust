@@ -2764,6 +2764,7 @@ fn apply_player_placement(
     // The story continue's nudge out of a level exit comes before the
     // floor: the original moves the player, then stands it on the ground.
     let mut position = placement.position;
+    let mut nudged = None;
     if nudge.is_some() {
         commands.remove_resource::<exa_game::level_change::NudgeOutOfExits>();
         let listed = exits.as_ref().map_or(&[][..], |exits| exits.0.as_slice());
@@ -2775,6 +2776,7 @@ fn apply_player_placement(
                     volume.name, volume.destination, nudge.distance, nudge.axis
                 );
                 position = moved;
+                nudged = Some(moved);
             }
             None => info!(
                 "level placement: the continued player at {position} stands in none of the \
@@ -2828,7 +2830,7 @@ fn apply_player_placement(
     let settle = settle.map_or(0, |settle| settle.0);
     fixed.run(
         place_player_in_step,
-        (at, by, placement.yaw, settle, height, landing),
+        (at, by, placement.yaw, settle, height, landing, nudged),
     );
     commands.insert_resource(PlacedTrace(1200));
     commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
@@ -2889,15 +2891,25 @@ fn trace_placed_player(
 /// items are re-placed unless it settles. A `settle` over zero gives the
 /// body the settling state for that many ticks (the story respawn's, after
 /// its placement).
-#[allow(clippy::type_complexity)]
+///
+/// The story continue's exit nudge (`nudged`, the moved point) is the
+/// original's own placement instead: the point taken to the navigation
+/// grid's nearest walkable point, the root put there, and the body placed
+/// on the ground by the leg snap in its static mode
+/// ([`exa_game::limp::GroundPlacement`] with `statics`: the Height Query
+/// sweeps the sectors' static meshes only), the frame keeping the
+/// placement's yaw. Without a grid the probed feet `at` stand in for the
+/// walkable point.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn place_player_in_step(
-    In((at, by, yaw, settle, height, landing)): In<(
+    In((at, by, yaw, settle, height, landing, nudged)): In<(
         Vec3,
         Vec3,
         f32,
         i32,
         exa_game::limp::FrameHeight,
         bool,
+        Option<Vec3>,
     )>,
     mut roots: Query<
         (&mut Transform, Option<&mut exa_physics::CharacterBody>),
@@ -2930,8 +2942,23 @@ fn place_player_in_step(
         Without<exa_game::player::Player>,
     >,
     physics: Option<Res<exa_physics::Physics>>,
+    nav: Option<Res<exa_world::nav::NavGrid>>,
     mut commands: Commands,
 ) {
+    // The nudge's walkable point, where the root and the frame go.
+    let at = match nudged {
+        Some(moved) => {
+            let to = nav
+                .as_deref()
+                .map_or(at, |g| exa_world::nav::nearest_walkable(g, moved));
+            info!(
+                "level placement: the nudged point {moved} goes to the nearest walkable {to} (grid {})",
+                nav.is_some()
+            );
+            to
+        }
+        None => at,
+    };
     if let Some(physics) = physics.as_deref() {
         info!(
             "level placement: the simulation's floor under {at}: {:?}",
@@ -2985,7 +3012,21 @@ fn place_player_in_step(
         // placement's yaw, its held items put back in its hands (not after
         // the story respawn's settling placement, which the original does
         // not re-place).
-        if let Some(ragdoll) = ragdoll.as_ref() {
+        if let (Some(ragdoll), Some(_)) = (ragdoll.as_ref(), nudged) {
+            info!(
+                "level placement: the nudged body's lowest part at {:.2} m is placed on the ground over the static meshes (root was {was:?} in the simulation)",
+                lowest(ragdoll)
+            );
+            commands
+                .entity(entity)
+                .insert(exa_game::limp::GroundPlacement {
+                    floor: at.y,
+                    yaw: Some(yaw),
+                    held: false,
+                    statics: true,
+                    at: Some(at),
+                });
+        } else if let Some(ragdoll) = ragdoll.as_ref() {
             info!(
                 "level placement: the body's lowest part at {:.2} m is put living at the placement (root was {was:?} in the simulation)",
                 lowest(ragdoll)
@@ -5227,7 +5268,15 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (floor, Vec3::ZERO, 0.7, 0, FrameHeight::Over(0.0), true),
+                (
+                    floor,
+                    Vec3::ZERO,
+                    0.7,
+                    0,
+                    FrameHeight::Over(0.0),
+                    true,
+                    None,
+                ),
             )
             .unwrap();
         let asked = *world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
@@ -5254,7 +5303,15 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (floor, Vec3::ZERO, 0.7, 0, FrameHeight::Over(0.0), true),
+                (
+                    floor,
+                    Vec3::ZERO,
+                    0.7,
+                    0,
+                    FrameHeight::Over(0.0),
+                    true,
+                    None,
+                ),
             )
             .unwrap();
         let asked = *world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
@@ -5282,7 +5339,7 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (Vec3::X, Vec3::ZERO, 0.0, 0, LANDING, false),
+                (Vec3::X, Vec3::ZERO, 0.0, 0, LANDING, false, None),
             )
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 0);
@@ -5296,6 +5353,7 @@ mod placement_tests {
                     PLACED_SETTLE,
                     FrameHeight::Given,
                     false,
+                    None,
                 ),
             )
             .unwrap();
@@ -5321,7 +5379,7 @@ mod placement_tests {
         world
             .run_system_once_with(
                 place_player_in_step,
-                (at, Vec3::ZERO, 0.7, 0, LANDING, false),
+                (at, Vec3::ZERO, 0.7, 0, LANDING, false, None),
             )
             .unwrap();
         let asked = *world
@@ -5341,6 +5399,7 @@ mod placement_tests {
                     PLACED_SETTLE,
                     FrameHeight::Given,
                     false,
+                    None,
                 ),
             )
             .unwrap();
@@ -5358,12 +5417,57 @@ mod placement_tests {
                     0,
                     FrameHeight::Stand,
                     false,
+                    None,
                 ),
             )
             .unwrap();
         let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
         assert_eq!(asked.height, FrameHeight::Stand);
         assert_eq!(asked.frame.translation.y, 0.0);
+    }
+
+    /// The story continue's exit nudge places the player as the original's
+    /// nudge does: the root at the nudged point (no grid: the probed feet
+    /// stand in for the walkable point) and the body on the ground by the
+    /// leg snap over the static meshes only, facing the placement's yaw;
+    /// no living placement.
+    #[test]
+    fn the_exit_nudge_places_the_player_on_the_static_ground() {
+        let mut world = World::new();
+        let root = world
+            .spawn((exa_game::player::Player, Transform::default()))
+            .id();
+        let body = world
+            .spawn((
+                exa_game::player::PlayerBody::new(0.0),
+                Transform::default(),
+                Ragdoll::new(&[]),
+            ))
+            .id();
+        let feet = Vec3::new(3.0, 0.4, -2.0);
+        world
+            .run_system_once_with(
+                place_player_in_step,
+                (
+                    feet,
+                    Vec3::ZERO,
+                    0.7,
+                    0,
+                    LANDING,
+                    false,
+                    Some(feet.with_y(1.2)),
+                ),
+            )
+            .unwrap();
+        assert!(world.get::<exa_game::limp::LivingPlacement>(body).is_none());
+        let asked = *world
+            .get::<exa_game::limp::GroundPlacement>(body)
+            .expect("the nudged body is placed on the ground");
+        assert!(asked.statics && !asked.held);
+        assert_eq!(asked.floor, 0.4);
+        assert_eq!(asked.yaw, Some(0.7));
+        assert_eq!(asked.at, Some(feet));
+        assert_eq!(world.get::<Transform>(root).unwrap().translation, feet);
     }
 }
 

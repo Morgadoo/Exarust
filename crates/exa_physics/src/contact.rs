@@ -6,6 +6,7 @@
 //! with friction from the part's own coefficient.
 //! Evidence: `docs/formats/RSQ.md` (Physical body).
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 /// A stored contact's plane lies this far (m) under the touched surface.
@@ -99,6 +100,16 @@ pub trait Level {
         false
     }
 
+    /// A body piece's box as the Ground Query's pre-test reads it: the
+    /// frame the piece moves with (world from its own) and the box's
+    /// centre and half extents in that frame. The Ground Query meets a
+    /// body's mesh only when its ray crosses this box
+    /// ([`crate::intersect::segment_box_slabs`]). None by default (no
+    /// pre-test: every piece the box gather gives goes on).
+    fn floor_box(&self, _piece: u32) -> Option<(Affine3A, Vec3, Vec3)> {
+        None
+    }
+
     /// The original's Ground Query: a point ray from `at` straight down at
     /// most `depth`, against the front of upward faces of floor pieces
     /// only. Returns the height of the first face it meets, or `None`.
@@ -128,6 +139,20 @@ fn floor_query<L: Level + ?Sized>(level: &L, at: Vec3, depth: f32) -> Option<f32
     for &piece in &pieces {
         if !level.floor_piece(piece) {
             continue;
+        }
+        // A body's node is met only when the ray, within the nearest hit
+        // so far, crosses its box in its own frame: the original's slab
+        // test, which also drops a flat body mesh (its box has no height,
+        // so the entry is never before the exit).
+        if level.movable(piece)
+            && let Some((frame, centre, half)) = level.floor_box(piece)
+        {
+            let into = frame.inverse();
+            let start = into.transform_point3(at);
+            let direction = into.transform_vector3(Vec3::NEG_Y);
+            if !crate::intersect::segment_box_slabs(start, direction, nearest, centre, half) {
+                continue;
+            }
         }
         triangles.clear();
         level.indexed_triangles(piece, lo, hi, &mut triangles);
@@ -343,6 +368,22 @@ impl Level for rapier3d::prelude::PhysicsWorld {
             .is_some_and(|(c, _)| c.user_data == crate::prop::STAND_IN)
     }
 
+    /// A stand-in's box: its mesh's own bounds in the collider's frame.
+    /// [inf] The stand-in's mesh is its node's, put in the world where the
+    /// body was registered and moved by the body since, so its bounds are
+    /// the node's box as it stood then (the node's own box when it was
+    /// placed unturned).
+    fn floor_box(&self, piece: u32) -> Option<(Affine3A, Vec3, Vec3)> {
+        let (collider, _) = self.colliders.get_unknown_gen(piece)?;
+        if collider.user_data != crate::prop::STAND_IN {
+            return None;
+        }
+        let bounds = collider.shape().as_trimesh()?.local_aabb();
+        let pose = collider.position();
+        let frame = Affine3A::from_rotation_translation(pose.rotation, pose.translation);
+        Some((frame, bounds.center(), bounds.half_extents()))
+    }
+
     /// The collider's own triangle count ([`crate::mesh_tree::takes_tree`]).
     fn has_tree(&self, piece: u32) -> bool {
         self.colliders
@@ -534,6 +575,70 @@ mod tests {
         fn floor_skips_first(&self, piece: u32) -> bool {
             self.first[piece as usize]
         }
+    }
+
+    /// The physics world's pieces as floor pieces, its stand-ins' boxes
+    /// from the world.
+    struct WorldFloors(rapier3d::prelude::PhysicsWorld);
+
+    impl Level for WorldFloors {
+        fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+            self.0.pieces(lo, hi, out);
+        }
+        fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+            self.0.triangles(piece, lo, hi, out);
+        }
+        fn movable(&self, piece: u32) -> bool {
+            self.0.movable(piece)
+        }
+        fn floor_piece(&self, _: u32) -> bool {
+            true
+        }
+        fn floor_box(&self, piece: u32) -> Option<(Affine3A, Vec3, Vec3)> {
+            self.0.floor_box(piece)
+        }
+    }
+
+    /// A world holding one mesh of `tris`, a stand-in when `stand_in`.
+    fn world_of(tris: &[[Vec3; 3]], stand_in: bool) -> WorldFloors {
+        use rapier3d::prelude::*;
+        let vertices: Vec<Vec3> = tris.iter().flatten().copied().collect();
+        let indices: Vec<[u32; 3]> = (0..tris.len() as u32)
+            .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
+            .collect();
+        let mut collider = ColliderBuilder::trimesh(vertices, indices)
+            .unwrap()
+            .translation(Vec3::new(0.0, 0.25, 0.0))
+            .build();
+        if stand_in {
+            collider.user_data = crate::prop::STAND_IN;
+        }
+        let mut world = PhysicsWorld::new();
+        world.insert_collider(collider, None);
+        world.step();
+        WorldFloors(world)
+    }
+
+    /// The Ground Query meets a body's mesh only when its ray crosses the
+    /// body's box: a flat stand-in (a box without height) is never met,
+    /// one with depth is, and a static mesh takes no pre-test.
+    #[test]
+    fn the_ground_query_meets_a_body_only_through_its_box() {
+        let at = Vec3::new(0.2, 1.0, 0.3);
+        let flat = square(0.0);
+        let level = world_of(&flat, true);
+        assert_eq!(level.floor_below(at, 2.0), None);
+        let level = world_of(&flat, false);
+        let hit = level.floor_below(at, 2.0).unwrap();
+        assert!((hit - 0.25).abs() < 1e-6, "{hit}");
+        // A plate with an underside 10 cm lower (turned away from the ray).
+        let mut deep = flat.to_vec();
+        deep.extend(square(-0.1).map(|[a, b, c]| [a, c, b]));
+        let level = world_of(&deep, true);
+        let hit = level.floor_below(at, 2.0).unwrap();
+        assert!((hit - 0.25).abs() < 1e-6, "{hit}");
+        // Outside the box across the ground: missed.
+        assert_eq!(level.floor_below(Vec3::new(1.5, 1.0, 0.0), 2.0), None);
     }
 
     /// The plain mesh ray: front faces only, the nearest strictly, the first

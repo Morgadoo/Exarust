@@ -872,6 +872,7 @@ fn an_objects_level_stage_takes_triangles_in_its_own_frame() {
             Vec3::new(2.0, 1.0, 0.0),
             Vec3::new(1.0, 2.0, 0.0),
         ]],
+        false,
     );
     assert_eq!(
         contacts.level[0],
@@ -882,9 +883,13 @@ fn an_objects_level_stage_takes_triangles_in_its_own_frame() {
     assert_eq!(contacts.pieces[0].end, 1);
     assert_eq!(contacts.pieces[0].centre, Vec3::new(150.0, 50.0, 0.0));
     assert_eq!(contacts.pieces[0].half, Vec3::new(50.0, 50.0, 0.0));
+    assert!(!contacts.pieces[0].tree);
     // An empty mesh adds no piece.
-    contacts.gather_level(&to_object, []);
+    contacts.gather_level(&to_object, [], true);
     assert_eq!(contacts.pieces.len(), 1);
+    // A mesh with a kd-tree marks its piece.
+    contacts.gather_level(&to_object, [[Vec3::X, Vec3::Y, Vec3::Z]], true);
+    assert!(contacts.pieces[1].tree);
 }
 
 /// Three world points as a level triangle in centimetres.

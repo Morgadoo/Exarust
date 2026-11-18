@@ -589,6 +589,10 @@ pub struct GroundPlacement {
     /// the original's exit nudge and summoned demon ask; the others take
     /// the sphere mode over the level and the listed body meshes.
     pub statics: bool,
+    /// The frame's place (m), when the caller moved the character in the
+    /// same step: the drawn transform still stands where it was (the exit
+    /// nudge's walkable point). `None` takes the drawn transform's.
+    pub at: Option<Vec3>,
 }
 
 /// The AI's re-placement of a body the scene takes back, as the original's
@@ -669,6 +673,7 @@ pub(crate) fn place_entering(
             yaw: Some(yaw),
             held: false,
             statics: false,
+            at: None,
         });
     }
 }
@@ -755,7 +760,9 @@ pub(crate) fn place_on_ground(
         ) else {
             continue;
         };
+        let origin = placement.at.unwrap_or(at.translation());
         let mut floor = at.affine();
+        floor.translation = origin.into();
         floor.translation.y = placement.floor;
         if let Some(yaw) = placement.yaw {
             floor.matrix3 = bevy::math::Mat3A::from_rotation_y(yaw);
@@ -795,7 +802,7 @@ pub(crate) fn place_on_ground(
         let meshes = sector_bodies.as_deref().map_or_else(Vec::new, |grid| {
             exa_physics::sector_lists::height_meshes(
                 grid,
-                at.translation(),
+                origin,
                 |e| {
                     others
                         .get(e)
@@ -812,7 +819,7 @@ pub(crate) fn place_on_ground(
         });
         for m in &meshes {
             let centre = m.world.transform_point3(m.centre);
-            let across = (centre - at.translation()).with_y(0.0).length();
+            let across = (centre - origin).with_y(0.0).length();
             if across < 2.0 {
                 debug!(
                     "ground placement {root:?}: body mesh {:.0} cm away at ({:.2}, {:.2}, {:.2}), {} triangles, tree {}",
@@ -855,7 +862,7 @@ pub(crate) fn place_on_ground(
                 "ground placement {root:?}: pelvis {:.1} cm over the floor (was {:.1}), feet at {:.1}, character ground {:.1}",
                 height - placement.floor * CM,
                 before.map_or(f32::NAN, |b| (b - placement.floor) * CM),
-                at.translation().y * CM,
+                origin.y * CM,
                 body.placement_feet() * CM
             ),
             None => info!("ground placement {root:?}: no ground under the feet, left standing"),
@@ -2903,6 +2910,7 @@ pub(crate) mod tests {
                     yaw: None,
                     held,
                     statics: false,
+                    at: None,
                 },
             ));
             app.update();
@@ -2962,6 +2970,7 @@ pub(crate) mod tests {
                     yaw: None,
                     held: false,
                     statics: false,
+                    at: None,
                 },
             ))
             .id();

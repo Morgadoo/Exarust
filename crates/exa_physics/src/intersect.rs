@@ -292,12 +292,37 @@ pub fn swept_sphere_aabb_hit(
 /// order of the two compares does not change an answer. The reciprocal of
 /// the travel is the original's approximate one ([`reciprocal_approx3`]).
 fn slabs_hit(offset: Vec3, travel: Vec3, extent: Vec3) -> bool {
+    slabs_within(offset, travel, extent, 1.0)
+}
+
+/// The slab test with the entry rejected at `limit` (in units of the
+/// travel): see [`slabs_hit`].
+fn slabs_within(offset: Vec3, travel: Vec3, extent: Vec3, limit: f32) -> bool {
     let inverse = reciprocal_approx3(travel);
     let low = (offset - extent) * inverse;
     let high = (offset + extent) * inverse;
     let entry = max_component(min_components(low, high));
     let exit = min_component(max_components(low, high));
-    max_first(entry, 0.0) < exit && entry < 1.0
+    max_first(entry, 0.0) < exit && entry < limit
+}
+
+/// The Ground Query's pre-test of a body node: whether the ray from
+/// `start` along the unit `direction`, at most `length` long, meets the
+/// box `centre`, `half` (all in the node's frame). The original's slab
+/// test: the approximate reciprocal of the direction, the entry the
+/// largest of the per-axis smaller crossings, the exit the smallest of the
+/// larger ones; a hit when the entry clamped at 0 is before the exit and
+/// the entry is before `length`. Both compares are ordered, so a NaN
+/// misses; a zero direction component gives infinite crossings on that
+/// axis (a NaN where the start lies on the slab's plane).
+pub fn segment_box_slabs(
+    start: Vec3,
+    direction: Vec3,
+    length: f32,
+    centre: Vec3,
+    half: Vec3,
+) -> bool {
+    slabs_within(centre - start, direction, half, length)
 }
 
 /// Whether a sphere of `radius` swept from `start` to `end` meets an
