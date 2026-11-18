@@ -1538,13 +1538,15 @@ struct WordRow {
 /// streams, the original's node render flags), tallied by shadow-bias
 /// level (bits 16..18) and the 0x80000 variant, with the cull-front
 /// (0x800), keep-own-light (0x1000) and grid-registration (0x100) bits
-/// counted; then every mesh with the grid-registration bit; then every node
+/// counted; then every mesh with the grid-registration bit, every mesh
+/// with the keep-own-light bit; then every node
 /// whose name starts with `uw01_floor`, the broken floors of the dungeon
 /// levels.
 pub fn render_words(game: &GameData) -> Result<()> {
     let mut tally: BTreeMap<(u32, bool), WordRow> = BTreeMap::new();
     let mut floors = Vec::new();
     let mut queued = Vec::new();
+    let mut own_light = Vec::new();
     for (kind, pack) in game.packs() {
         for e in pack.entries() {
             let b = pack.bytes(e);
@@ -1566,6 +1568,14 @@ pub fn render_words(game: &GameData) -> Result<()> {
                 row.cull_front += usize::from(word & 0x800 != 0);
                 row.own_light += usize::from(word & 0x1000 != 0);
                 row.grid_queue += usize::from(word & 0x100 != 0);
+                if word & 0x1000 != 0 {
+                    own_light.push(format!(
+                        "{}/{}:{} {word:#010x}",
+                        kind.file_stem(),
+                        e.name,
+                        node.name
+                    ));
+                }
                 if word & 0x100 != 0 {
                     queued.push(format!(
                         "{}/{}:{} {word:#010x} flags {:#010x}",
@@ -1610,6 +1620,13 @@ pub fn render_words(game: &GameData) -> Result<()> {
     );
     for q in queued {
         println!("  {q}");
+    }
+    println!(
+        "\nmeshes with the keep-own-light bit (0x1000): {}",
+        own_light.len()
+    );
+    for m in own_light {
+        println!("  {m}");
     }
     println!("\nuw01_floor* nodes:");
     for f in floors {

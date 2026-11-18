@@ -539,7 +539,12 @@ pub(crate) fn apply_load_fires(world: &mut World, daylight: f32) {
     }
     drop(records);
     for entity in &douse {
-        put_out_light(world, *entity);
+        douse_lights(world, *entity);
+        // By day the original darkens the glow of the mesh the first fire
+        // marker under the object hangs from (or the marker's own subtree
+        // when its parent is not a mesh), or the object's without one.
+        let target = daylight_glow_target(world, *entity);
+        put_out_glow(world, target);
     }
     let placed: Vec<(Entity, Vec3)> = fires
         .iter()
@@ -598,7 +603,7 @@ fn light_shift(world: &mut World, entity: Entity) -> Option<Vec3> {
     )
 }
 
-/// Clears the intensity of the node's light and of each direct child's.
+/// The node's direct children.
 fn direct_children(world: &mut World, parent: Entity) -> Vec<Entity> {
     let mut query = world.query::<(Entity, &ChildOf)>();
     let mut found = Vec::new();
@@ -610,16 +615,125 @@ fn direct_children(world: &mut World, parent: Entity) -> Vec<Entity> {
     found
 }
 
+/// Puts out a fire record's node: the intensity of the node's light and of
+/// each direct child's (the load fire replaces that light), and the
+/// fixture's glow ([`put_out_glow`]).
 pub(crate) fn put_out_light(world: &mut World, entity: Entity) {
+    douse_lights(world, entity);
+    put_out_glow(world, entity);
+}
+
+/// Clears the intensity of the node's light and of each direct child's
+/// (Exarust's reading of a light the fire replaces; see [`switch_off`]).
+fn douse_lights(world: &mut World, entity: Entity) {
     let hosts = direct_children(world, entity);
     for host in std::iter::once(entity).chain(hosts) {
-        if let Some(mut source) = world
-            .entity_mut(host)
-            .get_mut::<crate::light_source::LightSource>()
-        {
+        if let Some(mut source) = world.get_mut::<crate::light_source::LightSource>(host) {
             source.intensity = 0.0;
         }
     }
+}
+
+/// The node whose glow a fire record's daylight put-out darkens: the first
+/// fire marker at or under `root` (depth first, in child order: the
+/// original's search for a callback node), its parent when that is a mesh
+/// node, else the marker; `root` when there is no marker.
+fn daylight_glow_target(world: &mut World, root: Entity) -> Entity {
+    fn find(world: &World, node: Entity) -> Option<Entity> {
+        if world.get::<crate::fire::FireHost>(node).is_some() {
+            return Some(node);
+        }
+        let children = world.get::<Children>(node)?;
+        children.iter().find_map(|child| find(world, child))
+    }
+    let Some(marker) = find(world, root) else {
+        return root;
+    };
+    match world.get::<ChildOf>(marker).map(ChildOf::parent) {
+        Some(parent) if !mesh_parts(world, parent).is_empty() => parent,
+        _ => marker,
+    }
+}
+
+/// The drawn parts of a mesh node, in spawn order: its children with a
+/// material. Empty for a node that is not a mesh (the original's class 9).
+fn mesh_parts(world: &mut World, node: Entity) -> Vec<Entity> {
+    let Some(children) = world.get::<Children>(node) else {
+        return Vec::new();
+    };
+    let children: Vec<Entity> = children.iter().collect();
+    children
+        .into_iter()
+        .filter(|&child| {
+            world
+                .get::<MeshMaterial3d<exa_render::material::ExaMaterial>>(child)
+                .is_some()
+        })
+        .collect()
+}
+
+/// Turns a part's glow off: its material's emissive colour (not its alpha)
+/// goes to zero on a copy of its own, so the meshes that share the material
+/// keep theirs. The original writes the part's emissive scale and sets the
+/// part flag that makes the surface program read it.
+fn darken_part(world: &mut World, part: Entity) {
+    let Some(handle) = world
+        .get::<MeshMaterial3d<exa_render::material::ExaMaterial>>(part)
+        .map(|h| h.0.clone())
+    else {
+        return;
+    };
+    let Some(mut materials) =
+        world.get_resource_mut::<Assets<exa_render::material::ExaMaterial>>()
+    else {
+        return;
+    };
+    let Some(mut own) = materials.get(&handle).cloned() else {
+        return;
+    };
+    if own.params.emissive.truncate() == Vec3::ZERO {
+        return;
+    }
+    own.params.emissive = Vec3::ZERO.extend(own.params.emissive.w);
+    let copy = materials.add(own);
+    if let Some(mut slot) = world.get_mut::<MeshMaterial3d<exa_render::material::ExaMaterial>>(part) {
+        slot.0 = copy;
+    }
+}
+
+/// The original's put-out of a fixture's glow (the load fire and the
+/// daylight path): a mesh node's first part and the first part of each of
+/// its mesh children go dark (their emissive scale and the node's set to
+/// 0). The light itself is not written.
+pub(crate) fn put_out_glow(world: &mut World, node: Entity) {
+    let children = direct_children(world, node);
+    for host in std::iter::once(node).chain(children) {
+        if let Some(&part) = mesh_parts(world, host).first() {
+            darken_part(world, part);
+        }
+    }
+}
+
+/// The original's level-load switch-off (an operative record's flag
+/// `0x40`): every part of the mesh node goes dark, the first part of each
+/// mesh child, and each voxel-light child's current intensity is cleared
+/// without the colour update, so the volume keeps the colour it last
+/// derived until a later update re-reads it. Exarust also puts out the
+/// node's and its children's lights, as [`put_out_light`] does.
+pub(crate) fn switch_off(world: &mut World, node: Entity) {
+    for part in mesh_parts(world, node) {
+        darken_part(world, part);
+    }
+    let children = direct_children(world, node);
+    for &child in &children {
+        if let Some(&part) = mesh_parts(world, child).first() {
+            darken_part(world, part);
+        }
+        if let Some(mut light) = world.get_mut::<exa_render::gi::VoxelLight>(child) {
+            light.intensity = 0.0;
+        }
+    }
+    douse_lights(world, node);
 }
 
 /// Starts the level device's arc as a child of `node`, in the node's local
@@ -1538,6 +1652,73 @@ mod tests {
     /// Below the daylight threshold a fire record spawns a fire and lifts it
     /// by the stored height. Above it the fire is not spawned and the node's
     /// light is put out.
+    #[test]
+    fn the_put_out_and_switch_off_darken_the_fixture_glow() {
+        use exa_render::gi::VoxelLight;
+        use exa_render::material::{ExaMaterial, ExaParams};
+        let glow = Vec4::new(0.5, 0.3, 0.1, 0.25);
+        // A fixture mesh with two parts, a mesh child with two parts and a
+        // voxel light child, every part glowing through one shared material.
+        let build = || {
+            let mut world = World::new();
+            world.insert_resource(Assets::<ExaMaterial>::default());
+            let shared = world.resource_mut::<Assets<ExaMaterial>>().add(ExaMaterial {
+                params: ExaParams {
+                    emissive: glow,
+                    ..default()
+                },
+                ..default()
+            });
+            let node = world.spawn_empty().id();
+            let part = |world: &mut World, parent| {
+                world
+                    .spawn((MeshMaterial3d(shared.clone()), ChildOf(parent)))
+                    .id()
+            };
+            let a = part(&mut world, node);
+            let b = part(&mut world, node);
+            let child = world.spawn(ChildOf(node)).id();
+            let c = part(&mut world, child);
+            let d = part(&mut world, child);
+            let light = world
+                .spawn((VoxelLight::from_record([1.0, 0.5, 0.25], 2.0, 1.0), ChildOf(node)))
+                .id();
+            (world, node, [a, b, c, d], light)
+        };
+        let emissive = |world: &World, part: Entity| {
+            let handle = &world
+                .get::<MeshMaterial3d<ExaMaterial>>(part)
+                .expect("a part")
+                .0;
+            world
+                .resource::<Assets<ExaMaterial>>()
+                .get(handle)
+                .expect("its material")
+                .params
+                .emissive
+        };
+        let dark = Vec4::new(0.0, 0.0, 0.0, glow.w);
+
+        let (mut world, node, [a, b, c, d], light) = build();
+        put_out_glow(&mut world, node);
+        assert_eq!(emissive(&world, a), dark);
+        assert_eq!(emissive(&world, b), glow, "only the first part");
+        assert_eq!(emissive(&world, c), dark);
+        assert_eq!(emissive(&world, d), glow);
+        assert_eq!(world.get::<VoxelLight>(light).unwrap().intensity, 2.0);
+
+        let (mut world, node, [a, b, c, d], light) = build();
+        let colour = world.get::<VoxelLight>(light).unwrap().colour;
+        switch_off(&mut world, node);
+        assert_eq!(emissive(&world, a), dark);
+        assert_eq!(emissive(&world, b), dark, "every part of the node");
+        assert_eq!(emissive(&world, c), dark);
+        assert_eq!(emissive(&world, d), glow, "a child's first part only");
+        let l = world.get::<VoxelLight>(light).unwrap();
+        assert_eq!(l.intensity, 0.0);
+        assert_eq!(l.colour, colour, "no colour update");
+    }
+
     #[test]
     fn a_load_fire_lights_until_the_daylight_is_up() {
         let bare = |target| {
