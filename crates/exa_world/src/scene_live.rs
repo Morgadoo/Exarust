@@ -1125,7 +1125,10 @@ mod tests {
         let (rooms, _) = two_rooms();
         let (w, h) = (rooms.width() as i64, rooms.height() as i64);
         // Far off the grid's low and high sides.
-        assert_eq!(rooms.cell_of_moving_node(Vec2::new(-1000.0, -1000.0)), (1, 1));
+        assert_eq!(
+            rooms.cell_of_moving_node(Vec2::new(-1000.0, -1000.0)),
+            (1, 1)
+        );
         assert_eq!(
             rooms.cell_of_moving_node(Vec2::new(1000.0, 1000.0)),
             (w - 2, h - 2)

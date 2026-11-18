@@ -362,7 +362,10 @@ impl CellLights {
         let r = ceil_to_i32(light.radius / CELL).wrapping_add(1);
         let span = |c: i32, n: usize| {
             let hi = c.wrapping_add(r);
-            (c.wrapping_sub(r).max(0), if hi >= n as i32 { n as i32 - 1 } else { hi })
+            (
+                c.wrapping_sub(r).max(0),
+                if hi >= n as i32 { n as i32 - 1 } else { hi },
+            )
         };
         let ((x0, x1), (z0, z1)) = (span(cx, grid.w), span(cz, grid.h));
         let inside = |cell: usize| {
