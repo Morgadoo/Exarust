@@ -110,6 +110,8 @@ impl Plugin for CharacterPlugin {
                 // bound fails wgpu validation (a skinned pipeline with the
                 // unskinned mesh bind group).
                 .before(exa_anim::AnimSystems)
+                // The hair's two passes copy the materials these give.
+                .before(exa_world::cloth_draw::draw_hair_passes)
                 .in_set(exa_physics::FramePhase::World),
         );
     }

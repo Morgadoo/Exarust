@@ -1009,6 +1009,9 @@ impl Plugin for ClothPlugin {
                 crate::cloth_draw::draw_hair_passes
                     .after(build_cloth_nodes)
                     .run_if(resource_exists::<Assets<exa_render::material::ExaMaterial>>)
+                    .run_if(resource_exists::<
+                        Messages<AssetEvent<exa_render::material::ExaMaterial>>,
+                    >)
                     .in_set(exa_physics::FramePhase::World),
             )
             // The sector runs its simulated objects inside the bodies'

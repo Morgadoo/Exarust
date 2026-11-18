@@ -505,7 +505,9 @@ impl Plugin for CastPlugin {
             use exa_physics::sim_bridge::SimBridgeAppExt;
             app.bridge_message::<super::barricade_sound::ForceSounded>()
                 .bridge_copy::<exa_combat::stance::Stance>()
-                .bridge_copy::<exa_combat::swing_voice::SwingSound>();
+                .bridge_copy::<exa_combat::swing_voice::SwingSound>()
+                // The shell's close sound finds the body it is put on.
+                .bridge_copy::<super::effect_draw::ShellAuraOf>();
         }
         crate::effects::danger::add_hazard_watch(app);
         super::summon_live::bridge_summon_types(app);
