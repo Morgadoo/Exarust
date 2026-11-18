@@ -1,0 +1,4 @@
+- [x] Trace the flicker's walk order (EXA_FLICKER_TRACE) and compare two builds that differ by one unrelated resource
+- [x] Seed fire and portal flames from the spawn-order count (test: a_fires_streams_do_not_follow_its_entity_index)
+- [x] Walk the shared-generator systems and the light registrations in entity order
+- [x] Golden pictures identical across two unrelated builds

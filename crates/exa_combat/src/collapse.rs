@@ -481,7 +481,7 @@ pub fn collapse_groans(
     started: Query<(Entity, &Condition, Option<&GlobalTransform>), Added<Collapse>>,
     mut roll: Local<Roll>,
 ) {
-    for (fighter, condition, at) in &started {
+    for (fighter, condition, at) in started.iter().sort_unstable::<Entity>() {
         if !condition.is_collapsing() {
             continue;
         }

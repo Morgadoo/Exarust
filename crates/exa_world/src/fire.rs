@@ -868,23 +868,22 @@ pub struct FireFlame {
 
 /// Spawns a fire of `size` under its node: its light, and one entity per
 /// emitter (the flame, and above the small tier its bed). The texture is
-/// attached when the assets load ([`crate::flame::FlamePlugin`]).
+/// attached when the assets load ([`crate::flame::FlamePlugin`]). The
+/// emitters' random streams and the ring's source places are keyed by the
+/// fire's number in the order the spawns apply ([`crate::flame::FlameSeeds`],
+/// [`fire_key`]), not by the node's entity index, which an unrelated type
+/// added to a build moves (finding F571).
 pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
     // The level's fire markers go through the same builder a re-created
     // host node uses; a first spawn has no host flags and no marker field.
     let built = recreate(size, 0, 0, 0.0);
     let p = built.preset;
-    let specs: Vec<&EmitterSpec> = std::iter::once(&p.flame).chain(p.base.iter()).collect();
-    for (index, spec) in specs.into_iter().enumerate() {
-        let sources = match spec.ring {
-            Some((n, radius)) if n > 1 => {
-                let mut rng = Rng::new(0x5EED_0001 ^ node.index_u32().wrapping_mul(2_654_435_761));
-                Source::ring(n, radius, &mut rng)
-            }
-            _ => vec![Source::at_node()],
-        };
-        let mut emitter = Emitter::new(spec.template, spec.size, sources);
-        emitter.detail = spec.detail;
+    let specs: Vec<EmitterSpec> = std::iter::once(&p.flame)
+        .chain(p.base.iter())
+        .cloned()
+        .collect();
+    let mut emitters = Vec::with_capacity(specs.len());
+    for (index, spec) in specs.iter().enumerate() {
         let mut entity = if index == 0 {
             let light = p.light;
             let bundle = crate::light_bundle(&exa_formats::rfc::Light {
@@ -911,29 +910,68 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
                     node_flags: built.node_flags,
                     field: built.field,
                 },
-                crate::flame::Flame::new(emitter, light.lift, spec.texture, seed(node, index)),
                 ChildOf(node),
             ))
         } else {
-            // The bed's system meets no body: the presets clear its
-            // body-contact class bit.
             commands.spawn((
                 Name::new(spec.name),
                 Transform::from_xyz(0.0, spec.lift / 100.0, 0.0),
-                crate::flame::Flame::new(emitter, 0.0, spec.texture, seed(node, index))
-                    .without_contacts(),
                 ChildOf(node),
             ))
         };
         entity.insert(FireFlame {
             texture: spec.texture,
         });
+        emitters.push(entity.id());
+    }
+    let lift = p.light.lift;
+    crate::flame::queue_seeded(commands, move |world, number| {
+        let key = fire_key(number, world.get::<Transform>(node));
+        for (index, (entity, spec)) in emitters.into_iter().zip(&specs).enumerate() {
+            let flame = fire_flame(spec, index, lift, key);
+            if let Ok(mut entity) = world.get_entity_mut(entity) {
+                entity.insert(flame);
+            }
+        }
+    });
+}
+
+/// A fire's key: its number in the order the spawns applied, mixed with its
+/// node's loaded place (so a fire the step spawns, which the simulation's
+/// own count numbers, differs from the frame's fire of the same number).
+pub fn fire_key(number: u32, node: Option<&Transform>) -> u32 {
+    let place = node.map_or([0; 3], |t| t.translation.to_array().map(f32::to_bits));
+    place
+        .iter()
+        .fold(number.wrapping_mul(2_654_435_761), |key, bits| {
+            key.rotate_left(7) ^ bits
+        })
+}
+
+/// Emitter `index` of a fire keyed `key`: its ring's places and its
+/// streams. The flame (index 0) carries the light's lift; a bed's system
+/// meets no body (the presets clear its body-contact class bit).
+fn fire_flame(spec: &EmitterSpec, index: usize, lift: f32, key: u32) -> crate::flame::Flame {
+    let sources = match spec.ring {
+        Some((n, radius)) if n > 1 => {
+            let mut rng = Rng::new(0x5EED_0001 ^ key);
+            Source::ring(n, radius, &mut rng)
+        }
+        _ => vec![Source::at_node()],
+    };
+    let mut emitter = Emitter::new(spec.template, spec.size, sources);
+    emitter.detail = spec.detail;
+    let seed = seed(key, index);
+    if index == 0 {
+        crate::flame::Flame::new(emitter, lift, spec.texture, seed)
+    } else {
+        crate::flame::Flame::new(emitter, 0.0, spec.texture, seed).without_contacts()
     }
 }
 
-/// A flame's random seed, distinct per node and emitter.
-fn seed(node: Entity, index: usize) -> u32 {
-    (node.index_u32() ^ (index as u32).wrapping_mul(0x9E37_79B9)) | 1
+/// A flame's random seed, distinct per fire and emitter.
+fn seed(key: u32, index: usize) -> u32 {
+    (key ^ (index as u32).wrapping_mul(0x9E37_79B9)) | 1
 }
 
 /// Sets each fire light from its emitter's state, computed at the tick.
@@ -1391,5 +1429,37 @@ mod tests {
         let small = MEDIUM_SMALL_BASE.keys;
         assert_eq!(small.sample(2.0, false), [200, 120, 50, 0]);
         assert_eq!(small.sample(1.0, false), [0, 0, 0, 0]);
+    }
+
+    /// A large fire (flame and ringed bed) spawned in `world` after `extra`
+    /// unrelated entities: its flames, in emitter order, as text.
+    fn spawned_flames(extra: usize, place: Vec3) -> Vec<String> {
+        let mut world = World::new();
+        for _ in 0..extra {
+            world.spawn_empty();
+        }
+        let node = world.spawn(Transform::from_translation(place)).id();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        spawn_fire(&mut commands, node, 2.0);
+        queue.apply(&mut world);
+        let mut flames: Vec<(Entity, String)> = world
+            .query::<(Entity, &crate::flame::Flame)>()
+            .iter(&world)
+            .map(|(e, f)| (e, format!("{f:?}")))
+            .collect();
+        flames.sort_unstable_by_key(|f| f.0);
+        assert_eq!(flames.len(), 2, "a flame and its bed");
+        flames.into_iter().map(|f| f.1).collect()
+    }
+
+    /// Finding F571: a fire's streams and its ring's places follow its
+    /// number in the spawn order and its node's place, not its node's entity
+    /// index, which an unrelated type added to a build moves.
+    #[test]
+    fn a_fires_streams_do_not_follow_its_entity_index() {
+        let at = Vec3::new(1.0, 0.0, 2.0);
+        assert_eq!(spawned_flames(0, at), spawned_flames(37, at));
+        assert_ne!(spawned_flames(0, at), spawned_flames(0, at + Vec3::X));
     }
 }

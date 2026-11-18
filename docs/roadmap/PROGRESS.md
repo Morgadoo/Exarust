@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r315, 11-16) | target |
+| measure | start (r186, 11-10) | now (r316, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9262 | all |
+| Tests passing | 8,489 | 9264 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 316 | F571: build-dependent golden changes on fire-lit shots came from particle seeds keyed by entity index, which Bevy resource and message entities shift with any type a build adds; flames are now seeded in the order their spawns apply and shared random streams and light registration are walked in a sorted order; two builds differing only by an unused resource give identical traces and pictures. |
 | 2026-11-16 | 315 | Combo lists open by the GUI child placement (over the owner edge or above it, uncut) and a hovered combo glows its text; the pad pick uses the original record reach test; the pointer table matches the shipped executable; the first built-in glyph is the GUISymbl square; the game skin atlas is resampled to 40 by 20 units at the GUI unit and again on scale changes (skinned frames draw smooth; golden hub changed on purpose); five stale ledger rows corrected. |
 | 2026-11-16 | 314 | The ten mesh query slots are identical to the original over 5000 cases each; the cloth level contact reads the mesh face record and the sweep record; the grid shift is proven unreachable in 0.9.5 and the grid rebuild is the teardown reset; the placement static Height Query mode is ported (no caller yet); the placement route stop clears the run bit and the free walk; no picture or trace change. |
 | 2026-11-16 | 313 | Saves now carry the live part records of every placed object and prop (doors, levers, chains, cloth) and each mechanism live object word, so a door left open or an armed lever reloads as the player left it (proved by a save then load on the worker); the menu music toggle crossfades; a companion skill rise writes its AI skill and confidence; archive load 16.7 s to 11.2 s. |

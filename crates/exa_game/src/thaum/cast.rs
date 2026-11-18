@@ -2895,7 +2895,7 @@ pub(crate) fn follow_weapon_changes(
     mut arcs: Query<&mut LiveArcs>,
     mut draws: ResMut<EffectDraws>,
 ) {
-    for (caster_entity, mut caster) in &mut casters {
+    for (caster_entity, mut caster) in casters.iter_mut().sort_unstable::<Entity>() {
         // The weapon changes reach the power holding the item hook.
         if !caster.hooks.item_is(super::energy::SHOCK_WEAPONS) {
             continue;
@@ -3257,7 +3257,7 @@ pub(crate) fn tick_casters(
         state_flags,
         swing_sound,
         stance,
-    ) in &mut casters
+    ) in casters.iter_mut().sort_unstable::<Entity>()
     {
         let caster = &mut *caster;
         refresh_body(

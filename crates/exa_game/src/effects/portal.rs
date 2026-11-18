@@ -450,6 +450,11 @@ pub struct PortalSparks;
 #[derive(Component, Debug)]
 pub struct PortalDissolveNode;
 
+/// The salts of the portal's two particle systems' seeds
+/// ([`exa_world::flame::queue_reseed`]).
+const SPARKS_SALT: u32 = 0x5BA2_4C01;
+const DISSOLVE_SALT: u32 = 0x85EB_CA6B;
+
 /// A loaded level portal marker gets the portal's spark system and blue
 /// light, as the original's import handler builds them on the marker's
 /// place when the marker is loaded into the game's scene (the game plugin
@@ -462,7 +467,7 @@ pub fn light_portals(
     mut commands: Commands,
     markers: Query<(Entity, &GlobalTransform), Added<exa_world::PortalMarker>>,
 ) {
-    for (marker, place) in &markers {
+    for (marker, place) in markers.iter().sort::<Entity>() {
         info!(
             "portal: sparks and light on the marker {marker:?} at {:?} m",
             place.translation()
@@ -471,20 +476,22 @@ pub fn light_portals(
         emitter.spawn_rule = SpawnRule::PortalRing {
             scale: SYSTEM_SCALE,
         };
-        let seed = marker.index_u32().wrapping_mul(0x9E37_79B9) | 1;
         let system = commands
             .spawn((
                 Name::new(PORTAL_NODE_NAME),
                 PortalSparks,
                 // The marker's sparks meet no body: their builder clears
                 // the system's body-contact class bit (the dissolve keeps it).
-                Flame::new(emitter, 0.0, PARTICLE_TEXTURE, seed)
+                Flame::new(emitter, 0.0, PARTICLE_TEXTURE, 1)
                     .additive()
                     .without_contacts(),
                 Transform::IDENTITY,
                 ChildOf(marker),
             ))
             .id();
+        // Seeded in spawn order, not by the marker's entity index, which an
+        // unrelated type added to a build moves (finding F571).
+        exa_world::flame::queue_reseed(&mut commands, system, SPARKS_SALT);
         commands.spawn((
             Name::new(PORTAL_NODE_NAME),
             PortalLight,
@@ -597,14 +604,16 @@ pub fn use_portals(
             })
             .collect();
         let written = emitter.seed(&seeds);
-        let seed = request.body.index_u32().wrapping_mul(0x85EB_CA6B) | 1;
-        commands.spawn((
-            Name::new(DISSOLVE_NODE_NAME),
-            PortalDissolveNode,
-            exa_world::level_lifecycle::LevelEntity,
-            Flame::new(emitter, 0.0, PARTICLE_TEXTURE, seed).additive(),
-            Transform::IDENTITY,
-        ));
+        let dissolve = commands
+            .spawn((
+                Name::new(DISSOLVE_NODE_NAME),
+                PortalDissolveNode,
+                exa_world::level_lifecycle::LevelEntity,
+                Flame::new(emitter, 0.0, PARTICLE_TEXTURE, 1).additive(),
+                Transform::IDENTITY,
+            ))
+            .id();
+        exa_world::flame::queue_reseed(&mut commands, dissolve, DISSOLVE_SALT);
         let place = at.translation();
         let played = match (
             game.as_deref(),

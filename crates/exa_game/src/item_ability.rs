@@ -530,7 +530,9 @@ pub(crate) fn ability_tick(
         return;
     }
     let now = time.elapsed().as_millis() as u64;
-    for (character, possessions, modifier, burning_grip) in &mut characters {
+    for (character, possessions, modifier, burning_grip) in
+        characters.iter_mut().sort_unstable::<Entity>()
+    {
         let next = clock.next_ms.entry(character).or_insert(0);
         if now < *next {
             continue;
