@@ -1,0 +1,5 @@
+- [x] Check the GI injection and surface sample against the original's programs
+- [x] Picture pairs of the torch pose against the retail capture
+- [x] Keep-own-light bit in the cube caster walk, with a test
+- [x] Fixture glow put-out and switch-off, with a test
+- [x] Documentation and the comparison recipe
