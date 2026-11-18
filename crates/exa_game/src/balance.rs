@@ -414,7 +414,10 @@ pub enum Rising {
 /// changes nothing; else the condition is getting up, the body turns to
 /// its rising direction ([`rise_heading`]) when more than 18° off, stands
 /// on its controller, and a new pick starts with a blend of 20 from the
-/// whole physical pose; the feet's contact states are cleared.
+/// whole physical pose; the feet's contact states are cleared. Before any
+/// of it (on the waiting and held returns too) the torso twist starts over:
+/// its followed yaw is 0 and its rotation the identity, so a risen body's
+/// twist does not resume from its yaw before the fall.
 #[allow(clippy::too_many_arguments)]
 fn start_getting_up(
     body: &mut Ragdoll,
@@ -422,10 +425,13 @@ fn start_getting_up(
     condition: &mut Condition,
     flags: StateFlags,
     root: &mut Transform,
-    player: Steered,
+    mut player: Steered,
     motions: &Motions,
     then: &str,
 ) -> Rising {
+    if let Some((_, locomotor)) = player.as_mut() {
+        reset_twist(locomotor);
+    }
     let Some(drive) = body.drive.as_ref() else {
         return Rising::Waits;
     };
@@ -470,6 +476,13 @@ fn start_getting_up(
         anim.capture_whole();
     }
     Rising::Rises(started)
+}
+
+/// The get-up start's twist reset: the followed yaw 0, the rotation the
+/// identity (the twist before this tick's block stays as it is).
+fn reset_twist(locomotor: &mut Locomotor) {
+    locomotor.twist_yaw = 0.0;
+    locomotor.twist = Quat::IDENTITY;
 }
 
 /// The heading a get-up's turn compares its rising direction with: the
