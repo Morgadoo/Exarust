@@ -332,12 +332,13 @@ fn apply_pointer(
     }
 }
 
-/// The pointer of an empty slot: one transparent pixel.
-fn empty_pointer(menu: &mut MenuCursor, images: &mut Assets<Image>) -> CursorIcon {
-    let handle = menu
-        .empty
-        .get_or_insert_with(|| {
-            images.add(Image::new(
+/// The pointer of an empty slot: one transparent pixel, made on first use
+/// (the resources are written only then).
+fn empty_pointer(menu: &mut ResMut<MenuCursor>, images: &mut ResMut<Assets<Image>>) -> CursorIcon {
+    let handle = match &menu.empty {
+        Some(handle) => handle.clone(),
+        None => {
+            let handle = images.add(Image::new(
                 Extent3d {
                     width: 1,
                     height: 1,
@@ -347,9 +348,11 @@ fn empty_pointer(menu: &mut MenuCursor, images: &mut Assets<Image>) -> CursorIco
                 vec![0; 4],
                 TextureFormat::Rgba8UnormSrgb,
                 RenderAssetUsages::MAIN_WORLD,
-            ))
-        })
-        .clone();
+            ));
+            menu.empty = Some(handle.clone());
+            handle
+        }
+    };
     CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
         handle,
         ..default()
