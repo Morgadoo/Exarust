@@ -945,6 +945,8 @@ struct Sensed {
     speed: f32,
     contacts: Vec<Contact>,
     roles: Option<Roles>,
+    /// The level it left with the player and its id there.
+    former: Option<(u32, u32)>,
     /// Its race word carries the AI bit, the ally sense's mark of a fellow
     /// AI character ([`Npc::race_ai`]).
     ai: bool,
@@ -1013,6 +1015,7 @@ pub fn perceive_all(
                 Option<&StateFlags>,
                 Option<&combatant::PlayerContacts>,
                 Option<&combatant::MindPowers>,
+                Option<&roles::FormerLevel>,
             ),
         )>,
         Query<(
@@ -1055,7 +1058,7 @@ pub fn perceive_all(
                 child,
                 npc,
                 warded,
-                (locomotor, flags, player_contacts, powers),
+                (locomotor, flags, player_contacts, powers, former),
             )| {
                 let masked = powers.and_then(|p| p.mask);
                 let phase = anim
@@ -1105,6 +1108,7 @@ pub fn perceive_all(
                         (None, None) => Vec::new(),
                     },
                     roles: roles.cloned(),
+                    former: roles::FormerLevel::pair(former),
                     ai: npc.is_some_and(|n| n.race_ai),
                 }
             },
@@ -1248,7 +1252,7 @@ pub fn perceive_all(
                     let partner = Partner {
                         id: sensed.character_id,
                         roles: theirs,
-                        former: None,
+                        former: sensed.former,
                     };
                     let rating = roles::attitude(&db.book, roles, relations, &partner, db.locale);
                     Attitude {
@@ -1273,7 +1277,7 @@ pub fn perceive_all(
                         let partner = Partner {
                             id: third.character_id,
                             roles: their_roles,
-                            former: None,
+                            former: third.former,
                         };
                         Some((
                             third.entity,

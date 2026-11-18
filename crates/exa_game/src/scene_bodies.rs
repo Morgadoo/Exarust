@@ -806,6 +806,9 @@ pub fn spawn_scene_body(
         exa_ai::brain::CharacterId(record.id),
         exa_ai::combatant::Combatant::default(),
     ));
+    if let Some(former) = exa_ai::roles::FormerLevel::of_origin(record.origin) {
+        commands.entity(model_entity).insert(former);
+    }
     match plan.brain {
         BodyBrain::Duellist { reaction_ms } => {
             let mut duellist = exa_ai::Duellist::new(context.player);

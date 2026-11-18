@@ -339,6 +339,32 @@ fn the_last_attitude_moves_a_former_level_character() {
     );
 }
 
+/// A world follower's moved record is kept under its whole tagged id, which
+/// the masked lookups never find again: the first ask answers it, the next
+/// makes a new relation. A global record already under that id refuses the
+/// move and the level keeps its own.
+#[test]
+fn a_tagged_followers_moved_relation_answers_once() {
+    let none = Roles::default();
+    let mut rel = Relations::default();
+    rel.create(0x8000_0003, 0.0, 0, 2);
+    rel.find_mut(0x8000_0003).unwrap().last = 33.0;
+    let partner = Partner {
+        id: 0x4000_0007,
+        roles: &none,
+        former: Some((2, 0x8000_0003)),
+    };
+    assert_eq!(rel.last_attitude(&partner, 50, 2), 33.0);
+    assert_eq!(rel.global[&0x4000_0007].last, 33.0);
+    assert_eq!(rel.last_attitude(&partner, 60, 2), 0.0);
+    assert_eq!(rel.find(0x4000_0007).unwrap().met_ms, 60);
+    let mut held = Relations::default();
+    held.create(0x8000_0003, 0.0, 0, 2);
+    held.global.insert(0x4000_0007, Relation::default());
+    assert!(!held.migrate_former(0x4000_0007, 2, 0x8000_0003));
+    assert!(held.levels[0].table.contains_key(&3));
+}
+
 /// A relation role gains each value once; added again with no value it is
 /// left; a role the book does not hold is reported.
 #[test]
