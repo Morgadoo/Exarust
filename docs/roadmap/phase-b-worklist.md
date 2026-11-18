@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 319 | 96,760 | B1 wire (or prove unreachable) |
-| partial | 897 | 674,096 | B4 complete the port |
+| partial | 876 | 658,494 | B4 complete the port |
 | missing | 37 | 6,211 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -22,7 +22,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | powers | 60,532 | 1,307 | 181 |
 | world | 51,054 | 7,732 | 324 |
 | ai | 57,286 | 776 | 11 |
-| items | 38,648 | 4,077 | 525 |
+| items | 23,046 | 4,077 | 525 |
 | data | 17,286 | 3,068 | 0 |
 | runtime | 16,733 | 1,029 | 181 |
 | core | 9,818 | 2,319 | 59 |
@@ -99,9 +99,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Materials (unit routines) | render | 2 / 3,866 | 0 / 0 | 0 / 0 | 3,866 |
 | RFT_BoundSphere (unit routines) | core | 2 / 3,851 | 0 / 0 | 0 / 0 | 3,851 |
 | TMesh | render | 4 / 3,114 | 2 / 703 | 0 / 0 | 3,817 |
-| TProcMaterial | items | 4 / 3,148 | 0 / 0 | 1 / 525 | 3,673 |
 | SG_ItemGUI (unit routines) | items | 3 / 2,553 | 4 / 1,049 | 0 / 0 | 3,602 |
-| FLX_Materials_Procedural (unit routines) | items | 2 / 3,578 | 0 / 0 | 0 / 0 | 3,578 |
 | TCombatant | ai | 6 / 3,234 | 2 / 268 | 0 / 0 | 3,502 |
 | TPwrForceKinesis_S | powers | 5 / 3,452 | 0 / 0 | 0 / 0 | 3,452 |
 | RF_Intersection (unit routines) | physics | 2 / 288 | 8 / 3,137 | 0 / 0 | 3,425 |
@@ -196,13 +194,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGemstone | items | 1 / 760 | 0 / 0 | 0 / 0 | 760 |
 | TResin | items | 1 / 752 | 0 / 0 | 0 / 0 | 752 |
 | TPwrDispSummonDemon_I | powers | 1 / 752 | 0 / 0 | 0 / 0 | 752 |
-| TSteelPainted | items | 1 / 748 | 0 / 0 | 0 / 0 | 748 |
-| TSteelChain | items | 1 / 732 | 0 / 0 | 0 / 0 | 732 |
 | TScriptRole | script | 1 / 712 | 0 / 0 | 0 / 0 | 712 |
-| TSteelGen | items | 1 / 700 | 0 / 0 | 0 / 0 | 700 |
-| TIronGen | items | 1 / 700 | 0 / 0 | 0 / 0 | 700 |
-| TSteelBlade | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
-| TSteelPlate2 | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
 | FPC System RTL | runtime | 6 / 675 | 0 / 0 | 0 / 0 | 675 |
 | RF_ObjectLibs (unit routines) | data | 2 / 662 | 0 / 0 | 0 / 0 | 662 |
 | TPickerForm | ui | 1 / 184 | 2 / 473 | 0 / 0 | 657 |
@@ -220,28 +212,20 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TToolTip | ui | 1 / 553 | 0 / 0 | 0 / 0 | 553 |
 | TPackageLibrary | data | 1 / 542 | 0 / 0 | 0 / 0 | 542 |
 | TLightAlias | render | 2 / 537 | 0 / 0 | 0 / 0 | 537 |
-| TClothSilk | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
-| TClothPadded1 | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
-| TClothPadded2 | items | 1 / 536 | 0 / 0 | 0 / 0 | 536 |
-| TClothVelvet | items | 1 / 528 | 0 / 0 | 0 / 0 | 528 |
+| TProcMaterial | items | 0 / 0 | 0 / 0 | 1 / 525 | 525 |
 | Program main (Exanima.lpr) | runtime | 3 / 443 | 0 / 0 | 1 / 74 | 517 |
-| TClothBasic | items | 1 / 516 | 0 / 0 | 0 / 0 | 516 |
-| TClothFine | items | 1 / 508 | 0 / 0 | 0 / 0 | 508 |
 | TGUITask | ui | 3 / 504 | 0 / 0 | 0 / 0 | 504 |
 | TEndSessionMenu | modes | 1 / 477 | 0 / 0 | 0 / 0 | 477 |
 | TCharViewBehaviour | ai | 1 / 466 | 0 / 0 | 0 / 0 | 466 |
 | Item description phrases | items | 1 / 465 | 0 / 0 | 0 / 0 | 465 |
-| TLeatherA01 | items | 1 / 464 | 0 / 0 | 0 / 0 | 464 |
-| TLeatherA02 | items | 1 / 464 | 0 / 0 | 0 / 0 | 464 |
 | TPhysiquePicker | ui | 4 / 464 | 0 / 0 | 0 / 0 | 464 |
-| TSuedeA01 | items | 1 / 456 | 0 / 0 | 0 / 0 | 456 |
-| TWiredGripA01 | items | 1 / 456 | 0 / 0 | 0 / 0 | 456 |
 | TTexture | render | 1 / 453 | 0 / 0 | 0 / 0 | 453 |
 | THelpScreen | ui | 2 / 177 | 2 / 199 | 2 / 77 | 453 |
 | SGD_GameObjEdit (unit routines) | ui | 1 / 440 | 0 / 0 | 0 / 0 | 440 |
 | SG_Prelude_Main (unit routines) | modes | 1 / 422 | 0 / 0 | 0 / 0 | 422 |
 | TThaumTree | powers | 3 / 276 | 1 / 121 | 0 / 0 | 397 |
 | Scene node despawn and viewport step (TSceneTaskInt by address) | world | 0 / 0 | 1 / 388 | 0 / 0 | 388 |
+| FLX_Materials_Procedural (unit routines) | items | 1 / 388 | 0 / 0 | 0 / 0 | 388 |
 | RFG_Dialogue (unit routines) | script | 0 / 0 | 2 / 383 | 0 / 0 | 383 |
 | TProjectManager | data | 1 / 373 | 0 / 0 | 0 / 0 | 373 |
 | FLX_PostProcess (unit routines) | render | 1 / 222 | 0 / 0 | 1 / 127 | 349 |

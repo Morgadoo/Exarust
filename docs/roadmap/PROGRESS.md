@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r329, 11-16) | target |
+| measure | start (r186, 11-10) | now (r330, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **69.06%** | **100%** |
+| **Ledger: bytes in a final state** | — | **69.68%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9321 | all |
+| Tests passing | 8,489 | 9325 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -106,7 +106,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Thaumaturgy & effects | 9 | 9 | 81 | 62,020 |
 | World, levels & terrain | 5 | 5 | 90 | 59,110 |
 | AI & behaviour | 8 | 8 | 80 | 58,073 |
-| Items, materials & crafting | 5 | 5 | 73 | 43,250 |
+| Items, materials & crafting | 5 | 5 | 52 | 27,648 |
 | Data, assets & I/O | 6 | 6 | 47 | 20,354 |
 | Runtime & platform | 5 | 5 | 48 | 17,268 |
 | Core, math & threading | 3 | 3 | 52 | 12,196 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 3 | 2,097 |
 | Combat, weapons & damage | 1 | 1 | 3 | 1,560 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,246** | **776,180** |
+| **Total** | **90** | **90** | **1,225** | **760,578** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 330 | The CPU painter samples each library texture as the original load word asks (linear for 0x70133 metals, cloths, leathers; nearest for woods and coppers; the first claim wins), every job own map as a clamped level-0 bilinear mix and emblem pictures bilinearly; the gemstone pattern pass and the alternate steel normal are shown never to draw on shipped data (DEC-12 condition met); a dropped lit blade puts out its flame row; golden and FPS unchanged, painter wall time unchanged. |
 | 2026-11-16 | 329 | The main tick game clock (holding with the pause counter) and the scene task capped step run live, the light flicker taking the scene step; the pad step repeat and Powers hold run on the simulation clock; the per-mode words come from the original mode switch (arena level cap 12 read by the skill screen, the HUD alert and the company report); the camera detaches on a switch to no mode, a shot copies its view into the cursor pin, and the player own arena entrant start takes the fast two-point shot; golden unchanged. |
 | 2026-11-16 | 328 | Terrain takes one GI slot per tile as the original (arenao3 one tile row changes tone; e01, e02, hub identical); moving nodes take the original cell bytes and change rooms only on a cell change; the light flood cleanup box and cell insert reconciled with round 327 against the assembly (32-bit box arithmetic, no whole-cell shortcut); the grid +Ceiling node decoded as never drawn and never cast. |
 | 2026-11-16 | 327 | Two garments sharing a part name keep their own paint; strikes take their speed from the swing tracker and fists are measured along their hand (the arena_shield, shock and blast golden scenes change on purpose); hair cloth draws two culled passes; the get-up resets the torso twist; burning groans; the parchment hits by texture block; closing the skill screen refreshes armour; a teleporter journey arrives at the operative frame; a refused AI cast clears at once; the arena manager health follows the career; the force shell plays its break sound; the light flood clears a box; terrain detail follows the setting. |
