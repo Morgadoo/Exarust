@@ -1659,11 +1659,13 @@ impl ObjectContacts {
     /// The object's static stage for one level mesh: its triangles handed
     /// over (world, metres) in the object's space and centimetres, closed
     /// as one piece with the box about them, as the cloth's level contact
-    /// takes one static mesh at a time.
+    /// takes one static mesh at a time. `tree` says the mesh answers
+    /// through its kd-tree ([`crate::cloth_level::LevelPiece::tree`]).
     pub fn gather_level(
         &mut self,
         to_object: &Affine3A,
         triangles: impl IntoIterator<Item = [Vec3; 3]>,
+        tree: bool,
     ) {
         let first = self.level.len();
         for t in triangles {
@@ -1674,10 +1676,10 @@ impl ObjectContacts {
             });
         }
         if self.level.len() > first {
-            self.pieces.push(crate::cloth_level::LevelPiece::around(
-                &self.level[first..],
-                self.level.len(),
-            ));
+            let mut piece =
+                crate::cloth_level::LevelPiece::around(&self.level[first..], self.level.len());
+            piece.tree = tree;
+            self.pieces.push(piece);
         }
     }
 }
