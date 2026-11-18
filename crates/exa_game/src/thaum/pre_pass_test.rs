@@ -50,6 +50,12 @@ fn see_ticks(target: Res<Target>, bodies: Query<&Ragdoll>, mut seen: ResMut<Seen
 /// test's set-up), with probes after the first pass and at the character
 /// ticks. Returns the app, the duellist and the target.
 fn thrown_blast(disabled: bool) -> (App, Entity, Entity) {
+    thrown_blast_at(disabled, false)
+}
+
+/// As [`thrown_blast`], the target a character (it has a drive) when
+/// `character` is set.
+fn thrown_blast_at(disabled: bool, character: bool) -> (App, Entity, Entity) {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(CastPlugin)
@@ -67,6 +73,9 @@ fn thrown_blast(disabled: bool) -> (App, Entity, Entity) {
         );
     let mut target_body = body(9, Vec3::new(0.0, 0.0, 0.35), 0.3);
     target_body.set_disabled(disabled);
+    if character {
+        target_body.drive = Some(exa_physics::body::Drive::default());
+    }
     let target = app.world_mut().spawn(target_body).id();
     app.insert_resource(Target(target));
     let mut caster = PowerCaster::new(&[0x201]);
@@ -175,4 +184,37 @@ fn the_sector_gates_offer_only_near_enabled_parts() {
     let mut off = near.clone();
     off.set_disabled(true);
     assert!(!offered(object, &off, 0));
+}
+
+/// A struck character takes the knockback step routine: the knockback kind
+/// set and the step's target within one step length (the extension 1) of
+/// its chest, flat, along the blast.
+#[test]
+fn a_struck_character_takes_the_knockback_step_routine() {
+    let (mut app, _, target) = thrown_blast_at(false, true);
+    if let Some(drive) = app
+        .world_mut()
+        .get_mut::<Ragdoll>(target)
+        .unwrap()
+        .drive
+        .as_mut()
+    {
+        drive.balance_mut().set_extension(1.0);
+    }
+    let mut stepped = None;
+    for _ in 0..40 {
+        app.world_mut().run_schedule(FixedUpdate);
+        let body = app.world().get::<Ragdoll>(target).unwrap();
+        if let Some(at) = body.step_target() {
+            let drive = body.drive.as_ref().unwrap();
+            let step = exa_physics::body::step_length(drive.stats.scale, 1.0);
+            stepped = Some((at, drive.balance().chest(), step));
+            break;
+        }
+    }
+    let (at, chest, step) = stepped.expect("the blast knocks the character");
+    let chest = chest.unwrap_or(Vec3::ZERO);
+    let push = (at - chest).with_y(0.0);
+    assert!(push.length() <= step / 100.0 + 1e-4, "{push}");
+    assert!(0.0 < push.z, "{push}");
 }

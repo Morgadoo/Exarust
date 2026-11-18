@@ -28,14 +28,20 @@
 //!   and pitch). A part's limb callback ([`strike_torrent_part`]) pushes the
 //!   part's particles at the gathered surface's weights by
 //!   [`limb_impulse`]; a struck character takes [`torrent_knock`] of the
-//!   part's gathered impulse: the energy, a knockback step, its instability
+//!   part's gathered impulse: the energy, a knockback step (the step
+//!   routine, `Ragdoll::knock_along`, as the blast's), its instability
 //!   counter +1, the loosened pins and concern 1 at 0.01 toward the caster;
 //!   a body met is woken.
 //! - **Leaving**: the frame that would build no triangles removes it
 //!   ([`Torrent::builds_nothing`]): fizzled, or every stream spent.
 //!
-//! [inf: the frame's turned aim is the blast aim here (the player
-//! behaviour's turn spring is not wired); the level's meshes are walked
+//! - **The turned aim** ([`turned_view`]): the start resets a turn spring
+//!   (the player behaviour's cursor follower) at the aim's heading, and the
+//!   start's frame looks along the aim; each tick the spring follows the
+//!   aim's heading and takes one step, and the frame looks along its flat
+//!   direction, so a turning caster's streams swing round after the aim.
+//!
+//! [inf: the level's meshes are walked
 //! triangle by triangle without their kd-trees; a part without a node mesh
 //! answers with its spheres.] The stream ribbon draws with
 //! `effecttorrent_f` ([`draw_torrents`]). The hit ends as the blast's does
@@ -94,6 +100,26 @@ pub struct LiveTorrent {
     pub contact_scale: f32,
     /// The draws the start's two loop voices take.
     pub rolls: super::torrent_sound::TorrentRolls,
+    /// The turn spring the frame looks along: reset at the start's aim,
+    /// following the aim's heading each tick ([`turned_view`]).
+    pub(crate) turn: crate::steering::CursorFollower,
+}
+
+/// The tick's view with the turned aim: the turn spring follows the aim's
+/// heading and takes one step, and the frame looks along the spring's
+/// flat direction (`(sin yaw, 0, cos yaw)`), as the torrent's tick sets it
+/// up before the streams.
+pub(crate) fn turned_view(
+    turn: &mut crate::steering::CursorFollower,
+    view: &TorrentView,
+) -> TorrentView {
+    use exa_physics::engine_math::{direction_from_yaw, heading};
+    turn.follow(heading(view.turned_aim));
+    turn.tick();
+    TorrentView {
+        turned_aim: direction_from_yaw(turn.yaw()),
+        ..*view
+    }
 }
 
 /// The torrent's start on its caster: cast motion 0x26 with the power id,
@@ -149,6 +175,11 @@ pub fn new_torrent(
         generation,
         contact_scale: 0.0,
         rolls,
+        // The start resets the spring at the aim (the start's own frame
+        // looks along the aim itself).
+        turn: crate::steering::CursorFollower::at(exa_physics::engine_math::heading(
+            view.turned_aim,
+        )),
     }
 }
 
@@ -182,7 +213,8 @@ pub fn tick_torrent(
     let hooked = live.hooked;
     let mut short = false;
     live.torrent.roll = roll.0;
-    let events = live.torrent.tick_paying(view, &mut draws.0, |cost| {
+    let view = turned_view(&mut live.turn, view);
+    let events = live.torrent.tick_paying(&view, &mut draws.0, |cost| {
         let shortfall = spend_tick(body, cost);
         short |= shortfall;
         shortfall && hooked
@@ -483,9 +515,9 @@ fn knock_torrent_character(
     }) else {
         return;
     };
-    if let Some((direction, size)) = knock.knock {
-        let flat = Vec3::new(direction.x, 0.0, direction.z);
-        body.begin_knockback(flat * (size / CM));
+    if let Some((direction, amount)) = knock.knock {
+        // The knockback step routine, without the chest's velocity.
+        body.knock_along(direction, amount);
     }
     if let Ok(mut combatant) = combatants.get_mut(struck) {
         let aggression = npcs
@@ -713,6 +745,35 @@ mod tests {
             &mut roll,
         );
         (torrent, draws, roll)
+    }
+
+    /// The frame's turned aim follows the aim through the turn spring: a
+    /// quarter turn of the aim swings the frame round over several ticks,
+    /// flat, and it settles on the new heading.
+    #[test]
+    fn the_turned_aim_swings_after_the_aim() {
+        let mut body = CastBody {
+            focus: 1.0,
+            ..CastBody::default()
+        };
+        let (mut torrent, mut draws, mut roll) = live(&mut body);
+        let side = TorrentView {
+            turned_aim: Vec3::new(1.0, -0.2, 0.0),
+            ..view()
+        };
+        let first = turned_view(&mut torrent.turn.clone(), &side).turned_aim;
+        assert_eq!(first.y, 0.0);
+        assert!(0.0 < first.x && first.x < 0.5, "{first}");
+        tick_torrent(&mut torrent, &mut body, &side, &mut draws, &mut roll);
+        assert_eq!(torrent.turn.yaw(), first.x.atan2(first.z));
+        for _ in 0..200 {
+            tick_torrent(&mut torrent, &mut body, &side, &mut draws, &mut roll);
+        }
+        let settled = torrent.turn.yaw();
+        assert!(
+            (settled - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "{settled}"
+        );
     }
 
     #[test]

@@ -287,7 +287,10 @@ wounds count down before the characters' ticks (the original's body tick
 paints its queued marks), and `body::deal_shoves`, first in every tick, deals
 the blows the last post-step (and the frame) sent: the original's damage
 routine sets the push, daze, sag and knockback step in the post-step, so the
-next body tick already sees them.
+next body tick already sees them. The force effects' contacts call the same
+step routine without the chest's velocity (`body::knock_push`,
+`Ragdoll::knock_along`), and the blast's clears the knockback kind first
+(`Ragdoll::clear_knockback_kind`).
 
 The hand stays in the frame, as the original's hand runs on its main thread
 per input event (the GUI's cursor handlers) and writes the bodies directly.

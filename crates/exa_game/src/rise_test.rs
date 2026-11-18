@@ -362,3 +362,40 @@ fn a_raise_without_decay_left_keeps_the_feral_level() {
         .unwrap();
     assert_eq!(app.world().get::<Fighter>(body).unwrap().health.red, 0.7);
 }
+
+/// The revival picks the voice again from the record: a corpse that spoke
+/// with its living voice comes back with the undead one (its feral level
+/// now 0.2), its volume, gain and pitch kept.
+#[test]
+fn a_revived_corpse_takes_the_undead_voice() {
+    use crate::character_voice::voice_of;
+    use crate::mind::casts::{self, MindBody};
+    use exa_character::record::CharacterData;
+    use exa_combat::voice::CharacterVoice;
+    use exa_formats::races::builtin_human;
+    let mut app = app();
+    let (_root, body) = spawn_dead(&mut app, 0.0, 0, RaceMuscles::HUMAN);
+    app.insert_resource(BodyTicks(100));
+    let mut data = CharacterData::default();
+    data.record.feral = 0.0;
+    data.record.undead_voice = 2;
+    let race = builtin_human();
+    let mut living = voice_of(&data.record, &race, 1.5, 0.9, |_| false);
+    living.gain = 0.7;
+    let mut undead_record = data.record.clone();
+    undead_record.feral = 0.2;
+    let undead = voice_of(&undead_record, &race, 1.5, 0.9, |_| false);
+    assert_ne!(living.groan_short, undead.groan_short);
+    app.world_mut().entity_mut(body).insert((data, living));
+    let revival = casts::revive(&mut MindBody::new(0), 0.0, 1.0);
+    app.world_mut()
+        .run_system_cached_with(crate::mind::runtime::raise_corpse, (body, Some(revival)))
+        .unwrap();
+    app.world_mut().flush();
+    let voice = app.world().get::<CharacterVoice>(body).unwrap();
+    assert_eq!(voice.groan_short, undead.groan_short);
+    assert_eq!(voice.grunt, undead.grunt);
+    assert_eq!(voice.scream, undead.scream);
+    assert_eq!(voice.gain, 0.7);
+    assert_eq!(voice.pitch, 0.9);
+}
