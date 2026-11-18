@@ -208,6 +208,15 @@ fn unit_of(gui: Option<&exa_ui::GuiScale>) -> i32 {
     gui.map_or(4, |gui| gui.scale.max(1) as i32)
 }
 
+/// What opening the skill screen changes besides the screen: commands,
+/// the controls' switch, the story's experience and the mode's words.
+type OpenSkillsState<'w, 's> = (
+    Commands<'w, 's>,
+    Option<ResMut<'w, PlayerControl>>,
+    Option<ResMut<'w, StoryExperience>>,
+    Option<Res<'w, crate::flow::ModeWords>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn open_skills(
     mut requests: MessageReader<OpenSkills>,
@@ -219,12 +228,7 @@ pub(crate) fn open_skills(
     mut ui: ResMut<SkillUi>,
     bank: Option<ResMut<exa_audio::SoundBank>>,
     mut sources: Option<ResMut<Assets<AudioSource>>>,
-    (mut commands, mut control, mut story, words): (
-        Commands,
-        Option<ResMut<PlayerControl>>,
-        Option<ResMut<StoryExperience>>,
-        Option<Res<crate::flow::ModeWords>>,
-    ),
+    (mut commands, mut control, mut story, words): OpenSkillsState<'_, '_>,
 ) {
     if requests.read().count() == 0 {
         return;
