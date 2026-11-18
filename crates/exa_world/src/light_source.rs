@@ -578,9 +578,10 @@ fn flicker_trace() -> bool {
 }
 
 /// One flicker step for every animating light, at the frame's time, in
-/// entity (spawn) order: the shared generator's draws then go to the same
-/// lights whatever tables the query walks (the original steps its lights
-/// in the scene's order, each sector's list as registered).
+/// entity index (spawn) order: the shared generator's draws then go to the
+/// same lights whatever tables the query walks (the original steps its
+/// lights in the scene's order, each sector's list as registered). Bevy's
+/// own `Entity` order is the reverse of the index's.
 fn flicker_lights(
     time: Res<Time>,
     mut rng: ResMut<FlickerRng>,
@@ -592,7 +593,10 @@ fn flicker_lights(
     *frame += 1;
     let state = rng.0;
     let mut walked = Vec::new();
-    for (entity, mut source, at) in lights.iter_mut().sort_unstable::<Entity>() {
+    for (entity, mut source, at) in lights
+        .iter_mut()
+        .sort_unstable_by_key::<Entity, _>(|e| e.index_u32())
+    {
         if !source.animates() {
             continue;
         }
@@ -665,6 +669,46 @@ pub(crate) fn apply_light_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Finding F571: the flicker's shared generator goes to the lights in
+    /// entity index (spawn) order, though the query walks the later light's table
+    /// first.
+    #[test]
+    fn the_flicker_draws_in_entity_order() {
+        use bevy::ecs::system::RunSystemOnce;
+        #[derive(Component)]
+        struct Other;
+        let mut world = World::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        world.insert_resource(time);
+        world.init_resource::<FlickerRng>();
+        let light = || LightSource::new(FLICKER, 2.0);
+        // The table of (light, Other) is made first; the earlier light
+        // lands in the second table.
+        let first_table = world.spawn((light(), Other)).id();
+        let early = world.spawn(light()).id();
+        let late = world.spawn((light(), Other)).id();
+        world.despawn(first_table);
+        let walked: Vec<Entity> = world
+            .query::<(Entity, &LightSource)>()
+            .iter(&world)
+            .map(|(e, _)| e)
+            .collect();
+        assert_eq!(
+            walked,
+            [late, early],
+            "the query walks the late light first"
+        );
+        world.run_system_once(flicker_lights).unwrap();
+        let mut rng = FlickerRng(0);
+        let (mut a, mut b) = (light(), light());
+        a.flicker_step(&mut || rng.draw(), 16.0);
+        b.flicker_step(&mut || rng.draw(), 16.0);
+        assert_ne!(a, b);
+        assert_eq!(world.get::<LightSource>(early), Some(&a));
+        assert_eq!(world.get::<LightSource>(late), Some(&b));
+    }
 
     /// The oracle's case: the linear workflow's direct colour is the
     /// colour linearised by the original's sRGB routine (fast logarithm

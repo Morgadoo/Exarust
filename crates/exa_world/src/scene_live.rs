@@ -555,10 +555,11 @@ pub fn run_scene(
     } else {
         added_lights.iter().collect()
     };
-    // Registered in entity (spawn) order, not the queries' table order, so
-    // the sectors' light and mesh lists do not move with a build's types.
-    new_lights.sort_unstable();
-    register.sort_unstable();
+    // Registered in entity index (spawn) order, not the queries' table
+    // order, so the sectors' light and mesh lists do not move with a
+    // build's types.
+    new_lights.sort_unstable_by_key(|e| e.index_u32());
+    register.sort_unstable_by_key(|e| e.index_u32());
     let rooms = level.rooms.clone();
     let room_sector = |room: Option<u16>| room.map_or(SCENE_SECTOR, |r| usize::from(r) + 1);
 
