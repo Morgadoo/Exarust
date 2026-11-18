@@ -2089,10 +2089,7 @@ mod tests {
         assert_eq!(tracked_strike_speed(&t, Vec3::Y, false), 4.0);
         assert_eq!(tracked_strike_speed(&t, Vec3::Y * 2.0, true), 8.0);
         assert_eq!(tracked_strike_speed(&t, -Vec3::X, true), -6.0);
-        let still = swing::Tracker {
-            speed2: 1e-8,
-            ..t
-        };
+        let still = swing::Tracker { speed2: 1e-8, ..t };
         assert_eq!(tracked_strike_speed(&still, Vec3::Y, false), 1e-8);
     }
 

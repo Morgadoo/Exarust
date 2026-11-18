@@ -1152,15 +1152,29 @@ fn a_duellists_chosen_power_is_cast() {
 fn a_refused_duellist_cast_clears_its_casting_flag() {
     let mut app = new_app();
     let npc = duellist(&mut app);
-    app.world_mut().get_mut::<Duellist>(npc).unwrap().mind.casting = true;
+    app.world_mut()
+        .get_mut::<Duellist>(npc)
+        .unwrap()
+        .mind
+        .casting = true;
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(0x0800);
     duel_tick(&mut app);
-    assert_ne!(app.world().get::<PowerCaster>(npc).unwrap().last_result, code::STARTED);
+    assert_ne!(
+        app.world().get::<PowerCaster>(npc).unwrap().last_result,
+        code::STARTED
+    );
     assert!(!app.world().get::<Duellist>(npc).unwrap().mind.casting);
-    app.world_mut().get_mut::<Duellist>(npc).unwrap().mind.casting = true;
+    app.world_mut()
+        .get_mut::<Duellist>(npc)
+        .unwrap()
+        .mind
+        .casting = true;
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(SHOCK);
     duel_tick(&mut app);
-    assert_eq!(app.world().get::<PowerCaster>(npc).unwrap().last_result, code::STARTED);
+    assert_eq!(
+        app.world().get::<PowerCaster>(npc).unwrap().last_result,
+        code::STARTED
+    );
     assert!(app.world().get::<Duellist>(npc).unwrap().mind.casting);
 }
 

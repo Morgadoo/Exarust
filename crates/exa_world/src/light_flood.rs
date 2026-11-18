@@ -347,7 +347,9 @@ impl CellLights {
         let per_cell = PER_CELL_CM;
         let cx = (grid.w >> 1) as f32 + position.x * 100.0 * per_cell;
         let cz = (grid.h >> 1) as f32 + position.z * 100.0 * per_cell;
-        let n = i64::from(exa_physics::engine_math::ceil_to_i32(radius * 100.0 * per_cell)) + 1;
+        let n = i64::from(exa_physics::engine_math::ceil_to_i32(
+            radius * 100.0 * per_cell,
+        )) + 1;
         let (tx, tz) = (i64::from(cx as i32), i64::from(cz as i32));
         let (x0, x1) = ((tx - n).max(0), (tx + n).min(grid.w as i64 - 1));
         let (z0, z1) = ((tz - n).max(0), (tz + n).min(grid.h as i64 - 1));
@@ -696,7 +698,10 @@ mod tests {
         assert!(cells.window(cell(&g, 2, 1), 1).is_some());
         cells.flood(&g, 1, &near(centre(&g, 8, 1)));
         assert!(cells.window(cell(&g, 8, 1), 1).is_some());
-        assert!(cells.window(cell(&g, 2, 1), 1).is_some(), "the stale entry stays");
+        assert!(
+            cells.window(cell(&g, 2, 1), 1).is_some(),
+            "the stale entry stays"
+        );
         // This flood did not record it there.
         assert!(!cells.cells_of(1).contains(&cell(&g, 2, 1)));
         assert!(cells.cells_of(1).contains(&cell(&g, 8, 1)));

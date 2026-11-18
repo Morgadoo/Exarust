@@ -1630,7 +1630,12 @@ mod tests {
     /// two runs (the original matches groups by the painted material).
     #[test]
     fn painted_parts_group_by_garment_not_by_name() {
-        let tri = |x: f32| mesh(&[[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]], &[0, 1, 2]);
+        let tri = |x: f32| {
+            mesh(
+                &[[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]],
+                &[0, 1, 2],
+            )
+        };
         let (a, b, c, d) = (tri(0.0), tri(2.0), tri(4.0), tri(6.0));
         let parts = [
             MergePart {
@@ -1658,7 +1663,11 @@ mod tests {
             .collect();
         assert_eq!(
             runs,
-            [("&cloth", Some(1), 6), ("&cloth", Some(2), 3), ("skin", None, 3)]
+            [
+                ("&cloth", Some(1), 6),
+                ("&cloth", Some(2), 3),
+                ("skin", None, 3)
+            ]
         );
         assert_eq!(merged.triangle_tags, [1, 1, 2, 0]);
     }

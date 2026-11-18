@@ -219,9 +219,15 @@ mod tests {
         let back = materials.get(back_handle).unwrap();
         assert_eq!(ExaMaterialKey::from(back).cloth_cull(), Some(Face::Back));
         assert!(back.second_pass && back.draw_order > front.draw_order);
-        assert_eq!(world.get::<ChildOf>(passes.back_draw).unwrap().parent(), hair);
+        assert_eq!(
+            world.get::<ChildOf>(passes.back_draw).unwrap().parent(),
+            hair
+        );
         assert!(world.get::<HairPasses>(banner).is_none());
-        assert_eq!(world.get::<MeshMaterial3d<ExaMaterial>>(banner).unwrap().0, base);
+        assert_eq!(
+            world.get::<MeshMaterial3d<ExaMaterial>>(banner).unwrap().0,
+            base
+        );
         // A new material on the hair is split again, on the same child.
         let child = passes.back_draw;
         let other = app
@@ -236,7 +242,10 @@ mod tests {
         let passes = app.world().get::<HairPasses>(hair).unwrap();
         assert_eq!(passes.back_draw, child);
         assert_ne!(
-            app.world().get::<MeshMaterial3d<ExaMaterial>>(hair).unwrap().0,
+            app.world()
+                .get::<MeshMaterial3d<ExaMaterial>>(hair)
+                .unwrap()
+                .0,
             other
         );
     }

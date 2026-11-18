@@ -297,7 +297,10 @@ pub fn burn_upkeep(
         Option<&mut exa_physics::body::Ragdoll>,
         Option<&mut crate::collapse::Hands>,
         &mut Burn,
-        (Option<&GlobalTransform>, Option<&crate::voice::CharacterVoice>),
+        (
+            Option<&GlobalTransform>,
+            Option<&crate::voice::CharacterVoice>,
+        ),
     )>,
     mut pains: MessageWriter<crate::pain::PainSounded>,
     mut roll: Local<crate::Roll>,

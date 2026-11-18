@@ -558,7 +558,9 @@ fn a_get_up_resets_the_torso_twist() {
         twist_before: twisted,
         ..Locomotor::default()
     };
-    world.entity_mut(id).insert((Locomotion::default(), locomotor));
+    world
+        .entity_mut(id)
+        .insert((Locomotion::default(), locomotor));
     world.run_system_once(take_posture).unwrap();
     let locomotor = world.get::<Locomotor>(id).unwrap();
     assert_eq!(locomotor.twist_yaw, 0.0);

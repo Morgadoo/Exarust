@@ -2661,7 +2661,9 @@ fn tick_shell_auras(
             let at = of
                 .and_then(|of| bodies.get(of.0).ok())
                 .and_then(|body| body.parts.iter().find(|p| p.parent.is_none()))
-                .map_or(Vec3::ZERO, |root| Vec3::from(root.transform().translation) * CM);
+                .map_or(Vec3::ZERO, |root| {
+                    Vec3::from(root.transform().translation) * CM
+                });
             info!("force shell {entity:?}: closes with {set} at {at:?} cm, pitch {pitch:.4}");
             sounded.write(super::barricade_sound::ForceSounded::at(
                 set, at, volume, pitch,
