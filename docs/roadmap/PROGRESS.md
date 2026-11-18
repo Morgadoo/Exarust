@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r326, 11-16) | target |
+| measure | start (r186, 11-10) | now (r327, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **68.72%** | **100%** |
+| **Ledger: bytes in a final state** | — | **69.06%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9301 | all |
+| Tests passing | 8,489 | 9311 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,23 +98,23 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 110 | 145,258 |
+| Physics, bodies & cloth | 7 | 7 | 108 | 145,082 |
 | Rendering & GPU | 10 | 10 | 171 | 104,953 |
-| UI | 12 | 12 | 202 | 101,577 |
-| Characters, motion & animation | 8 | 8 | 139 | 83,767 |
+| UI | 12 | 12 | 200 | 101,298 |
+| Characters, motion & animation | 8 | 8 | 138 | 79,202 |
 | Game modes, arena & session | 7 | 7 | 136 | 65,221 |
-| Thaumaturgy & effects | 9 | 9 | 83 | 64,321 |
+| Thaumaturgy & effects | 9 | 9 | 81 | 62,020 |
 | World, levels & terrain | 5 | 5 | 91 | 59,211 |
 | AI & behaviour | 8 | 8 | 80 | 58,073 |
 | Items, materials & crafting | 5 | 5 | 73 | 43,250 |
-| Data, assets & I/O | 6 | 6 | 48 | 21,436 |
+| Data, assets & I/O | 6 | 6 | 47 | 20,354 |
 | Runtime & platform | 5 | 5 | 48 | 17,268 |
 | Core, math & threading | 3 | 3 | 52 | 12,196 |
 | Script, dialogue & story | 2 | 2 | 16 | 4,496 |
 | Audio | 1 | 1 | 3 | 2,097 |
 | Combat, weapons & damage | 1 | 1 | 3 | 1,560 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,255** | **784,684** |
+| **Total** | **90** | **90** | **1,247** | **776,281** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 327 | Two garments sharing a part name keep their own paint; strikes take their speed from the swing tracker and fists are measured along their hand (the arena_shield, shock and blast golden scenes change on purpose); hair cloth draws two culled passes; the get-up resets the torso twist; burning groans; the parchment hits by texture block; closing the skill screen refreshes armour; a teleporter journey arrives at the operative frame; a refused AI cast clears at once; the arena manager health follows the career; the force shell plays its break sound; the light flood clears a box; terrain detail follows the setting. |
 | 2026-11-16 | 326 | The journal entry list is an editable combo box with the original query, press, drag, keys and callback edit arm, so entries can be renamed (F89 closed); combos open on the press as the original; entering combat drops a dragged item at the pointer; the pad drives an open combo list or palette and the arena board bottom buttons; golden unchanged. |
 | 2026-11-16 | 325 | The story continue exit nudge takes the nearest walkable point and places the player on the static ground, and a summoned demon arrives on the static ground, as the original mode 1 placement; the Ground Query pre-tests body pieces with the original slab test (identical over 5000 cases, a flat body plate is not met); the cloth sphere push floor follows the mesh query form; traces and golden unchanged. |
 | 2026-11-16 | 324 | Meshes flagged to keep their own light (38 shipped: torch shadows, lamps, braziers) now cast in their own light cube; the put-out and switch-off darken the fixture glow as the original (emissive scale; voxel-light intensity without a colour update); the original GI injection and sample programs were decoded and match Exarust term for term; the exanima01 near-flame excess was mostly the comparison pose (torch head floating 6 cm), now documented; a 1.3-1.7x excess within 1 m below the flame needs a retail capture. |
