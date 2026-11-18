@@ -162,6 +162,10 @@ pub struct LiveScene {
     tracked: EntityHashMap<Entity>,
     /// Each moving root's sector and its meshes.
     roots: EntityHashMap<(usize, Vec<Entity>)>,
+    /// The cell bytes of each moving root and moved light, as the scene's
+    /// per-frame cell update last wrote them; the room hook runs only when
+    /// they change.
+    node_cells: EntityHashMap<(i64, i64)>,
     /// Meshes Bevy must never cull.
     exempt: EntityHashSet,
     /// Meshes the last visible pass drew (in a sector it drew).
@@ -575,6 +579,7 @@ pub fn run_scene(
             members.retain(|&m| m != entity);
             if members.is_empty() {
                 live.roots.remove(&root);
+                live.node_cells.remove(&root);
             }
         }
         live.exempt.remove(&entity);
@@ -593,6 +598,7 @@ pub fn run_scene(
         let Some(node) = live.light_node.remove(&entity) else {
             continue;
         };
+        live.node_cells.remove(&entity);
         if let Some(id) = live.light_id_of.remove(&node)
             && live.node_of_light.get(&id) == Some(&node)
         {
@@ -649,9 +655,14 @@ pub fn run_scene(
         if n.position == position && n.half_extents == half {
             continue;
         }
-        let sector = room_sector(rooms.room_of_node(Vec2::new(position.x, position.z)));
-        if scene.nodes[node].sector != Some(sector) {
-            scene.move_to_sector(node, sector);
+        // The per-frame cell update: the room hook runs only when the
+        // light's cell bytes change.
+        let cell = rooms.cell_of_moving_node(Vec2::new(position.x, position.z));
+        if live.node_cells.insert(entity, cell) != Some(cell) {
+            let sector = room_sector(rooms.room_of_cell(cell.0, cell.1));
+            if scene.nodes[node].sector != Some(sector) {
+                scene.move_to_sector(node, sector);
+            }
         }
         set_link_light(&mut scene.nodes[node], light, reach);
         scene.set_frame(node, position, Mat3::IDENTITY, half);
@@ -743,7 +754,14 @@ pub fn run_scene(
             continue;
         };
         let p = t.translation();
-        let now = room_sector(rooms.room_of_node(Vec2::new(p.x, p.z)));
+        // The per-frame cell update writes the root's cell bytes (clamped
+        // one cell in from the edge) and runs the room hook only when they
+        // change.
+        let cell = rooms.cell_of_moving_node(Vec2::new(p.x, p.z));
+        if live.node_cells.insert(root, cell) == Some(cell) {
+            continue;
+        }
+        let now = room_sector(rooms.room_of_cell(cell.0, cell.1));
         if now == *sector {
             continue;
         }
@@ -1100,6 +1118,20 @@ mod tests {
                 CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
         }
         (Rooms::flood(&grid), grid)
+    }
+
+    #[test]
+    fn a_moving_nodes_cell_bytes_stay_one_cell_in_from_the_edge() {
+        let (rooms, _) = two_rooms();
+        let (w, h) = (rooms.width() as i64, rooms.height() as i64);
+        // Far off the grid's low and high sides.
+        assert_eq!(rooms.cell_of_moving_node(Vec2::new(-1000.0, -1000.0)), (1, 1));
+        assert_eq!(
+            rooms.cell_of_moving_node(Vec2::new(1000.0, 1000.0)),
+            (w - 2, h - 2)
+        );
+        // The load-time sort takes the edge cell itself.
+        assert_eq!(rooms.cell_of_node(Vec2::new(-1000.0, -1000.0)), (0, 0));
     }
 
     #[test]

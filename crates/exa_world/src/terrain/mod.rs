@@ -1201,7 +1201,7 @@ impl TerrainBuild {
             blocks,
             grounds: vec![None; tile_count],
             composite: composite::CompositePools::new(
-                composite::detail_size(manager::ManagerSettings::DEFAULT.texture_detail),
+                live_detail_size(loader.cache.textures.settings()),
                 composite::CompositeFeatures::default(),
             ),
             detail_texture,
@@ -1923,6 +1923,13 @@ impl Look {
     }
 }
 
+/// The live composite pools' detail size: the game's texture-detail
+/// setting through the terrain manager constructor's rule (4096 below 3,
+/// else 8192).
+fn live_detail_size(settings: &exa_assets::texture::TextureSettings) -> u32 {
+    composite::detail_size(settings.texture_detail.min(i32::MAX as u32) as i32)
+}
+
 /// The culling box of block (`bx`, `by`) in its tile's space: the leaf
 /// descriptor's height range over the tile's height `bounds`
 /// ([`manager::block_box_in`]) around the block's centre and half extents
@@ -2443,6 +2450,16 @@ fn sobel_normal(tile: &TerrainTile, i: i32, j: i32, spacing: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_live_composite_takes_the_texture_detail_setting() {
+        let mut settings = exa_assets::texture::TextureSettings::default();
+        // The retail user's detail 3.
+        assert_eq!(live_detail_size(&settings), 8192);
+        settings.texture_detail = 2;
+        assert_eq!(live_detail_size(&settings), 4096);
+        assert_eq!(composite::high_level(live_detail_size(&settings)), 4);
+    }
 
     /// The size naga lays the shader's `TerrainSplat` struct out at, cut
     /// out of `terrain.wesl` (the shader itself imports Bevy's modules,
