@@ -138,6 +138,29 @@ pub struct Partner<'a> {
     pub former: Option<(u32, u32)>,
 }
 
+/// A level's own character that left its level with the player: the level
+/// it left and the local id it had there, as the door flush records them
+/// in its character record (the record's origin). The relations of the
+/// characters that met it there move to the global table the first time
+/// they are asked about it ([`Relations::last_attitude`]).
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormerLevel {
+    pub locale: u32,
+    pub id: u32,
+}
+
+impl FormerLevel {
+    /// The former level of a record's origin, when it has one.
+    pub fn of_origin(origin: Option<[u32; 2]>) -> Option<Self> {
+        origin.map(|[locale, id]| Self { locale, id })
+    }
+
+    /// The pair [`Partner::former`] takes.
+    pub fn pair(former: Option<&Self>) -> Option<(u32, u32)> {
+        former.map(|f| (f.locale, f.id))
+    }
+}
+
 /// The attitude of one character toward another.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rating {
@@ -370,9 +393,18 @@ impl Relations {
             return false;
         }
         for level in &mut self.levels {
-            if level.locale == former_locale
-                && let Some(moved) = level.table.remove(&(former_id & KEY_BITS))
-            {
+            if level.locale != former_locale {
+                continue;
+            }
+            let key = former_id & KEY_BITS;
+            if !level.table.contains_key(&key) {
+                continue;
+            }
+            // The global table refuses a key it holds: the record stays.
+            if self.global.contains_key(&id) {
+                return false;
+            }
+            if let Some(moved) = level.table.remove(&key) {
                 self.global.insert(id, moved);
                 return true;
             }
@@ -382,14 +414,20 @@ impl Relations {
 
     /// The last attitude about `partner`. A global partner missing from the
     /// table is looked for in the stored tables of its former locale and
-    /// moved to the global table, under its whole id; a partner still
-    /// missing gets a new relation and the answer 0.
+    /// moved to the global table, under its whole id, and the moved record
+    /// answers; a partner still missing gets a new relation and the answer
+    /// 0. The lookups key a global partner by its id less the tag bits, so
+    /// a record moved under a tagged world id answers only this once: the
+    /// next ask finds neither it nor the level's (gone) record and makes a
+    /// new one, as the original does.
     pub fn last_attitude(&mut self, partner: &Partner<'_>, now_ms: u32, locale: u32) -> f32 {
         if partner.id & LOCAL_ID == 0
             && !self.global.contains_key(&(partner.id & KEY_BITS))
             && let Some((former_locale, former_id)) = partner.former
+            && self.migrate_former(partner.id, former_locale, former_id)
+            && let Some(moved) = self.global.get(&partner.id)
         {
-            self.migrate_former(partner.id, former_locale, former_id);
+            return moved.last;
         }
         if let Some(r) = self.find(partner.id) {
             return r.last;

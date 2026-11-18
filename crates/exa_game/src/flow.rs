@@ -2828,6 +2828,18 @@ impl Flow {
         steps
     }
 
+    /// Whether the story's per-frame hook runs its once-a-second work this
+    /// frame (the crystal drain): the story hook is set, no main menu
+    /// covers the game, no transition runs, the game is playing and the
+    /// player's condition has neither dying bit (a dying or dead player
+    /// ends the hook before it).
+    pub fn story_hook_runs(&self, player_condition: Option<u32>) -> bool {
+        self.hook == Hook::Story
+            && !self.menu_open
+            && self.phase == Phase::Playing
+            && player_condition.is_some_and(|c| c & DYING == 0)
+    }
+
     /// The story's per-frame hook: the wake-up flags, the once-a-second
     /// discovery pass, and the knocked-out or dead player.
     pub fn story_tick(&mut self, now: u32, player: Option<PlayerReading>) -> Vec<Step> {
@@ -4147,7 +4159,7 @@ pub(crate) fn open_named_level(
 
 /// A teleporter journey is the game's level exit. The destination's
 /// level-entry music check reads the track the music's main voice plays.
-fn travel(
+pub(crate) fn travel(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     mut journeys: Option<MessageReader<crate::destination::TravelToLevel>>,

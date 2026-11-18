@@ -57,10 +57,39 @@ pub struct LevelMusic(pub String);
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct LevelMusicVolume(pub f32);
 
+/// The level's track is the story level hook's: it plays only when it
+/// differs from the track playing on their first 15 characters
+/// ([`story_hook_plays`]). A story door change that keeps the track keeps
+/// it playing across the change (its transition stops the music only when
+/// the destination's track differs).
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct StoryMusicHook;
+
+/// Whether the story level hook plays `track` over `playing` (both as
+/// Exarust names them, lowercase keys): only when they differ on their
+/// first 15 characters. The original compares its own spellings, which
+/// differ from each other by more than case, so the keys answer the same.
+pub fn story_hook_plays(track: &str, playing: &str) -> bool {
+    let short = |s: &str| {
+        s.bytes()
+            .take(15)
+            .map(|b| b.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+    };
+    short(track) != short(playing)
+}
+
 /// Where the level's track starts, in seconds, when its mode picks a start
 /// (the arena hub starts its track at one of four places).
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct LevelMusicStart(pub f32);
+
+/// A story level by its name (`exanima0…`, `exanimac…`): its music is the
+/// story level hook's.
+pub fn is_story_level(level: &str) -> bool {
+    let l = level.to_ascii_lowercase();
+    l.starts_with("exanima0") || l.starts_with("exanimac")
+}
 
 /// Music for a level name, following the original's track naming. A story
 /// level (`exanima0…`, `exanimac…`) plays what [`story_music`] picks.
@@ -72,7 +101,7 @@ pub fn music_for_level(level: &str) -> &'static str {
         "msc_arenao"
     } else if l.starts_with("arena") {
         "msc_arena3"
-    } else if l.starts_with("exanima0") || l.starts_with("exanimac") {
+    } else if is_story_level(level) {
         story_music(level.as_bytes()).key
     } else {
         "ambntra01"
@@ -594,11 +623,16 @@ impl AudioEnvironment {
 
 /// Plays the level's track when the level sets it. A level change goes
 /// through the original's transition screen, which stops A and forgets its
-/// name, after which the level plays its track at once (no crossfade).
+/// name when the destination's music differs, after which the level plays
+/// its track at once (no crossfade). A story level's track
+/// ([`StoryMusicHook`]) that A already plays on its first 15 characters is
+/// left playing, at its volume, as the story hook leaves it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn start_music(
     mut env: ResMut<AudioEnvironment>,
     music: Option<Res<LevelMusic>>,
     (volume, start): (Option<Res<LevelMusicVolume>>, Option<Res<LevelMusicStart>>),
+    story: Option<Res<StoryMusicHook>>,
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
@@ -609,6 +643,15 @@ pub(crate) fn start_music(
     };
     if music.is_changed() {
         *pending = true;
+        if story.is_some()
+            && !music.0.is_empty()
+            && !env.music_name().is_empty()
+            && !story_hook_plays(&music.0, env.music_name())
+        {
+            *pending = false;
+            info!("music: {} plays on into the level", env.music_name());
+            return;
+        }
     }
     let Some(game) = game else {
         return;
@@ -776,6 +819,30 @@ mod tests {
         // One update binds A to a source, as a running frame would.
         env.update(&mut bank, &crate::environment::UpdateInput::default());
         (env, bank, buffer)
+    }
+
+    /// A story level whose track plays already leaves it playing: the
+    /// story hook plays only a track that differs on its first 15
+    /// characters.
+    #[test]
+    fn a_story_track_that_plays_on_is_not_restarted() {
+        use bevy::prelude::*;
+        assert!(!story_hook_plays("msc_uw01amb", "msc_uw01amb"));
+        assert!(!story_hook_plays("msc_abcdefghijkX", "msc_abcdefghijkY"));
+        assert!(story_hook_plays("msc_countfoura", "msc_countfour"));
+        assert!(story_hook_plays("msc_uw01ambb", "msc_uw01amb"));
+        let (env, bank, _) = env_with_track(30.0);
+        let mut app = App::new();
+        app.insert_resource(env)
+            .insert_resource(bank)
+            .init_resource::<Assets<bevy::audio::AudioSource>>()
+            .insert_resource(StoryMusicHook)
+            .insert_resource(LevelMusic("msc_test".into()))
+            .add_systems(Update, start_music);
+        app.update();
+        let env = app.world().resource::<AudioEnvironment>();
+        assert_eq!(env.music_name(), "msc_test", "the hook keeps it playing");
+        assert!(env.music.a.is_some());
     }
 
     #[test]

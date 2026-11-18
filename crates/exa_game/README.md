@@ -867,7 +867,8 @@ points, the camera in its frame and its fade), and the node attach
 run), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a
-barricade, and the steps away; the live blasts and waves carry a hazard a
+barricade, assessed into the brain's contact from the body's look and
+frame forward and written back whole, and the steps away; the live blasts and waves carry a hazard a
 sight pass can walk, and a standing barricade carries one for its wall),
 `effects::emissive` (the seven GI lights' programs, extents, colours and
 boxes, registered as GI shapes while the blast, torrent, teleporter
@@ -1391,7 +1392,7 @@ for 1.2 s up and 1.2 s down and plays its section's sound at 0.3
 and the child voxel lights' intensity follow the level, which ends at 0;
 a level load cancels the pulses; `--object-click F#id` aims a scripted
 click at a placed id). Charged crystals lose 2 charge a game second
-(`crystal_drain`: the collect pass at the end of a level load over the
+while the story hook runs (`Flow::story_hook_runs`; `crystal_drain`: the collect pass at the end of a level load over the
 player's hands, worn and carried items, then the socket and inventory
 sources once a second; the item panels file the AR crystal's sources too:
 a drop into a container (kind 2, whose record's crystal stacks then

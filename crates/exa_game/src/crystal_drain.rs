@@ -30,8 +30,10 @@
 //! source stays while any went down. Exarust keeps a placed container's
 //! record on its object ([`exa_world::ObjectSections`]) and a bag's in the
 //! live database, so the source remembers the object the panel was opened
-//! on. Kind 1 (every container of the level) is filed by no caller in
-//! 0.9.5 and answers false. While the player's own inventory is shown the
+//! on. Kind 1 is filed by the player's put-downs of a held object in the
+//! world (the release in reach, out of reach and off a lock) and drains the
+//! AR crystals that are children of the scene's objects, each redrawn for
+//! its new charge; Exarust files it nowhere yet and it answers false. While the player's own inventory is shown the
 //! inventory source drains its pack panel's list instead of the record
 //! ([`GameScreens::player_pack_mut`], the character view's answer for the
 //! player's first view): each crystal entry loses its charge and its icon
@@ -285,9 +287,9 @@ pub(crate) struct OpenPack<'w> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drain_sources(
     mut state: ResMut<CrystalDrain>,
-    time: Option<Res<Time<Virtual>>>,
+    (time, flow): (Option<Res<Time<Virtual>>>, Option<Res<crate::flow::Flow>>),
     loading: Option<Res<exa_ui::LoadingStatus>>,
-    mut players: Query<&mut Possessions, With<PlayerBody>>,
+    mut players: Query<(&mut Possessions, Option<&exa_combat::Condition>), With<PlayerBody>>,
     mut objects: Option<ResMut<LiveObjects>>,
     mut placed: Query<&mut exa_world::ObjectSections>,
     mut items: Option<ResMut<crate::doll_view::DollItems>>,
@@ -304,6 +306,18 @@ pub(crate) fn drain_sources(
     let Some(time) = time else {
         return;
     };
+    // The drain is the story hook's: another mode's frame, a covering menu,
+    // a transition or a dying player skips it (the second it last ran
+    // stays, so it runs again on the first frame the hook does).
+    if let Some(flow) = flow.as_deref() {
+        let condition = players
+            .iter()
+            .next()
+            .map(|(_, condition)| condition.map_or(0, |c| c.0));
+        if !flow.story_hook_runs(condition) {
+            return;
+        }
+    }
     let second = time.elapsed().as_millis() as u64 / 1000;
     if state.second >= second {
         return;
@@ -312,7 +326,10 @@ pub(crate) fn drain_sources(
     if state.drain.sources.is_empty() {
         return;
     }
-    let mut player = players.iter_mut().next();
+    let mut player = players
+        .iter_mut()
+        .next()
+        .map(|(possessions, _)| possessions);
     let before = state.drain.sources.len();
     let containers = state.containers.clone();
     state.drain.tick(|source| match source {
@@ -349,7 +366,7 @@ pub(crate) fn drain_sources(
                 items.as_deref_mut(),
             )
         }
-        // Filed by no caller in 0.9.5.
+        // The player's put-downs file it in the original; not ported.
         Source::Containers => false,
     });
     if state.drain.sources.len() != before {
@@ -412,7 +429,13 @@ impl Plugin for CrystalDrainPlugin {
                 mark_collect,
                 collect_sources,
                 take_filed_sources,
-                drain_sources.after(crate::flow::open_named_level),
+                // The story hook's place: after the named level opens and
+                // before the flow's travel, its transition and the alarm
+                // return read the flow and the player's condition.
+                drain_sources
+                    .after(crate::flow::open_named_level)
+                    .before(crate::flow::travel)
+                    .before(crate::golem_alarm::return_from_alarm),
             )
                 .chain()
                 .after(crate::panel_live::PanelInput)
@@ -556,6 +579,62 @@ mod tests {
         app.update();
         let now = carried(&mut app);
         assert_eq!((now[0].flags, now[1].flags), (0x08_0000, 0x06_0000));
+    }
+
+    /// The drain is the story hook's: in the main menu's flow, or with a
+    /// dying player, the game second passes without a drain; once the
+    /// story plays it drains on its first frame.
+    #[test]
+    fn the_drain_runs_only_in_the_story_hook() {
+        use crate::flow::{Flow, Hook, Phase};
+        use std::time::Duration;
+        let mut app = App::new();
+        app.insert_resource(Time::<Virtual>::default())
+            .insert_resource(Flow::default())
+            .add_plugins(CrystalDrainPlugin);
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerBody::new(0.0),
+                exa_combat::Condition(0),
+                Possessions {
+                    carried: vec![Carried {
+                        id: CRYSTAL,
+                        flags: 0x0a_0000,
+                        x: 0,
+                        y: 0,
+                    }],
+                    ..Possessions::default()
+                },
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<CrystalDrain>()
+            .drain
+            .add(Source::Inventory);
+        let second = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Time<Virtual>>()
+                .advance_by(Duration::from_secs(1));
+            app.update();
+            app.world().get::<Possessions>(player).unwrap().carried[0].flags
+        };
+        assert_eq!(second(&mut app), 0x0a_0000, "the menu's frame");
+        {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            flow.hook = Hook::Story;
+            flow.phase = Phase::Playing;
+        }
+        app.world_mut()
+            .get_mut::<exa_combat::Condition>(player)
+            .unwrap()
+            .0 = crate::flow::DYING;
+        assert_eq!(second(&mut app), 0x0a_0000, "a dying player");
+        app.world_mut()
+            .get_mut::<exa_combat::Condition>(player)
+            .unwrap()
+            .0 = 0;
+        assert_eq!(second(&mut app), 0x08_0000, "the story plays");
     }
 
     #[test]
