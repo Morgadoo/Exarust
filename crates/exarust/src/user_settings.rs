@@ -1,7 +1,8 @@
 //! The user's settings files, read at launch as the original reads them:
 //! the text settings file (`<project>.ini`, created empty when missing) and
 //! the binary settings store (`<project>.set`, whose key bindings the player
-//! uses). On a first run the game's own save writes `FirstRun = 0`, and the
+//! uses). On a first run the game's own save writes `FirstRun = 0` (then, on a
+//! Steam Deck, the cursor, GUI size and GI precision), and the
 //! store is written back on exit. Rules: `docs/formats/SETTINGS.md`.
 //!
 //! The files live in Exarust's own folder (`EXARUST_USER_DIR`, else the
@@ -39,21 +40,22 @@ pub struct UserSettings {
 #[derive(Clone, Debug, Default)]
 pub struct AppliedStore(Arc<Mutex<Option<SettingsStore>>>);
 
-impl UserSettings {
-    /// The last boolean the file gave the named setting.
-    pub fn last_bool(&self, name: &str) -> Option<bool> {
-        self.last(name).and_then(|v| match v {
+/// The last boolean the assignments gave the named setting.
+fn last_bool(assignments: &[Assignment], name: &str) -> Option<bool> {
+    assignments
+        .iter()
+        .rev()
+        .find(|a| REGISTRY[a.index].name == name)
+        .and_then(|a| match &a.value {
             Value::Bool(b) => Some(*b),
             _ => None,
         })
-    }
+}
 
-    fn last(&self, name: &str) -> Option<&Value> {
-        self.assignments
-            .iter()
-            .rev()
-            .find(|a| REGISTRY[a.index].name == name)
-            .map(|a| &a.value)
+impl UserSettings {
+    /// The last boolean the file gave the named setting.
+    pub fn last_bool(&self, name: &str) -> Option<bool> {
+        last_bool(&self.assignments, name)
     }
 
     fn sets(&self, name: &str) -> bool {
@@ -227,8 +229,21 @@ pub fn load(project: &str) -> Option<UserSettings> {
     let folder = folder()?;
     create_folders(&folder);
     let ini = settings_ini::settings_file(&folder, project);
-    let text = settings_ini::open_settings_file(&ini);
-    let (settings, assignments) = Settings::read(&text, 0);
+    let mut text = settings_ini::open_settings_file(&ini);
+    let (mut settings, mut assignments) = Settings::read(&text, 0);
+    // The game's first run: its one-setting save records that it happened,
+    // then on a Steam Deck sets the hand-held defaults
+    // ([`first_run_defaults`]), and the file is read again with them.
+    if last_bool(&assignments, "FirstRun").unwrap_or(true) {
+        settings_ini::save_one_setting_to_file(&ini, "FirstRun", settings_ini::format_bool(false));
+        if write_first_run_defaults(&ini, exa_game::hw_config::steam_deck()) {
+            text = settings_ini::open_settings_file(&ini);
+            (settings, assignments) = Settings::read(&text, 0);
+            info!(
+                "settings: the first run on a Steam Deck sets the cursor, GUI size and GI precision"
+            );
+        }
+    }
     let user = UserSettings {
         settings,
         assignments,
@@ -237,10 +252,6 @@ pub fn load(project: &str) -> Option<UserSettings> {
         store_path: settings_ini::store_file(&folder, project),
         applied: AppliedStore::default(),
     };
-    // The game's first run: its one-setting save records that it happened.
-    if user.last_bool("FirstRun").unwrap_or(true) {
-        settings_ini::save_one_setting_to_file(&ini, "FirstRun", settings_ini::format_bool(false));
-    }
     let loaded = SettingsStore::load(read_whole_file(&user.store_path).unwrap_or_default());
     if loaded.integrity_failed {
         warn!("{INTEGRITY_MESSAGE}");
@@ -249,6 +260,32 @@ pub fn load(project: &str) -> Option<UserSettings> {
         store: loaded.store,
         ..user
     })
+}
+
+/// The settings the game's first run writes on a Steam Deck after
+/// `FirstRun = 0`, in its order:
+/// the cursor at 150, the GUI size 1 and the GI's low precision on. Off a
+/// Deck the first run writes none of them.
+pub fn first_run_defaults(steam_deck: bool) -> &'static [(&'static str, &'static str)] {
+    if steam_deck {
+        &[
+            ("CursorSize", "150"),
+            ("GUISize", "1"),
+            ("GILowPrecision", "1"),
+        ]
+    } else {
+        &[]
+    }
+}
+
+/// Writes [`first_run_defaults`] into the settings file; true when any was
+/// written.
+fn write_first_run_defaults(ini: &Path, steam_deck: bool) -> bool {
+    let mut wrote = false;
+    for (name, value) in first_run_defaults(steam_deck) {
+        wrote |= settings_ini::save_one_setting_to_file(ini, name, value);
+    }
+    wrote
 }
 
 /// Saves the bindings the Settings form's Apply committed.
@@ -331,6 +368,26 @@ mod tests {
             .and_then(Bindings::decode)
             .unwrap();
         assert_eq!(back.key(Action::Forward), 0x26);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A first run on a Steam Deck writes the cursor, GUI size and GI
+    /// precision into the file, which then reads them; off a Deck nothing.
+    #[test]
+    fn a_first_run_on_a_steam_deck_writes_its_defaults() {
+        let dir = std::env::temp_dir().join(format!("exarust-firstrun-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ini = dir.join("game.ini");
+        std::fs::write(&ini, b"").unwrap();
+        assert!(!write_first_run_defaults(&ini, false));
+        assert!(std::fs::read(&ini).unwrap().is_empty());
+        assert!(write_first_run_defaults(&ini, true));
+        let text = settings_ini::open_settings_file(&ini);
+        let (settings, assignments) = Settings::read(&text, 0);
+        assert_eq!(last_bool(&assignments, "GILowPrecision"), Some(true));
+        assert!(settings_ini::sets(&assignments, "CursorSize"));
+        assert!(settings_ini::sets(&assignments, "GUISize"));
+        let _ = settings;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

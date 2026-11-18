@@ -160,19 +160,31 @@ pub fn exported_level_section(
 ) -> exa_formats::Result<Vec<u8>> {
     let scene = exa_formats::rfc::Scene::parse(level_bytes)?;
     let raw = exa_formats::rfc_level::LevelRaw::scan(level_bytes)?;
-    export_level_scene(&scene, &raw, story, settings)
+    export_level_scene(&scene, &raw, story, settings, &[])
 }
 
 /// [`exported_level_section`] over a section already read (and possibly
 /// changed: the save's level export writes the live placed objects and the
 /// live local tier over the loaded ones, [`crate::level_save`]).
+///
+/// `shared` names what the shared material libraries hold: those names stay
+/// out of the section's material list and their records out of its library,
+/// as the original's export asks the libraries before listing a material
+/// and its scene library never took a record the manager already held.
 pub fn export_level_scene(
     scene: &exa_formats::rfc::Scene,
     raw: &exa_formats::rfc_level::LevelRaw,
     story: bool,
     settings: SettingsState,
+    shared: &[[u8; 16]],
 ) -> exa_formats::Result<Vec<u8>> {
-    let export = exa_formats::rfc_level::level_scene(scene, raw)?;
+    let mut export = exa_formats::rfc_level::level_scene(scene, raw)?;
+    if !shared.is_empty() {
+        export.shared_materials = shared.to_vec();
+        export
+            .material_library
+            .retain(|(name, _)| !exa_formats::rfc_write::library_holds(name, shared));
+    }
     let settings =
         (story && settings_chunk_written(settings.old, settings.saved)).then_some(SettingsChunk {
             tag: save_tag_bytes(settings.old, settings.tag),

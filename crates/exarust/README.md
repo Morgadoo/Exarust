@@ -121,7 +121,7 @@ The user's settings files (`Exanima.ini`, `Exanima.set`,
 start from `EXARUST_USER_DIR`, else `~/.config/exarust`: the window size,
 full screen, vertical sync, supersampling, the frame-rate readout and the
 GUI size they name apply unless the command line overrides them, and the
-store's key bindings are used. `--no-settings` ignores them. The store is
+store's key bindings are used. A first run on a Steam Deck writes the original's hand-held defaults (CursorSize 150, GUISize 1, GILowPrecision 1) into the file before it is read. `--no-settings` ignores them. The store is
 written back on exit (`SettingsStore::save_to`), and a store with no
 contents is not written. The flow's own settings writes — the expert-ladder
 unlock a novice practice win records, and the story-background unlock the

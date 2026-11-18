@@ -2381,6 +2381,14 @@ pub fn restore_arena(
     let mut shelved = 0;
     let applied = tables.is_some();
     if let Some(mut tables) = tables {
+        // After the record's repair a converted save's hub stash drops its
+        // marked ids too, before the lists are regenerated from it.
+        if loaded.converted {
+            let dropped = arena_save::compact_converted_stash(&mut tables.stash);
+            if dropped > 0 {
+                info!("save: the converted save's stash drops {dropped} marked entries");
+            }
+        }
         crate::arena_tables::apply(
             career,
             &mut stores.staff,
@@ -4360,6 +4368,16 @@ mod tests {
             unreachable!()
         };
         header.data_version = 8;
+        // The hub stash holds a marked entry too.
+        let entry = |id| arena_save::ItemEntry {
+            id,
+            flags: 0,
+            extra: 0,
+        };
+        data.chunks.push(save_package::OwnedChunk {
+            id: arena_save::HUB_STASH_CHUNK,
+            data: arena_save::write_item_list(&[entry(0x8000_0007), entry(9)]),
+        });
         let mut package = save_package::PackageImage::new();
         package.put_section(
             save_package::WORLD_CHARACTER_DB,
@@ -4400,6 +4418,16 @@ mod tests {
         );
         // The identity reset follows the repair (the race byte is cleared).
         assert_eq!(back.profession() & 0x0000_FF00, 0);
+        // The stash's marked entry is gone; its plain one stays.
+        assert!(stores.stash.contains(&9), "{:?}", stores.stash);
+        assert!(
+            stores
+                .stash
+                .iter()
+                .all(|id| id & arena_save::ITEM_MARKER == 0),
+            "{:?}",
+            stores.stash
+        );
     }
 
     /// The level exit's save: the original writes it before the
