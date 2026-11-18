@@ -499,6 +499,17 @@ pub fn share_holder_sleep(
     mut held: Query<(&HeldGrip, &mut Ragdoll)>,
     mut holders: Query<&mut Ragdoll, Without<HeldGrip>>,
 ) {
+    // The holders a touch reset since the last tick: the touch's walk
+    // reaches their sleeping items, which drop their contacts too.
+    let mut touched = bevy::ecs::entity::EntityHashSet::default();
+    for mut body in &mut holders {
+        if body.touched() {
+            body.take_touched();
+            if let Some(first) = body.parts.first().map(|p| p.entity) {
+                touched.insert(first);
+            }
+        }
+    }
     let linked = |grip: &HeldGrip| !grip.released && grip.links.is_some();
     let keys: Vec<Entity> = held
         .iter()
@@ -553,6 +564,9 @@ pub fn share_holder_sleep(
     for (grip, mut body) in &mut held {
         if !linked(grip) {
             continue;
+        }
+        if touched.contains(&grip.holder_key) {
+            body.touched_through_holder();
         }
         let Some(&(count, asleep)) = woken.get(&grip.holder_key) else {
             continue;

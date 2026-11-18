@@ -1083,6 +1083,56 @@ fn a_held_item_is_parked_and_unparked_with_its_holder() {
     assert!(!parked(&app, item));
 }
 
+/// A touch on a sleeping holder walks its tree: its sleeping held item
+/// drops its stored level contacts too (the tick after), and wakes with it;
+/// a holder woken without a touch leaves the item's contacts.
+#[test]
+fn a_touch_on_a_sleeping_holder_resets_its_items_contacts() {
+    let holder_part = Entity::from_raw_u32(60).unwrap();
+    let item_part = Entity::from_raw_u32(61).unwrap();
+    let mut app = App::new();
+    app.add_systems(Update, crate::grip_solve::share_holder_sleep);
+    let contact = crate::contact::LevelContact {
+        weights: [0.25; 4],
+        point: Vec3::ZERO,
+        normal: Vec3::Y,
+        plane: 0.0,
+    };
+    let mut item_body = rigid(item_part, Vec3::X, 1.0);
+    item_body.parts[0].contacts.push(contact);
+    let holder = app
+        .world_mut()
+        .spawn(rigid(holder_part, Vec3::ZERO, 1.0))
+        .id();
+    let item = app
+        .world_mut()
+        .spawn((item_body, held_weapon(holder_part)))
+        .id();
+    app.update();
+    assert!(app.world().get::<Ragdoll>(item).unwrap().asleep());
+    // Woken without a touch: the item wakes, its contact stays.
+    app.world_mut()
+        .get_mut::<Ragdoll>(holder)
+        .unwrap()
+        .wake_to(100);
+    app.update();
+    assert_eq!(app.world().get::<Ragdoll>(item).unwrap().parts[0].contacts.len(), 1);
+    // Both asleep again; a blow touches the holder.
+    *app.world_mut().get_mut::<Ragdoll>(holder).unwrap() = rigid(holder_part, Vec3::ZERO, 1.0);
+    let mut item_body = rigid(item_part, Vec3::X, 1.0);
+    item_body.parts[0].contacts.push(contact);
+    *app.world_mut().get_mut::<Ragdoll>(item).unwrap() = item_body;
+    app.world_mut()
+        .get_mut::<Ragdoll>(holder)
+        .unwrap()
+        .touch(crate::body::WAKE_COUNT);
+    app.update();
+    let body = app.world().get::<Ragdoll>(item).unwrap();
+    assert!(body.parts[0].contacts.is_empty());
+    assert!(!body.asleep());
+    assert!(!app.world().get::<Ragdoll>(holder).unwrap().touched());
+}
+
 /// A held item shares its holder's sleep, as the original's body tree
 /// shares its root's countdown: it takes the larger of the two countdowns
 /// and wakes with an awake holder, falls asleep with a sleeping one, a

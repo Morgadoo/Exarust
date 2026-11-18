@@ -1963,6 +1963,11 @@ pub struct Ragdoll {
     /// counted down by its speed once limp ([`count_down`]); the post-step
     /// puts it to sleep at 1.
     countdown: i32,
+    /// A touch reset this sleeping body's contacts since the held items
+    /// last took their holder's sleep: the original's touch walks the body
+    /// tree, so a sleeping held item drops its contacts too
+    /// ([`crate::grip_solve::share_holder_sleep`]).
+    touched: bool,
     /// Ticks still to run with gravity but no inertia, as the original
     /// settles a re-placed character (its temporary state's countdown).
     settle: i32,
@@ -2127,6 +2132,7 @@ impl Ragdoll {
             drive: self.drive.clone(),
             ticks: self.ticks,
             countdown: self.countdown,
+            touched: self.touched,
             settle: self.settle,
             sleep: self.sleep,
             simulated: self.simulated,
@@ -3232,6 +3238,7 @@ impl Ragdoll {
             // its first tick, and wakes a living one to 256 at once; placed
             // corpses still collapse from standing in Exarust.
             countdown: WAKE_COUNT,
+            touched: false,
             settle: 0,
             sleep: Sleep::Awake,
             simulated: false,
@@ -4591,8 +4598,30 @@ impl Ragdoll {
             for p in &mut self.parts {
                 p.contacts.clear();
             }
+            self.touched = true;
         }
         self.wake_to(count);
+    }
+
+    /// Whether a touch reset this body's contacts since
+    /// [`Ragdoll::take_touched`] last asked.
+    pub fn touched(&self) -> bool {
+        self.touched
+    }
+
+    /// Takes the touch mark: true once after a touch reset the body.
+    pub fn take_touched(&mut self) -> bool {
+        std::mem::take(&mut self.touched)
+    }
+
+    /// A touch reaching this body through its holder's tree: a sleeping
+    /// body drops its stored level contacts, as the touched one did.
+    pub fn touched_through_holder(&mut self) {
+        if self.asleep() {
+            for p in &mut self.parts {
+                p.contacts.clear();
+            }
+        }
     }
 
     /// Holds the body out of the simulation while the item cursor carries
