@@ -216,6 +216,12 @@ A light's direct colour and its node colour SHALL linearise the stored colour wi
 - **WHEN** a light updates in the linear workflow
 - **THEN** its direct colour equals the original's bit for bit
 
+### Requirement: Condition re-scale of placed lights
+A placed object whose record is condition-scaled SHALL scale its voxel lights under the root to their records' intensities times (1 − c/255)² (double precision, cast once), with their colours recomputed, and its glow meshes' emissive by the same share, at spawn and again whenever its condition byte changes.
+
+#### Scenario: A crystal spent to half
+- **WHEN** a condition-scaled object's condition goes from 0 to 128
+- **THEN** its voxel light's intensity becomes the record's times (127/255)² and its glow's emissive the same share
 ### Requirement: Automatic sun reads the grid rooms
 A level whose record leaves the sun automatic SHALL get a sun only when it has no lights and no grid rooms.
 

@@ -17,6 +17,10 @@ struct PostSettings {
     desaturate: f32,
     sharpen: f32,
     pad1: f32,
+    // The original's `Blur`: the screen fade's weight, the bloom's scale
+    // (the strength, faded in with the screen), the desaturation mask (how
+    // far the scene gives way to its bloom) and the bloom term.
+    blur: vec4<f32>,
 }
 
 // The scene is stored in 8 bits by the original, so it clamps at 1.
@@ -90,9 +94,12 @@ fn finish(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // The grading curve: a strong lift of the mid-tones, 1 stays 1.
     let b = 0.9 * c * c + 0.1 * c;
     c = 7.05 * b / (6.5 * b + 0.55);
-    // Bloom, combined like a screen.
-    let blurred = textureSampleLevel(bloom, source_sampler, in.uv, 0.0).rgb;
-    let glow = max(blurred - vec3(0.03), vec3(0.0)) * 1.75 * settings.bloom_strength;
-    let out = vec3(1.0) - clamp((vec3(1.0) - c) * (vec3(1.0) - glow * glow), vec3(0.0), vec3(1.0));
+    // Bloom, combined like a screen; the fades scale the scene's share (a
+    // weight of 0 is black), lift the bloom and swap the scene for it.
+    let fade = settings.blur;
+    let blm = max(textureSampleLevel(bloom, source_sampler, in.uv, 0.0).rgb - vec3(0.03), vec3(0.0));
+    c = mix(c, blm, fade.z);
+    let glow = blm * 1.75 * fade.y + vec3(fade.w);
+    let out = vec3(1.0) - clamp((vec3(1.0) - c * fade.x) * (vec3(1.0) - glow * glow), vec3(0.0), vec3(1.0));
     return vec4(out, full.a);
 }

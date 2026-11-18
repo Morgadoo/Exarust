@@ -94,36 +94,119 @@ impl FadeControl {
             ..previous
         }
     }
+
+    /// The control after the final pass at `clock`: the running fade stops
+    /// once it has run out (the screen fade past 5000 ticks; the
+    /// desaturation fade, consulted only without a screen fade, past 3000,
+    /// clearing its kind with it).
+    pub fn expire(self, clock: u32) -> Self {
+        let clock = u64::from(clock);
+        let started = u64::from(self.start);
+        let mut out = self;
+        if self.fade {
+            if started + u64::from(FADE_TICKS) < clock {
+                out.fade = false;
+            }
+        } else if self.desaturate && started + u64::from(DESAT_FADE_TICKS) < clock {
+            out.desaturate = false;
+            out.desaturate_kind = 0;
+        }
+        out
+    }
+}
+
+/// A fade the game asks for; the frame stamps it with its clock. The
+/// simulation step's callers (the teleport bubble) send it as a message.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FadeRequest {
+    /// The screen fade in from black (the story's start and the revive).
+    Screen,
+    /// The desaturation fade with its kind byte (the mind's awakening with
+    /// 0, the teleport bubble's hold with 1).
+    Desaturate(u8),
+}
+
+/// The main view's post processor's fade state: the control the final
+/// pass reads and the starts asked for since the last frame.
+#[derive(Resource, Clone, Debug)]
+pub struct ScreenFade {
+    pub control: FadeControl,
+    pub requests: Vec<FadeRequest>,
+}
+
+impl Default for ScreenFade {
+    fn default() -> Self {
+        Self {
+            control: FadeControl {
+                start: 0,
+                fade: false,
+                desaturate: false,
+                desaturate_kind: 0,
+            },
+            requests: Vec::new(),
+        }
+    }
+}
+
+impl ScreenFade {
+    /// Starts the screen fade (the post processor's fade start).
+    pub fn begin_fade(&mut self) {
+        self.requests.push(FadeRequest::Screen);
+    }
+
+    /// Starts the desaturation fade with `kind` (the post processor's
+    /// desaturation start).
+    pub fn begin_desaturate(&mut self, kind: u8) {
+        self.requests.push(FadeRequest::Desaturate(kind));
+    }
+
+    /// One frame at `clock`: the requests start their fades, then the
+    /// values the final pass takes are worked out and a fade that has run
+    /// out stops.
+    pub fn step(&mut self, clock: u32, base_bloom: f32) -> PostFade {
+        for request in self.requests.drain(..) {
+            self.control = match request {
+                FadeRequest::Screen => FadeControl::begin_fade(clock, self.control),
+                FadeRequest::Desaturate(kind) => {
+                    FadeControl::begin_desaturate(clock, kind, self.control)
+                }
+            };
+        }
+        let values = fade_values(clock, self.control, base_bloom);
+        self.control = self.control.expire(clock);
+        values
+    }
 }
 
 /// The four components the final pass's `Blur` uniform receives each frame,
-/// in order: the screen fade's weight, the desaturation, the desaturation
-/// mask and the bloom term.
+/// in order: the screen fade's weight, the bloom's scale (the post
+/// processor's bloom strength, faded in with the screen), the desaturation
+/// mask (how far the scene is replaced by its bloom) and the bloom term.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PostFade {
     pub weight: f32,
-    pub desaturation: f32,
+    pub bloom_scale: f32,
     pub mask: f32,
     pub bloom: f32,
 }
 
-/// The fade values at `clock` for a control and the base desaturation. With
-/// no fade active the weight is 1 and the base desaturation passes through.
+/// The fade values at `clock` for a control and the base bloom strength.
+/// With no fade active the weight is 1 and the base strength passes through.
 ///
 /// The screen fade's alpha is `1 - (start + 5000 - clock) * 0.0002` computed
 /// in double precision (0 at the start, 1 at the end, 1 once it has run out,
 /// when the fade also stops); the weight is the alpha to the tenth power
-/// (one square, then four more factors of it in f32) and the desaturation
+/// (one square, then four more factors of it in f32) and the bloom scale
 /// is `alpha · base`.
 ///
 /// The desaturation fade's ramp is `1 - (start + 3000 - clock) / 3000` (1
 /// once it has run out); below a quarter its mask is `1 - 4·ramp`, else
 /// `(ramp - 0.25) · 1.333` with the product in double precision. The mask
 /// the pass receives is `1 - mask`, the weight stays 1 and the base
-/// desaturation passes through; a non-zero kind adds `(1 - mask)² · 0.4`
+/// strength passes through; a non-zero kind adds `(1 - mask)² · 0.4`
 /// (a double product) to the bloom. The frame in which it runs out still
 /// computes the mask from a ramp of 1 and has no bloom.
-pub fn fade_values(clock: u32, control: FadeControl, base_desaturation: f32) -> PostFade {
+pub fn fade_values(clock: u32, control: FadeControl, base_bloom: f32) -> PostFade {
     let clock = u64::from(clock);
     let started = u64::from(control.start);
     if control.fade {
@@ -136,7 +219,7 @@ pub fn fade_values(clock: u32, control: FadeControl, base_desaturation: f32) -> 
         let squared = alpha * alpha;
         return PostFade {
             weight: squared * squared * squared * squared * squared,
-            desaturation: alpha * base_desaturation,
+            bloom_scale: alpha * base_bloom,
             mask: 0.0,
             bloom: 0.0,
         };
@@ -162,14 +245,14 @@ pub fn fade_values(clock: u32, control: FadeControl, base_desaturation: f32) -> 
         };
         return PostFade {
             weight: 1.0,
-            desaturation: base_desaturation,
+            bloom_scale: base_bloom,
             mask: 1.0 - mask,
             bloom,
         };
     }
     PostFade {
         weight: 1.0,
-        desaturation: base_desaturation,
+        bloom_scale: base_bloom,
         mask: 0.0,
         bloom: 0.0,
     }
@@ -285,6 +368,10 @@ pub struct ExaPost {
     /// supersample level n (0 without supersampling).
     pub sharpen: f32,
     pad1: f32,
+    /// The final pass's `Blur`: the fade's weight, the bloom's scale, the
+    /// desaturation mask and the bloom term ([`PostFade`]), written each
+    /// frame from [`ScreenFade`].
+    pub blur: Vec4,
 }
 
 impl Default for ExaPost {
@@ -294,7 +381,40 @@ impl Default for ExaPost {
             desaturate: 0.0,
             sharpen: SHARPEN,
             pad1: 0.0,
+            blur: Vec4::new(1.0, 1.0, 0.0, 0.0),
         }
+    }
+}
+
+/// The frame's fade: each post camera's `Blur` from [`ScreenFade`] at the
+/// frame clock (game time in whole milliseconds, paused time held, as the
+/// original's frame clock) and the camera's bloom strength.
+fn step_screen_fade(
+    time: Res<Time>,
+    mut fade: ResMut<ScreenFade>,
+    mut sent: MessageReader<FadeRequest>,
+    mut posts: Query<&mut ExaPost>,
+) {
+    fade.requests.extend(sent.read().copied());
+    if !fade.requests.is_empty() {
+        info!("screen fade: {:?} at {:?}", fade.requests, time.elapsed());
+    }
+    let clock = time.elapsed().as_millis() as u32;
+    let busy = fade.control.fade || fade.control.desaturate || !fade.requests.is_empty();
+    if !busy {
+        for mut post in &mut posts {
+            let idle = Vec4::new(1.0, post.bloom_strength, 0.0, 0.0);
+            if post.blur != idle {
+                post.blur = idle;
+            }
+        }
+        return;
+    }
+    // The scale is the fade's alpha times each camera's own strength.
+    let v = fade.step(clock, 1.0);
+    for mut post in &mut posts {
+        let scale = v.bloom_scale * post.bloom_strength;
+        post.blur = Vec4::new(v.weight, scale, v.mask, v.bloom);
     }
 }
 
@@ -308,9 +428,11 @@ impl Plugin for PostPlugin {
             UniformComponentPlugin::<ExaPost>::default(),
         ))
         .init_resource::<PostSharpen>()
+        .init_resource::<ScreenFade>()
+        .add_message::<FadeRequest>()
         .add_systems(
             PostUpdate,
-            (adopt_cameras, follow_sharpen)
+            (adopt_cameras, follow_sharpen, step_screen_fade)
                 .chain()
                 .in_set(exa_physics::FramePostPhase::Prepare),
         );
@@ -705,13 +827,13 @@ mod fade_tests {
     }
 
     #[test]
-    fn without_a_fade_the_base_desaturation_passes_through() {
+    fn without_a_fade_the_base_bloom_passes_through() {
         let values = fade_values(1234, idle(), 0.6);
         assert_eq!(
             values,
             PostFade {
                 weight: 1.0,
-                desaturation: 0.6,
+                bloom_scale: 0.6,
                 mask: 0.0,
                 bloom: 0.0
             }
@@ -724,22 +846,22 @@ mod fade_tests {
         assert!(fade.fade && !fade.desaturate);
         // The ramp starts at alpha 0 and rises.
         let start = fade_values(1000, fade, 0.8);
-        assert_eq!((start.weight, start.desaturation), (0.0, 0.0));
+        assert_eq!((start.weight, start.bloom_scale), (0.0, 0.0));
         // Halfway: alpha 0.5, desaturation 0.4, weight 0.5^10.
         let half = fade_values(3500, fade, 0.8);
         assert!((half.weight - 0.000_976_562_5).abs() < 1e-7);
-        assert!((half.desaturation - 0.4).abs() < 1e-6);
+        assert!((half.bloom_scale - 0.4).abs() < 1e-6);
         // At the end the alpha reaches 1 and the base desaturation returns.
         let end = fade_values(6000, fade, 0.8);
         assert!((end.weight - 1.0).abs() < 1e-6);
-        assert!((end.desaturation - 0.8).abs() < 1e-6);
+        assert!((end.bloom_scale - 0.8).abs() < 1e-6);
         // Past it the alpha stays 1: the same values, mask and bloom zero.
         let done = fade_values(6001, fade, 0.8);
         assert_eq!(
             done,
             PostFade {
                 weight: 1.0,
-                desaturation: 0.8,
+                bloom_scale: 0.8,
                 mask: 0.0,
                 bloom: 0.0
             }
@@ -752,7 +874,7 @@ mod fade_tests {
         // At the start the ramp is 0, so the mask is 1 and then inverted.
         let start = fade_values(500, fade, 0.75);
         assert_eq!(
-            (start.mask, start.weight, start.desaturation),
+            (start.mask, start.weight, start.bloom_scale),
             (0.0, 1.0, 0.75)
         );
         // Halfway (ramp 0.5): (0.5 - 0.25) * 1.333 = 0.33325, inverted.
@@ -773,10 +895,59 @@ mod fade_tests {
         let done = fade_values(3501, kind, 0.75);
         assert!((done.mask - 0.000_25).abs() < 1e-6);
         assert_eq!(
-            (done.bloom, done.desaturation, done.weight),
+            (done.bloom, done.bloom_scale, done.weight),
             (0.0, 0.75, 1.0)
         );
     }
+    #[test]
+    fn a_run_out_fade_stops_and_the_desaturation_clears_its_kind() {
+        let fade = FadeControl::begin_fade(1000, idle());
+        assert!(fade.expire(6000).fade);
+        assert!(!fade.expire(6001).fade);
+        let desat = FadeControl::begin_desaturate(0, 1, idle());
+        let done = desat.expire(3001);
+        assert!(!done.desaturate && done.desaturate_kind == 0);
+        // Under a screen fade the desaturation waits.
+        let both = FadeControl::begin_fade(0, desat);
+        assert!(both.expire(3001).desaturate);
+    }
+
+    /// The live frame system: a requested fade starts at the frame clock,
+    /// writes every post camera's `Blur` (black at its start) and, once run
+    /// out, leaves the idle values.
+    #[test]
+    fn the_frame_fades_every_post_camera_from_black() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                100,
+            )))
+            .init_resource::<ScreenFade>()
+            .add_message::<FadeRequest>()
+            .add_systems(Update, step_screen_fade);
+        let camera = app.world_mut().spawn(ExaPost::default()).id();
+        app.update();
+        let blur = |app: &App| app.world().get::<ExaPost>(camera).unwrap().blur;
+        assert_eq!(blur(&app), Vec4::new(1.0, 1.0, 0.0, 0.0));
+        app.world_mut().resource_mut::<ScreenFade>().begin_fade();
+        app.update();
+        let start = blur(&app);
+        assert_eq!((start.x, start.y), (0.0, 0.0));
+        for _ in 0..25 {
+            app.update();
+        }
+        let half = blur(&app);
+        assert!(half.x > 0.0 && half.x < 0.01 && half.y > 0.4 && half.y < 0.6);
+        for _ in 0..30 {
+            app.update();
+        }
+        assert!(!app.world().resource::<ScreenFade>().control.fade);
+        app.update();
+        assert_eq!(blur(&app), Vec4::new(1.0, 1.0, 0.0, 0.0));
+    }
+
     #[test]
     fn the_post_params_pick_the_bright_variant() {
         assert_eq!(post_variant(0.9375, false), PostVariant::Bright);

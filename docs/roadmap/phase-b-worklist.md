@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 558 | 141,842 | B1 wire (or prove unreachable) |
-| partial | 1,275 | 803,563 | B4 complete the port |
+| uncalled | 556 | 141,790 | B1 wire (or prove unreachable) |
+| partial | 1,273 | 801,759 | B4 complete the port |
 | missing | 44 | 9,519 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,10 +15,10 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 141,157 | 16,867 | 238 |
-| render | 110,827 | 21,704 | 3,232 |
+| render | 109,916 | 21,652 | 3,232 |
 | ui | 83,216 | 39,045 | 288 |
 | characters | 84,180 | 14,061 | 1,452 |
-| powers | 82,320 | 2,261 | 2,321 |
+| powers | 81,427 | 2,261 | 2,321 |
 | world | 55,355 | 15,716 | 563 |
 | modes | 63,606 | 7,005 | 363 |
 | ai | 67,452 | 1,271 | 11 |
@@ -152,7 +152,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TClassSelect | modes | 5 / 1,940 | 0 / 0 | 0 / 0 | 1,940 |
 | Shading-mask GLSL snippets | render | 2 / 1,895 | 1 / 38 | 0 / 0 | 1,933 |
 | Scene content helpers (unit before RF_Dynamics) | world | 1 / 925 | 4 / 768 | 1 / 239 | 1,932 |
-| TBubbleEffect | powers | 2 / 1,924 | 0 / 0 | 0 / 0 | 1,924 |
 | FLX_ItemFactory (unit routines) | items | 3 / 1,915 | 0 / 0 | 0 / 0 | 1,915 |
 | RF_MeshVoxels (unit routines) | render | 1 / 1,434 | 1 / 468 | 0 / 0 | 1,902 |
 | TkdTree | world | 3 / 1,661 | 1 / 240 | 0 / 0 | 1,901 |
@@ -165,7 +164,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Env_Effects (unit routines) | powers | 1 / 1,666 | 0 / 0 | 0 / 0 | 1,666 |
 | Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 1 / 1,662 | 0 / 0 | 0 / 0 | 1,662 |
 | XA_ExperienceSys (unit routines) | modes | 2 / 1,506 | 2 / 153 | 0 / 0 | 1,659 |
-| FLX_PostProcess (unit routines) | render | 3 / 1,480 | 2 / 52 | 1 / 127 | 1,659 |
 | TPwrDispLongDoor_I | powers | 2 / 1,649 | 0 / 0 | 0 / 0 | 1,649 |
 | TTransitionScreen | ui | 3 / 1,605 | 0 / 0 | 0 / 0 | 1,605 |
 | TTErrainkdTree | world | 0 / 0 | 5 / 1,513 | 0 / 0 | 1,513 |
@@ -204,6 +202,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | T3DView | render | 2 / 977 | 1 / 69 | 0 / 0 | 1,046 |
 | SG_Teleporters (unit routines) | world | 2 / 1,042 | 0 / 0 | 0 / 0 | 1,042 |
 | RF_Import_RFC2 (unit routines) | data | 5 / 645 | 1 / 386 | 0 / 0 | 1,031 |
+| TBubbleEffect | powers | 1 / 1,031 | 0 / 0 | 0 / 0 | 1,031 |
 | THairEditForm | ui | 1 / 828 | 1 / 117 | 0 / 0 | 945 |
 | SG_GameFunctions (unit routines) | script | 3 / 445 | 2 / 495 | 0 / 0 | 940 |
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
@@ -230,6 +229,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TSteelGen | items | 1 / 700 | 0 / 0 | 0 / 0 | 700 |
 | TIronGen | items | 1 / 700 | 0 / 0 | 0 / 0 | 700 |
 | FPC System RTL | runtime | 6 / 675 | 1 / 23 | 0 / 0 | 698 |
+| FLX_PostProcess (unit routines) | render | 2 / 569 | 0 / 0 | 1 / 127 | 696 |
 | TSteelBlade | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
 | TSteelPlate2 | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
 | TEndSessionMenu | modes | 2 / 666 | 0 / 0 | 0 / 0 | 666 |
