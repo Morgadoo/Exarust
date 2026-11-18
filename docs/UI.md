@@ -194,9 +194,13 @@ Outside the game's view (menus, the character view, panels) the window
 shows its own pointer. The original keeps a table of twelve pointers and
 shows one by index: the arrow, up-down, left-right, the two diagonals,
 the hand, wait, the four-way move, the text beam, the cross, an "add"
-slot and the not-allowed sign. The shipped executable carries no pointer
-images of its own, so these are the platform's, and the "add" slot stays
-empty. A negative index hides the pointer; showing an index again after
+slot and the not-allowed sign. Its start-up sets the flag that loads the
+arrow, the arrows, the cross and the "add" slot (0-4, 9, 10) from the
+executable's own cursor resources, and the shipped executable has none
+of them (its resources hold only two other cursor groups), so those
+slots hold no pointer and showing one hides the pointer. The hand, wait,
+four-way move, text beam and not-allowed sign (5-8, 11) are the
+platform's. A negative index hides the pointer; showing an index again after
 that reveals it first; asking for the index already shown does nothing.
 The window starts on slot 0.
 
@@ -219,8 +223,9 @@ are reproduced; the window's `CursorIcon` is set to the slot shown, the
 menu cursor as a custom image built once the display is known (the
 primary display's height, else the first display's on Wayland, rebuilt if
 it changes). Exarust's interface never changes the slot, so the pointer is
-always slot 0, the menu cursor. Winit has no empty pointer, so the empty
-slot would show the platform's arrow.
+always slot 0, the menu cursor. An empty slot (slot 0 before the menu
+cursor is built) shows a transparent one-pixel image, as winit has no
+empty pointer.
 
 ## Health bars
 

@@ -224,6 +224,8 @@ pub struct GuiTextures {
     pub textures: HashMap<String, GuiTexture>,
     /// Names already reported missing, so the error is logged once.
     pub missing: Vec<String>,
+    /// The GUI unit the skin's atlas was last resampled for.
+    pub skin_unit: Option<i32>,
 }
 
 impl GuiTextures {
@@ -493,6 +495,10 @@ impl Plugin for GuiDrawPlugin {
             .init_resource::<GuiCanvas>()
             .add_systems(Startup, load_gui_textures)
             .add_systems(
+                PreUpdate,
+                follow_skin_scale.after(crate::scale::follow_window),
+            )
+            .add_systems(
                 PostUpdate,
                 (
                     render_frames.in_set(exa_physics::FramePostPhase::Prepare),
@@ -516,7 +522,6 @@ fn load_gui_textures(game: Option<Res<Game>>, mut textures: ResMut<GuiTextures>)
     };
     let fonts = crate::gui_font::FONTS.map(|font| font.texture);
     for name in [
-        SKIN_TEXTURE,
         crate::gui_text::MENU_FONT_TEXTURE,
         crate::menu::MENU_TITLE_TEXTURE,
         crate::selection::SCREEN_ATLAS,
@@ -539,6 +544,76 @@ fn load_gui_textures(game: Option<Res<Game>>, mut textures: ResMut<GuiTextures>)
             Err(error) => {
                 error!("GUI texture {name:?}: {error}");
                 textures.missing.push(name.to_string());
+            }
+        }
+    }
+}
+
+/// The game skin's atlas at a GUI unit, as the skin's load does on
+/// opening and on every scale change: `guiskin.rfi` decoded and resampled
+/// to 40 by 20 units ([`crate::skin::guiskin_size`]) by the engine's
+/// resample to an arbitrary size in the file's own format word and flags.
+/// `None` when the size is not positive or the resample refuses the word.
+pub fn skin_atlas(
+    image: &exa_assets::RgbaImage,
+    format_word: u32,
+    flags: u32,
+    unit: i32,
+) -> Option<GuiTexture> {
+    let (w, h) = crate::skin::guiskin_size(unit);
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let (w, h) = (w as usize, h as usize);
+    let pixels = if (image.width as usize, image.height as usize) == (w, h) {
+        image.pixels.clone()
+    } else {
+        exa_render::mipmap::resample_rgba8_to_size(
+            &image.pixels,
+            image.width as usize,
+            image.height as usize,
+            w,
+            h,
+            format_word,
+            flags,
+        )
+    };
+    if pixels.len() != w * h * 4 {
+        return None;
+    }
+    GuiTexture::from_bottom_up(w as u32, h as u32, &pixels)
+}
+
+/// Keeps the skin's atlas at the GUI unit: loaded once the game's data is
+/// there and again whenever the unit changes.
+fn follow_skin_scale(
+    game: Option<Res<Game>>,
+    gui: Option<Res<crate::scale::GuiScale>>,
+    mut textures: ResMut<GuiTextures>,
+) {
+    let (Some(game), Some(gui)) = (game, gui) else {
+        return;
+    };
+    let unit = gui.scale as i32;
+    if textures.skin_unit == Some(unit) {
+        return;
+    }
+    textures.skin_unit = Some(unit);
+    match game.load_rgba_with_format(SKIN_TEXTURE) {
+        Ok((image, format, flags)) => match skin_atlas(&image, format, flags, unit) {
+            Some(texture) => {
+                info!(
+                    "GUI skin: {}x{} atlas resampled to {}x{} for unit {unit}",
+                    image.width, image.height, texture.width, texture.height
+                );
+                textures.textures.insert(SKIN_TEXTURE.to_string(), texture);
+            }
+            None => error!("GUI texture {SKIN_TEXTURE:?}: the resample to unit {unit} failed"),
+        },
+        Err(error) => {
+            if !textures.missing.iter().any(|n| n == SKIN_TEXTURE) {
+                error!("GUI texture {SKIN_TEXTURE:?}: {error}");
+                textures.missing.push(SKIN_TEXTURE.to_string());
             }
         }
     }
@@ -1480,6 +1555,60 @@ mod tests {
         assert_eq!(at(1, 1), 255);
         assert_eq!(at(2, 2), 255);
         assert_eq!(at(3, 3), 0);
+    }
+
+    /// The skin's atlas is resampled to 40 by 20 units at the GUI unit; a
+    /// flat file stays flat, and a file already that size is kept.
+    #[test]
+    fn the_skin_atlas_is_resampled_to_forty_by_twenty_units() {
+        let image = exa_assets::RgbaImage {
+            width: 256,
+            height: 128,
+            pixels: [90, 120, 150, 200].repeat(256 * 128),
+        };
+        let format = exa_formats::pixel::id::RGBA8;
+        let at4 = skin_atlas(&image, format, 0, 4).unwrap();
+        assert_eq!((at4.width, at4.height), (160, 80));
+        assert!(at4.pixels.iter().all(|p| {
+            p.iter()
+                .zip([90u8, 120, 150, 200])
+                .all(|(a, b)| a.abs_diff(b) <= 1)
+        }));
+        let at6 = skin_atlas(&image, format, 0, 6).unwrap();
+        assert_eq!((at6.width, at6.height), (240, 120));
+        assert!(skin_atlas(&image, format, 0, 0).is_none());
+    }
+
+    /// Live: the installed skin atlas follows the GUI unit (skipped
+    /// without `EXANIMA_DIR`).
+    #[test]
+    fn the_installed_skin_atlas_follows_the_gui_unit() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let mut app = App::new();
+        app.insert_resource(Game(std::sync::Arc::new(data)))
+            .init_resource::<GuiTextures>()
+            .insert_resource(crate::scale::GuiScale { size: 0, scale: 4 })
+            .add_systems(Update, follow_skin_scale);
+        app.update();
+        let size = |app: &App| {
+            let t = app
+                .world()
+                .resource::<GuiTextures>()
+                .get(SKIN_TEXTURE)
+                .unwrap();
+            (t.width, t.height)
+        };
+        assert_eq!(size(&app), (160, 80));
+        app.world_mut()
+            .resource_mut::<crate::scale::GuiScale>()
+            .scale = 6;
+        app.update();
+        assert_eq!(size(&app), (240, 120));
     }
 
     #[test]

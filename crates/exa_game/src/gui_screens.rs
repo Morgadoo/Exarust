@@ -1331,7 +1331,7 @@ impl GameScreens {
             self.journal_titles.clone(),
             owner,
             self.journal_unit.max(1),
-            self.task.screen.1,
+            self.task.screen,
             self.journal_row,
         );
         info!(

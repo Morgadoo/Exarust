@@ -1690,7 +1690,9 @@ control fill (style frames, the colour inset by the margin). The drop-down
 lists and the palette swatch popup draw through the line skin's form draw
 with their own words (shadow, backdrop, the wide window frame; a list
 opened from a line-skinned combo loses its panel style and rises by a unit
-less one), the emblem form's swatches the line skin's shade, and the
+less one; a combo's list is placed by the GUI's child placement, a pixel
+over its owner's bottom edge or above it, never cut; a hovered combo draws
+its text through the skin's glowing text), the emblem form's swatches the line skin's shade, and the
 board's and Manage Company's tables the line skin's header line.
 The focus follows the pointer to the record under it, and a focused text
 field or combo box takes the keys through its own handler
