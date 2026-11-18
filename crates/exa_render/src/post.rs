@@ -367,22 +367,75 @@ pub struct ExaPost {
     /// The sharpen supersampling turns on: 1.5 × (0.075·n + 0.4) at
     /// supersample level n (0 without supersampling).
     pub sharpen: f32,
-    pad1: f32,
+    /// The blur's loop end, the kernel's `taps − 1` (the uniform the
+    /// filter sets beside its weights).
+    last: i32,
     /// The final pass's `Blur`: the fade's weight, the bloom's scale, the
     /// desaturation mask and the bloom term ([`PostFade`]), written each
     /// frame from [`ScreenFade`].
     pub blur: Vec4,
+    /// The blur kernel's weights (`Filter`), four to a slot: the centre
+    /// first, then each symmetric pair's ([`bloom_kernel`]).
+    kernel: [Vec4; KERNEL_SLOTS],
+}
+
+/// The most taps a view's blur takes (the item renderer's 24), in slots
+/// of four.
+pub const MAX_TAPS: usize = 32;
+const KERNEL_SLOTS: usize = MAX_TAPS / 4;
+/// The game view's blur taps: the post processor's constructor default.
+pub const VIEW_TAPS: u32 = 16;
+/// The item renderer's blur taps (its view sets them on its post).
+pub const ITEM_VIEW_TAPS: u32 = 24;
+
+impl ExaPost {
+    /// The post of a view whose blur takes `taps` taps: the filter's kernel
+    /// for that count ([`bloom_kernel`], the linear workflow with the tap
+    /// count as its level, as the filter passes its own count), at most
+    /// [`MAX_TAPS`].
+    pub fn with_taps(taps: u32) -> Self {
+        let mut post = Self {
+            bloom_strength: 1.0,
+            desaturate: 0.0,
+            sharpen: SHARPEN,
+            last: -1,
+            blur: Vec4::new(1.0, 1.0, 0.0, 0.0),
+            kernel: [Vec4::ZERO; KERNEL_SLOTS],
+        };
+        post.set_taps(taps);
+        post
+    }
+
+    /// Rebuilds the kernel for `taps` taps.
+    pub fn set_taps(&mut self, taps: u32) {
+        let taps = taps.min(MAX_TAPS as u32);
+        let kernel = bloom_kernel(taps as f32, taps as f32, true);
+        let mut filter = [0.0f32; MAX_TAPS];
+        for (slot, w) in filter.iter_mut().zip(&kernel.weights) {
+            *slot = *w;
+        }
+        self.kernel = std::array::from_fn(|i| Vec4::from_slice(&filter[i * 4..i * 4 + 4]));
+        self.last = kernel.last;
+    }
+
+    /// The kernel's tap count.
+    pub fn taps(&self) -> u32 {
+        (self.last + 1).max(0) as u32
+    }
+
+    /// The kernel's weights as uploaded.
+    pub fn weights(&self) -> Vec<f32> {
+        self.kernel
+            .iter()
+            .flat_map(|v| v.to_array())
+            .take(self.taps() as usize)
+            .collect()
+    }
 }
 
 impl Default for ExaPost {
     fn default() -> Self {
-        Self {
-            bloom_strength: 1.0,
-            desaturate: 0.0,
-            sharpen: SHARPEN,
-            pad1: 0.0,
-            blur: Vec4::new(1.0, 1.0, 0.0, 0.0),
-        }
+        Self::with_taps(VIEW_TAPS)
     }
 }
 
@@ -498,6 +551,7 @@ fn follow_sharpen(sharpen: Res<PostSharpen>, mut posts: Query<&mut ExaPost>) {
 #[derive(Resource)]
 struct PostPipelines {
     single: BindGroupLayoutDescriptor,
+    blur: BindGroupLayoutDescriptor,
     combine: BindGroupLayoutDescriptor,
     sampler: Sampler,
     bright: CachedRenderPipelineId,
@@ -556,6 +610,18 @@ fn init_pipelines(
             ),
         ),
     );
+    // The blur passes read the view's kernel from its settings.
+    let blur = BindGroupLayoutDescriptor::new(
+        "exa_post_blur",
+        &BindGroupLayoutEntries::with_indices(
+            ShaderStages::FRAGMENT,
+            (
+                (0, texture_2d(TextureSampleType::Float { filterable: true })),
+                (1, sampler(SamplerBindingType::Filtering)),
+                (3, uniform_buffer::<ExaPost>(true)),
+            ),
+        ),
+    );
     let combine = BindGroupLayoutDescriptor::new(
         "exa_post_combine",
         &BindGroupLayoutEntries::sequential(
@@ -576,8 +642,8 @@ fn init_pipelines(
     };
     let pipelines = PostPipelines {
         bright: pipeline("bright", &single, BRIGHT_FORMAT),
-        blur_x: pipeline("blur_x", &single, BRIGHT_FORMAT),
-        blur_y: pipeline("blur_y", &single, BLURRED_FORMAT),
+        blur_x: pipeline("blur_x", &blur, BRIGHT_FORMAT),
+        blur_y: pipeline("blur_y", &blur, BLURRED_FORMAT),
         finish: HashMap::new(),
         shader: shader.clone(),
         vertex: vertex.clone(),
@@ -587,6 +653,7 @@ fn init_pipelines(
             ..default()
         }),
         single,
+        blur,
         combine,
     };
     commands.insert_resource(pipelines);
@@ -740,20 +807,32 @@ fn post_process(
         &[],
         &textures.bright.default_view,
     );
-    let from_bright = single(&textures.bright.default_view);
+    let blur_layout = cache.get_bind_group_layout(&pipelines.blur);
+    let blur = |source: &TextureView| {
+        device.create_bind_group(
+            "exa_post_blur",
+            &blur_layout,
+            &BindGroupEntries::with_indices((
+                (0, source),
+                (1, &pipelines.sampler),
+                (3, settings.clone()),
+            )),
+        )
+    };
+    let from_bright = blur(&textures.bright.default_view);
     pass(
         "exa_post_blur_x",
         blur_x,
         &from_bright,
-        &[],
+        &[index.index()],
         &textures.blurred_x.default_view,
     );
-    let from_x = single(&textures.blurred_x.default_view);
+    let from_x = blur(&textures.blurred_x.default_view);
     pass(
         "exa_post_blur_y",
         blur_y,
         &from_x,
-        &[],
+        &[index.index()],
         &textures.blurred.default_view,
     );
     let post = target.post_process_write();
@@ -974,6 +1053,47 @@ mod fade_tests {
         assert_eq!(fetches, 1);
         assert_eq!(programs.cached(PostVariant::Plain), None);
     }
+    /// The post program parses and validates as WGSL (with the full-screen
+    /// vertex output standing in for Bevy's import), and its settings hold
+    /// the kernel the views upload.
+    #[test]
+    fn the_post_program_validates() {
+        let source = include_str!("post.wesl").replace(
+            "import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;",
+            "struct FullscreenVertexOutput { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };",
+        );
+        let module = naga::front::wgsl::parse_str(&source).expect("post.wesl parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("post.wesl validates");
+        assert!(source.contains("kernel: array<vec4<f32>, 8>"));
+        assert_eq!(KERNEL_SLOTS, 8);
+    }
+
+    #[test]
+    fn a_views_post_uploads_the_filters_kernel() {
+        // The game view: 16 taps, the curve the shader once carried as
+        // constants (0.0711 falling to 0.0162, rounded to 4 places).
+        let post = ExaPost::default();
+        assert_eq!(post.taps(), VIEW_TAPS);
+        assert_eq!(post.weights(), bloom_kernel(16.0, 16.0, true).weights);
+        let rounded: Vec<f32> = post
+            .weights()
+            .iter()
+            .map(|w| (w * 10_000.0).round() / 10_000.0)
+            .collect();
+        assert_eq!(rounded[0], 0.0711);
+        assert_eq!(rounded[15], 0.0162);
+        // The item renderer's 24 taps.
+        let item = ExaPost::with_taps(ITEM_VIEW_TAPS);
+        assert_eq!(item.taps(), 24);
+        assert_eq!(item.weights(), bloom_kernel(24.0, 24.0, true).weights);
+        assert_eq!(ExaPost::with_taps(99).taps(), MAX_TAPS as u32);
+    }
+
     #[test]
     fn the_bloom_kernel_weights_follow_the_original_curve() {
         // Five samples: x = (15 − i)/15 − 0.4375, w = x²·24, doubled except

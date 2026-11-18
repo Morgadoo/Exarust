@@ -46,8 +46,11 @@
 //!   ([`box_rotation`], [`box_scale`]).
 //!
 //! The draw runs once over the frame, through `exa_render::rain`, and the
-//! scene's weather starts and frees the set (`crate::weather`). The
-//! original's own passes are modelled but not drawn: it runs one pass per
+//! scene's weather starts and frees the set (`crate::weather`); above
+//! shading quality three a second entity draws the reflected set
+//! ([`reflected_rotation`]) from the same drops. The original's per
+//! sub-frame passes are modelled but not drawn (they wait on the owner's
+//! ruling on per-sub-frame effect draws): it runs one pass per
 //! sub-frame ([`frame_passes`]): the sub-frame's whole-pixel viewport
 //! shift, its `FrmCrd` (one over the screen sides and the corner's 0/−1
 //! offsets), and `ObjMat`, the drop set's own turn ([`tilt`], the same 2°
@@ -58,7 +61,8 @@
 //! sub-frame also draws the reflected set ([`reflected_tilt`]: −2° about
 //! the first axis and 170° about the second). `EyeVec` is the camera seen
 //! from that scaled, placed turn ([`eye_vector`]: the camera less the box
-//! centre, dotted with each row); the fragment pass reads the frame buffer
+//! centre, dotted with each row); the reflection level is the shading
+//! quality; the fragment pass reads the frame buffer
 //! behind the streak, its bright pass and adds the rain's colour, and the
 //! draw is `GL_LINES` over the drawn vertices.
 //!
@@ -100,7 +104,8 @@ pub const UNIFORMS: [&str; 4] = ["ObjMat", "EyeVec", "RainCol0", "FrmCrd"];
 /// The frame-buffer sampler's texture unit (the constructor sets `FrmBuf`
 /// to the unit the weather's frame buffer is bound to).
 pub const FRAME_BUFFER_UNIT: u32 = 7;
-/// The reflection level a second, reflected pass needs: above this.
+/// The shading quality a second, reflected pass needs: above this (the
+/// frame routine tests the shading quality's global).
 pub const REFLECT_LEVEL: u32 = 3;
 /// The reflected pass's tilt and turn, degrees.
 pub const REFLECT_TILT_DEGREES: f32 = -2.0;
@@ -120,6 +125,20 @@ pub const FRAME_OFFSET: f64 = 0.15;
 /// vectors; a guess, as the turn's sign is not visible at 2°.
 pub fn box_rotation() -> Quat {
     Quat::from_rotation_x(-BOX_TILT_DEGREES.to_radians())
+}
+
+/// The reflected set's turn, read the way [`box_rotation`] reads the drop
+/// set's ([`reflected_tilt`] taken as the transpose of the stored matrix:
+/// 2° about x the other way and 170° about y), the same guess of sense.
+pub fn reflected_rotation() -> Quat {
+    Quat::from_mat3a(&reflected_tilt().transpose())
+}
+
+/// Whether the view draws the reflected set as well: the original's
+/// shading quality (the global its renderer settings write) above three,
+/// four as compiled in and five in the retail user's ini.
+pub fn draws_reflection(shading_quality: i32) -> bool {
+    shading_quality > REFLECT_LEVEL as i32
 }
 
 /// The box's scale for a view of `fov_degrees`: `√(fov / 70)`, the
@@ -606,6 +625,19 @@ mod tests {
         assert_eq!(seen.x, 1.0);
         assert_eq!(seen.y, (1.0 * 0.0 + 2.0 * cos) + 3.0 * sin);
         assert_eq!(seen.z, (1.0 * 0.0 + 2.0 * -sin) + 3.0 * cos);
+    }
+
+    /// The reflected set's turn is read as the drop set's is: the stored
+    /// matrix's transpose gives the drop set's live rotation, and the
+    /// reflected one turns the box's z axis nearly round (170°).
+    #[test]
+    fn the_reflected_set_turns_as_the_stored_matrix_reads() {
+        let plain = Quat::from_mat3a(&tilt().transpose());
+        assert!(plain.angle_between(box_rotation()) < 1e-5);
+        let z = reflected_rotation() * Vec3::Z;
+        assert!(z.z < -0.98, "{z:?}");
+        assert!(draws_reflection(4) && draws_reflection(5));
+        assert!(!draws_reflection(3));
     }
 
     #[test]
