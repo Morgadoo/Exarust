@@ -4159,7 +4159,7 @@ pub(crate) fn open_named_level(
 
 /// A teleporter journey is the game's level exit. The destination's
 /// level-entry music check reads the track the music's main voice plays.
-fn travel(
+pub(crate) fn travel(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     mut journeys: Option<MessageReader<crate::destination::TravelToLevel>>,

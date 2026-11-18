@@ -429,7 +429,13 @@ impl Plugin for CrystalDrainPlugin {
                 mark_collect,
                 collect_sources,
                 take_filed_sources,
-                drain_sources.after(crate::flow::open_named_level),
+                // The story hook's place: after the named level opens and
+                // before the flow's travel, its transition and the alarm
+                // return read the flow and the player's condition.
+                drain_sources
+                    .after(crate::flow::open_named_level)
+                    .before(crate::flow::travel)
+                    .before(crate::golem_alarm::return_from_alarm),
             )
                 .chain()
                 .after(crate::panel_live::PanelInput)

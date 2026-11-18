@@ -247,6 +247,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<exa_combat::impact::LimbImpact>()
         .bridge_copy::<exa_ai::route_walk::AiRoute>()
+        .bridge_copy::<exa_ai::roles::FormerLevel>()
         .bridge_message::<crate::thaum::cast::Otherwhere>()
         .bridge_message::<crate::thaum::hold_live::HoldEnd>()
         .bridge_message::<crate::thaum::kinesis_live::KinesisPicked>()
