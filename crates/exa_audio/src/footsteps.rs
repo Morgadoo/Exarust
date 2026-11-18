@@ -148,7 +148,7 @@ pub(crate) fn footsteps(
             }
         }
     }
-    for (e, body, gt, ragdoll, clock) in &mut walkers {
+    for (e, body, gt, ragdoll, clock) in walkers.iter_mut().sort_unstable::<Entity>() {
         if ragdoll {
             continue;
         }

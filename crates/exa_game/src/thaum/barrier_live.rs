@@ -277,7 +277,7 @@ pub(crate) fn tick_barriers(
     (mut limbs, mut parts): (Local<Vec<LimbSphere>>, Local<Vec<usize>>),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (entity, mut live) in &mut barriers {
+    for (entity, mut live) in barriers.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         let mut scratch = CastBody::default();
         let mut place = live.barrier.dome.at;
@@ -314,7 +314,7 @@ pub(crate) fn tick_barriers(
             continue;
         }
         let centre = live.barrier.dome.at;
-        for (other, mut body, at) in &mut bodies {
+        for (other, mut body, at) in bodies.iter_mut().sort_unstable::<Entity>() {
             if other == live.caster {
                 continue;
             }

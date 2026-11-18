@@ -393,7 +393,7 @@ pub(crate) fn tick_waves(
         Query<&mut exa_world::cloth::ClothInstance>,
     ),
 ) {
-    for (entity, mut live) in &mut waves {
+    for (entity, mut live) in waves.iter_mut().sort_unstable::<Entity>() {
         let live = &mut *live;
         let root = bodies
             .get(live.caster)

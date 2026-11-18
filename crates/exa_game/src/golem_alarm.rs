@@ -451,6 +451,7 @@ fn offered_characters(
 ) -> Vec<QueryBody> {
     let bodies: Vec<QueryBody> = guardians
         .iter()
+        .sort_unstable::<Entity>()
         .map(|(entity, gt, data, ..)| QueryBody {
             at: gt.translation() * 100.0,
             race_word: data.record.profession(),
@@ -743,6 +744,7 @@ pub fn return_from_alarm(
     let player_at = player_gt.translation() * 100.0;
     let bodies: Vec<QueryBody> = guardians
         .iter()
+        .sort_unstable::<Entity>()
         .map(|(entity, gt, _, _, data, ..)| QueryBody {
             at: gt.translation() * 100.0,
             race_word: data.record.profession(),
