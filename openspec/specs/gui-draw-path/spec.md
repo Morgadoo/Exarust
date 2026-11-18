@@ -402,6 +402,7 @@ The default tooltip's background SHALL be the skin's rounded fill from one pixel
 #### Scenario: A shown tooltip
 - **WHEN** a tooltip has faded in
 - **THEN** its background is the rounded program's quad at alpha 153
+
 ### Requirement: Text box line count
 The text box's line count SHALL be one for a text under two bytes and SHALL add a line when the byte before the last is a carriage return.
 
@@ -422,3 +423,10 @@ A game mode switch SHALL force the game GUI's reselect under the pointer.
 #### Scenario: Start of play
 - **WHEN** the Character mode starts
 - **THEN** the GUI's active control becomes the reselect code and the pointer is read again
+
+### Requirement: Game skin atlas at the GUI unit
+The game skin's atlas SHALL be `guiskin.rfi` resampled by the engine's resample to an arbitrary size to 40 by 20 GUI units in the file's own format word and flags, once the game's data is open and again whenever the GUI unit changes.
+
+#### Scenario: Unit 4 then 6
+- **WHEN** the GUI unit is 4 and then becomes 6
+- **THEN** the skin's atlas is 160 by 80 pixels and then 240 by 120
