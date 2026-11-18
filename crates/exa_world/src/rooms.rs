@@ -305,6 +305,17 @@ impl Rooms {
         )
     }
 
+    /// The cell bytes the scene's per-frame cell update writes onto a
+    /// moving node: [`Self::cell_of`] clamped to `1..=size − 2` (one cell in
+    /// from the grid's edge, unlike the load-time sort's clamp).
+    pub fn cell_of_moving_node(&self, p: Vec2) -> (i64, i64) {
+        let (x, y) = self.cell_of(p);
+        (
+            x.clamp(1, (self.width as i64 - 2).max(1)),
+            y.clamp(1, (self.height as i64 - 2).max(1)),
+        )
+    }
+
     /// The room of the cell a node stands in (metres, on X/Z); a point
     /// outside the grid takes the edge cell.
     pub fn room_of_node(&self, p: Vec2) -> Option<u16> {

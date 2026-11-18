@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r327, 11-16) | target |
+| measure | start (r186, 11-10) | now (r328, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9311 | all |
+| Tests passing | 8,489 | 9315 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 328 | Terrain takes one GI slot per tile as the original (arenao3 one tile row changes tone; e01, e02, hub identical); moving nodes take the original cell bytes and change rooms only on a cell change; the light flood cleanup box and cell insert reconciled with round 327 against the assembly (32-bit box arithmetic, no whole-cell shortcut); the grid +Ceiling node decoded as never drawn and never cast. |
 | 2026-11-16 | 327 | Two garments sharing a part name keep their own paint; strikes take their speed from the swing tracker and fists are measured along their hand (the arena_shield, shock and blast golden scenes change on purpose); hair cloth draws two culled passes; the get-up resets the torso twist; burning groans; the parchment hits by texture block; closing the skill screen refreshes armour; a teleporter journey arrives at the operative frame; a refused AI cast clears at once; the arena manager health follows the career; the force shell plays its break sound; the light flood clears a box; terrain detail follows the setting. |
 | 2026-11-16 | 326 | The journal entry list is an editable combo box with the original query, press, drag, keys and callback edit arm, so entries can be renamed (F89 closed); combos open on the press as the original; entering combat drops a dragged item at the pointer; the pad drives an open combo list or palette and the arena board bottom buttons; golden unchanged. |
 | 2026-11-16 | 325 | The story continue exit nudge takes the nearest walkable point and places the player on the static ground, and a summoned demon arrives on the static ground, as the original mode 1 placement; the Ground Query pre-tests body pieces with the original slab test (identical over 5000 cases, a flat body plate is not met); the cloth sphere push floor follows the mesh query form; traces and golden unchanged. |
