@@ -608,12 +608,6 @@ const CM_PER_M: f32 = 100.0;
 /// The overhead attack's motion, whose blow a struck player feels at 0.4.
 const OVERHEAD_MOTION: usize = 0x0C;
 
-/// A fist meets a part with its knuckles, which lie inside the hand's box;
-/// its segment ends on the box's far face, so a contact there is measured
-/// this far (cm) inside it (the original ignores contacts at or past a
-/// striker's far end).
-const KNUCKLES_INSIDE: f32 = 0.1;
-
 /// What starts an attack: its motion, the blend the executor gives a stab
 /// or an overhead, the fighter's weapon class, whether it has Remise, and
 /// the game clock (ms).
@@ -873,7 +867,11 @@ pub fn detect_hits(
                     .collect(),
             };
             // The first position of the sweep since last frame that meets a
-            // body part, and the part nearest the blade there.
+            // body part, and the part nearest the blade there. The contact
+            // point is where the two touch, on the part's surface toward
+            // the blade (the original's pair contact), carried onto the
+            // blade as it is now: a blade's end driven into a part touches
+            // it short of that end.
             let contact = (1..=SWEEP_STEPS).find_map(|k| {
                 let t = k as f32 / SWEEP_STEPS as f32;
                 let (sa, sb) = (a0.lerp(a, t), b0.lerp(b, t));
@@ -884,7 +882,12 @@ pub fn detect_hits(
                         let d = p.distance(c);
                         // The point on the blade as it is now.
                         let along = sa.distance(p) / sa.distance(sb).max(1e-4);
-                        (d < r).then_some((d / r, bone, a.lerp(b, along)))
+                        let surface = if d > 0.0 {
+                            (p - c) * (r / d - 1.0)
+                        } else {
+                            Vec3::ZERO
+                        };
+                        (d < r).then_some((d / r, bone, a.lerp(b, along) + surface))
                     })
                     .min_by(|x, y| x.0.total_cmp(&y.0))
                     .map(|(_, bone, p)| (bone, p))
@@ -923,8 +926,8 @@ pub fn detect_hits(
 }
 
 /// The strike a blade's contact at `point` (world) deals: where along the
-/// weapon it landed (cm from the grip; a fist's contact is measured
-/// [`KNUCKLES_INSIDE`] inside its far face), how fast it struck, and the
+/// weapon it landed (cm from the grip, a fist's along its striking axis),
+/// how fast it struck, and the
 /// swing it belongs to.
 ///
 /// The speed is the original's: the swing tracker of the striker's slot
@@ -944,10 +947,9 @@ pub(crate) fn blade_strike(
     powers: Option<&PowerFactors>,
     tracker: Option<&swing::Tracker>,
 ) -> Strike {
-    let mut along = frame.inverse().transform_point3(point).y * CM_PER_M;
-    if !blade.record.armed() {
-        along = along.min(blade.length * CM_PER_M - KNUCKLES_INSIDE);
-    }
+    // No clamp at the far end: a contact at or past it is ignored by the
+    // damage routine (p ≥ 1), fists included, as the original's is.
+    let along = frame.inverse().transform_point3(point).y * CM_PER_M;
     // A quadruped's stab is resolved as a swing.
     let quadruped = wielder.is_some_and(|f| f.stats.quadruped);
     let stab = attack.motion == AttackMotion::Stab && !quadruped;
@@ -4480,7 +4482,8 @@ mod tests {
 
     /// Unarmed, the main side and the overhead strike with the right fist
     /// only, the other side with the left; the struck point is the
-    /// knuckles, 0.1 cm inside the hand's 17.66 cm, so the blow counts. A
+    /// knuckles where they touch the chest, inside the hand's 17.66 cm, so
+    /// the blow counts (a contact at or past the far end would not). A
     /// held weapon's class makes the fists no strikers at all.
     #[test]
     fn fists_strike_with_the_motions_hand() {
@@ -4496,7 +4499,7 @@ mod tests {
             assert_eq!(hit.bone, 9);
             assert!(!hit.weapon.armed());
             assert!(
-                (hit.strike.along - (17.66 - 0.1)).abs() < 1e-3,
+                hit.strike.along < 17.66 && hit.strike.along > 12.0,
                 "{:?}",
                 hit.strike
             );
