@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 372 | 107,473 | B1 wire (or prove unreachable) |
-| partial | 969 | 713,766 | B4 complete the port |
+| partial | 965 | 706,825 | B4 complete the port |
 | missing | 42 | 9,112 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,13 +14,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 137,038 | 16,556 | 238 |
+| physics | 130,150 | 16,556 | 238 |
 | render | 97,456 | 12,993 | 3,232 |
 | ui | 71,319 | 33,988 | 167 |
 | characters | 72,838 | 11,619 | 1,452 |
 | modes | 61,957 | 7,005 | 363 |
 | powers | 63,675 | 1,714 | 2,321 |
-| ai | 61,062 | 1,061 | 11 |
+| ai | 61,009 | 1,061 | 11 |
 | world | 51,687 | 9,448 | 563 |
 | items | 39,698 | 4,117 | 525 |
 | data | 22,076 | 3,427 | 0 |
@@ -34,9 +34,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 35 / 94,952 | 4 / 1,337 | 0 / 0 | 96,289 |
+| TMotileDynamics | physics | 33 / 88,258 | 4 / 1,337 | 0 / 0 | 89,595 |
 | SG_CharacterGen (unit routines) | characters | 38 / 28,359 | 23 / 5,324 | 0 / 0 | 33,683 |
-| TSimSector | physics | 24 / 20,331 | 0 / 0 | 0 / 0 | 20,331 |
+| TSimSector | physics | 23 / 20,137 | 0 / 0 | 0 / 0 | 20,137 |
 | TMotilePart | characters | 31 / 15,455 | 4 / 1,296 | 2 / 1,370 | 18,121 |
 | XA_Arena (unit routines) | modes | 24 / 15,711 | 3 / 1,321 | 4 / 363 | 17,395 |
 | TVXGIManager | render | 11 / 16,981 | 0 / 0 | 0 / 0 | 16,981 |
@@ -102,7 +102,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RFT_BoundSphere (unit routines) | core | 2 / 3,851 | 0 / 0 | 0 / 0 | 3,851 |
 | TProcMaterial | items | 5 / 3,325 | 0 / 0 | 1 / 525 | 3,850 |
 | TMesh | render | 4 / 3,114 | 2 / 703 | 0 / 0 | 3,817 |
-| TCombatant | ai | 8 / 3,509 | 2 / 268 | 0 / 0 | 3,777 |
+| TCombatant | ai | 7 / 3,456 | 2 / 268 | 0 / 0 | 3,724 |
 | SG_ItemGUI (unit routines) | items | 3 / 2,553 | 4 / 1,049 | 0 / 0 | 3,602 |
 | FLX_Materials_Procedural (unit routines) | items | 2 / 3,578 | 0 / 0 | 0 / 0 | 3,578 |
 | RF_Main (unit routines) | runtime | 9 / 3,549 | 0 / 0 | 0 / 0 | 3,549 |
