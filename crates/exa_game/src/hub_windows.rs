@@ -986,6 +986,9 @@ pub struct BoardTables {
     /// The focused table view's activation-key flag (its MenuSel press
     /// state, which [`table_view::TableView::command`] keeps).
     pub pad_pressed: bool,
+    /// The bottom button the pad has focused (its control index), in
+    /// place of a table.
+    pub pad_button: Option<usize>,
 }
 
 /// A row a table's press picked up ([`table_view::TableReply::Drag`]):
@@ -1054,6 +1057,51 @@ pub enum BoardPad {
     Table(BoardTableAction),
     /// `MenuBak`: the form's back slot (the window closes, as Escape).
     Back,
+    /// `MenuSel` on a focused bottom button: its key message (0xc0 with
+    /// the activation word) toggles it and runs its callback, the one its
+    /// click runs; the hub clicks it at this screen point.
+    Click((i32, i32)),
+}
+
+/// The board's bottom buttons the pad can focus, by control index, with
+/// the layout rectangle each sits on: End Day, Close, Enter and Forfeit
+/// (their records carry the pad's focus style 0x400000; the tab buttons'
+/// do not).
+const BOARD_PAD_BUTTONS: [usize; 4] = [
+    exa_ui::match_board::control::DAY_END,
+    exa_ui::match_board::control::CLOSE,
+    exa_ui::match_board::control::ENTER,
+    exa_ui::match_board::control::SECONDARY,
+];
+
+/// A board button's rectangle in the board's client.
+fn board_button_rect(
+    layout: &exa_ui::match_board::BoardLayout,
+    index: usize,
+) -> exa_ui::match_board::Rect {
+    use exa_ui::match_board::control;
+    match index {
+        control::DAY_END => layout.end_day_button,
+        control::CLOSE => layout.close_button,
+        control::ENTER => layout.enter_button,
+        _ => layout.forfeit_button,
+    }
+}
+
+/// Whether the pad reaches a board button: its record (class 1 with its
+/// template style) and its live state pass the reach test
+/// ([`exa_ui::gui_controls::pad_reaches`]: shown, enabled, the focus
+/// style).
+fn board_button_reachable(board: &exa_ui::match_board::Board, index: usize) -> bool {
+    let state = if index == exa_ui::match_board::control::ENTER {
+        board.enter_state()
+    } else {
+        board.controls[index]
+    };
+    let mut record = exa_ui::gui_controls::Control::new(1, 0, 0, 0, 0);
+    record.style = exa_ui::match_board::TEMPLATE_RECORDS[index].style;
+    record.state = state;
+    exa_ui::gui_controls::pad_reaches(&record)
 }
 
 /// The hub's windows: the window manager, the one open, and the models the
@@ -1344,8 +1392,31 @@ impl HubWindows {
                 self.board_pad_pick(key.cursor);
                 BoardPad::Table(BoardTableAction::Took)
             }
-            Fallback::Control(word) => BoardPad::Table(self.board_pad_command(word)),
+            Fallback::Control(word) => match self.board_tables.pad_button {
+                Some(index) => self.board_button_key(index, word),
+                None => BoardPad::Table(self.board_pad_command(word)),
+            },
         }
+    }
+
+    /// A focused bottom button's key message: `MenuSel` (0x100, the
+    /// activation word) clicks it while the pad still reaches it; any
+    /// other word does nothing.
+    fn board_button_key(&mut self, index: usize, word: u32) -> BoardPad {
+        let (Some(board), Some(bounds)) = (self.board.as_ref(), self.bounds()) else {
+            return BoardPad::Table(BoardTableAction::None);
+        };
+        if word & exa_ui::gui_controls::ACTIVATE == 0 || !board_button_reachable(board, index) {
+            return BoardPad::Table(BoardTableAction::None);
+        }
+        let border = self.board_form.as_ref().map_or(0, |f| f.geometry.border);
+        let rect = board_button_rect(&board.layout(), index);
+        let at = (
+            bounds.left + border + rect.x + rect.w / 2,
+            bounds.top + border + rect.y + rect.h / 2,
+        );
+        info!("hub board: the pad's MenuSel clicks button {index} at {at:?}");
+        BoardPad::Click(at)
     }
 
     /// The directional pick among the board's visible tables.
@@ -1358,6 +1429,13 @@ impl HubWindows {
         let mut slots = Vec::new();
         let mut targets = Vec::new();
         let mut origin = IVec2::ZERO;
+        let layout = board.layout();
+        // The bottom buttons the pad reaches are candidates beside the
+        // tables (ids after them).
+        let buttons: Vec<usize> = BOARD_PAD_BUTTONS
+            .into_iter()
+            .filter(|&index| board_button_reachable(board, index))
+            .collect();
         for &slot in board.visible_tables() {
             let client = board.table_layout(slot).client();
             let (_, centre) = board.table_view(slot).centre_and_default();
@@ -1373,9 +1451,34 @@ impl HubWindows {
             });
             slots.push(slot);
         }
+        for (i, &index) in buttons.iter().enumerate() {
+            let rect = board_button_rect(&layout, index);
+            let centre = IVec2::new(rect.x + rect.w / 2, rect.y + rect.h / 2);
+            let focused = self.board_tables.pad_button == Some(index);
+            if focused {
+                origin = centre;
+            }
+            targets.push(PickTarget {
+                id: (slots.len() + i) as i32,
+                centre,
+                reachable: true,
+                current: focused,
+            });
+        }
         let Some(id) = pick_control(cursor, origin, &targets, board.unit) else {
             return;
         };
+        if let Some(&index) = (id as usize)
+            .checked_sub(slots.len())
+            .and_then(|i| buttons.get(i))
+        {
+            self.board_tables.pad_button = Some(index);
+            self.board_tables.pad_table = None;
+            self.board_tables.pad_pressed = false;
+            info!("hub board: the pad picks the bottom button {index}");
+            return;
+        }
+        self.board_tables.pad_button = None;
         let slot = slots[id as usize];
         let mut view = board.table_view(slot);
         let before = view.selected;

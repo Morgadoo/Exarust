@@ -202,6 +202,10 @@ impl OptionForms {
     }
 }
 
+/// The combo box's state bits while its drop-down list is open (its open
+/// sets them, the list's close clears them).
+pub(crate) const LIST_OPEN: u32 = 0x60;
+
 /// A combo box's drop-down list, opened under its owner record at
 /// `owner` (screen x, y, width, height) with `selected` (1-based) chosen:
 /// the list takes its opener's form skin and the owner's width. The line
@@ -535,6 +539,19 @@ impl HubWindows {
             list,
             rect: place,
         });
+        // The open marks its combo box (state 0x60) until the list's close.
+        if let Some(form) = self.forms.get_mut(window) {
+            form.set_bits(record, LIST_OPEN, true);
+        }
+    }
+
+    /// The drop-down list's close clears its combo box's open bits.
+    fn list_closed(&mut self, popup: &Popup) {
+        if let Popup::List { window, record, .. } = popup
+            && let Some(form) = self.forms.get_mut(*window)
+        {
+            form.set_bits(*record, LIST_OPEN, false);
+        }
     }
 
     /// The popup takes the pointer while it is up. Returns whether it did.
@@ -603,8 +620,89 @@ impl HubWindows {
         }
         if keep {
             self.forms.options.popup = Some(popup);
+        } else {
+            self.list_closed(&popup);
         }
         if let Some((window, record, row)) = chosen {
+            self.list_chosen(career, window, record, row);
+        }
+        if let Some((record, index)) = picked {
+            self.emblem_colour(record, index as u8);
+        }
+        true
+    }
+
+    /// The pad's menu word for an open popup, which its open pushed on
+    /// the focus stack over the window (the drop-down list's and the
+    /// colour palette's command slot): `MenuSel` (0x100) chooses the
+    /// selected row and closes the list (the palette keeps its pick),
+    /// `MenuBak` (0x200) closes (the palette restores its opening index),
+    /// and a navigation step (a word with a low bit, 0x4000 up and 0x8000
+    /// down; the palette also 0x1000 and 0x2000 across) moves the
+    /// selection. Answers whether a popup took the word.
+    pub(crate) fn popup_command(&mut self, career: &mut ArenaCareer, word: u32) -> bool {
+        let Some(mut popup) = self.forms.options.popup.take() else {
+            return false;
+        };
+        let mut keep = true;
+        let mut chosen = None;
+        let mut picked = None;
+        match &mut popup {
+            Popup::List {
+                window,
+                record,
+                list,
+                ..
+            } => {
+                let mut owner = ComboOwner { chosen: None };
+                match list.command(word, &mut owner) {
+                    exa_ui::drop_down::DropCommand::Choose(row) => {
+                        chosen = Some((*window, *record, row as u32));
+                        list.close(&mut owner);
+                        keep = false;
+                    }
+                    exa_ui::drop_down::DropCommand::Close => {
+                        list.close(&mut owner);
+                        keep = false;
+                    }
+                    exa_ui::drop_down::DropCommand::Moved(_)
+                    | exa_ui::drop_down::DropCommand::None => {}
+                }
+            }
+            Popup::Palette { record, swatch, .. } => {
+                let before = swatch.index;
+                swatch.command(word);
+                if swatch.index != before {
+                    picked = Some((*record, swatch.index));
+                }
+                keep = swatch.shown;
+            }
+        }
+        debug!("hub: the pad's word {word:#x} goes to the open popup (kept {keep})");
+        if keep {
+            self.forms.options.popup = Some(popup);
+        } else {
+            self.list_closed(&popup);
+        }
+        if let Some((window, record, row)) = chosen {
+            self.list_chosen(career, window, record, row);
+        }
+        if let Some((record, index)) = picked {
+            self.emblem_colour(record, index as u8);
+        }
+        true
+    }
+
+    /// A drop-down list's chosen row (1-based) written back to its combo
+    /// box: the merchant's options re-store what the merchant restocks.
+    fn list_chosen(
+        &mut self,
+        career: &mut ArenaCareer,
+        window: FormWindow,
+        record: usize,
+        row: u32,
+    ) {
+        {
             if let Some(form) = self.forms.get_mut(window) {
                 set_combo(form, record, row);
             }
@@ -628,10 +726,6 @@ impl HubWindows {
                 );
             }
         }
-        if let Some((record, index)) = picked {
-            self.emblem_colour(record, index as u8);
-        }
-        true
     }
 
     /// The palette popup told its owner: the swatch shows the cell (its
@@ -1917,6 +2011,34 @@ pub fn load_emblem_textures(
     }
 }
 
+/// A key the window procedure sent, as a text field's or combo box's key
+/// message reads it: a typed printable byte, or a key-down's edit key
+/// with the word's Ctrl and Shift (C, V and X only with Ctrl). Any other
+/// key is none.
+pub(crate) fn field_key_of(key: GuiKey) -> Option<FieldKey> {
+    if key.flags & exa_ui::gui_keys::TYPED != 0 {
+        let byte = u8::try_from(key.key)
+            .ok()
+            .filter(|b| (b' '..=b'~').contains(b));
+        return byte.map(|byte| FieldKey {
+            byte,
+            typed: true,
+            ctrl: false,
+            shift: false,
+        });
+    }
+    let ctrl = key.flags & exa_ui::gui_keys::CTRL != 0;
+    let shift = key.flags & exa_ui::gui_keys::SHIFT != 0;
+    edit_key_byte(key.key)
+        .filter(|&b| ctrl || !matches!(b, 0x43 | 0x56 | 0x58))
+        .map(|byte| FieldKey {
+            byte,
+            typed: false,
+            ctrl,
+            shift,
+        })
+}
+
 /// The edit keys among the virtual keys a key-down sends (the codes the
 /// edit unit switches on); the rest the text field passes over.
 fn edit_key_byte(vk: u32) -> Option<u8> {
@@ -2042,29 +2164,7 @@ pub fn hub_form_typing(
             continue;
         }
         if windows.forms.options.key_focus.is_some() {
-            let press = if typed {
-                let byte = u8::try_from(key.key)
-                    .ok()
-                    .filter(|b| (b' '..=b'~').contains(b));
-                byte.map(|byte| FieldKey {
-                    byte,
-                    typed: true,
-                    ctrl: false,
-                    shift: false,
-                })
-            } else {
-                let ctrl = key.flags & exa_ui::gui_keys::CTRL != 0;
-                let shift = key.flags & exa_ui::gui_keys::SHIFT != 0;
-                edit_key_byte(key.key)
-                    .filter(|&b| ctrl || !matches!(b, 0x43 | 0x56 | 0x58))
-                    .map(|byte| FieldKey {
-                        byte,
-                        typed: false,
-                        ctrl,
-                        shift,
-                    })
-            };
-            let Some(press) = press else {
+            let Some(press) = field_key_of(key) else {
                 climb(key);
                 continue;
             };
@@ -2497,6 +2597,46 @@ mod tests {
         let at = (rect.x + 10, rect.y + 3 + row * 3 + row / 2);
         click(&mut windows, &mut career, at);
         assert_eq!(career.merchant_rank, 2);
+    }
+
+    /// The pad's menu words reach an open drop-down list first (its open
+    /// pushed it on the focus stack): a step down moves its selection,
+    /// `MenuSel` chooses the row and closes it, `MenuBak` closes it with
+    /// the choice unchanged; with no popup open nothing takes the word.
+    #[test]
+    fn the_pad_steps_and_chooses_in_an_open_combo_list() {
+        let mut windows = windows();
+        let mut career = ArenaCareer::default();
+        windows.open_merchant_options(&career);
+        assert!(!windows.popup_command(&mut career, 0x100));
+        let form = windows.forms.get(FormWindow::Merchant).unwrap();
+        let at = centre(form, merchant::LOOK_FOR);
+        click(&mut windows, &mut career, at);
+        assert!(windows.forms.options.popup.is_some());
+        let state = |windows: &HubWindows| {
+            windows.forms.get(FormWindow::Merchant).unwrap().controls()[merchant::LOOK_FOR].state
+                & LIST_OPEN
+        };
+        assert_eq!(state(&windows), LIST_OPEN, "the open marks the combo");
+        // Down twice: Anything -> Clothing & Armour -> Weapons.
+        assert!(windows.popup_command(&mut career, 0x8001));
+        assert!(windows.popup_command(&mut career, 0x8001));
+        let Some(Popup::List { list, .. }) = windows.forms.options.popup.as_ref() else {
+            panic!("the list stays open");
+        };
+        assert_eq!(list.selected, 3);
+        assert!(windows.popup_command(&mut career, 0x100));
+        assert!(windows.forms.options.popup.is_none());
+        assert_eq!(state(&windows), 0, "the close clears the marks");
+        assert_eq!(career.merchant_kinds, 0xc000);
+        let form = windows.forms.get(FormWindow::Merchant).unwrap();
+        assert_eq!(form.controls()[merchant::LOOK_FOR].text, b"Weapons");
+        // MenuBak closes without a choice.
+        click(&mut windows, &mut career, at);
+        assert!(windows.popup_command(&mut career, 0x4001));
+        assert!(windows.popup_command(&mut career, 0x200));
+        assert!(windows.forms.options.popup.is_none());
+        assert_eq!(career.merchant_kinds, 0xc000);
     }
 
     #[test]

@@ -1040,6 +1040,9 @@ pub(crate) struct ComboWords<'a> {
     /// The box's edit bytes once a key or press reached it; else the run
     /// its creation fits.
     pub view: Option<exa_ui::text_edit::EditView>,
+    /// The owner form's caret bit (its state word's 0x10): with the box's
+    /// focus bit (state 0x400) the caret is drawn.
+    pub caret_lit: bool,
 }
 
 /// The skin palette's ink at a byte slot of the text group (slots `0xcc`
@@ -1216,6 +1219,18 @@ pub(crate) fn paint_combo_front(
         painted.push(GuiLayer::new(
             text_batch(font, &run.quads, ink, font_texture),
             LayerTexture::Named(font.texture),
+        ));
+    }
+    // With the focus bit and the owner form's caret bit the edit unit's
+    // caret goes where the caret is.
+    if show_selection && words.caret_lit {
+        let (x, y) = exa_ui::text_edit::caret_position(font, words.text, &view, at.x, at.y);
+        painted.push(caption_layer(
+            font,
+            font_texture,
+            &[exa_ui::text_layout::CARET_GLYPH],
+            (x, y),
+            text_slot(palette, draw.text_ink),
         ));
     }
     painted
@@ -1591,6 +1606,7 @@ mod tests {
                     pad: 1,
                     text: b"Anything",
                     view: None,
+                    caret_lit: false,
                 },
                 4,
                 &palette,
