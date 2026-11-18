@@ -323,6 +323,28 @@ pub fn arrival_placement(
         })
 }
 
+/// Where a teleporter journey (the arrival word
+/// [`exa_assets::content_stream::ARRIVAL_WORD`]) stands the arriving
+/// player: at the frame of the object the content stream adopted as the
+/// player's (`frame`: metres and rotation rows; the level's operative of the
+/// player's kind, the last one met winning), the original's spawn node, its
+/// position and heading. `None` for any other arrival or when the level
+/// names no such object: the transition markers decide then
+/// ([`arrival_placement`]).
+pub fn journey_placement(
+    arrival: LevelArrival,
+    frame: Option<(Vec3, [[f32; 3]; 3])>,
+) -> Option<PlayerPlacement> {
+    if arrival.entrance != exa_assets::content_stream::ARRIVAL_WORD {
+        return None;
+    }
+    let (position, rotation) = frame?;
+    Some(PlayerPlacement {
+        position,
+        yaw: rotation[2][0].atan2(rotation[0][0]),
+    })
+}
+
 /// The story continue's exit nudge, pending: the next [`PlayerPlacement`]
 /// is moved out of the level exit that holds it ([`nudge_out_of_exits`])
 /// before the player is stood on the floor, and the marker goes with the
@@ -487,6 +509,18 @@ mod tests {
         // A save's load left no level: nothing matches.
         let none = from(0, exa_assets::content_stream::NO_PREVIOUS_LEVEL);
         assert!(arrival_placement(&markers, none).is_none());
+        // A teleporter journey stands the player at the adopted operative's
+        // frame; another arrival, or no operative, leaves it to the markers.
+        let journey = LevelArrival {
+            entrance: exa_assets::content_stream::ARRIVAL_WORD,
+            previous_level: 2,
+        };
+        let quarter = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+        let at = journey_placement(journey, Some((Vec3::new(3.0, 0.5, -2.0), quarter))).unwrap();
+        assert_eq!(at.position, Vec3::new(3.0, 0.5, -2.0));
+        assert!((at.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!(journey_placement(journey, None).is_none());
+        assert!(journey_placement(from(0, 2), Some((Vec3::ZERO, quarter))).is_none());
     }
 
     /// The return to the title through the flow's, the lifecycle's and this

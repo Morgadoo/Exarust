@@ -3242,3 +3242,17 @@ for the controller; `player::reselect_on_mode_switch` forces the GUI's
 reselect on each game mode switch; the settings form shows the Controls
 view tabs while a pad is connected; icons render with
 `exa_items::item_icon::render_variant` (weapon light preset).
+
+## Re-audit ports (fixes4)
+
+- The get-up's start resets the torso twist (`balance::start_getting_up`).
+- The parchment's hit test samples by texture block (`parchment`).
+- Closing the skill screen runs the armour pass (`skill_screen::close`).
+- A teleporter journey arrives at the adopted operative
+  (`level_change::journey_placement`).
+- A refused AI cast clears the duellist's casting flag at once
+  (`thaum::cast::cast_for_duellists`).
+- The hub's entry and End Day set the manager's body from its health word
+  (`arena_hub_live::apply_manager_health`).
+- The Shell power's aura plays `thmfrc_brf` when asked to close
+  (`ForceShell::break_set`, `thaum::cast::tick_shell_auras`).

@@ -362,7 +362,7 @@ pub fn strike_events(events: &[HitEvent], p: &mut StrikeParams) {
         let Some(frame) = blade.frame_or(scene) else {
             continue;
         };
-        let Ok((mut attack, _, anim, powers)) = p.attackers.get_mut(attacker) else {
+        let Ok((mut attack, swing, anim, powers)) = p.attackers.get_mut(attacker) else {
             continue;
         };
         if attack.held_pending {
@@ -401,7 +401,16 @@ pub fn strike_events(events: &[HitEvent], p: &mut StrikeParams) {
         };
         let strike = Strike {
             part: contact.part,
-            ..crate::blade_strike(blade, &frame, on_blade, &attack, progress, wielder, powers)
+            ..crate::blade_strike(
+                blade,
+                &frame,
+                on_blade,
+                &attack,
+                progress,
+                wielder,
+                powers,
+                Some(&swing.tracker[blade.slot.index()]),
+            )
         };
         let by = if contact.fist { "fist" } else { "weapon" };
         if contact.struck == Struck::Limb {

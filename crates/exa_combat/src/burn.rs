@@ -273,9 +273,17 @@ pub fn apply_burn(
     Some(step)
 }
 
+/// The voice line a burn's quiet crackle (timer 19 or under) asks: the
+/// groan.
+pub const BURN_GROAN_LINE: i32 = 2;
+
 /// The ticked body's burn, in its upkeep stage: health, the regeneration
 /// rate, and a collapse when yellow falls below 0. The blend takes the
 /// body's muscle energy (the collapse start reads that energy against 1.2).
+/// A due crackle at timer 19 or under asks the body's voice for its groan
+/// at the crackle's levels (the voice applies its waits and gains, as a
+/// pain groan); a loud crackle folds the voice's gains in, but Exarust has
+/// no burn sample in a voice yet, so it sounds nothing.
 #[allow(clippy::type_complexity)]
 pub fn burn_upkeep(
     mut commands: Commands,
@@ -289,25 +297,62 @@ pub fn burn_upkeep(
         Option<&mut exa_physics::body::Ragdoll>,
         Option<&mut crate::collapse::Hands>,
         &mut Burn,
+        (
+            Option<&GlobalTransform>,
+            Option<&crate::voice::CharacterVoice>,
+        ),
     )>,
+    mut pains: MessageWriter<crate::pain::PainSounded>,
     mut roll: Local<crate::Roll>,
 ) {
-    let Ok((mut fighter, mut condition, mut flags, mut anim, mut body, mut hands, mut burn)) =
-        fighters.get_mut(ticked.body)
+    let Ok((
+        mut fighter,
+        mut condition,
+        mut flags,
+        mut anim,
+        mut body,
+        mut hands,
+        mut burn,
+        (at, voice),
+    )) = fighters.get_mut(ticked.body)
     else {
         return;
     };
     let now = ticks.as_ref().map_or(0, |t| t.millis());
+    let sound = BurnSound {
+        loud_sample: false,
+        gains: voice.map_or(BurnGains::default(), |v| BurnGains {
+            volume: v.volume,
+            volume2: v.gain,
+            pitch: v.pitch,
+        }),
+    };
     let Some(step) = apply_burn(
         &mut fighter.health,
         condition.0,
         &mut burn,
         now,
         &mut roll,
-        BurnSound::default(),
+        sound,
     ) else {
         return;
     };
+    if let Some(crackle) = step.crackle.filter(|c| c.groan) {
+        pains.write(crate::pain::PainSounded {
+            fighter: ticked.body,
+            point: at.map_or(Vec3::ZERO, GlobalTransform::translation),
+            sounds: crate::pain::PainSounds {
+                wound: None,
+                voice: Some((
+                    BURN_GROAN_LINE,
+                    crate::pain::Loudness {
+                        volume: crackle.volume,
+                        pitch: crackle.pitch,
+                    },
+                )),
+            },
+        });
+    }
     let energy = body
         .as_ref()
         .and_then(|b| b.drive.as_ref())
@@ -554,7 +599,8 @@ mod tests {
     #[test]
     fn the_upkeep_clears_the_ticked_fighters_rate() {
         let mut app = App::new();
-        app.add_systems(Update, burn_upkeep);
+        app.add_message::<crate::pain::PainSounded>()
+            .add_systems(Update, burn_upkeep);
         let mut fighter = crate::Fighter::default();
         fighter.health.rate = 1.0;
         let body = app
@@ -580,6 +626,48 @@ mod tests {
         assert!(health.yellow < 0.25);
         assert_eq!(app.world().get::<Burn>(body).unwrap().strength, 0.0);
         assert!(app.world().get::<crate::collapse::Collapse>(body).is_none());
+    }
+
+    /// A due crackle at a timer of 19 or under asks the ticked body's voice
+    /// for its groan (line 2) at the crackle's levels, at the body.
+    #[test]
+    fn a_quiet_crackle_asks_the_voice_for_its_groan() {
+        let mut app = App::new();
+        app.add_message::<crate::pain::PainSounded>()
+            .add_systems(Update, burn_upkeep);
+        let body = app
+            .world_mut()
+            .spawn((
+                crate::Fighter::default(),
+                crate::Condition::NORMAL,
+                crate::StateFlags::default(),
+                exa_anim::Animator::new("Default", "Idle"),
+                Burn {
+                    strength: 1.0,
+                    timer: 5.0,
+                    next_sound: 0,
+                },
+                GlobalTransform::from_translation(Vec3::new(1.0, 2.0, 3.0)),
+            ))
+            .id();
+        app.insert_resource(exa_physics::body::TickedCharacter {
+            body,
+            character: None,
+        });
+        app.insert_resource(exa_physics::body::BodyTicks(1000));
+        app.update();
+        let sent: Vec<crate::pain::PainSounded> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::pain::PainSounded>>()
+            .drain()
+            .collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].fighter, body);
+        assert_eq!(sent[0].point, Vec3::new(1.0, 2.0, 3.0));
+        let (line, loud) = sent[0].sounds.voice.unwrap();
+        assert_eq!(line, BURN_GROAN_LINE);
+        assert!((0.3..=0.5).contains(&loud.volume) && (0.8..=1.0).contains(&loud.pitch));
+        assert!(sent[0].sounds.wound.is_none());
     }
 
     /// Only a part with a bone index above zero adds a fire's dose.

@@ -190,7 +190,7 @@ impl Plugin for ArenaHubPlugin {
                 (
                     crate::hub_windows::sync_hub_screen,
                     crate::arsenal::load_shelf_kinds,
-                    (leave_arena, enter_loaded_hub).chain(),
+                    (leave_arena, enter_loaded_hub, apply_manager_health).chain(),
                     auto_rematch.before(crate::save_live::SaveLiveSystems::Steps),
                     (
                         crate::hub_forms::hub_emblem_on_load,
@@ -263,6 +263,36 @@ impl Plugin for ArenaHubPlugin {
     }
 }
 
+/// The manager's body takes its health from the career's word, as the
+/// hub's entry and End Day's rest do: red and yellow both the maximum times
+/// the word times 1/65535 ([`crate::arena_match::health_from_word`]). The
+/// fighter is the simulation's: the write lands on its copy at the next
+/// step.
+pub fn apply_manager_health(
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    mut bodies: Query<(Entity, &mut Fighter), With<PlayerBody>>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+) {
+    if !career.manager_health_due {
+        return;
+    }
+    let Some((body, mut fighter)) = bodies.iter_mut().next() else {
+        return;
+    };
+    career.manager_health_due = false;
+    let word = career.player.health;
+    let health = crate::arena_match::health_from_word(word, fighter.health.max);
+    let set = move |f: &mut Fighter| {
+        f.health.red = health;
+        f.health.yellow = health;
+    };
+    match fixed.as_deref_mut() {
+        Some(fixed) => fixed.write(body, &mut fighter, set),
+        None => set(&mut fighter),
+    }
+    info!("arena hub: the manager's body takes health {health} from the word {word:#06x}");
+}
+
 /// The manager as the player's body reads: its condition, red health and
 /// the pelvis height in centimetres.
 fn manager_reading(reading: Option<(&Condition, &Fighter, Option<&Ragdoll>)>) -> ManagerReading {
@@ -308,7 +338,7 @@ fn enter_loaded_hub(
     players: Query<&mut Transform, With<Player>>,
     bodies: Query<(&Condition, &Fighter, Option<&Ragdoll>), With<PlayerBody>>,
     player_bodies: Query<Entity, With<PlayerBody>>,
-    career: ResMut<crate::hub_windows::ArenaCareer>,
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
     mut latches: MessageWriter<exa_world::mechanisms::LatchDoorsAt>,
     (mut animators, motions): (
@@ -419,6 +449,8 @@ fn enter_loaded_hub(
         }
         if placed {
             info!("arena hub: the manager stands at {manager}");
+            // The entry sets the manager's body from its health word.
+            career.manager_health_due = true;
         }
         hub.manager_placed = placed;
     }
@@ -4466,6 +4498,36 @@ mod tests {
             );
             assert!(plan.draw_weapon);
         }
+    }
+
+    /// The hub's entry and End Day set the manager's body from the
+    /// career's health word: red and yellow both the maximum times the word
+    /// over 65535; nothing is written while no update is due.
+    #[test]
+    fn the_manager_takes_its_health_from_the_word() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.player.health = 32768;
+        world.insert_resource(career);
+        let body = world
+            .spawn((PlayerBody::new(0.0), Condition(0), Fighter::default()))
+            .id();
+        let max = world.get::<Fighter>(body).unwrap().health.max;
+        world.run_system_once(apply_manager_health).unwrap();
+        assert_eq!(world.get::<Fighter>(body).unwrap().health.red, max);
+        world
+            .resource_mut::<crate::hub_windows::ArenaCareer>()
+            .manager_health_due = true;
+        world.run_system_once(apply_manager_health).unwrap();
+        let health = world.get::<Fighter>(body).unwrap().health;
+        let expected = crate::arena_match::health_from_word(32768, max);
+        assert_eq!((health.red, health.yellow), (expected, expected));
+        assert!(
+            !world
+                .resource::<crate::hub_windows::ArenaCareer>()
+                .manager_health_due
+        );
     }
 
     #[test]

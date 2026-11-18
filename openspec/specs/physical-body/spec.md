@@ -3467,3 +3467,9 @@ The Ground Query SHALL meet a rigid body's mesh only when its downward ray, with
 #### Scenario: A flat body mesh
 - **WHEN** the ray falls onto a body whose mesh is a flat plate (a box without height)
 - **THEN** the Ground Query does not meet it, while a static plate in the same place is met
+### Requirement: Twist reset at the get-up
+The get-up's start SHALL set the torso twist's followed yaw to 0 and its rotation to the identity before anything else, on its waiting and held returns too.
+
+#### Scenario: A body that fell twisted
+- **WHEN** a lying body with a twisted torso starts its get-up
+- **THEN** its twist yaw is 0 and its twist the identity
