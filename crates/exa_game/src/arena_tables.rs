@@ -377,25 +377,34 @@ pub fn event_entry(row: crate::arena::MatchInstance) -> arena_save::EventEntry {
 }
 
 /// The week's event `index` as the tournament chunk's loader rebuilds it:
-/// the template of that id copied whole (an id no tournament template has
-/// leaves `None`), its rank window and rank set to 5 and the event index,
-/// the saved weapon row and the word after it. The saved rank word is
-/// skipped.
+/// the template of that id copied whole, its rank window and rank set to 5
+/// and the event index, the saved weapon row and the word after it. The
+/// saved rank word is skipped. An id no tournament template has copies
+/// nothing: the loader's entry keeps what it held before (`previous`, the
+/// live board's row at that index; a zeroed entry without one) under the
+/// saved id, with the same rank, weapon and word writes.
 pub fn event_from_entry(
     entry: arena_save::EventEntry,
     index: usize,
-) -> Option<crate::arena::MatchInstance> {
-    let template = crate::arena::TOURNAMENTS
+    previous: Option<crate::arena::MatchInstance>,
+) -> crate::arena::MatchInstance {
+    let mut row = match crate::arena::TOURNAMENTS
         .iter()
-        .find(|template| template.id == entry.template)?;
-    let mut row = crate::arena::MatchInstance::from_template(template, 5);
+        .find(|template| template.id == entry.template)
+    {
+        Some(template) => crate::arena::MatchInstance::from_template(template, 5),
+        None => crate::arena::MatchInstance {
+            id: entry.template,
+            ..previous.unwrap_or_default()
+        },
+    };
     row.min_rank = 5;
     row.max_rank = index as i32;
     row.slot = 5;
     row.rank = index as i32;
     row.weapon_row = entry.third;
     row.xp = entry.fourth;
-    Some(row)
+    row
 }
 
 /// A hire-list candidate's character export: a record with its name, its
@@ -549,22 +558,32 @@ pub fn apply(
     career.merchant_kinds = tables.merchant.stock_type;
     career.merchant_rank = tables.merchant.specialisation as i32;
     career.entries = roster_from_rows(&tables.tournament.rows);
-    // The week's prize and its six events, each rebuilt from its template.
-    let events: Vec<crate::arena::MatchInstance> = tables
-        .tournament
-        .events
-        .iter()
-        .enumerate()
-        .filter_map(|(index, entry)| event_from_entry(*entry, index))
-        .collect();
-    if let Ok(rows) = <[crate::arena::MatchInstance; 6]>::try_from(events) {
-        let companies = tables.tournament.field.map(|company| company as u8);
-        career.tournament = Some(crate::arena::TournamentBoard {
-            rows,
-            prize_id: tables.tournament.prize,
-            companies,
-        });
+    // The week's prize and its six events, each rebuilt from its template
+    // over the live board's rows. A field whose first company is 0 is drawn
+    // anew before the events are read, 16 of the 19 rivals from the
+    // career's roll (the engine's shared generator).
+    let mut field = tables.tournament.field;
+    if tables.tournament.needs_field() {
+        let drawn = crate::career::draw_rival_field(&mut career.roll);
+        for (word, company) in field.iter_mut().zip(drawn) {
+            *word = company as u32;
+        }
+        bevy::log::info!("arena load: the saved field is empty; a new one is drawn {drawn:?}");
     }
+    let previous = career.tournament.as_ref().map(|board| board.rows);
+    let rows: [crate::arena::MatchInstance; 6] = std::array::from_fn(|index| {
+        event_from_entry(
+            tables.tournament.events[index],
+            index,
+            previous.map(|rows| rows[index]),
+        )
+    });
+    let companies = field.map(|company| company as u8);
+    career.tournament = Some(crate::arena::TournamentBoard {
+        rows,
+        prize_id: tables.tournament.prize,
+        companies,
+    });
     // The hire list's candidates from their character exports. The count
     // is cleared before the chunk loads, so a save with no candidates (or
     // a broken chunk) leaves the list empty; Manage Company draws a new
@@ -601,9 +620,7 @@ pub fn apply(
             board.rows.map(|row| (row.id, row.weapon_row))
         ))
     );
-    // A field whose first company is 0 stays empty, so the next tournament
-    // asks for a new one.
-    career.rivals = tables.tournament.field.map(|company| company as i32);
+    career.rivals = field.map(|company| company as i32);
     career.prize_history = tables.tournament.history;
     // A week the chunk names the company's (1) is won; Exarust's own
     // session words may already hold it (an older Exarust save wrote the
@@ -880,6 +897,49 @@ mod tests {
             &tables,
         );
         assert_eq!(back.rivals, career.rivals);
+    }
+
+    /// The tournament chunk's load draws a field for an empty one, and an
+    /// event id no template has keeps the live board's row under that id.
+    #[test]
+    fn an_empty_field_is_drawn_and_an_unknown_event_keeps_the_live_row() {
+        let mut career = career("Rivals");
+        career.regenerate_tournament_at(0x2468_ace0);
+        let mut tables = from_live(&career, &Staff::default(), &Arsenal::default(), &[], None);
+        tables.tournament.field = [0; arena_save::FIELD_LEN];
+        tables.tournament.events[2].template = 0x77;
+        tables.tournament.events[2].third = 3;
+        let mut back = ArenaCareer::default();
+        back.regenerate_tournament_at(0x1357_9bdf);
+        let before = back.tournament.as_ref().unwrap().rows[2];
+        let mut roll = back.roll;
+        let expected = crate::career::draw_rival_field(&mut roll);
+        apply(
+            &mut back,
+            &mut Staff::default(),
+            &mut Arsenal::default(),
+            &mut Vec::new(),
+            &tables,
+        );
+        assert_eq!(back.rivals, expected);
+        assert_eq!(back.roll, roll);
+        let board = back.tournament.as_ref().unwrap();
+        assert_eq!(board.companies, expected.map(|c| c as u8));
+        let row = board.rows[2];
+        assert_eq!(row.id, 0x77);
+        assert_eq!(
+            (row.cash, row.teams, row.fighters),
+            (before.cash, before.teams, before.fighters)
+        );
+        assert_eq!(
+            (row.min_rank, row.max_rank, row.slot, row.rank),
+            (5, 2, 5, 2)
+        );
+        assert_eq!(row.weapon_row, 3);
+        // The known events are their templates.
+        let saved = career.tournament.as_ref().unwrap();
+        assert_eq!(board.rows[0].id, saved.rows[0].id);
+        assert_eq!(board.rows[0].teams, saved.rows[0].teams);
     }
 
     /// The hire list (each candidate's character export) and the week's

@@ -821,6 +821,16 @@ pub fn repair_converted_record(record: &mut crate::characters::CharacterRecord) 
     }
 }
 
+/// The old arena save's compaction of the hub stash after the record's
+/// repair: the stash keeps only the entries whose id has the top bit clear,
+/// in order (the twelve-byte compaction the carried list also goes
+/// through). Returns how many entries were dropped.
+pub fn compact_converted_stash(stash: &mut Vec<ItemEntry>) -> usize {
+    let before = stash.len();
+    stash.retain(|entry| entry.id & ITEM_MARKER == 0);
+    before - stash.len()
+}
+
 /// Keeps only plain entries of an eight-byte item list: the arena's load
 /// compaction drops every entry whose first word has the top bit set and
 /// closes the gaps in place.

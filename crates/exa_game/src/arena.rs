@@ -1336,7 +1336,7 @@ mod weapon_tests {
 }
 
 /// A rolled match instance (the binary's 0x70-byte record).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MatchInstance {
     pub id: u32,
     pub flags: u32,
