@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r332, 11-16) | target |
+| measure | start (r186, 11-10) | now (r333, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **70.35%** | **100%** |
+| **Ledger: bytes in a final state** | — | **71.22%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9331 | all |
+| Tests passing | 8,489 | 9335 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,23 +98,23 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 107 | 144,960 |
-| Rendering & GPU | 10 | 10 | 164 | 101,199 |
+| Physics, bodies & cloth | 7 | 7 | 101 | 130,611 |
 | UI | 12 | 12 | 199 | 101,149 |
+| Rendering & GPU | 10 | 10 | 162 | 99,457 |
 | Characters, motion & animation | 8 | 8 | 138 | 79,202 |
 | Game modes, arena & session | 7 | 7 | 136 | 65,221 |
 | AI & behaviour | 8 | 8 | 80 | 58,073 |
-| Thaumaturgy & effects | 9 | 9 | 80 | 56,611 |
-| World, levels & terrain | 5 | 5 | 74 | 53,886 |
+| World, levels & terrain | 5 | 5 | 73 | 53,149 |
+| Thaumaturgy & effects | 9 | 9 | 79 | 51,807 |
 | Items, materials & crafting | 5 | 5 | 52 | 27,648 |
 | Data, assets & I/O | 6 | 6 | 47 | 20,354 |
 | Runtime & platform | 5 | 5 | 46 | 15,124 |
-| Core, math & threading | 3 | 3 | 52 | 12,196 |
+| Core, math & threading | 3 | 3 | 51 | 11,981 |
 | Script, dialogue & story | 2 | 2 | 16 | 4,496 |
 | Audio | 1 | 1 | 3 | 2,097 |
 | Combat, weapons & damage | 1 | 1 | 3 | 1,560 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,197** | **743,776** |
+| **Total** | **90** | **90** | **1,186** | **721,929** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 333 | DEC-7: the approximate reciprocal and reciprocal square root now answer from one fixed table equal to Intel on all 2^32 inputs (the worker AMD CPU differs on 26-51 percent of inputs, so runs no longer depend on the CPU); engine maths and eight exact sites use it, the oracle answers from the same table (129 of 129 identical); a fading tendril strand ends as the original; a fist contact past the far face is ignored as the original; nine golden scenes change on purpose (bodies differ in the last bits from tick 1); the mesh queries stay exact for now. |
 | 2026-11-16 | 332 | The rulings taken on 2026-11-19 applied after a row-by-row review: 22 rows close as deviations (DEC-5: the terrain kd and block trees, the background builder, the mesh any-hit ray, the slab re-test, the work-area fit and the stereo camera scale; DEC-11: the arc respawn); the DEC-7 sites wait on the fixed Intel approximation (dec7 lane); 47 candidates refused with their reasons. |
 | 2026-11-16 | 331 | The frame walk runs in the original list blocks: scissored opaque and alpha-tested meshes leave the batched phases so the doorway scissor clips them, the cut-away faded pass lays depth before colour after all blended surfaces, grass draws in its hook block with depth writes off and the 0.1 cut, alpha-tested records cut their texels in the colour pass (the pass had no discard), the rain draws its reflected set and each view uploads its bloom kernel; plants now show cut blades; golden unchanged. |
 | 2026-11-16 | 330 | The CPU painter samples each library texture as the original load word asks (linear for 0x70133 metals, cloths, leathers; nearest for woods and coppers; the first claim wins), every job own map as a clamped level-0 bilinear mix and emblem pictures bilinearly; the gemstone pattern pass and the alternate steel normal are shown never to draw on shipped data (DEC-12 condition met); a dropped lit blade puts out its flame row; golden and FPS unchanged, painter wall time unchanged. |
