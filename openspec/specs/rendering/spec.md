@@ -2063,3 +2063,17 @@ Every part of a fading cut-away mesh SHALL lay its depth, with colour writes off
 #### Scenario: Two fading roofs
 - **WHEN** two fading roofs overlap on screen
 - **THEN** only the nearer roof's colour is blended over the scene where they overlap
+
+### Requirement: Rain reflected set
+Above shading quality three the rain SHALL draw its drops a second time with the reflected turn (2° about x the other way and 170° about y) at the same place and scale, and SHALL draw only the drop set at shading quality three or below.
+
+#### Scenario: Shipped shading quality
+- **WHEN** it rains at shading quality four
+- **THEN** two sets of streaks are drawn from the same drops
+
+### Requirement: Bloom kernel per view
+Each post-processed view SHALL blur its bright pass with the kernel the filter builds for the view's tap count (the linear workflow, the count as its level), uploaded with its last index: 16 taps for the game view and 24 for the item renderer's view.
+
+#### Scenario: Game view
+- **WHEN** the game view's post runs
+- **THEN** its blur weights fall from 0.0711 at the centre to 0.0162 at the sixteenth tap

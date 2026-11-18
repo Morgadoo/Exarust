@@ -168,10 +168,14 @@ Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
 `Tonemapping::None`):
 
 1. **Bright pass** at half resolution: (c + c²)·0.8, clamped.
-2. **Blur**: separable, 31 taps (a centre and 15 pairs, 2 half-resolution
-   texels apart), horizontally then vertically at a quarter of the
-   resolution. Weights fall from 0.0711 to 0.0162; the total gain is about
-   1.23.
+2. **Blur**: separable, horizontally then vertically at a quarter of the
+   resolution, over the view's kernel (`Filter`, uploaded with its last
+   index): a centre and a pair for each further tap, 2 half-resolution
+   texels apart. The filter builds it for its tap count with the linear
+   workflow and the count as its level (`post::bloom_kernel`, set on each
+   view's `ExaPost`): the game view's 16 taps fall from 0.0711 to 0.0162,
+   a total gain of about 1.23; the item renderer's view sets 24
+   (`post::ITEM_VIEW_TAPS`; Exarust's icon camera has no post pass yet).
 3. **Final pass**: the scene clamped to 1, then:
    - a **sharpen**, on when supersampling is (strength 1.5 × (0.075·n +
      0.4) at supersample level n; 0.9375 at the original's 4×). It takes
@@ -4299,7 +4303,13 @@ the rain falls to 0.01 (`exa_world::scene_env`). While the amount is above
   `ScreenSpaceTransmission` while the effect exists. Cameras without it
   draw no rain. The original draws the effect once per supersample corner
   over that corner's frame; Exarust draws it once, at the supersampled
-  resolution. The reflected pass (reflection level above 3) is not drawn.
+  resolution. Each corner's pass also draws the reflected set when the
+  shading quality (the global the frame routine tests) is above 3, four
+  as compiled in: the same drops turned 2° about x the other way and 170°
+  about y. Exarust draws it as a second entity sharing the drops' mesh and
+  material (`effects::rain::reflected_rotation`, read with the drop set's
+  sense of turn), so the shipped settings show twice the streaks of one
+  set.
 - **Look.** Over a dark night ground the streaks are faint dark lines (a
   quarter darker than what lies behind them); over bright ground or sky
   they are bright lines. `EXA_RAIN_DEBUG` and `EXA_RAIN_DRAW` (see

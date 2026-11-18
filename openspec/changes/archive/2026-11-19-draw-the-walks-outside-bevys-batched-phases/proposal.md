@@ -42,3 +42,9 @@ shader had no discard; `AlphaMode::Mask` only picked Bevy's phase).
   child lays its depth first.
 - The terrain plants draw in the grass hook block.
 - `passes`: the particle pass model renamed to the faded pass it is.
+- The rain draws its reflected set (a second entity, the reflected turn)
+  above shading quality three, as each sub-frame pass of the original does
+  (the frame routine tests the shading quality's global).
+- `ExaPost` carries the view's blur kernel (`Filter` and its last index,
+  `bloom_kernel` for its tap count: 16 for the game view, 24 for the item
+  renderer's) and the blur passes loop over it.
