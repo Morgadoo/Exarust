@@ -1,0 +1,5 @@
+- [x] Read the library, region-map and emblem load words and the programs' sampling
+- [x] Sample library textures and emblem pictures bilinearly at the fragment centre (test: a_library_texture_is_filtered_linearly_at_the_fragment_centre)
+- [x] Sample the jobs' own maps bilinearly at level 0, clamped (tests: a_region_map_is_filtered_linearly_and_clamped, a_magnified_map_is_filtered_linearly, the_region_map_clamps_past_its_end)
+- [x] Tally detail classes and wrap bits of the painter's maps (exa-tool corpus paint-maps)
+- [x] Painter pictures and paint-bench before and after

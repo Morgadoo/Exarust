@@ -347,6 +347,11 @@ enum CorpusKind {
     /// Every material record a mesh group draws with, by material type
     /// (the low byte of its kind word), listing the type-2 (smoke) users.
     Materials,
+    /// The painter's source maps: every procedural material's library
+    /// textures and every factory component's shade, normal and mask maps,
+    /// by size, detail class (the level texture detail 3 uploads), wrap and
+    /// stored chain.
+    PaintMaps,
 }
 
 fn main() -> Result<()> {
@@ -650,6 +655,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Materials,
         } => corpus::materials(&game),
+        Cmd::Corpus {
+            what: CorpusKind::PaintMaps,
+        } => corpus::paint_maps(&game),
         Cmd::Nav { level, png } => nav::nav(&game, &level, png.as_deref()),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)
@@ -890,11 +898,11 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
     let appearance = item.appearance.expect("filtered");
     let texels = |name: &str| -> Option<Texels> {
         let rfi = Rfi::parse(game.texture(name)?).ok()?;
-        Some(Texels {
-            width: rfi.header.width as usize,
-            height: rfi.header.height as usize,
-            rgba: rfi.decode_rgba8().ok()?,
-        })
+        Some(Texels::new(
+            rfi.header.width as usize,
+            rfi.header.height as usize,
+            rfi.decode_rgba8().ok()?,
+        ))
     };
     let shade = texels(&format!("{stem}d")).context("no shade map")?;
     let mut owned = Vec::new();
@@ -911,6 +919,12 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
             .collect();
         let normals: Vec<Option<Texels>> =
             normal_library(material).iter().map(|n| texels(n)).collect();
+        let filter = exa_assets::paint::LibraryFilter::of_word(
+            exa_assets::paint::program_material(material).library_word(),
+        );
+        for t in lib.iter().chain(&specular).chain(&normals).flatten() {
+            t.claim_filter(filter);
+        }
         println!(
             "  mask {} material {material} colour {:#04x} library {}/{}",
             layer.mask,
