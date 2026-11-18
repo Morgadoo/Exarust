@@ -266,6 +266,8 @@ fn the_spectated_arena_start_is_a_fast_two_point_shot() {
     app.update();
     let c = cam(&app, camera);
     assert!(c.is_free());
+    // The shot copied the camera into the cursor pin's saved view.
+    assert_eq!(c.shots, 1);
     assert_eq!(c.asked_pitch(), 0.0);
     assert_eq!(c.zoom(), 1280.0);
     let floor = crate::nav_camera::pitch_floor(1280.0);
