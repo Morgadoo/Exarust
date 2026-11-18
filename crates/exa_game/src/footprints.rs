@@ -302,9 +302,9 @@ mod tests {
                 .world_mut()
                 .spawn((CharacterBody::default(), Transform::from_xyz(x, 0.0, 0.15)))
                 .id();
-            let mut body = app
-                .world_mut()
-                .spawn((Fighter::default(), Condition::NORMAL, ChildOf(root)));
+            let mut body =
+                app.world_mut()
+                    .spawn((Fighter::default(), Condition::NORMAL, ChildOf(root)));
             if player {
                 body.insert(PlayerBody::new(0.0));
             }
@@ -319,9 +319,18 @@ mod tests {
         assert!(app.world().get_entity(inside_root).is_ok());
         assert!(app.world().get_entity(player_root).is_ok());
         assert!(app.world().resource::<NavFootprints>().of(inside).is_some());
-        assert!(overflows(app.world().resource::<NavGrid>(), Vec3::new(4.8, 0.0, 0.15)));
-        assert!(!overflows(app.world().resource::<NavGrid>(), Vec3::new(4.2, 0.0, 0.15)));
-        assert!(overflows(app.world().resource::<NavGrid>(), Vec3::new(0.0, 0.0, -4.7)));
+        assert!(overflows(
+            app.world().resource::<NavGrid>(),
+            Vec3::new(4.8, 0.0, 0.15)
+        ));
+        assert!(!overflows(
+            app.world().resource::<NavGrid>(),
+            Vec3::new(4.2, 0.0, 0.15)
+        ));
+        assert!(overflows(
+            app.world().resource::<NavGrid>(),
+            Vec3::new(0.0, 0.0, -4.7)
+        ));
     }
 
     /// A standing player stamps; once vanished its footprint stays where

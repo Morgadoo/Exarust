@@ -696,7 +696,8 @@ pub fn carry_held(
             if grip.holder_key != key || grip.released {
                 continue;
             }
-            let (Some(hand), Some(before)) = (holder.parts.get(rest.hand), carry.before.get(rest.hand))
+            let (Some(hand), Some(before)) =
+                (holder.parts.get(rest.hand), carry.before.get(rest.hand))
             else {
                 continue;
             };

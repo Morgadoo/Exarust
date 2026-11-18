@@ -846,9 +846,10 @@ pub(crate) fn place_on_ground(
         // The placement's recursion carries the held items with their
         // hands; the original's behaviour then puts them back in the hands
         // where the placement left them.
-        commands
-            .entity(root)
-            .insert((exa_physics::grip::CarryHeld { before: carried }, exa_physics::grip::ReplaceHeld));
+        commands.entity(root).insert((
+            exa_physics::grip::CarryHeld { before: carried },
+            exa_physics::grip::ReplaceHeld,
+        ));
         match placed {
             Some(height) => info!(
                 "ground placement {root:?}: pelvis {:.1} cm over the floor (was {:.1}), feet at {:.1}, character ground {:.1}",

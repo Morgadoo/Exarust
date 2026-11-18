@@ -876,7 +876,10 @@ fn a_placed_holder_carries_its_held_item_with_its_hand() {
         .spawn((rigid(loose, Vec3::new(0.2, 0.4, 0.0), 1.0), grip(false)))
         .id();
     app.update();
-    app.world_mut().get_mut::<HeldGrip>(loose_e).unwrap().released = true;
+    app.world_mut()
+        .get_mut::<HeldGrip>(loose_e)
+        .unwrap()
+        .released = true;
     let hand_before = app.world().get::<Ragdoll>(holder_e).unwrap().parts[1].transform();
     let item_before = app.world().get::<Ragdoll>(item_e).unwrap().parts[0].transform();
     let loose_before = app.world().get::<Ragdoll>(loose_e).unwrap().parts[0].transform();
@@ -897,7 +900,9 @@ fn a_placed_holder_carries_its_held_item_with_its_hand() {
         let worlds: Vec<Affine3A> = body.parts.iter().map(|p| turn * p.transform()).collect();
         body.place_at(&worlds);
     }
-    app.world_mut().entity_mut(holder_e).insert(CarryHeld { before });
+    app.world_mut()
+        .entity_mut(holder_e)
+        .insert(CarryHeld { before });
     app.update();
     assert!(app.world().get::<CarryHeld>(holder_e).is_none());
     let hand_after = app.world().get::<Ragdoll>(holder_e).unwrap().parts[1].transform();
@@ -1116,7 +1121,12 @@ fn a_touch_on_a_sleeping_holder_resets_its_items_contacts() {
         .unwrap()
         .wake_to(100);
     app.update();
-    assert_eq!(app.world().get::<Ragdoll>(item).unwrap().parts[0].contacts.len(), 1);
+    assert_eq!(
+        app.world().get::<Ragdoll>(item).unwrap().parts[0]
+            .contacts
+            .len(),
+        1
+    );
     // Both asleep again; a blow touches the holder.
     *app.world_mut().get_mut::<Ragdoll>(holder).unwrap() = rigid(holder_part, Vec3::ZERO, 1.0);
     let mut item_body = rigid(item_part, Vec3::X, 1.0);
