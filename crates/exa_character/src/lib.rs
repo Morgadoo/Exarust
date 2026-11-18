@@ -1031,10 +1031,15 @@ fn fist_records(race: &RaceWeaponry, hands: [(f32, f32); 2], holder: &Holder) ->
 }
 
 /// Where a fist's striker lies in its hand part: from the hand's origin
-/// along its x axis, toward the side its box lies on (a striker's segment
-/// runs along its local +Y).
-fn fist_transform(centre_x: f32) -> Transform {
-    let across = if centre_x < 0.0 { -Vec3::X } else { Vec3::X };
+/// along its x axis, negated for the right hand (a striker's segment runs
+/// along its local +Y). The original's damage routine measures an unarmed
+/// contact along the striking hand's local x, negated when that hand is the
+/// right one, so the fist's +Y is the measure the routine takes.
+fn fist_transform(slot: Slot) -> Transform {
+    let across = match slot {
+        Slot::First => -Vec3::X,
+        Slot::Second => Vec3::X,
+    };
     Transform::from_rotation(Quat::from_rotation_arc(Vec3::Y, across))
 }
 
@@ -1831,13 +1836,13 @@ pub fn equip_outfits(
             if let (Some(right), Some(left)) = (hand(RIGHT_HAND), hand(LEFT_HAND)) {
                 let across = |b: &PartBounds| (b.centre.x * CM_PER_M, b.half_extents.x * CM_PER_M);
                 let records = fist_records(&race, [across(&right.1), across(&left.1)], &holder);
-                for (((part, bounds), record), slot) in [right, left]
+                for (((part, _), record), slot) in [right, left]
                     .into_iter()
                     .zip(records)
                     .zip([Slot::First, Slot::Second])
                 {
                     commands.spawn((
-                        fist_transform(bounds.centre.x),
+                        fist_transform(slot),
                         ChildOf(part),
                         exa_combat::Blade::new(body, record.length / CM_PER_M, record)
                             .in_slot(slot),
@@ -2508,9 +2513,10 @@ mod tests {
             assert!((fist.recoil - 0.35).abs() < 1e-6);
             assert!((fist.length - 17.66).abs() < 1e-4);
         }
-        let along = |x: f32| fist_transform(x).rotation * Vec3::Y;
-        assert!(along(-8.0).abs_diff_eq(-Vec3::X, 1e-6));
-        assert!(along(8.0).abs_diff_eq(Vec3::X, 1e-6));
+        // The right fist measures along the hand's -x, the left along +x.
+        let along = |slot| fist_transform(slot).rotation * Vec3::Y;
+        assert!(along(Slot::First).abs_diff_eq(-Vec3::X, 1e-6));
+        assert!(along(Slot::Second).abs_diff_eq(Vec3::X, 1e-6));
         // The Harvester (race index 10, heavy-claws word): a right fist and
         // a left heavy claw.
         let harvester = RaceWeaponry {
