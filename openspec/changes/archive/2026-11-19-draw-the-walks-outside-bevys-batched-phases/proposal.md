@@ -25,7 +25,12 @@ shader had no discard; `AlphaMode::Mask` only picked Bevy's phase).
   (`Shd.AlphaTst`) drop a diffuse texel below ½ (`shadeopt_f`,
   `shadetrl_f`; `MatDif.a·a` in `shadesss_f`; the hair alpha in
   `shadehar_f`).
-- Worker GPU pairs: `context/artifacts/2026-11-19-renderphase/` (pairs1: e01, e02 and the hub within 0.02 % of pixels, arenao3 2.4 % from the grass cut).
+- Worker GPU pairs (`context/artifacts/2026-11-19-renderphase/final`, main
+  r328 against the lane, fixed frames): exanima01 and exanima02 unchanged
+  (no pixel over 8/255), the hub 0.001 %; arenao3 2.65 % (the plants' cut
+  blades); rain 0.8 % (the reflected set); without supersampling the
+  faded scaffold of exanima02 changes 2.5 % (only the nearest faded layer
+  blends) and exanima01's torch flame shows through the faded cage floor.
 
 ## What changes
 
