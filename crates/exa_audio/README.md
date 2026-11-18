@@ -256,7 +256,10 @@ bus next to the rodio sources) are in.
   forgets its name at black. The story's level-entry check
   (`story_music_changes`) compares the destination's track with the playing
   one on 15 characters; `story_music_changes_for_key` makes the same check
-  against Exarust's lowercase track key (`music_name`).
+  against Exarust's lowercase track key (`music_name`). A story level's
+  track is the story hook's (`StoryMusicHook`): it plays only when it
+  differs from the one playing on 15 characters (`story_hook_plays`), so
+  a door into a level with the same track keeps it playing.
 - Observed quirks kept: the promoted track's volume is not written into A's
   nominal volume (the original writes it to a global nothing reads); B's
   buffer is neither released nor forgotten when an overlay ends; stopping A
