@@ -106,7 +106,7 @@ pub use stages::{
     MechanismStep, SolverStage, SolverStages, TickBehaviour, TickedCharacter, run_character_ticks,
     solve_among, solve_with,
 };
-pub use steps::step_length;
+pub use steps::{knock_push, step_length};
 #[path = "body_frame.rs"]
 mod frame;
 #[path = "body_inspect.rs"]
@@ -5309,6 +5309,30 @@ impl Ragdoll {
         let chest = drive.balance.chest().unwrap_or(Vec3::ZERO);
         let landings = drive.balance.landings();
         steps::begin_knockback(&mut drive.steps, chest + offset, landings);
+    }
+
+    /// The knockback step routine as the force effects call it (without the
+    /// chest's velocity): `direction` (cm units, any length) with its height
+    /// zeroed, times `2·amount`, cut to the step length when its squared
+    /// length (`(x² + y²) + z²`, a NaN not cutting it) is longer, and the
+    /// step started at the chest plus that push.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    pub fn knock_along(&mut self, direction: Vec3, amount: f32) {
+        let Some(drive) = self.drive.as_ref() else {
+            return;
+        };
+        let step_cm = step_length(drive.stats.scale, drive.balance.extension());
+        let push = knock_push(direction, amount, step_cm);
+        self.begin_knockback(push / 100.0);
+    }
+
+    /// The knockback kind cleared, as a force contact does on a character
+    /// before it knocks it: a contact too weak to knock ends the knockback
+    /// a running step had.
+    pub fn clear_knockback_kind(&mut self) {
+        if let Some(drive) = self.drive.as_mut() {
+            drive.steps.knockback = false;
+        }
     }
 
     /// A light blow's write in place of the knockback: the step's start is

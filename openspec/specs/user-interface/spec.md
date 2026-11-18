@@ -4353,3 +4353,10 @@ The first built-in glyph SHALL be the executable's GUISymbl image's 48-pixel squ
 #### Scenario: A scale change
 - **WHEN** the GUI level changes
 - **THEN** the small atlas is drawn again with the GUISymbl square first
+
+### Requirement: Non-modal message box
+A hub message box without the modal bit 0x80 SHALL keep the keys but let a pointer off the box reach the highest form under it; a box with the bit SHALL take every pointer hit.
+
+#### Scenario: The hire refusal box
+- **WHEN** a 0x41 box is open over a form and the pointer clicks that form's button beside the box
+- **THEN** the form under the box answers and the box stays on top

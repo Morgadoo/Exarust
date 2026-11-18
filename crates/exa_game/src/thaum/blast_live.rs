@@ -34,14 +34,16 @@
 //!   weights, the impulse pushed at those weights with the strain, the
 //!   chunk's weight loss). A part met wakes its body to 256 ticks; a
 //!   character's part also takes [`character_knock`] of that part's
-//!   gathered impulse: the energy, a knockback step, its instability
-//!   counter +1, concern 1 at 0.01 toward the caster and the loosened pins.
-//!   The force wave shares these contact slots ([`ChunkSet`]). The parts
+//!   gathered impulse: its knockback kind cleared, the energy, a knockback
+//!   step (the step routine without the chest's velocity: the knock's
+//!   direction flattened, times twice its size, cut to the step length;
+//!   `Ragdoll::knock_along`), its instability counter +1, concern 1 at
+//!   0.01 toward the caster and the loosened pins. The force wave shares these contact slots ([`ChunkSet`]). The parts
 //!   offered are those the sector's first pass walks: the nine grid cells
 //!   around the blast's, each part's bound sphere and mesh box against the
 //!   blast's bounds, a disabled body skipped.
 //!   [inf: a part built without a node mesh answers with its collision
-//!   spheres; the knock is a knockback step.]
+//!   spheres.]
 //! - **Release**: the release alerts the caster's known characters
 //!   ([`alert_amount`]); the ribbon draws with `effectforce_f` in every
 //!   state, a charging blast's in the charge's colour ([`draw_blasts`]); the charge loop and the release play
@@ -773,12 +775,14 @@ pub(crate) fn level_meshes(
 
 /// What a struck character takes from one part's contact, as the
 /// original's part contact ends: its energy and the knock from the part's
-/// gathered impulse ([`character_knock`]), its instability counter +1, the
+/// gathered impulse ([`character_knock`]) after its knockback kind is
+/// cleared, the knock taken by the step routine
+/// (`Ragdoll::knock_along`), its instability counter +1, the
 /// concern 1 at 0.01 toward the caster, and the pins loosened
 /// ([`loosen_pins`]).
-/// [unread: the contact also clears a body byte and, for a part of kind
-/// 0x10, sets its node's 0x80 bit and zeroes a part word; their readers are
-/// not traced, so Exarust does neither.]
+/// [unread: for a part of kind 0x10 the contact also sets its node's 0x80
+/// bit and zeroes a part word; their readers are not traced, so Exarust
+/// does neither.]
 pub(crate) fn knock_character(
     body: &mut Ragdoll,
     mass: f32,
@@ -788,6 +792,9 @@ pub(crate) fn knock_character(
     combatants: &mut Query<&mut Combatant>,
     npcs: &Query<&Npc>,
 ) {
+    // The contact first clears the knockback kind: a contact too weak to
+    // knock ends the knockback a running step had.
+    body.clear_knockback_kind();
     let Some(knock) = body.drive.as_mut().map(|drive| {
         let knock = character_knock(mass, drive.energy, impulse);
         drive.energy = knock.energy;
@@ -797,9 +804,9 @@ pub(crate) fn knock_character(
     }) else {
         return;
     };
-    if let Some((direction, size)) = knock.knock {
-        let flat = Vec3::new(direction.x, 0.0, direction.z);
-        body.begin_knockback(flat * (size / CM));
+    if let Some((direction, amount)) = knock.knock {
+        // The knockback step routine, without the chest's velocity.
+        body.knock_along(direction, amount);
     }
     if let Ok(mut combatant) = combatants.get_mut(struck) {
         let aggression = npcs

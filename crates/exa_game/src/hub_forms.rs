@@ -60,6 +60,11 @@ pub enum FormWindow {
     Message,
 }
 
+/// A message box's modal bit: with it the box takes every pointer hit;
+/// without it (the hire's and the arena's 0x41 boxes) the pointer reaches
+/// the forms under it.
+pub const MESSAGE_MODAL: u32 = 0x80;
+
 /// The open message box's words: its title, text and flag word (to place
 /// it again after a resize) and its key and result state.
 #[derive(Clone, Debug, PartialEq)]
@@ -444,7 +449,8 @@ impl HubForms {
         info!("message box: {title:?}: {text:?}");
     }
 
-    /// Whether a message box is the top form (it takes the keys).
+    /// Whether a message box is the top form (it takes the keys; the
+    /// pointer only when the box is modal, [`MESSAGE_MODAL`]).
     pub fn message_on_top(&self) -> bool {
         self.top().is_some_and(|f| f.window == FormWindow::Message)
     }
@@ -534,6 +540,23 @@ impl HubForms {
                     && self.forms[top].form.held().is_none() =>
             {
                 self.find(FormWindow::Company).unwrap_or(top)
+            }
+            // A message box without the modal bit (0x80; the hire's 0x41)
+            // lets the pointer reach the forms under it: off the box, the
+            // highest form under the pointer takes it.
+            Some(top)
+                if self.forms[top].window == FormWindow::Message
+                    && self
+                        .message
+                        .as_ref()
+                        .is_some_and(|m| m.flags & MESSAGE_MODAL == 0)
+                    && !self.forms[top].form.contains(at.0, at.1)
+                    && self.forms[top].form.held().is_none() =>
+            {
+                (0..top)
+                    .rev()
+                    .find(|&i| self.forms[i].form.contains(at.0, at.1))
+                    .unwrap_or(top)
             }
             Some(top) => top,
             None => return Vec::new(),
@@ -2370,6 +2393,30 @@ mod tests {
         assert!(forms.message_key(exa_ui::modal_screens::KEY_SPACE));
         assert_eq!(forms.message_result, Some(0));
         assert!(!forms.message_key(exa_ui::modal_screens::KEY_SPACE));
+    }
+
+    /// A 0x41 box lets the pointer reach the form under it, off the box:
+    /// the under form's Ok answers; a modal (0x80) box keeps the pointer.
+    #[test]
+    fn a_box_without_the_modal_bit_lets_the_pointer_reach_the_form_under_it() {
+        for (word, reaches) in [(crate::staff::REFUSAL_BOX_WORD, true), (0xc1, false)] {
+            let mut forms = HubForms::default();
+            let mut under =
+                exa_ui::modal_screens::open_message_box("Under", "Text", 1, (1280, 720), 4);
+            under.place_at(0, 0);
+            forms.push(FormWindow::Dismiss, under);
+            forms.open_message("Hire", "No room.", word, (1280, 720), 4);
+            let below = forms.get(FormWindow::Dismiss).unwrap();
+            let (ox, oy) = below.origin();
+            let ok = &below.controls()[1];
+            let at = (ox + ok.x + ok.w / 2, oy + ok.y + ok.h / 2);
+            assert!(!forms.get(FormWindow::Message).unwrap().contains(at.0, at.1));
+            forms.input(at, true, false);
+            let answered = forms.input(at, false, true);
+            let reached = answered.iter().any(|a| a.0 == FormWindow::Dismiss);
+            assert_eq!(reached, reaches, "box word {word:#x}: {answered:?}");
+            assert!(forms.message_on_top());
+        }
     }
 
     /// Its Ok button stores 1 and closes it; a resize places it again.
