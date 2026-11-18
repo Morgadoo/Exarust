@@ -681,14 +681,20 @@ pub fn release_freed_grips(
 /// ([`grip::CarryHeld`]): every item the body holds (its grip not
 /// released) is moved by its holding hand's move, `hand_after ·
 /// hand_before⁻¹`, every particle set so it moves at rest. The items are
-/// not woken (the recursion only places them).
+/// not woken (the recursion only places them). A holder the re-place
+/// follows ([`ReplaceHeld`]) is skipped: the re-place sets every item part
+/// from its grip whatever the carry left, so carrying first would only
+/// change its rounding.
 pub fn carry_held(
     mut commands: Commands,
-    asked: Query<(Entity, &grip::CarryHeld, &Ragdoll)>,
+    asked: Query<(Entity, &grip::CarryHeld, &Ragdoll, Has<ReplaceHeld>)>,
     mut held: Query<(&HeldGrip, &HeldRest, &mut Ragdoll), Without<grip::CarryHeld>>,
 ) {
-    for (entity, carry, holder) in &asked {
+    for (entity, carry, holder, replaced) in &asked {
         commands.entity(entity).remove::<grip::CarryHeld>();
+        if replaced {
+            continue;
+        }
         let Some(key) = holder.parts.first().map(|p| p.entity) else {
             continue;
         };
