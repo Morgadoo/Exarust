@@ -116,6 +116,7 @@
 //!                                     company table), tab:N, winner:ROW; comma separated (debug)
 //!          --shop-sell ID             with --open-hub-window shop: put item ID (hex with 0x) in the manager's pack,
 //!                                     click it into the sell basket and confirm the trade (debug)
+//!          --hub-emblem NAME          play arenahub (debug): the company's emblem is the named preset (klean)
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
 //!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
 //!                                     stand-in for a loaded career's employee); its weapons and shields are held,
@@ -328,6 +329,9 @@
 //! `exarust`: the window size, full screen, vertical sync, supersampling,
 //! the frame-rate readout and the GUI size they name apply unless the
 //! command line says otherwise, and the store's key bindings are used.
+//! The first run (the file's `FirstRun` still set) runs the GPU benchmark
+//! and stores the levels it detects, as the original's first start does
+//! (not in a grid quadrant or a `--screenshot` run).
 //!
 //! In tile-grid levels only the rooms the player can see are drawn, as in
 //! the original: the player's room and those behind a door within 2 m; the
@@ -741,6 +745,8 @@ pub struct Options {
     /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
     /// the company once the hub is entered (a debug tool).
     pub hub_employee_kit: Vec<(String, Vec<u32>)>,
+    /// `--hub-emblem NAME`: the company's emblem preset (debug).
+    pub hub_emblem: Option<String>,
     /// `--hub-enter slot,...`: the hub begins the board's match with this
     /// lineup.
     pub hub_enter: Vec<usize>,
@@ -1682,6 +1688,7 @@ fn parse_command_line(all: Vec<String>) -> Result<(Options, View, Option<PathBuf
                     }
                 }
             }
+            "--hub-emblem" => options.hub_emblem = args.next(),
             "--hub-employee-kit" => {
                 let value = args.next().unwrap_or_default();
                 match parse_employee_kit(&value) {
@@ -2063,6 +2070,10 @@ fn build_app(
         );
         if options.benchmark {
             hardware.start_benchmark();
+        } else if user.first_run && options.offscreen.is_none() && options.screenshot.is_none() {
+            // The first run's auto-detection, stored when it ends. Grid
+            // quadrants and screenshot runs keep their settings unmeasured.
+            hardware.first_run_detection();
         }
         Some(hardware)
     } else {

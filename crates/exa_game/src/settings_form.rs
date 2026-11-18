@@ -343,7 +343,8 @@ fn form_input(
     {
         form.set_keys(&key_names(copy));
     }
-    let covered = editor.screen.is_some() || warm.screen.is_some();
+    // The benchmark hides the form while it runs (its message box shows).
+    let covered = editor.screen.is_some() || warm.screen.is_some() || config.benchmark.is_some();
     let window = windows.single().ok();
     let mut events = Vec::new();
     let mut keep = true;
@@ -958,27 +959,74 @@ pub fn text_colour(palette: &SkinPalette) -> u32 {
     (u32::from(a) << 24) | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
 }
 
-/// Draws the form, then the key-read and warm-up screens over it.
+/// The benchmark's message box: its title, its text (the original's ends
+/// in the code page's ellipsis, byte 0x85) and its flag word (no buttons,
+/// no close box, framed).
+pub const ANALYSING_TITLE: &str = "Configuration";
+pub const ANALYSING_TEXT: &[u8] = b"Analysing system\x85";
+pub const ANALYSING_FLAGS: u32 = 0x60;
+
+/// The message box the GPU benchmark shows while it runs, over a `screen`
+/// at the GUI `unit`. The layout's width is the box's least (the text is
+/// far narrower), so it is measured without the ellipsis.
+pub fn analysing_box(screen: (i32, i32), unit: i32) -> exa_ui::record_form::RecordForm {
+    let mut form = exa_ui::modal_screens::open_message_box(
+        ANALYSING_TITLE,
+        "Analysing system",
+        ANALYSING_FLAGS,
+        screen,
+        unit,
+    );
+    if let Some(label) = form
+        .geometry
+        .controls
+        .get_mut(exa_ui::modal_screens::MESSAGE_LABEL)
+    {
+        label.text = ANALYSING_TEXT.to_vec();
+    }
+    form
+}
+
+/// Draws the form, then the key-read and warm-up screens over it. While
+/// the GPU benchmark runs the form is hidden and the benchmark's
+/// "Configuration" message box shows instead, as the original's benchmark
+/// hides the settings form and shows its box until the runs end (the
+/// Defaults button shows the form again afterwards).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw(
     settings: Res<SettingsForm>,
     editor: Res<BindingEditor>,
     warm: Res<ShaderWarmScreen>,
+    config: Option<Res<HardwareConfig>>,
     textures: Option<Res<GuiTextures>>,
+    glyphs: Option<Res<exa_ui::GuiLevelState>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
 ) {
-    if settings.form.is_none() && editor.screen.is_none() && warm.screen.is_none() {
+    let benchmarking = config.is_some_and(|config| config.benchmark.is_some());
+    if settings.form.is_none() && editor.screen.is_none() && warm.screen.is_none() && !benchmarking
+    {
         return;
     }
     let empty = GuiTextures::default();
     let textures = textures.as_deref().unwrap_or(&empty);
-    if let Some(form) = &settings.form {
+    if let Some(form) = &settings.form
+        && !benchmarking
+    {
         paint_form(form, textures).submit(&mut frames);
     }
     let Ok(window) = windows.single() else {
         return;
     };
     let (screen, unit) = screen_and_unit(window);
+    if benchmarking {
+        let look = crate::hub_windows::Look::new(1.0, unit, textures, glyphs.as_deref());
+        let mut painted = Painted::default();
+        let (frame, _) =
+            crate::hub_forms::paint_form(&mut painted, &analysing_box(screen, unit), &look);
+        painted.layers.extend(frame);
+        painted.submit(&mut frames);
+    }
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) =
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
@@ -1028,6 +1076,18 @@ mod tests {
                     .chain(),
             );
         app
+    }
+
+    #[test]
+    fn the_benchmarks_box_has_no_buttons_and_the_ellipsis() {
+        let form = analysing_box((1280, 720), 4);
+        assert_eq!(form.title, ANALYSING_TITLE);
+        assert_eq!(form.controls().len(), 1);
+        assert_eq!(form.controls()[0].text, b"Analysing system\x85".to_vec());
+        // The least width (320 design pixels plus the skin's border twice),
+        // centred across.
+        let r = form.rect();
+        assert_eq!((r.x * 2 + r.w), 1280);
     }
 
     #[test]

@@ -192,7 +192,11 @@ impl Plugin for ArenaHubPlugin {
                     crate::arsenal::load_shelf_kinds,
                     (leave_arena, enter_loaded_hub).chain(),
                     auto_rematch.before(crate::save_live::SaveLiveSystems::Steps),
-                    crate::hub_forms::open_hub_window_on_load,
+                    (
+                        crate::hub_forms::hub_emblem_on_load,
+                        crate::hub_forms::open_hub_window_on_load,
+                    )
+                        .chain(),
                     crate::hub_forms::hub_employee_kit_on_load,
                     crate::hub_forms::hub_arsenal_on_load.after(hub_enter_on_load),
                     crate::hub_forms::hub_stash_on_load,
@@ -2425,12 +2429,30 @@ fn shop_drag(
                 let (icon, _) = icons.as_deref_mut().map_or((0, (0, 0)), |icons| {
                     icons.reserve(item.id, item.flags, catalogue)
                 });
-                shop.preview_drag = Some(crate::shop_preview::PreviewDrag {
+                // The locked view's drag start: a shop item's payload is one
+                // no panel takes; an icon that did not resolve starts none.
+                match crate::shop_preview::drag_kind(
                     item,
                     icon,
-                    grab: crate::item_container::drag_grab(shop.panels.pack.icon_size),
-                });
-                info!("hub shop: drag of {item:?} off the preview at {pointer:?}");
+                    shop.panels.pack.icon_size.max(0) as u32,
+                ) {
+                    Some(kind) => {
+                        shop.preview_drag = Some(crate::shop_preview::PreviewDrag {
+                            item,
+                            icon,
+                            grab: crate::item_container::drag_grab(shop.panels.pack.icon_size),
+                            kind,
+                        });
+                        info!(
+                            "hub shop: drag of {item:?} off the preview at {pointer:?} (kind {kind:#x})"
+                        );
+                    }
+                    None => {
+                        if let Some(icons) = icons.as_deref_mut() {
+                            icons.release(icon);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2456,7 +2478,10 @@ fn shop_drag(
             .and_then(|icons| icons.half(drag.icon))
             .unwrap_or((0, 0));
         let mut landed = None;
-        if let Some((panel, cell)) = shop.panels.panel_at(client) {
+        // A shop item's payload (the locked view's) is taken by no panel.
+        if drag.kind != crate::shop_preview::UNTAKEN
+            && let Some((panel, cell)) = shop.panels.panel_at(client)
+        {
             let accepted = shop.panels.get(panel).accept(
                 &crate::item_container::Drag {
                     src: Some(crate::shop_preview::PREVIEW_PANEL),
