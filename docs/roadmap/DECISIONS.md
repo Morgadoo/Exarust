@@ -182,6 +182,8 @@ buffer whose content depends on draw order, the second a hang.
 **Blocks:** one `partial` row (the wisps' strip draw).
 
 ### DEC-12. Generated textures on the CPU
+**Taken 2026-11-16 as recommended** (see the Taken table).
+
 **Question:** the original generates its item, apparel and skin textures
 as GL render jobs (a 256-slot job ring flushed on the GL thread, a 64-slot
 surface cache of render targets, a shade scratch target, programs compiled
@@ -208,10 +210,65 @@ painter for no visible gain.
 **Blocks:** about twenty rows of FLX_Materials_Procedural and
 FLX_Character_Textures (the lane rates them `engine` under this condition).
 
+## Batch rulings
+
+Taken by the owner on 2026-11-16 from the triage of the open ledger
+(2026-11-16): each closes the ledger rows whose only open item is the
+plumbing it names. A reviewer still checks each row: the proof names the
+Rust replacement, and nothing observable depends on what was replaced.
+A row that also carries a port item, an unclear reading, a blocker, a
+retail capture or a picture owed stays open whatever is ruled here.
+
+### B1. Object model
+The original's object lists, virtual class slots, clone, constructors and
+destructors, master and instance nodes, per-object child and controller
+lists, and scene-node matrix rebuilds are ECS entities and components,
+Rust ownership, shared handles and Bevy transform propagation in Exarust.
+A row whose only open item is that plumbing (including the same values
+kept in another representation with no other reader) closes as `engine`,
+citing B1. Excluded: any row whose behaviour leans on list order (draw
+order, update order, which object a search finds first); those stay port
+work.
+
+### B2. UI toolkit and input plumbing
+The original's widget toolkit (form base classes, the root and game
+layers per router, focus and invalidation messages, scaling and drawing
+hook chains, viewport input delegates) is Exarust's own UI layer and Bevy
+input systems. A row whose only open item is that plumbing closes as
+`engine`, citing B2, when the visible result is the same. Not covered: the
+inactive layer's dimming, which stays port work.
+
+### B3. Direct calls instead of deferred queues
+Work the original posts to a deferred-call ring, a message, a stream job
+or a callback, and Exarust calls directly or runs as a system in the same
+frame, is kept as a `deviation`, citing B3, when the difference is at most
+one frame of timing with the same result. Condition: the call stays on the
+same side of the simulation step / frame boundary as in the original; a
+move across that boundary is not covered.
+
+### B4. Engine resources and platform
+GL objects, programs, buffers and render targets (wgpu and Bevy render),
+texture managers, caches, pools, reference counts and loaders (Bevy assets
+and Rust memory), and windows, threads, locks, the console and the file
+system (winit, Rust std, Bevy) close as `engine`, citing B4. For a GPU item
+the proof names the wgpu or WESL path that does the work. Not covered: any
+difference in a picture (that stays port work). The shader warm-up hitch is
+a Phase D performance item, not a ledger blocker.
+
+### B5. Deterministic stand-ins and guards (split)
+- **B5a, taken:** clock reseeds replaced by fixed sequences where the
+  original's value cannot be reproduced anyway, metres against centimetres,
+  float rounding that differs only in the last bit, and the physics
+  library's triangle order are kept as `deviation`, citing B5a.
+- **B5b, not taken yet:** the NaN and overrun guards wait on one data scan
+  per guard (if shipped data can reach the guarded case, it is port work);
+  the per-system random streams get their own decision entry.
+
 ## Taken
 
 | date | decision |
 |---|---|
+| 2026-11-16 | Batch rulings B1, B2, B3 (with its step/frame condition), B4 and B5a taken as recommended by the triage of the open ledger; B5b waits on its data scans and a decision entry for the random streams. DEC-12 taken as recommended (generated textures on the CPU engine-replaced, on the condition that every program a job draws has its arithmetic matched; a program not yet matched keeps its row open). Recorded 2026-11-18 at the owner's request. |
 | 2026-11-15 | DEC-8 taken as recommended (shader templates engine-replaced where the WESL paths cover every variant). |
 | 2026-11-12 | DEC-1 to DEC-4 taken as recommended when the owner set the goal "complete the plan": the ledger definition of 100%; Steam kept as a deviation for now; the character creator audited read-only, ports left to the other session; Phase A starts with the three-package pilot, the rest sized from its numbers. |
 | 2026-11-11 | Lockstep traces may change when a change makes timing follow the simulation as the original does (round 201); each change is explained in the round's notes. |
