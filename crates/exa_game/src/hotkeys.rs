@@ -509,7 +509,10 @@ fn press_hotkeys(
                         req.entered_combat();
                         // Entering combat mode closes every in-game screen
                         // and the power tree (the bar stays).
+                        // The GUI's held left button is let go first, so
+                        // an item drag in flight drops at the pointer.
                         commands.queue(|world: &mut World| {
+                            crate::panel_live::release_held_drag(world);
                             crate::gui_screens::sweep_screens(
                                 world,
                                 crate::gui_screens::ScreenSweep::Every,

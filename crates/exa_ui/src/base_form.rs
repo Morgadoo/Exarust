@@ -262,6 +262,8 @@ impl BaseForm {
                     i,
                     Message {
                         message: message::QUERY,
+                        param: rx as u32,
+                        extra: ry as u32,
                         ..Message::default()
                     },
                     self.unit,

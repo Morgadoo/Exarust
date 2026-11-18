@@ -1811,6 +1811,7 @@ pub fn hub_pad(
     mut hub: ResMut<ArenaHub>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut stores: Option<ResMut<crate::save_live::ArenaStores>>,
+    mut clicks: Option<ResMut<Messages<WorldClick>>>,
 ) {
     let Some(key) = pad
         .as_deref_mut()
@@ -1818,6 +1819,11 @@ pub fn hub_pad(
     else {
         return;
     };
+    // An open drop-down list or colour palette is the top of the focus
+    // stack (its open pushed it): its command slot takes the word.
+    if windows.popup_command(&mut career, key.key) {
+        return;
+    }
     if windows.forms.message_on_top() {
         if windows.forms.message_pad(key.key) {
             info!("hub: the pad closes the message box");
@@ -1836,6 +1842,17 @@ pub fn hub_pad(
             info!("hub: the pad's MenuBak closes the top window");
             if windows.close_top() {
                 hub.busy = false;
+            }
+        }
+        // A focused bottom button's activation runs the callback its
+        // click runs: the hub's click hook takes it as a click there.
+        crate::hub_windows::BoardPad::Click(at) => {
+            if let Some(clicks) = clicks.as_deref_mut() {
+                clicks.write(WorldClick {
+                    hit: crate::hand::Hit::Level,
+                    pointer: IVec2::new(at.0, at.1),
+                    double: false,
+                });
             }
         }
         crate::hub_windows::BoardPad::Table(action) => {
@@ -3072,6 +3089,72 @@ mod tests {
         );
         pad_word(&mut app, 0x200, Vec2::ZERO);
         assert!(!app.world().resource::<HubWindows>().is_open());
+    }
+
+    /// The board's bottom buttons the pad reaches (shown, enabled, the
+    /// focus style) are pick candidates beside the tables: a step down
+    /// from the lineup focuses one, and `MenuSel` on it clicks it, the
+    /// hub's click hook taking a click on that button.
+    #[test]
+    fn the_pad_picks_and_presses_the_boards_bottom_buttons() {
+        use exa_ui::match_board::{BoardHit, BoardTab, TableSlot, control};
+        let mut app = board_app(BoardTab::Matches);
+        app.init_resource::<crate::pad_menu::PadMenu>()
+            .init_resource::<ArenaHub>()
+            .add_message::<WorldClick>()
+            .add_systems(Update, hub_pad);
+        app.world_mut()
+            .resource_mut::<HubWindows>()
+            .board_tables
+            .pad_table = Some(TableSlot::Lineup);
+        let mut button = None;
+        for _ in 0..4 {
+            pad_word(&mut app, 0x8011, Vec2::new(0.0, 1.0));
+            button = app.world().resource::<HubWindows>().board_tables.pad_button;
+            if button.is_some() {
+                break;
+            }
+        }
+        let index = button.expect("a step down reaches a bottom button");
+        assert!(
+            [
+                control::DAY_END,
+                control::CLOSE,
+                control::ENTER,
+                control::SECONDARY
+            ]
+            .contains(&index)
+        );
+        assert_eq!(
+            app.world().resource::<HubWindows>().board_tables.pad_table,
+            None
+        );
+        app.world_mut()
+            .resource_mut::<Messages<WorldClick>>()
+            .drain()
+            .count();
+        pad_word(&mut app, 0x100, Vec2::ZERO);
+        let clicks: Vec<WorldClick> = app
+            .world_mut()
+            .resource_mut::<Messages<WorldClick>>()
+            .drain()
+            .collect();
+        assert_eq!(clicks.len(), 1);
+        let windows = app.world().resource::<HubWindows>();
+        let bounds = windows.bounds().unwrap();
+        let border = windows.board_form.as_ref().map_or(0, |f| f.geometry.border);
+        let local = (
+            clicks[0].pointer.x - bounds.left - border,
+            clicks[0].pointer.y - bounds.top - border,
+        );
+        let hit = windows.board.as_ref().unwrap().hit_test(local);
+        let expected = match index {
+            control::DAY_END => BoardHit::EndDay,
+            control::CLOSE => BoardHit::Close,
+            control::ENTER => BoardHit::Enter,
+            _ => BoardHit::Forfeit,
+        };
+        assert_eq!(hit, expected);
     }
 
     /// A message box over the board takes the pad's word through its key

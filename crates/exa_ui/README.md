@@ -691,7 +691,14 @@ window draws its frame and its pack and equipment panels. They draw with
 icons use `SkinMode::HltCol`, the item GUI's own program (below). The
 character view, preview bars and the loot panels' body items are not
 wired here; the journal's entry list opens its drop-down list
-(`option_forms::open_drop_list`, drawn over the windows).
+(`option_forms::open_drop_list`, drawn over the windows). The combo box's
+own messages in `gui_controls::dispatch`: its pointer query answers the
+text cursor (0x8020000) left of an editable box's arrow, so the hover
+code's edit state 0x20000 reaches its state; a left press in that state
+answers 0x15 (the box holds it and takes the key focus; its owner places
+the caret), any other left press opens the list (the owner's report) and
+answers 3; the release only answers 3. The base form's query carries the
+point.
 
 ## The item panel's icon program
 

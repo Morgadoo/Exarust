@@ -1873,11 +1873,14 @@ drawing:
   renames the selected entry while editing and otherwise stores the text
   and selects the picked row. The selection writes the list record's
   caption (the entry's title), its 1-based row, the entry count and every
-  title; a release over the list (a combo box) opens its drop-down list of
-  those titles under it with the row chosen (the list takes the journal's
-  line skin as the hub's combo lists do), and a row picked there stores
-  the text box's text into the selected entry and selects the picked one.
-  A title edit (the list's edit state, F89) is not reached.
+  title; a press on the list's arrow (a combo box) opens its drop-down
+  list of those titles under it with the row chosen (the list takes the
+  journal's line skin as the hub's combo lists do), and a row picked there
+  stores the text box's text into the selected entry and selects the
+  picked one. The list is editable: New's focus selects its whole title, a
+  press on its text (the edit state) places the caret and focuses it, and
+  each key edits it and calls its callback in the edit state, which renames
+  the selected entry and its row in the titles.
 - **Sweeps and saves.** Entering combat mode (Tab, or a script's
   combat-mode call that turns it on) closes every in-game screen (tag
   mask 0xce100000) back to front, then the power tree; the shown power
@@ -2896,8 +2899,12 @@ result reads as 0. Their rules:
 - **Combo box.** The span is `w − (4·unit|1) − 2·pad − unit`; the arrow
   sits `(4·unit|1) − unit/2 + 1` in from the right and `(unit+1) − (unit&1)`
   down, unless the style hides it (`0x8000000`). An editable box shows the
-  text cursor left of `left + w − (4·unit|1) − pad`. A left press in the
-  edit state drops the anchor, any other opens the drop-down list. Setting
+  text cursor left of `left + w − (4·unit|1) − pad` (the query's word
+  0x8020000, whose 0x20000 is the hover's edit state). A left press in the
+  edit state drops the anchor and answers 0x15 (held, key focus); any other
+  opens the drop-down list on the press and answers 3; the release only
+  answers 3. With the focus bit (0x400) the box draws its selection, and
+  its caret while its form's caret bit is lit. Setting
   a selection of 0 (or with no items) clears the text; otherwise the item,
   capped at the last, becomes the text, cut to the limit, and the owner is
   told unless the caller asks for quiet. Creation takes the selected item's

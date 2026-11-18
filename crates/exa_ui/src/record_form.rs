@@ -421,16 +421,22 @@ impl RecordForm {
     }
 
     fn send(&mut self, i: usize, m: Message) -> Vec<usize> {
+        self.send_answer(i, m).1
+    }
+
+    /// Sends a message and keeps the record's answer with its reports.
+    fn send_answer(&mut self, i: usize, m: Message) -> (u32, Vec<usize>) {
         let unit = self.unit();
         let mut events = Vec::new();
-        gui_controls::dispatch(&mut self.geometry.controls, i, m, unit, &mut events);
-        events
+        let answer = gui_controls::dispatch(&mut self.geometry.controls, i, m, unit, &mut events);
+        let changed = events
             .into_iter()
             .filter_map(|event| match event {
                 ControlEvent::Changed(i) => Some(i),
                 _ => None,
             })
-            .collect()
+            .collect();
+        (answer, changed)
     }
 
     /// A left press: the record under the pointer is held and pressed (a
@@ -446,7 +452,7 @@ impl RecordForm {
         } else {
             (x - ox) as u32
         };
-        self.send(
+        let (answer, changed) = self.send_answer(
             i,
             Message {
                 message: message::PRESS,
@@ -455,7 +461,14 @@ impl RecordForm {
                 over: true,
                 ..Message::default()
             },
-        )
+        );
+        // A combo box whose press opened its list (answer 3) does not hold
+        // the press: the list takes the pointer, and the release finds no
+        // held record.
+        if self.geometry.controls[i].class == crate::controls::COMBO_BOX && answer & 5 != 5 {
+            self.held = None;
+        }
+        changed
     }
 
     /// The pointer moved: a held trackbar follows it, a held record lights
